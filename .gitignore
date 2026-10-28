@@ -1,0 +1,26 @@
+# 运行期数据：账号 token（DPAPI）、积分台账、备份、日志、账号档案
+# 体积 400MB+ 且含敏感信息，绝不入库
+data/
+
+# 历史版本 zip 归档（40MB），只做本地留存
+legacy/
+
+# 项目内虚拟环境（226MB），由 setup.vbs / uv sync 重建
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 本地临时文件
+*.log
+*.tmp
+*.old
+.DS_Store
+Thumbs.db
+
+# 编辑器 / 工具私有数据
+.idea/
+.codebuddy/
+.workbuddy/
