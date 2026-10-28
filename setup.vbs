@@ -24,4 +24,32 @@ If rc <> 0 Then
     MsgBox "Dependency sync failed (exit code " & rc & ")." & vbCrLf & vbCrLf & _
            "Run setup.bat in a terminal to see details.", _
            vbCritical, "AI Manager"
+    WScript.Quit rc
 End If
+
+FixPythonw
+
+
+' venv's pythonw.exe may be a console copy of python.exe (how uv builds envs),
+' which pops a cmd window on double-click. Overwrite it with the GUI template
+' shipped by the base interpreter. ASCII only: see the header note.
+Sub FixPythonw()
+    Dim cfg, stream, line, baseHome, tpl
+    On Error Resume Next
+    cfg = root & "\.venv\pyvenv.cfg"
+    If Not fso.FileExists(cfg) Then Exit Sub
+
+    Set stream = fso.OpenTextFile(cfg, 1)
+    Do Until stream.AtEndOfStream
+        line = stream.ReadLine
+        If Left(line, 7) = "home = " Then baseHome = Trim(Mid(line, 8))
+    Loop
+    stream.Close
+
+    If baseHome = "" Then Exit Sub
+    tpl = baseHome & "\Lib\venv\scripts\nt\pythonw.exe"
+    If fso.FileExists(tpl) Then
+        fso.CopyFile tpl, root & "\.venv\Scripts\pythonw.exe", True
+    End If
+    Err.Clear
+End Sub

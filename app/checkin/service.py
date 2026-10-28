@@ -73,11 +73,19 @@ def mark_checked(iid: str) -> None:
         pass
 
 
-def checked_ids() -> set[str]:
-    """今天已经签过的账号（自然日口径，用于汇总文案）。"""
+def checked_ids(accounts: list[Account] | None = None) -> set[str]:
+    """今天已经签过的账号（自然日口径，用于汇总文案）。
+
+    下次可签时刻只认接口的平台（Qoder）不参与：本地记录分不清签到发生在
+    今天这轮还是昨天跨过来的那轮，拿它当基线会把“昨天领过”显示成“今天已签”。
+    """
     today = datetime.now().date()
+    api_iids = {account.iid for account in (accounts or ())
+                if next_from_api(account.platform)}
     out = set()
     for key, value in _load_checked().items():
+        if key in api_iids:
+            continue
         at = _parse_checked(value)
         if at and at.date() == today:
             out.add(key)

@@ -279,7 +279,10 @@ class AccountCenterPage(BasePage):
         requires = self._needs.get(iid, account.requires_checkin)
         at = service.checked_at(iid) if requires else None
         checked = self._status_checked.get(iid)
-        today_done = bool(at and at.date() == datetime.now().date())
+        api_window = service.next_from_api(account.platform)
+        # 活动制平台的本地记录分不清今天/昨天两轮，不能当“今天已签”的兜底
+        today_done = (not api_window
+                      and bool(at and at.date() == datetime.now().date()))
         if not requires:
             self.detail_badge.set("免签到", "muted")
         elif checked is True or (checked is None and today_done):
@@ -289,37 +292,44 @@ class AccountCenterPage(BasePage):
         else:
             self.detail_badge.set("状态未知", "muted")
 
+        # 只认接口的平台空跑一次也算“签到”，本地时间会把没发放的调用记成签到；
+        # 这类账号改看台账里真正到手的发放时间。
+        records = ledger.records(iid) if (requires and api_window) else None
         if not requires:
             self.detail_checkin.setText("本次签到 免签到")
+        elif records is not None:
+            last = _short_time(records[0].get("granted")) if records else ""
+            self.detail_checkin.setText(f"本次签到 {last}" if last else "本次签到 暂无记录")
         elif at:
             self.detail_checkin.setText(f"本次签到 {at:%m-%d %H:%M:%S}")
         else:
             self.detail_checkin.setText("本次签到 暂无记录")
 
         self._tick_detail()
-        self._paint_records(iid)
+        self._paint_records(iid, records)
 
     def _tick_detail(self) -> None:
         """每秒只改一行文案；无选中时不做事。
 
-        文案要区分「接口说现在可签」和「接口没给时间」：后者不能写成可签，
-        否则活动还没下发时用户会以为能点。
+        文案要区分三种状态：接口给了下一轮时刻、接口说现在可签、接口什么都没给。
+        后者不能写成可签，否则活动还没下发时用户会以为能点。
         """
         if not self._detail_iid:
             return
         checked = self._status_checked.get(self._detail_iid)
         target = self._detail_target
-        if checked is False:
-            self.detail_next.setText("下次签到 现在可签")
-        elif target is not None and target > datetime.now():
+        if target is not None and target > datetime.now():
+            # 今天这轮还没开（例如 10:00 前），先给时刻和倒计时，不写“现在可签”
             self.detail_next.setText(
                 f"下次签到 约 {target:%m-%d %H:%M} · {service.countdown_text(target)}")
+        elif checked is False:
+            self.detail_next.setText("下次签到 现在可签")
         elif checked is True:
             self.detail_next.setText("下次签到 本轮已签，等下一轮下发")
         else:
             self.detail_next.setText("下次签到 —")
 
-    def _paint_records(self, iid: str) -> None:
+    def _paint_records(self, iid: str, records: list | None = None) -> None:
         while self.detail_rows.count():
             item = self.detail_rows.takeAt(0)
             widget = item.widget()
@@ -328,7 +338,7 @@ class AccountCenterPage(BasePage):
                 widget.deleteLater()
 
         entries = []
-        rows = ledger.records(iid)
+        rows = ledger.records(iid) if records is None else records
         if rows:
             # 本工具亲眼记录的发放：有确切获得时间，信息最全
             for row in rows:
@@ -478,6 +488,9 @@ class AccountCenterPage(BasePage):
                 continue
             if state is None and not service.checkin_due(account):
                 continue                      # 接口没给状态，退回本地自然日兜底
+            target = service.next_checkin_at(account)
+            if target is not None and target > datetime.now():
+                continue                      # 接口给了下一轮时刻且还没到，别空跑
             due.append(account)
         if not due:
             self.log(f"{reason}：状态已是最新，没有需要签到的账号", "dim")
@@ -531,7 +544,8 @@ class AccountCenterPage(BasePage):
             self._render_checkin(*payload)
 
     def _refresh_caches(self) -> None:
-        self._checked = service.checked_ids()
+        # 传账号进去：只认接口的平台（Qoder）不能用本地记录当“今天已签”的基线
+        self._checked = service.checked_ids(list(self.accounts.values()))
         self._ledger = ledger.summaries()
 
     def _ordered(self, accounts: list[Account]) -> list[Account]:
@@ -621,7 +635,12 @@ class AccountCenterPage(BasePage):
             self._checked.add(iid)
         elif result.checked_in is False:
             self._checked.discard(iid)
-        checked = result.checked_in if result.checked_in is not None else (iid in self._checked)
+        if result.checked_in is not None:
+            checked = result.checked_in
+        elif service.next_from_api(account.platform):
+            checked = None
+        else:
+            checked = iid in self._checked
         if not requires:
             today = "免签到"
         elif checked is True:
@@ -673,22 +692,24 @@ class AccountCenterPage(BasePage):
         iid = account.iid
         if iid not in self.accounts:
             return
-        if result.ok and account.requires_checkin:
+        if result.ok and not result.already and account.requires_checkin:
             self._checked.add(iid)
             self._status_checked[iid] = True
             # 台账刚写过这一条，只重算这一个账号
             self._ledger[iid] = ledger.summary(iid)
-        colors = self._colors(iid, account)
+        changes = {
+            "balance": self._balance_text(iid),
+            "_tip_map": {"balance": result.message},
+        }
         if not account.requires_checkin:
-            today = "免签到"
-        else:
-            today = "已签到" if result.ok else "失败"
+            changes["today"] = "免签到"
+        elif not result.already:
+            colors = self._colors(iid, account)
             colors["today"] = PALETTE["ok"] if result.ok else PALETTE["danger"]
-        self.table.model.update(
-            iid, today=today,
-            balance=self._balance_text(iid),
-            _fg_map=colors,
-            _tip_map={"balance": result.message})
+            changes["today"] = "已签到" if result.ok else "失败"
+            changes["_fg_map"] = colors
+        # already 时不改单元格：本轮早已领过，今天到底算不算已签由紧随其后的状态刷新决定
+        self.table.model.update(iid, **changes)
         self._update_credit_cells(iid)
         self._update_summary()
         if iid == self._detail_iid:
@@ -982,27 +1003,41 @@ class AccountCenterPage(BasePage):
 
     def _checkin_worker(self, emit, targets: list[Account]):
         success = 0
+        already = 0
         for account in targets:
             self.log(f"[{account.platform_label}] 正在为 {account.name} 签到…", "dim")
             result = service.checkin_one(account, self.log)
             if result.ok:
-                service.mark_checked(account.iid)
-                service.record_grant(account, result)
-                success += 1
+                # 「本轮早已领过」没有新发放，不能把这次调用写成本次签到时刻
+                if result.already:
+                    already += 1
+                else:
+                    service.mark_checked(account.iid)
+                    service.record_grant(account, result)
+                    success += 1
             emit(("checkin", (account, result)))
             if result.ok:
                 fresh = service.refresh_status_after_checkin(account, self.log)
                 if fresh is not None:
                     emit(("status", (account.iid, fresh)))
-        self.log(f"签到结束：成功 {success}/{len(targets)}",
-                 "ok" if success == len(targets) else "error")
-        return (success, len(targets))
+        note = f"签到结束：成功 {success}/{len(targets)}"
+        if already:
+            note += f"，本轮已领取 {already}"
+        self.log(note, "ok" if success + already == len(targets) else "error")
+        return (success, len(targets), already)
 
     def _checkin_done(self, payload) -> None:
         self._set_busy(False)
         self._update_summary()
-        success, total = payload
-        self.notify(f"签到完成：成功 {success}/{total}", "ok" if success == total else "warn")
+        success, total, already = payload
+        if already and not success:
+            # 今天这轮还没开（或别处已领），不是失败，别报红色警告
+            self.notify(f"{already} 个账号本轮已领取，暂无可签的窗口", "warn")
+            return
+        text = f"签到完成：成功 {success}/{total}"
+        if already:
+            text += f" · 本轮已领取 {already}"
+        self.notify(text, "ok" if success + already == total else "warn")
 
     def _fail(self, message: str) -> None:
         self._set_busy(False)
