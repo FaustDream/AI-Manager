@@ -17,13 +17,15 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+import requests
+
 from ..core import winproc
 from ..sessions import profiles as wb_profiles
 from ..sessions.editions import Edition
 from . import qoder as qoder_provider
 from . import trae as trae_provider
 from .base import Account, parse_iso
-from .workbuddy import seal_field
+from .workbuddy import open_field, seal_field
 
 QODER_DIR_CN = Path(os.environ.get("APPDATA", "")) / "com.qodercn.app.stable"
 QODER_DIR_INTL = Path(os.environ.get("APPDATA", "")) / "com.qoder.app.stable"
@@ -251,15 +253,65 @@ def _wb_target_uid(account: Account) -> str:
     return str(account.meta.get("uid") or account.account_id or "")
 
 
+def _ticket_for(ep: Edition, uid: str) -> Path | None:
+    """切换时实际会写回客户端的那份 .info：档案优先，其次客户端自己的备份。"""
+    if not uid:
+        return None
+    if wb_profiles.has_pack_auth(ep, uid):
+        return wb_profiles.pack_auth_path(ep, uid)
+    return wb_profiles.find_auth_backup(ep, uid)
+
+
+def _ticket_status(path: Path) -> int:
+    """用票据里的 token 问一次积分接口。
+
+    200 = 服务端还认这个登录态；401 = 已经失效，写回去也只会跳登录页；
+    0 = 读不出 token 或网络不通，交给后面的流程按未知处理。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        auth = data.get("auth") or {}
+        token = open_field(auth.get("accessToken"))
+        uid = str((data.get("account") or {}).get("uid") or "")
+        domain = str(auth.get("domain") or "")
+    except Exception:
+        return 0
+    if not token:
+        return 0
+    base = ("https://www.workbuddy.ai/v2/billing/meter" if domain.endswith(".ai")
+            else "https://copilot.tencent.com/v2/billing/meter")
+    try:
+        resp = requests.post(
+            f"{base}/get-user-resource",
+            headers={"Authorization": f"Bearer {token}", "X-User-Id": uid,
+                     "X-Domain": domain, "Content-Type": "application/json",
+                     # 少了 UA 会被网关挡成 403，看起来像票据失效
+                     "User-Agent": "Mozilla/5.0 CodeBuddy/5.6.0"},
+            json={"PageNumber": 1, "PageSize": 1, "ProductCode": "p_tcaca",
+                  "Status": [0, 3]},
+            timeout=8)
+    except requests.RequestException:
+        return 0
+    return resp.status_code
+
+
 def switch_workbuddy(account: Account, log) -> str:
+    ep = _wb_edition(account)
+    target_uid = _wb_target_uid(account)
+    # 先确认票据还能用：服务端已经 401 的话，切过去必定停在登录页，
+    # 与其让用户在登录页上撞墙，不如在这里就说明白，客户端都不用关
+    ticket = _ticket_for(ep, target_uid)
+    if ticket is not None and _ticket_status(ticket) == 401:
+        raise SwitchError(
+            "这个账号保存的登录票据已经失效（服务端返回 401），切换过去一定会停在登录页。\n"
+            "请先在客户端里登录一次该账号，关闭客户端后会自动补存新票据，之后再切换。")
+
     if not close_client_for(account, log):
         raise SwitchError(f"{account.platform_label} 客户端没能自动关闭，请手动退出后再切换。")
     path = _wb_file(account)
     if not path.exists():
         raise SwitchError(f"没有找到 {account.platform_label} 的登录态文件。")
 
-    ep = _wb_edition(account)
-    target_uid = _wb_target_uid(account)
     notes: list[str] = []
     cur_uid = ""
 

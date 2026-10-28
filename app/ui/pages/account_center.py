@@ -53,6 +53,8 @@ ACTION_COL = len(COLUMNS) - 1
 # 一次整包拷贝动辄上百 MB，切页面太频繁时没必要每次都重存
 AUTO_SAVE_INTERVAL = 300
 EXIT_SAVE_INTERVAL = 60
+# 切换后等客户端启动 + 鉴权，再回头确认它有没有接受票据
+SWITCH_VERIFY_DELAY = 20
 
 
 def _error_text(balance, summary: str) -> str:
@@ -125,6 +127,7 @@ class AccountCenterPage(BasePage):
         self._last_save = 0.0
         self._saving = False
         self._client_was_running = False
+        self._switch_gen = 0
         # 后台每日轮询是否在跑：不占用 busy，只锁会写登录态的动作
         self._daily_running = False
         # 积分明细面板：只在有选中行时显示；倒计时只刷文案，不重读文件
@@ -1247,8 +1250,41 @@ class AccountCenterPage(BasePage):
             # 账号换了，会话归属跟着变：通知会话管理重拉（含云端会话列表）
             bus.BUS.data_changed.emit("sessions")
             self.refresh()
+            self._verify_switch(account)
 
         tasks.submit(worker, on_done=done, on_error=self._fail)
+
+    def _verify_switch(self, account: Account) -> None:
+        """切换后等客户端起来确认一眼：票据没被接受就直接说，别让用户自己撞登录页。"""
+        if account.platform != "workbuddy":
+            return
+        ep = self._edition_for(account)
+        uid = str(account.meta.get("uid") or "")
+        if not uid:
+            return
+        self._switch_gen += 1
+        generation = self._switch_gen
+
+        def check(_emit):
+            time.sleep(SWITCH_VERIFY_DELAY)   # 给客户端留出启动 + 鉴权的时间
+            if not winproc.process_running(ep.proc):
+                return None
+            return profiles.auth_uid(ep), profiles.current_uid(ep)
+
+        def done(result) -> None:
+            if generation != self._switch_gen or not result:
+                return
+            info_uid, snap_uid = result
+            if info_uid == uid:
+                self.log(f"客户端已接受 {account.name} 的登录票据", "dim")
+                return
+            self.log(f"客户端没有接受 {account.name} 的登录票据"
+                     f"（现在 .info 是 {info_uid[:8] or '空'}），需要重新登录一次", "warn")
+            self.notify("切换后客户端仍要求登录：该账号票据已失效，请登录一次", "warn")
+
+        tasks.submit(check, on_done=done,
+                     on_error=lambda m: self.log(
+                         f"切换校验失败：{m.splitlines()[0]}", "dim"))
 
     def remove_account(self) -> None:
         if self._blocked_by_daily("移除账号"):

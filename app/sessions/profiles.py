@@ -228,7 +228,11 @@ def write_auth(ep: Edition, source: Path) -> Path | None:
 
 
 def has_pack_auth(ep: Edition, uid: str) -> bool:
-    return bool(uid) and (_pack_dir(ep, uid) / PACK_AUTH).exists()
+    return bool(uid) and pack_auth_path(ep, uid).exists()
+
+
+def pack_auth_path(ep: Edition, uid: str) -> Path:
+    return _pack_dir(ep, uid) / PACK_AUTH
 
 
 def find_auth_backup(ep: Edition, uid: str) -> Path | None:
