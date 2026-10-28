@@ -36,7 +36,7 @@ BUTTONS: dict[str, dict] = {
     },
     "accounts.switch_login": {
         "panel": "accounts", "position": "toolbar", "order": 30,
-        "text": "切换客户端登录", "kind": "ghost", "icon": "sync",
+        "text": "切换登录", "kind": "ghost", "icon": "sync",
         "requires": ["selected"], "enable_when": "selection",
         "note": "把 token 写回官方客户端登录文件（自动关闭并重启客户端）",
     },
@@ -67,7 +67,7 @@ BUTTONS: dict[str, dict] = {
     },
     "checkin.refresh_login": {
         "panel": "checkin", "position": "toolbar", "order": 50,
-        "text": "刷新登录态", "kind": "ghost", "icon": None,
+        "text": "刷新登录", "kind": "ghost", "icon": None,
         "requires": [], "enable_when": "always",
         "note": "重新扫描各客户端的本地登录态",
     },
@@ -81,7 +81,7 @@ BUTTONS: dict[str, dict] = {
     # 添加账号 / 打开客户端只在账号动作行出现一次，签到行不再重复注册
     "profiles.logout": {
         "panel": "profiles", "position": "header", "order": 10,
-        "text": "登录其它账号", "kind": "ghost", "icon": None,
+        "text": "退出登录", "kind": "ghost", "icon": None,
         "requires": [], "enable_when": "always",
         "note": "保存当前账号后清空登录态，客户端回到登录页",
     },
@@ -127,14 +127,21 @@ class ButtonBar:
         self._widgets: dict[str, QPushButton] = {}
 
     def build(self, layout, panel: str, position: str,
-              on_click: dict, ctx=None) -> dict[str, QPushButton]:
-        """构建按钮并接线；ctx 返回 {selected/rows/checkin_account/stored_account}。"""
+              on_click: dict, ctx=None,
+              compact: bool = False) -> dict[str, QPushButton]:
+        """构建按钮并接线；ctx 返回 {selected/rows/checkin_account/stored_account}。
+
+        compact 用于按钮多、需要挤在一行的场景：去掉图标并收紧内边距。
+        """
         buttons: dict[str, QPushButton] = {}
         from .widgets import make_button
         for bid in sorted_ids(panel, position):
             meta = BUTTONS[bid]
             handler = on_click.get(bid)
-            button = make_button(meta["text"], meta["kind"], meta["icon"])
+            button = make_button(meta["text"], meta["kind"],
+                                 None if compact else meta["icon"])
+            if compact:
+                button.setProperty("compact", True)
             if handler:
                 button.clicked.connect(
                     self._guard(bid, handler, ctx))

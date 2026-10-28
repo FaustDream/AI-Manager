@@ -84,19 +84,6 @@ def _round_text(result) -> str:
     return "每日签到检查完成：今天都已签到，无需重复"
 
 
-def _round_short(result) -> str:
-    """工具栏上的一行短结果，成功后一直留在这里，不随气泡消失。"""
-    if result.success:
-        return f"成功 {result.success}"
-    if result.failed:
-        return f"失败 {result.failed}"
-    if result.waiting:
-        return f"等待 {result.waiting}"
-    if result.already:
-        return f"已领 {result.already}"
-    return "已签"
-
-
 def _short_time(value, prefix: str = "") -> str:
     """ISO 时间串转本地「月-日 时:分」；解析不了返回空串。"""
     if not value:
@@ -135,6 +122,8 @@ class AccountCenterPage(BasePage):
         self._last_save = 0.0
         self._saving = False
         self._client_was_running = False
+        # 后台每日轮询是否在跑：不占用 busy，只锁会写登录态的动作
+        self._daily_running = False
         # 积分明细面板：只在有选中行时显示；倒计时只刷文案，不重读文件
         self._detail_iid = ""
         self._detail_target: datetime | None = None
@@ -166,40 +155,32 @@ class AccountCenterPage(BasePage):
         self.btn_bar = button_config.ButtonBar(self.cfg)
         self._action_buttons = []
 
-        # ---- 动作区：签到与账号操作放在同一张卡片里 ----
-        # 两行按钮同处一块，避免「添加账号 / 打开客户端」在工具行和表头各出现一次
+        # ---- 动作区：全部按钮挤在一行，签到在前、账号操作在后 ----
         toolbar = Card(padding=14, spacing=8)
-        checkin_row = QHBoxLayout()
-        checkin_row.setSpacing(8)
-        checkin_buttons = self.btn_bar.build(checkin_row, "checkin", "toolbar", {
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        checkin_buttons = self.btn_bar.build(row, "checkin", "toolbar", {
             "checkin.checkin_all": lambda: self.checkin(all_accounts=True),
             "checkin.query_status": lambda: self.query(selected_only=False),
             "checkin.refresh_credits": self.refresh_credits,
             "checkin.refresh_login": self.refresh,
             "checkin.toggle_skip": self.toggle_skip,
-        }, ctx=self._btn_ctx)
+        }, ctx=self._btn_ctx, compact=True)
         self.btn_all = checkin_buttons.get("checkin.checkin_all")
-        checkin_row.addStretch(1)
-        # 轮询结果：没执行过时留空，不写「启动一次 + 每 6 小时」这类说明文字
-        self.round_hint = label("", "SectionHint")
-        checkin_row.addWidget(self.round_hint)
-        toolbar.body.addLayout(checkin_row)
-
-        account_row = QHBoxLayout()
-        account_row.setSpacing(8)
-        account_buttons = self.btn_bar.build(account_row, "accounts", "header", {
+        row.addSpacing(10)          # 签到动作与账号操作之间的分组留白
+        account_buttons = self.btn_bar.build(row, "accounts", "header", {
             "accounts.add": self.add_account,
-        }, ctx=self._btn_ctx)
-        account_buttons.update(self.btn_bar.build(account_row, "accounts", "toolbar", {
+        }, ctx=self._btn_ctx, compact=True)
+        account_buttons.update(self.btn_bar.build(row, "accounts", "toolbar", {
             "accounts.open_client": self.open_client,
             "accounts.switch_login": lambda: self.switch_login(None),
             "accounts.remove": self.remove_account,
-        }, ctx=self._btn_ctx))
-        self.btn_bar.build(account_row, "profiles", "header", {
+        }, ctx=self._btn_ctx, compact=True))
+        self.btn_bar.build(row, "profiles", "header", {
             "profiles.logout": self.logout,
-        }, ctx=self._btn_ctx)
-        account_row.addStretch(1)
-        toolbar.body.addLayout(account_row)
+        }, ctx=self._btn_ctx, compact=True)
+        row.addStretch(1)
+        toolbar.body.addLayout(row)
 
         self.btn_switch = account_buttons.get("accounts.switch_login")
         self.btn_remove = account_buttons.get("accounts.remove")
@@ -486,24 +467,29 @@ class AccountCenterPage(BasePage):
         self._reload_profiles()
 
     # ------------------------------------------------------------ 每日轮询
+    # 后台轮询只锁会写登录态/账号库的动作，其余按钮保持可用：
+    # 用户正在用的功能不能被一次后台检查打断。
+    DAILY_BLOCKED = ("checkin.checkin_all", "accounts.switch_login",
+                     "accounts.remove", "profiles.logout")
+
     def run_daily_round(self, startup: bool = False) -> bool:
         """主窗口按「启动一次 + 每 6 小时一次」的节奏调用，返回是否真的开跑。
 
         启动那一轮即使当天已经签过也会完整跑一遍：先查接口状态，再决定签谁，
         最后由 _daily_done 给出明确的结果提示，不让用户以为「什么都没发生」。
 
-        与手动扫描共用 busy：轮询期间按钮与行内操作一起禁用，
-        避免用户点「全部签到」和后台轮询同时打接口、重复写签到记录。
+        不占用页面的 busy：轮询期间按钮仍可正常点击，只有会写登录态的动作被锁。
         """
-        if self.busy:
+        if self.busy or self._daily_running:
             return False
-        self._set_busy(True, "正在执行每日签到轮询…")
+        self._daily_running = True
+        self._sync_buttons()
         if startup:
             self.log("启动轮询：立即执行一次签到检查", "dim")
         else:
             self.log("每日轮询：开始检测日期与账号状态", "dim")
         tasks.submit(self._daily_worker, on_done=self._daily_done,
-                     on_error=self._fail, on_partial=self._apply)
+                     on_error=self._daily_failed, on_partial=self._apply)
         return True
 
     def _daily_worker(self, emit):
@@ -511,18 +497,23 @@ class AccountCenterPage(BasePage):
         return daily.run_round(self.cfg, self.log, emit)
 
     def _daily_done(self, result) -> None:
-        self._set_busy(False)
+        self._daily_running = False
+        self._sync_buttons()
         self._update_summary()
         if result is None:
             return
-        text = _round_text(result)
-        self.notify(text, "warn" if result.failed and not result.success else "ok")
-        # 气泡会消失，工具栏这行一直留着，回头也能看到上次的结果
-        self.round_hint.setText(f"{result.when:%H:%M} · {_round_short(result)}")
-        self.round_hint.setToolTip(f"{text}（每 {daily.INTERVAL_HOURS} 小时轮询一次）")
+        self.notify(_round_text(result),
+                    "warn" if result.failed and not result.success else "ok")
         if result.success and not self.win.isActiveWindow():
             # 窗口在后台时闪任务栏，避免错过签到成功
             QApplication.alert(self.win)
+
+    def _daily_failed(self, message: str) -> None:
+        # 后台轮询不持有 busy，失败时也不要动它（可能正有手动任务在跑）
+        self._daily_running = False
+        self._sync_buttons()
+        self.log(message, "error")
+        self.notify("后台轮询失败，详情见运行日志", "error")
 
     # ------------------------------------------------------------------ 档案
     def _reload_profiles(self) -> None:
@@ -618,6 +609,7 @@ class AccountCenterPage(BasePage):
             })
         self.table.set_rows(rows)
         self._install_actions()
+        self._refresh_row_actions()
         for account in accounts:
             self._update_credit_cells(account.iid)
         self._update_summary()
@@ -827,26 +819,27 @@ class AccountCenterPage(BasePage):
 
         current = switcher.is_current(account)
         specs = (
-            ("签到", account.requires_checkin,
+            ("签到", "checkin", account.requires_checkin,
              lambda: self.checkin_one(account.iid)),
-            ("切换", account.platform in SWITCHABLE and not current,
+            ("切换", "switch", account.platform in SWITCHABLE and not current,
              lambda: self.switch_login(account.iid)),
-            ("恢复会话", self._has_pack(account) and current,
+            ("恢复会话", "restore", self._has_pack(account) and current,
              lambda: self.restore_sessions(account.iid)),
         )
-        for text, enabled, slot in specs:
+        for text, kind, enabled, slot in specs:
             button = make_button(text, "link")
             button.setObjectName("RowAction")
             button.setFixedHeight(24)
             button.clicked.connect(slot)
             button.setEnabled(enabled and not self.busy)
-            self._action_buttons.append((button, enabled))
+            self._action_buttons.append((button, enabled, kind))
             layout.addWidget(button)
         return host
 
     def _refresh_row_actions(self) -> None:
-        for button, enabled in self._action_buttons:
-            button.setEnabled(enabled and not self.busy)
+        for button, enabled, kind in self._action_buttons:
+            blocked = self._daily_running and kind in ("checkin", "switch")
+            button.setEnabled(enabled and not self.busy and not blocked)
 
     def _account_of(self, iid: str | None) -> Account | None:
         if iid:
@@ -900,8 +893,26 @@ class AccountCenterPage(BasePage):
             "stored_account": bool(account and account.meta.get("stored")),
         }
 
+    def _blocked_by_daily(self, action: str) -> bool:
+        """后台轮询期间挡住会写登录态/账号库的动作，其余操作照常。"""
+        if not self._daily_running:
+            return False
+        self.notify(f"后台正在轮询签到，{action}请稍候再试", "warn")
+        return True
+
+    @property
+    def daily_running(self) -> bool:
+        """主窗口据此避开后台轮询：积分轮询不要和签到轮询抢接口。"""
+        return self._daily_running
+
     def _sync_buttons(self) -> None:
         self.btn_bar.sync({"busy": self.busy, **self._btn_ctx()})
+        if self._daily_running:
+            # 后台轮询只锁会写登录态/账号库的动作，其余按钮保持可点
+            for bid in self.DAILY_BLOCKED:
+                widget = self.btn_bar.widget(bid)
+                if widget is not None:
+                    widget.setEnabled(False)
         self._refresh_row_actions()
 
     def _set_busy(self, busy: bool, text: str = "") -> None:
@@ -980,6 +991,8 @@ class AccountCenterPage(BasePage):
             self.notify(f"积分已刷新（{count} 个账号）")
 
     def checkin(self, all_accounts: bool) -> None:
+        if self._blocked_by_daily("签到"):
+            return
         if self.busy:
             return
         if not self.accounts:
@@ -1008,7 +1021,7 @@ class AccountCenterPage(BasePage):
         self._start_checkin(targets)
 
     def _start_checkin(self, targets: list[Account]) -> None:
-        if self.busy or not targets:
+        if self._blocked_by_daily("签到") or self.busy or not targets:
             return
         self._set_busy(True, "正在签到…")
         tasks.submit(lambda emit: self._checkin_worker(emit, targets),
@@ -1016,6 +1029,8 @@ class AccountCenterPage(BasePage):
                      on_partial=self._apply)
 
     def checkin_one(self, iid: str) -> None:
+        if self._blocked_by_daily("签到"):
+            return
         account = self.accounts.get(iid)
         if account is None or self.busy:
             return
@@ -1126,6 +1141,8 @@ class AccountCenterPage(BasePage):
         self.log(f"已启动 {Path(exe).name}，登录后点「刷新登录态」", "dim")
 
     def switch_login(self, iid: str | None = None) -> None:
+        if self._blocked_by_daily("切换登录"):
+            return
         account = self._account_of(iid)
         if account is None:
             self.info("切换账号", "请先在列表中选择一个账号。")
@@ -1181,6 +1198,8 @@ class AccountCenterPage(BasePage):
         tasks.submit(worker, on_done=done, on_error=self._fail)
 
     def remove_account(self) -> None:
+        if self._blocked_by_daily("移除账号"):
+            return
         account = self._account_of(None)
         if account is None:
             self.info("移除账号", "请先在列表中选择一条记录。")
@@ -1316,6 +1335,8 @@ class AccountCenterPage(BasePage):
         tasks.submit(worker, on_done=done, on_error=self._fail)
 
     def logout(self) -> None:
+        if self._blocked_by_daily("退出登录"):
+            return
         ep = self._edition_for(self._current_workbuddy())
 
         def action():
