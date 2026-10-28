@@ -71,25 +71,14 @@ BUTTONS: dict[str, dict] = {
         "requires": [], "enable_when": "always",
         "note": "重新扫描各客户端的本地登录态",
     },
-    "checkin.add_account": {
-        "panel": "checkin", "position": "toolbar", "order": 60,
-        "text": "添加账号", "kind": "ghost", "icon": "plus",
-        "requires": [], "enable_when": "always",
-        "note": "打开添加账号对话框",
-    },
     "checkin.toggle_skip": {
         "panel": "checkin", "position": "toolbar", "order": 70,
         "text": "免签到", "kind": "ghost", "icon": None,
         "requires": ["selected", "checkin_account"], "enable_when": "selection",
         "note": "切换选中账号的免签到标记",
     },
-    "checkin.open_client": {
-        "panel": "checkin", "position": "toolbar", "order": 80,
-        "text": "打开客户端", "kind": "ghost", "icon": "external",
-        "requires": ["selected"], "enable_when": "selection",
-        "note": "启动选中账号对应的官方客户端",
-    },
     # -------------------------------------------------------------- 账号动作
+    # 添加账号 / 打开客户端只在账号动作行出现一次，签到行不再重复注册
     "profiles.logout": {
         "panel": "profiles", "position": "header", "order": 10,
         "text": "登录其它账号", "kind": "ghost", "icon": None,

@@ -166,29 +166,43 @@ class AccountCenterPage(BasePage):
         self.btn_bar = button_config.ButtonBar(self.cfg)
         self._action_buttons = []
 
-        # ---- 第一行：签到动作 ----
-        toolbar = Card(padding=14, spacing=10)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        checkin_buttons = self.btn_bar.build(row, "checkin", "toolbar", {
+        # ---- 动作区：签到与账号操作放在同一张卡片里 ----
+        # 两行按钮同处一块，避免「添加账号 / 打开客户端」在工具行和表头各出现一次
+        toolbar = Card(padding=14, spacing=8)
+        checkin_row = QHBoxLayout()
+        checkin_row.setSpacing(8)
+        checkin_buttons = self.btn_bar.build(checkin_row, "checkin", "toolbar", {
             "checkin.checkin_all": lambda: self.checkin(all_accounts=True),
             "checkin.query_status": lambda: self.query(selected_only=False),
             "checkin.refresh_credits": self.refresh_credits,
             "checkin.refresh_login": self.refresh,
-            "checkin.add_account": self.add_account,
             "checkin.toggle_skip": self.toggle_skip,
-            "checkin.open_client": self.open_client,
         }, ctx=self._btn_ctx)
         self.btn_all = checkin_buttons.get("checkin.checkin_all")
-        row.addStretch(1)
-        # 原来的「每日自动签到 + 时刻」换成固定节奏的轮询，这里留一句状态
-        self.round_hint = label(
-            f"启动一次 + 每 {daily.INTERVAL_HOURS} 小时", "SectionHint")
-        self.round_hint.setToolTip(
-            "每日轮询签到：确认进入新的一天后，先校验账号状态，再对可签的账号调用签到接口")
-        row.addWidget(self.round_hint)
-        toolbar.body.addLayout(row)
+        checkin_row.addStretch(1)
+        # 轮询结果：没执行过时留空，不写「启动一次 + 每 6 小时」这类说明文字
+        self.round_hint = label("", "SectionHint")
+        checkin_row.addWidget(self.round_hint)
+        toolbar.body.addLayout(checkin_row)
 
+        account_row = QHBoxLayout()
+        account_row.setSpacing(8)
+        account_buttons = self.btn_bar.build(account_row, "accounts", "header", {
+            "accounts.add": self.add_account,
+        }, ctx=self._btn_ctx)
+        account_buttons.update(self.btn_bar.build(account_row, "accounts", "toolbar", {
+            "accounts.open_client": self.open_client,
+            "accounts.switch_login": lambda: self.switch_login(None),
+            "accounts.remove": self.remove_account,
+        }, ctx=self._btn_ctx))
+        self.btn_bar.build(account_row, "profiles", "header", {
+            "profiles.logout": self.logout,
+        }, ctx=self._btn_ctx)
+        account_row.addStretch(1)
+        toolbar.body.addLayout(account_row)
+
+        self.btn_switch = account_buttons.get("accounts.switch_login")
+        self.btn_remove = account_buttons.get("accounts.remove")
         self.body.addWidget(toolbar)
 
         # ---- 账号表 ----
@@ -205,19 +219,6 @@ class AccountCenterPage(BasePage):
         self.summary = label("正在扫描登录态…", "SectionHint")
         head.addWidget(self.summary)
         head.addStretch(1)
-        account_buttons = self.btn_bar.build(head, "accounts", "header", {
-            "accounts.add": self.add_account,
-        }, ctx=self._btn_ctx)
-        account_buttons.update(self.btn_bar.build(head, "accounts", "toolbar", {
-            "accounts.open_client": self.open_client,
-            "accounts.switch_login": lambda: self.switch_login(None),
-            "accounts.remove": self.remove_account,
-        }, ctx=self._btn_ctx))
-        self.btn_bar.build(head, "profiles", "header", {
-            "profiles.logout": self.logout,
-        }, ctx=self._btn_ctx)
-        self.btn_switch = account_buttons.get("accounts.switch_login")
-        self.btn_remove = account_buttons.get("accounts.remove")
         table_layout.addLayout(head)
         table_layout.addWidget(hline())
 
@@ -236,7 +237,7 @@ class AccountCenterPage(BasePage):
         table_layout.addWidget(self.table, 1)
 
         self.empty = EmptyState("还没有发现任何账号",
-                                "先打开对应客户端登录，或点右上角「添加账号」用浏览器授权")
+                                "先打开对应客户端登录，或点上方「添加账号」用浏览器授权")
         table_layout.addWidget(self.empty, 1)
         self.body.addWidget(table_card, 1)
 
