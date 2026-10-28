@@ -10,6 +10,7 @@ sessions/restore.py 按 user_id 引用恢复，整库替换会让其他账号的
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 from datetime import datetime
@@ -22,6 +23,28 @@ from .editions import remove_path
 PACK_ROOT = paths.PROFILE_ROOT
 STATE_DIRS = ("app/session", "storage")
 DB_FILES = ("workbuddy.db", "workbuddy.db-wal", "workbuddy.db-shm")
+
+# 客户端的登录票据：token、sessionState、uin 都在这个文件里。
+# 以前只存 app/session 不存它，切换时只能拿别的账号的文件当模板重新拼一份，
+# 拼出来的 sessionState 服务端不认，客户端就回到登录页——这是「有档案也要重登」的根因。
+AUTH_DIR = (Path(os.environ.get("LOCALAPPDATA", "")) / "CodeBuddyExtension"
+            / "Data" / "Public" / "auth")
+AUTH_NAMES = {"cn": "workbuddy-desktop.info", "intl": "workbuddy-desktop-ai.info"}
+PACK_AUTH = "auth.info"
+
+
+def auth_file(ep: Edition) -> Path:
+    return AUTH_DIR / AUTH_NAMES.get(ep.key, AUTH_NAMES["cn"])
+
+
+def auth_uid(ep: Edition) -> str:
+    """客户端 .info 里记录的登录账号；比 account-snapshot 更贴近实际登录。"""
+    try:
+        data = json.loads(auth_file(ep).read_text(encoding="utf-8"))
+        return str((data.get("account") or {}).get("uid") or "")
+    except (OSError, ValueError):
+        return ""
+
 
 
 def _pack_dir(ep: Edition, uid: str) -> Path:
@@ -103,11 +126,19 @@ def save_current(ep: Edition, uid: str = "") -> Path:
             src = ep.root / name
             if src.exists():
                 shutil.copy2(src, tmp / name)
+        # 只在这个账号自己登录时才把 .info 打进档案：拿别人的票据存进来，
+        # 以后恢复就会「档案里是 A、票据是 B」，比没有档案更糟
+        auth = auth_file(ep)
+        has_auth = False
+        if auth.exists() and auth_uid(ep) == uid:
+            shutil.copy2(auth, tmp / PACK_AUTH)
+            has_auth = True
         meta = {
             "uid": uid,
             "label": ep.label,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
             "sessions": _sessions_count(ep),
+            "has_auth": has_auth,
         }
         (tmp / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                                        encoding="utf-8")
@@ -166,8 +197,69 @@ def _restore(ep: Edition, uid: str) -> None:
         storage_dst = ep.root / "storage"
         storage_dst.mkdir(parents=True, exist_ok=True)
         shutil.copytree(storage_src, storage_dst, dirs_exist_ok=True)
+    # 登录票据原样写回：sessionState 是每次登录由服务端签发的，重建一个
+    # 随机值客户端不认，会直接跳登录页
+    auth_src = src / PACK_AUTH
+    if auth_src.exists():
+        write_auth(ep, auth_src)
     # workbuddy.db 保持原样：会话由 restore 模块按 user_id 引用恢复，
     # 整库替换会让其他账号的会话从当前库里消失
+
+
+def write_auth(ep: Edition, source: Path) -> Path | None:
+    """把一份 .info 写回客户端，原文件先留备份；返回备份路径。"""
+    target = auth_file(ep)
+    try:
+        if source.resolve() == target.resolve():
+            return None          # 源就是当前文件，没必要自己覆盖自己
+    except OSError:
+        pass
+    backup = None
+    if target.exists():
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = target.with_name(target.name + f".bak-{stamp}")
+        try:
+            shutil.copy2(target, backup)
+        except OSError:
+            backup = None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return backup
+
+
+def has_pack_auth(ep: Edition, uid: str) -> bool:
+    return bool(uid) and (_pack_dir(ep, uid) / PACK_AUTH).exists()
+
+
+def find_auth_backup(ep: Edition, uid: str) -> Path | None:
+    """在客户端自己的 .info 备份里找这个账号的原始票据。
+
+    客户端每次登录都会把上一个 .info 存成带时间戳的备份，本工具切换前也会留
+    .bak-*；两者都带着当时的 sessionState，比重新拼一份可靠。旧档案没有
+    auth.info 时靠它兜底。
+    """
+    if not uid or not AUTH_DIR.is_dir():
+        return None
+    best: tuple[float, Path] | None = None
+    for entry in AUTH_DIR.iterdir():
+        if not entry.is_file() or entry.name.endswith(".json"):
+            continue
+        if not entry.name.endswith(".info") and ".info." not in entry.name:
+            continue
+        try:
+            data = json.loads(entry.read_text(encoding="utf-8"))
+            found = str((data.get("account") or {}).get("uid") or "")
+        except (OSError, ValueError):
+            continue
+        if found != uid:
+            continue
+        try:
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        if best is None or mtime > best[0]:
+            best = (mtime, entry)
+    return best[1] if best else None
 
 
 def switch(ep: Edition, uid: str) -> tuple[bool, str]:
