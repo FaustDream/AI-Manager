@@ -1325,7 +1325,7 @@ class AccountCenterPage(BasePage):
                 text += f"\n有 {preview['missing']} 条会话缺少正文文件，无法恢复。"
             self.info("恢复会话", text)
             return
-        detail = (f"将把 {ep.label} 中已有的项目会话关联到：\n{account.name}\n\n"
+        detail = (f"将把 {ep.label} 里已有的项目会话关联到：\n{account.name}\n\n"
                   f"项目 {preview['projects']} 个 · 会话 {preview['total']} 条"
                   f"（其中 {preview['pending']} 条需要重新关联）")
         if preview["missing"]:
