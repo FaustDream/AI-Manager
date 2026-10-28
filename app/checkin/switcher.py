@@ -261,29 +261,43 @@ def switch_workbuddy(account: Account, log) -> str:
     ep = _wb_edition(account)
     target_uid = _wb_target_uid(account)
     notes: list[str] = []
+    cur_uid = ""
 
-    # 1) 切换前：把当前客户端的登录态 + 会话库存档，之前的账号随时可一键换回
+    # 1) 切换前：把当前客户端的登录态存档，之前的账号随时可一键换回
     try:
         cur_uid = str(wb_profiles.current_uid(ep) or "")
         if cur_uid and cur_uid != target_uid:
             wb_profiles.save_current(ep, cur_uid)
-            notes.append("已存档当前账号的登录态和会话，之后可从账号档案一键切回")
-            log(f"[{account.platform_label}] 已存档当前账号 {cur_uid[:8]} 的会话")
+            notes.append("已存档当前账号的登录态，之后可从账号档案一键切回")
+            log(f"[{account.platform_label}] 已存档当前账号 {cur_uid[:8]} 的登录态")
     except Exception as exc:  # 存档失败不应阻断切换
         log(f"[{account.platform_label}] 存档当前账号失败（切换继续）：{exc}")
 
-    # 2) 目标账号已有档案：先恢复它的会话库和登录态，再写 token
+    # 2) 目标账号已有档案：先恢复登录态，再把切换前账号的会话按引用关联过来
     if target_uid and wb_profiles.has_pack(ep, target_uid):
         try:
             wb_profiles.restore_pack(ep, target_uid)
-            notes.append(f"已恢复 {target_uid[:8]} 之前保存的会话（免重新登录）")
-            log(f"[{account.platform_label}] 已恢复目标账号 {target_uid[:8]} 的会话")
+            notes.append(f"已恢复 {target_uid[:8]} 之前保存的登录态（免重新登录）")
+            log(f"[{account.platform_label}] 已恢复目标账号 {target_uid[:8]} 的登录态")
+            try:
+                from ..sessions import restore as session_restore
+                report = session_restore.restore_for_account(
+                    ep, target_uid,
+                    source_uids={cur_uid} if cur_uid else None,
+                    log=log,
+                )
+                notes.append(report.summary())
+                log(f"[{account.platform_label}] {report.summary()}")
+            except Exception as exc:
+                # 会话恢复失败不能把登录态回滚：客户端已经准备好用新账号启动
+                notes.append(f"会话恢复未完成：{exc}")
+                log(f"[{account.platform_label}] 会话恢复失败（登录态已切换）：{exc}", "error")
         except Exception as exc:
-            log(f"[{account.platform_label}] 恢复目标账号会话失败（按全新登录处理）：{exc}")
+            log(f"[{account.platform_label}] 恢复目标账号登录态失败（按全新登录处理）：{exc}")
     else:
         # 本机没有这个账号的 Chromium 登录态，无论 token 怎么写都要重新登录
         notes.append("本机没有该账号的登录态存档，客户端会停在登录页，需要重新登录一次；"
-                     "登录后关闭客户端本工具会自动存档，之后切换就不用再登录了")
+                     "登录后点「恢复会话」可把已有项目会话关联过来")
         log(f"[{account.platform_label}] 目标账号 {target_uid[:8] or '未知'} 无档案，"
             "切换后需要重新登录一次")
 

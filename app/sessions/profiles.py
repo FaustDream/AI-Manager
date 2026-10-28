@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""WorkBuddy 账号档案：把登录态与本机会话打包，一键换回。
+"""WorkBuddy 账号档案：把登录态与本机会话快照打包，一键换回。
 
 登录态在 `<数据目录>/app/session`（Chromium 的 Cookies / Local Storage），
 账号标识在 `storage/skeleton/account-snapshot.json`，会话在 workbuddy.db。
-这三样一起换，客户端重启后就是另一个账号的完整状态；同一个账号再切回来时
-不需要重新扫码登录（凭据在同一台机器、同一套加密密钥下仍然有效）。
+切换账号只换登录态与 storage，**不再替换 workbuddy.db**：会话由
+sessions/restore.py 按 user_id 引用恢复，整库替换会让其他账号的会话消失。
+档案里仍保留一份 workbuddy.db 快照，仅作为旧数据补回与回滚的依据。
 """
 from __future__ import annotations
 
@@ -123,27 +124,11 @@ def has_pack(ep: Edition, uid: str) -> bool:
     return bool(uid) and _pack_dir(ep, uid).exists()
 
 
-def restore_sessions(ep: Edition, uid: str) -> None:
-    """只把会话库换回档案里的那份，不动登录态。
-
-    用于切回来之后发现会话记录没了：登录态仍然有效，只是 workbuddy.db 被
-    别的账号覆盖过。调用方负责先关客户端。
-    """
-    src = _pack_dir(ep, uid)
-    if not (src / "workbuddy.db").exists():
-        raise RuntimeError("这个档案里没有会话库")
-    for name in DB_FILES:
-        target = ep.root / name
-        if target.exists():
-            remove_path(target)
-        if (src / name).exists():
-            shutil.copy2(src / name, target)
-
-
 def restore_pack(ep: Edition, uid: str) -> None:
-    """把指定账号的档案恢复到客户端数据目录（登录态 + storage + 会话库）。
+    """把指定账号的档案恢复到客户端数据目录（登录态 + storage）。
 
     与 switch() 不同：不负责保存当前账号，调用方自行保证已存档后再调用。
+    会话库不在这里替换——见 sessions/restore.py：按归属引用恢复，正文不搬。
     """
     if not has_pack(ep, uid):
         raise RuntimeError("找不到该账号的档案")
@@ -154,19 +139,21 @@ def _restore(ep: Edition, uid: str) -> None:
     src = _pack_dir(ep, uid)
     if not (src / "app/session").exists():
         raise RuntimeError("这个档案里没有登录态，无法免登录切换")
-    for rel in STATE_DIRS:
-        target = ep.root / rel
-        if target.exists():
-            remove_path(target)
-        if (src / rel).exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(src / rel, target)
-    for name in DB_FILES:
-        target = ep.root / name
-        if target.exists():
-            remove_path(target)
-        if (src / name).exists():
-            shutil.copy2(src / name, target)
+    # 登录态是全局的，必须整体替换
+    session_src = src / "app/session"
+    session_dst = ep.root / "app/session"
+    if session_dst.exists():
+        remove_path(session_dst)
+    shutil.copytree(session_src, session_dst)
+    # storage 里有每个账号自己的 user-<uid>-personal：合并而不是整体替换，
+    # 否则会把其他账号的本地数据一起删掉（旧实现就是这么丢的）
+    storage_src = src / "storage"
+    if storage_src.exists():
+        storage_dst = ep.root / "storage"
+        storage_dst.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(storage_src, storage_dst, dirs_exist_ok=True)
+    # workbuddy.db 保持原样：会话由 restore 模块按 user_id 引用恢复，
+    # 整库替换会让其他账号的会话从当前库里消失
 
 
 def switch(ep: Edition, uid: str) -> tuple[bool, str]:

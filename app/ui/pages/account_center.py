@@ -21,6 +21,7 @@ from ...checkin.base import (Account, ActionResult, CreditSnapshot, StatusResult
 from ...checkin.registry import LABELS
 from ...core import bus, tasks, winproc
 from ...sessions import profiles
+from ...sessions import restore as session_restore
 from ...sessions.editions import Edition
 from .. import button_config
 from ..dialogs import AddAccountDialog
@@ -823,7 +824,8 @@ class AccountCenterPage(BasePage):
              lambda: self.checkin_one(account.iid)),
             ("切换", "switch", account.platform in SWITCHABLE and not current,
              lambda: self.switch_login(account.iid)),
-            ("恢复会话", "restore", self._has_pack(account) and current,
+            ("恢复会话", "restore",
+             account.platform == "workbuddy" and current,
              lambda: self.restore_sessions(account.iid)),
         )
         for text, kind, enabled, slot in specs:
@@ -1172,8 +1174,8 @@ class AccountCenterPage(BasePage):
             uid = str(account.meta.get("uid") or "")
             if not profiles.has_pack(ep, uid):
                 hint += ("\n\n注意：本机没有保存过这个账号的登录态，切换后客户端会停在登录页，"
-                         "需要重新登录一次。登录完成并关闭客户端后本工具会自动存档，"
-                         "之后再切回它就不用再登录了。")
+                         "需要重新登录一次。登录后点「恢复会话」可把已有项目会话关联过来；"
+                         "关闭客户端后本工具会自动存档登录态。")
         if not self.confirm(
                 "切换账号",
                 f"将把 {account.platform_label} 官方客户端的登录态切换为：\n{account.name}\n\n"
@@ -1184,7 +1186,8 @@ class AccountCenterPage(BasePage):
         self._set_busy(True, "正在写回客户端登录态…")
 
         def worker(_emit):
-            return switcher.switch(account, lambda message: self.log(message))
+            return switcher.switch(
+                account, lambda message, level="info": self.log(message, level))
 
         def done(message: str):
             self._set_busy(False)
@@ -1287,50 +1290,67 @@ class AccountCenterPage(BasePage):
             self.log(f"退出前保存账号档案失败：{exc}", "error")
 
     def restore_sessions(self, iid: str | None = None) -> None:
-        """用档案里的会话库覆盖客户端的 workbuddy.db，登录态不动。
+        """把本版本已有的项目会话按归属引用关联到当前账号。
 
-        只允许对当前登录的账号操作：会话按 user_id 归属，把别的账号的库换进来
-        客户端也读不到，反而会覆盖掉当前账号自己的会话。
+        只改 sessions.user_id / deleted_at，正文原地复用；重复执行时已关联的
+        会话算作「已存在」，不会新增行，也不会复制文件。
         """
         account = self._account_of(iid)
         if account is None:
             self.info("恢复会话", "请先选择一个账号。")
             return
         if account.platform != "workbuddy":
-            self.info("恢复会话", "只有 WorkBuddy 账号保存了会话档案。")
+            self.info("恢复会话", "只有 WorkBuddy 有本机会话库；Qoder / Trae 不涉及会话恢复。")
             return
         if not switcher.is_current(account):
             self.info("恢复会话", "只能恢复当前登录账号的会话；先切换到该账号再来恢复。")
             return
         ep = self._edition_for(account)
-        uid = str(account.meta.get("uid") or "")
-        if not uid or not profiles.has_pack(ep, uid):
-            self.info("恢复会话", "这个账号还没有保存过会话档案。")
+        uid = str(account.meta.get("uid") or profiles.current_uid(ep)
+                  or ep.current_uid()[0])
+        if not uid:
+            self.info("恢复会话", "读不到当前账号，客户端可能还没登录完成。")
             return
-        if not self.confirm(
-                "恢复会话",
-                f"将关闭客户端，用档案恢复 {account.name} 的会话记录，然后重新打开。\n"
-                "客户端当前的会话库会被替换，登录态不变。继续吗？"):
+        if not ep.exists:
+            self.info("恢复会话", f"找不到 {ep.label} 的会话库。")
             return
-        if not profiles.ensure_closed(ep):
-            self.error("关闭失败", f"{ep.label} 没能关闭，请手动退出后重试。")
+        try:
+            preview = session_restore.preview(ep, uid)
+        except Exception as exc:
+            self.warn("恢复会话", f"读取会话库失败：{exc}")
+            return
+        if not preview["total"]:
+            text = "这个版本里还没有可恢复的会话。"
+            if preview["missing"]:
+                text += f"\n有 {preview['missing']} 条会话缺少正文文件，无法恢复。"
+            self.info("恢复会话", text)
+            return
+        detail = (f"将把 {ep.label} 中已有的项目会话关联到：\n{account.name}\n\n"
+                  f"项目 {preview['projects']} 个 · 会话 {preview['total']} 条"
+                  f"（其中 {preview['pending']} 条需要重新关联）")
+        if preview["missing"]:
+            detail += f"\n缺正文 {preview['missing']} 条，会跳过"
+        detail += "\n\n只改会话归属，不复制正文；可重复执行，不会产生副本。继续吗？"
+        if not self.confirm("恢复会话", detail):
+            return
+        if not switcher.close_client_for(account, self.log):
+            self.error("关闭失败", f"{account.platform_label} 没能关闭，请手动退出后重试。")
             return
 
         self._set_busy(True, "正在恢复会话…")
 
         def worker(_emit):
             try:
-                profiles.restore_sessions(ep, uid)
-                return f"已恢复 {account.name} 的会话记录"
+                return session_restore.restore_for_account(ep, uid, log=self.log)
             finally:
                 # 只要客户端被关过就重新打开，避免留下“软件打不开”的状态
                 winproc.start_exe(ep.exe)
 
-        def done(message: str) -> None:
+        def done(report) -> None:
             self._set_busy(False)
-            self.log(message, "ok")
-            self.notify(message)
+            self.info("恢复会话", report.detail())
             bus.BUS.data_changed.emit("sessions")
+            self.refresh()
 
         tasks.submit(worker, on_done=done, on_error=self._fail)
 
@@ -1348,7 +1368,7 @@ class AccountCenterPage(BasePage):
         self._run_profile(
             ep, action, "登录其它账号",
             "将先保存当前账号，然后清空登录态并重启客户端，停在登录页。\n"
-            "登录后新账号的会话会重新累积，旧账号的会话仍在档案里。\n继续吗？",
+            "旧账号的会话仍保留在本机会话库，重新登录后可点「恢复会话」找回。\n继续吗？",
             restart=False)
 
     def _run_profile(self, ep: Edition, action, title: str, message: str,
@@ -1398,6 +1418,9 @@ class AccountCenterPage(BasePage):
             "· 同一账号当天签到成功后不再重复调用；接口给了下一轮开放时刻时，"
             "会等窗口开了再签。\n"
             "· 免签到：勾选后「全部签到」和每日轮询都会跳过它，但仍会刷新积分与到期。\n"
+            "· 会话恢复：把当前版本已有的项目会话按归属关联到当前账号，只改引用、"
+            "不复制正文，可重复执行。账号切换登录会自动恢复切换前账号的会话；"
+            "手动登录不自动恢复，需要点「恢复会话」。\n"
             "· WorkBuddy 国际版没有签到玩法，自动标记为免签到，不参与后台签到。\n"
             "· 手动「签到选中」对免签到账号依然有效（强制签到）。\n"
             "· 剩余积分来自平台实时接口；最近到期和临期积分按积分批次计算，"
