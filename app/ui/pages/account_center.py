@@ -119,6 +119,8 @@ class AccountCenterPage(BasePage):
         self._status_checked: dict[str, bool | None] = {}
         # 只记「哪个版本下有哪些 uid」，用来判断该账号能否免登录恢复
         self._packs: dict[str, set[str]] = {"cn": set(), "intl": set()}
+        self._packs_loaded = False
+        self._packs_loading = False
         self._profile_gen = 0
         self._last_save = 0.0
         self._saving = False
@@ -444,6 +446,7 @@ class AccountCenterPage(BasePage):
             return
         self._set_busy(True, "正在扫描登录态…")
         self.log("开始扫描各客户端登录态", "dim")
+        self._reload_profiles()          # 档案列表不依赖签到状态，先并行加载
         tasks.submit(self._scan_worker, on_done=self._scan_done,
                      on_error=self._fail, on_partial=self._apply)
 
@@ -465,7 +468,8 @@ class AccountCenterPage(BasePage):
         self._set_busy(False)
         self._update_summary()
         self._sync_buttons()
-        self._reload_profiles()
+        if not self._packs_loaded:
+            self._reload_profiles()
 
     # ------------------------------------------------------------ 每日轮询
     # 后台轮询只锁会写登录态/账号库的动作，其余按钮保持可用：
@@ -518,29 +522,47 @@ class AccountCenterPage(BasePage):
 
     # ------------------------------------------------------------------ 档案
     def _reload_profiles(self) -> None:
-        """只取每个版本的 uid 列表，用来标记哪些账号能免登录恢复。"""
+        """只取每个版本的 uid 列表，用来标记哪些账号能免登录恢复。
+
+        与首屏扫描并行：档案列不必等各账号状态查完才显示。
+        """
+        if self._packs_loading:
+            return
+        self._packs_loading = True
         self._profile_gen += 1
         generation = self._profile_gen
 
         def worker(_emit):
             return {
-                "cn": [pack["uid"] for pack in profiles.list_packs(Edition("cn"))],
-                "intl": [pack["uid"] for pack in profiles.list_packs(Edition("intl"))],
+                "cn": profiles.list_pack_uids(Edition("cn")),
+                "intl": profiles.list_pack_uids(Edition("intl")),
             }
+
+        def failed(message: str) -> None:
+            self._packs_loading = False
+            self.log(f"读取账号档案失败：{message.splitlines()[0]}", "error")
 
         tasks.submit(worker,
                      on_done=lambda data: self._apply_packs(generation, data),
-                     on_error=lambda m: self.log(
-                         f"读取账号档案失败：{m.splitlines()[0]}", "error"))
+                     on_error=failed)
 
     def _apply_packs(self, generation: int, data: dict) -> None:
+        self._packs_loading = False
         if generation != self._profile_gen:      # 期间又发起了一次，结果作废
             return
         self._packs = {key: set(value) for key, value in data.items()}
+        self._packs_loaded = True
         for account in self.accounts.values():
-            self.table.model.update(
-                account.iid, pack="有" if self._has_pack(account) else "—")
+            self.table.model.update(account.iid, pack=self._pack_text(account))
         self._install_actions()
+
+    def _pack_text(self, account: Account | None) -> str:
+        """档案列的文案：非 WorkBuddy 没有档案；加载中显示省略号，避免误判为空。"""
+        if account is None or account.platform != "workbuddy":
+            return "—"
+        if not self._packs_loaded:
+            return "…"
+        return "有" if self._has_pack(account) else "—"
 
     def _has_pack(self, account: Account | None) -> bool:
         if account is None or account.platform != "workbuddy":
@@ -575,6 +597,8 @@ class AccountCenterPage(BasePage):
     def _render_accounts(self, accounts: list[Account]) -> None:
         accounts = self._ordered(accounts)
         keep = self._detail_iid          # 表格 set_rows 会清掉选中，先记住
+        if not self._packs_loaded:
+            self._reload_profiles()      # 档案列与账号状态并行加载
         self.accounts = {account.iid: account for account in accounts}
         self.live_lots = {}
         self._balances = {}
@@ -603,7 +627,7 @@ class AccountCenterPage(BasePage):
                 "today": today,
                 "balance": "—",
                 "expire": "—",
-                "pack": "有" if self._has_pack(account) else "—",
+                "pack": self._pack_text(account),
                 "action": "",
                 "_fg_map": self._colors(iid, account),
                 "_tip_map": {"name": f"来源：{account.source or '浏览器登录'}"},
@@ -1262,6 +1286,7 @@ class AccountCenterPage(BasePage):
         def done(_path):
             self._saving = False
             self.log(f"账号档案已自动保存（{reason}）", "dim")
+            self._reload_profiles()      # 新存档后「档案」列要立刻变成「有」
 
         def failed(message: str):
             self._saving = False
@@ -1421,6 +1446,8 @@ class AccountCenterPage(BasePage):
             "· 会话恢复：把当前版本已有的项目会话按归属关联到当前账号，只改引用、"
             "不复制正文，可重复执行。账号切换登录会自动恢复切换前账号的会话；"
             "手动登录不自动恢复，需要点「恢复会话」。\n"
+            "· 「档案」列只表示该账号在本机有没有保存过登录态，只有 WorkBuddy 有；"
+            "Qoder / Trae 恒为「—」，会话恢复也不再依赖档案。\n"
             "· WorkBuddy 国际版没有签到玩法，自动标记为免签到，不参与后台签到。\n"
             "· 手动「签到选中」对免签到账号依然有效（强制签到）。\n"
             "· 剩余积分来自平台实时接口；最近到期和临期积分按积分批次计算，"

@@ -124,6 +124,20 @@ def has_pack(ep: Edition, uid: str) -> bool:
     return bool(uid) and _pack_dir(ep, uid).exists()
 
 
+def list_pack_uids(ep: Edition) -> set[str]:
+    """只返回有档案的 uid，不统计体积。
+
+    账号中心每刷一次都要判断「这个账号有没有登录态档案」，而 list_packs()
+    会遍历几十 MB 的文件算大小，放在首屏会明显拖慢档案列的填充。
+    """
+    base = PACK_ROOT / ep.key
+    if not base.exists():
+        return set()
+    return {entry.name for entry in base.iterdir()
+            if entry.is_dir() and not entry.name.endswith(".tmp")
+            and (entry / "meta.json").exists()}
+
+
 def restore_pack(ep: Edition, uid: str) -> None:
     """把指定账号的档案恢复到客户端数据目录（登录态 + storage）。
 
