@@ -218,6 +218,10 @@ QPushButton:hover {{
 QPushButton:pressed {{
     background: #E9ECF2;
 }}
+/* 一行要塞很多按钮时用：去掉图标，左右内边距收紧 */
+QPushButton[compact="true"] {{
+    padding: 7px 10px;
+}}
 QPushButton:disabled {{
     color: {p['muted']};
     background: #F7F8FA;

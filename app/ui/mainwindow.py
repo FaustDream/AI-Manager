@@ -419,7 +419,8 @@ class MainWindow(QMainWindow):
         """
         if self._credit_polling:
             return
-        if any(getattr(page, "busy", False) for page in self.pages.values()):
+        if any(getattr(page, "busy", False) or getattr(page, "daily_running", False)
+               for page in self.pages.values()):
             return
         self._credit_polling = True
 
