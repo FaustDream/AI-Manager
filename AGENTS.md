@@ -16,7 +16,8 @@ Windows 桌面工具，把「三家 AI 编程平台的每日签到」与「本�
 
 | 场景 | 命令 |
 | --- | --- |
-| 启动软件 | `.venv\Scripts\pythonw.exe run.pyw` |
+| **首次安装（用户）** | 双击 `一键安装.vbs`：自动检查/安装 uv、同步依赖、建桌面快捷方式、启动 |
+| 日常启动 | 双击桌面「AI Manager」；等价 `.venv\Scripts\pythonw.exe run.pyw` |
 | 开发（热重载） | `.venv\Scripts\python.exe dev.py` |
 | 重建 / 修复环境 | 双击 `setup.vbs`（静默无窗口）；要看输出用 `setup.bat`；等价命令 `uv sync` |
 
@@ -29,7 +30,8 @@ Windows 桌面工具，把「三家 AI 编程平台的每日签到」与「本�
 pyproject.toml          依赖声明 + 版本号（唯一真源）
 uv.lock                 锁定 13 个包的精确版本；不要手改，用 `uv lock` 生成
 .python-version         固定 3.12
-setup.vbs / setup.bat   重建环境：vbs 静默，bat 显示详细输出
+一键安装.vbs            面向用户的唯一入口：装 uv + 同步依赖 + 建快捷方式 + 启动
+setup.vbs / setup.bat   仅同步依赖：vbs 静默，bat 显示详细输出（排错用）
 .venv/                  实际运行环境，uv 生成，不要手工往里装东西
 CHANGELOG.md            版本更新记录，发布说明的唯一来源
 .gitignore              入库范围：data/ legacy/ .venv/ 及工具私有目录
@@ -124,6 +126,8 @@ tools/                  一次性脚本（图标生成、截图）
     - 进程存在性判断用 `winproc.process_running()`（ctypes 快照），不要用 `tasklist`
     - 运维脚本若由用户双击，必须提供 `.vbs` 静默入口（参考 `setup.vbs`），不能让 bat 直接弹黑框
 12. **不手工修改 `.venv`**。环境异常一律用 `setup.vbs` / `uv sync` 重建，不要在里面 `pip install` 或删文件
+13. **`一键安装.vbs` 与 `setup.vbs` 必须以 UTF-16 LE（带 BOM）保存**。Windows Script Host 按系统 ANSI 代码页解析 `.vbs`，一旦存成 UTF-8，中文会报 `Unterminated string constant`。编辑后若编码被改回 UTF-8，重新转换：
+    `$t=[IO.File]::ReadAllText($p,[Text.Encoding]::UTF8); [IO.File]::WriteAllText($p,$t,[Text.Encoding]::Unicode)`
 
 ## 5. 验证与验收
 

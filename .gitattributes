@@ -1,0 +1,10 @@
+# VBS 以 UTF-16 LE + BOM 保存（Windows Script Host 需要），
+# 必须禁止 Git 做换行或编码转换，否则中文提示会变成乱码 / 语法错误。
+*.vbs -text
+
+# 其余文本文件统一按 LF 入库，工作区保持原样
+*.py   text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.bat  text eol=crlf
