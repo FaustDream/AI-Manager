@@ -474,6 +474,21 @@ class AccountCenterPage(BasePage):
         self._sync_buttons()
         if not self._packs_loaded:
             self._reload_profiles()
+        self._auto_save_if_missing()
+
+    def _auto_save_if_missing(self) -> None:
+        """客户端已经关着、但当前账号还没有档案：直接补一份。
+
+        以前只在「客户端从运行变成关闭」那一刻存档，所以工具没开着的时候关掉
+        客户端就永远存不上，用户得再开关一次客户端才行。
+        """
+        target = self._save_target()
+        if target is None:
+            return
+        ep, uid = target
+        if profiles.has_pack(ep, uid) or winproc.process_running(ep.proc):
+            return
+        self._auto_save("首次发现该账号", force=True)
 
     # ------------------------------------------------------------ 每日轮询
     # 后台轮询只锁会写登录态/账号库的动作，其余按钮保持可用：
