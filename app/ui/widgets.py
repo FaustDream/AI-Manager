@@ -226,16 +226,18 @@ class EmptyState(QWidget):
 
 # --------------------------------------------------------------------- 表格
 class DataTable(QTableView):
-    # 行被拖到新位置：(源行, 目标行)。模型不支持 moveRows，由页面自己重排数据
+    # 行被拖到新位置：(源行, 移除源行后的插入位置)。模型 move_row 由页面调用
     row_moved = Signal(int, int)
 
     def __init__(self, columns: list[Column], key: str = "id", multi: bool = True,
-                 row_height: int = 36, parent=None):
+                 row_height: int = 36, reorder: bool = False, parent=None):
         super().__init__(parent)
         self.setObjectName("DataTable")
         self.model = RowModel(columns, key=key)
         self.setModel(self.model)
         self.columns = columns
+        # 只有明确支持排序的表才开拖拽：其余表拖了也没人接收，容易误以为卡住
+        self._reorder = bool(reorder)
 
         self.verticalHeader().setVisible(False)
         self.verticalHeader().setDefaultSectionSize(row_height)
@@ -266,13 +268,15 @@ class DataTable(QTableView):
                 mode = QHeaderView.ResizeMode.Interactive
             header.setSectionResizeMode(position, mode)
 
-        # 行拖动排序：Qt 的模型不支持 moveRows，dropEvent 只负责算目标行并发信号
-        self.setDragEnabled(True)
-        self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
-        self.setDragDropOverwriteMode(False)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        # 行拖动排序：dropEvent 只算落点并发信号，真正的重排由页面调 model.move_row
+        if self._reorder:
+            self.setDragEnabled(True)
+            self.setAcceptDrops(True)
+            self.setDropIndicatorShown(True)
+            self.setDragDropOverwriteMode(False)
+            self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+            self.setDefaultDropAction(Qt.DropAction.MoveAction)
+            self.setToolTip("按住任意一行上下拖动可调整顺序，顺序会自动保存")
 
     # ------------------------------------------------------------------ 布局
     def column_widths(self) -> list[int]:
@@ -295,15 +299,33 @@ class DataTable(QTableView):
                 header.resizeSection(index, value)
 
     def dropEvent(self, event) -> None:  # noqa: N802 - Qt 接口
-        """只计算落点所在行，真正的重排交给页面（模型不支持 moveRows）。"""
-        point = event.position().toPoint()
-        target = self.indexAt(point)
-        source = self.currentIndex().row()
-        target_row = target.row() if target.isValid() else self.model.rowCount() - 1
-        if source < 0 or target_row < 0 or source == target_row:
+        """只计算落点，真正的重排交给页面（页面调 model.move_row）。
+
+        落在某行上半 → 插到该行之前；下半 → 插到该行之后；落在空白 → 放最后。
+        发出去的是「移除源行后的插入位置」，页面直接 insert/pop 即可。
+        """
+        if not self._reorder:
             event.ignore()
             return
-        self.row_moved.emit(source, target_row)
+        source = self.currentIndex().row()
+        if source < 0:
+            event.ignore()
+            return
+        point = event.position().toPoint()
+        index = self.indexAt(point)
+        if index.isValid():
+            target = index.row()
+            rect = self.visualRect(index)
+            if point.y() > rect.center().y():
+                target += 1
+        else:
+            target = self.model.rowCount()
+        if target > source:
+            target -= 1                     # 源行先被摘掉，后面的落点要前移一格
+        if target < 0 or target >= self.model.rowCount() or target == source:
+            event.ignore()
+            return
+        self.row_moved.emit(source, target)
         event.accept()
 
     # ------------------------------------------------------------------ 便捷

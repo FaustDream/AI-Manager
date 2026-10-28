@@ -206,7 +206,7 @@ class AccountCenterPage(BasePage):
         table_layout.addLayout(head)
         table_layout.addWidget(hline())
 
-        self.table = DataTable(COLUMNS, key="id", parent=self)
+        self.table = DataTable(COLUMNS, key="id", reorder=True, parent=self)
         saved = self.cfg.get("account_columns") or []
         if len(saved) != len(COLUMNS):
             saved = []                      # 列结构变了，旧宽度会错位，全部重来
@@ -893,14 +893,14 @@ class AccountCenterPage(BasePage):
     # ------------------------------------------------------------ 表格布局
     def _move_row(self, source: int, target: int) -> None:
         """拖拽后重排行并把新顺序写进配置，下次打开保持一致。"""
-        rows = self.table.model.rows
-        if not (0 <= source < len(rows)) or not (0 <= target < len(rows)):
+        if not self.table.model.move_row(source, target):
             return
-        rows.insert(target, rows.pop(source))
-        self.table.model.set_rows(rows)
         self._install_actions()
-        self.cfg["account_order"] = [row["id"] for row in rows]
+        self.cfg["account_order"] = [row["id"] for row in self.table.model.rows]
         self.win.save_cfg()
+        # 选中行跟着数据走，这里只是把详情面板同步到新位置
+        row = self.table.current_row()
+        self._show_detail(row["id"] if row else "")
 
     def _save_columns(self) -> None:
         widths = self.table.column_widths()
@@ -1448,6 +1448,8 @@ class AccountCenterPage(BasePage):
             "手动登录不自动恢复，需要点「恢复会话」。\n"
             "· 「档案」列只表示该账号在本机有没有保存过登录态，只有 WorkBuddy 有；"
             "Qoder / Trae 恒为「—」，会话恢复也不再依赖档案。\n"
+            "· 账号顺序：按住任意一行上下拖动即可调整，顺序会记住；"
+            "拖到某行上半放前面、下半放后面，拖到空白处放最后。\n"
             "· WorkBuddy 国际版没有签到玩法，自动标记为免签到，不参与后台签到。\n"
             "· 手动「签到选中」对免签到账号依然有效（强制签到）。\n"
             "· 剩余积分来自平台实时接口；最近到期和临期积分按积分批次计算，"
