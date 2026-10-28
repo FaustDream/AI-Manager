@@ -1,22 +1,20 @@
 # -*- coding: utf-8 -*-
-"""总览：一眼看清签到、会话、备份的整体状态。"""
+"""总览：一屏看清今日签到与积分收支。"""
 from __future__ import annotations
 
-import os
 from datetime import datetime
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QProgressBar, QVBoxLayout, QWidget
 
+from ...checkin import creditlog
 from ...checkin import service as checkin_service
 from ...checkin.base import CreditSnapshot, StatusResult, summarize_lots
-from ...core import paths, tasks, winproc
-from ...core.format import fmt_size
-from ...sessions import service as session_service
-from ...sessions.editions import Edition
+from ...core import tasks
 from ..models import Column
 from ..theme import PALETTE
-from ..widgets import Badge, Card, DataTable, StatCard, hline, label, make_button
+from ..widgets import (Card, DataTable, StatCard, TrendBars, hline, label,
+                       make_button)
 from .base import BasePage
 
 CHECKIN_COLS = [
@@ -27,7 +25,8 @@ CHECKIN_COLS = [
     Column("expire", "最近到期", 128, "center", stretch=True),
 ]
 
-SOURCES = ("WorkBuddy 国内版", "WorkBuddy 国际版", "CodeBuddy IDE", "IDEA 插件")
+# 右侧「各账号积分」最多列几个：再多就把卡片撑得比左边还高
+BALANCE_ROWS = 8
 
 
 def _error_text(balance, summary: str) -> str:
@@ -44,17 +43,18 @@ def _error_text(balance, summary: str) -> str:
 class OverviewPage(BasePage):
     key = "overview"
     title = "总览"
-    subtitle = "签到、会话、账号档案的整体状态"
+    subtitle = "今日签到与积分收支"
 
     def __init__(self, win):
         super().__init__(win)
-        self.snap = None
         self.accounts = []
         self._by_iid: dict[str, object] = {}
         self._balances: dict[str, float | None] = {}
         self._balance_error: dict[str, str] = {}
         self._expiry: dict[str, str] = {}
         self._done: set[str] = set()
+        self._stats: dict = {}
+        self.balance_rows: dict[str, tuple] = {}
         self._first = True
         self._build()
 
@@ -66,26 +66,21 @@ class OverviewPage(BasePage):
         self.btn_credit = make_button("刷新积分", "ghost", "clock")
         self.btn_credit.clicked.connect(self.refresh_credits)
         self.header.add_action(self.btn_credit)
-        self.btn_sync = make_button("一键同步", "primary", "sync")
-        self.btn_sync.clicked.connect(self.goto_sync)
-        self.header.add_action(self.btn_sync)
 
         stats = QHBoxLayout()
         stats.setSpacing(12)
         self.card_checkin = StatCard("checkin", "签到账号", "—", "正在读取…")
-        self.card_pending = StatCard("sync", "待同步会话", "—", "正在读取…", "accent")
-        self.card_sessions = StatCard("sessions", "会话总数", "—", "正在读取…", "accent")
-        self.card_trash = StatCard("archive", "回收站", "—", "正在读取…", "warn")
-        for card in (self.card_checkin, self.card_pending, self.card_sessions, self.card_trash):
+        self.card_credit = StatCard("bolt", "积分总额", "—", "正在读取…")
+        self.card_gain = StatCard("plus", "今日增加", "—", "正在读取…", "ok")
+        self.card_spend = StatCard("clock", "今日消耗", "—", "正在读取…", "warn")
+        for card in (self.card_checkin, self.card_credit, self.card_gain, self.card_spend):
             stats.addWidget(card, 1)
         self.body.addLayout(stats)
 
         columns = QHBoxLayout()
         columns.setSpacing(12)
 
-        left = QVBoxLayout()
-        left.setSpacing(12)
-
+        # ---- 左：今日签到 ----
         checkin_card = QFrame()
         checkin_card.setObjectName("Card")
         checkin_layout = QVBoxLayout(checkin_card)
@@ -106,68 +101,30 @@ class OverviewPage(BasePage):
         self.checkin_table = DataTable(CHECKIN_COLS, key="id", row_height=34)
         self.checkin_table.setMinimumHeight(220)
         checkin_layout.addWidget(self.checkin_table, 1)
-        left.addWidget(checkin_card, 1)
+        columns.addWidget(checkin_card, 1)
 
-        status_card = Card(padding=16, spacing=8)
-        status_card.add_title("运行状态", "写入会话前需关闭对应客户端")
-        self.status_rows = {}
-        for key, name in (("cn", "WorkBuddy 国内版"), ("intl", "WorkBuddy 国际版")):
-            row = QHBoxLayout()
-            row.setSpacing(8)
-            row.addWidget(label(name, "StatLabel"))
-            row.addStretch(1)
-            badge = Badge("—", "muted")
-            row.addWidget(badge)
-            self.status_rows[key] = badge
-            status_card.body.addLayout(row)
-        status_card.body.addWidget(hline())
-        self.backup_hint = label("", "KeyLabel")
-        status_card.body.addWidget(self.backup_hint)
-        left.addWidget(status_card)
-
-        columns.addLayout(left, 1)
-
+        # ---- 右：积分趋势 + 各账号积分 ----
         right = QVBoxLayout()
         right.setSpacing(12)
 
-        source_card = Card(padding=16, spacing=9)
-        source_card.add_title("会话来源", "四个来源合计")
-        self.source_bars = {}
-        for name in SOURCES:
-            row = QHBoxLayout()
-            row.setSpacing(8)
-            tag = label(name, "StatLabel")
-            tag.setFixedWidth(112)
-            row.addWidget(tag)
-            bar = QProgressBar()
-            bar.setObjectName("ThinBar")
-            bar.setTextVisible(False)
-            bar.setRange(0, 100)
-            bar.setValue(0)
-            row.addWidget(bar, 1)
-            value = label("0", "ValueLabel")
-            value.setFixedWidth(44)
-            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            row.addWidget(value)
-            source_card.body.addLayout(row)
-            self.source_bars[name] = (bar, value)
-        source_card.body.addWidget(hline())
-        self.size_hint = label("", "KeyLabel")
-        source_card.body.addWidget(self.size_hint)
-        right.addWidget(source_card)
+        trend_card = Card(padding=16, spacing=8)
+        trend_card.add_title("积分趋势", f"近 {creditlog.TREND_DAYS} 天余额合计")
+        self.trend = TrendBars()
+        trend_card.body.addWidget(self.trend)
+        self.trend_hint = label("", "KeyLabel")
+        self.trend_hint.setWordWrap(True)
+        trend_card.body.addWidget(self.trend_hint)
+        right.addWidget(trend_card)
 
-        quick = Card(padding=16, spacing=8)
-        quick.add_title("快捷操作")
-        for text, icon_name, handler in (
-            ("打开签到中心", "checkin", lambda: self.win.navigate("checkin")),
-            ("打开会话管理", "sessions", lambda: self.win.navigate("sessions")),
-            ("切换账号档案", "profiles", lambda: self.win.navigate("profiles")),
-            ("打开数据目录", "folder", lambda: os.startfile(str(paths.DATA_DIR))),
-        ):
-            button = make_button(text, "ghost", icon_name)
-            button.clicked.connect(handler)
-            quick.body.addWidget(button)
-        right.addWidget(quick)
+        balance_card = Card(padding=16, spacing=8)
+        balance_card.add_title("各账号积分", "按当前余额")
+        self.balance_box = QVBoxLayout()
+        self.balance_box.setSpacing(7)
+        balance_card.body.addLayout(self.balance_box)
+        self.balance_empty = label("正在读取…", "SectionHint")
+        self.balance_empty.setWordWrap(True)
+        balance_card.body.addWidget(self.balance_empty)
+        right.addWidget(balance_card)
         right.addStretch(1)
 
         holder = QWidget()
@@ -198,19 +155,15 @@ class OverviewPage(BasePage):
                 emit((kind, (iid, result)))
 
             tasks.parallel_map(accounts, query)
-            try:
-                snap = session_service.build_snapshot(True, with_cloud=False)
-            except Exception as exc:
-                self.log(f"读取会话失败：{exc}", "error")
-                snap = None
-            emit(("snapshot", snap))
+            # 余额快照在上面每个账号查完时就已落盘，这里统一算一次合计与走势
+            emit(("stats", creditlog.summary()))
             return True
 
         tasks.submit(worker, on_done=lambda _r: self._set_busy(False),
                      on_error=self._failed, on_partial=self._apply)
 
     def refresh_credits(self) -> None:
-        """只刷新剩余积分与到期，不查签到状态、不扫会话。"""
+        """只刷新剩余积分与到期，不查签到状态。"""
         if self.busy:
             return
         targets = list(self._by_iid.values())
@@ -224,6 +177,7 @@ class OverviewPage(BasePage):
                 targets, lambda m: self.log(m, "dim"))
             for iid, snapshot in results.items():
                 emit(("credit", (iid, snapshot)))
+            emit(("stats", creditlog.summary()))
             return len(results)
 
         def done(count: int):
@@ -234,12 +188,24 @@ class OverviewPage(BasePage):
                      on_error=self._failed, on_partial=self._apply)
 
     def on_credits(self, snapshots: dict) -> None:
-        """定时轮询回来的积分快照：静默更新今日签到卡片。"""
+        """定时轮询回来的积分快照：静默更新表格与统计。"""
         if not self._by_iid:
             return
+        touched = False
         for iid, snapshot in snapshots.items():
             if iid in self._by_iid:
                 self._render_credit(iid, snapshot)
+                touched = True
+        if touched:
+            self._reload_stats()
+
+    def _reload_stats(self) -> None:
+        if self.busy:
+            return
+        tasks.submit(lambda _emit: creditlog.summary(),
+                     on_done=self._apply_stats,
+                     on_error=lambda message: self.log(
+                         f"积分统计失败：{message.splitlines()[0]}", "dim"))
 
     def _failed(self, message: str) -> None:
         self._set_busy(False)
@@ -255,9 +221,8 @@ class OverviewPage(BasePage):
             self._render_status(*payload)
         elif kind == "credit":
             self._render_credit(*payload)
-        elif kind == "snapshot":
-            self.snap = payload
-            self._render_snapshot()
+        elif kind == "stats":
+            self._apply_stats(payload)
 
     def _render_accounts(self) -> None:
         checked_ids = checkin_service.checked_ids(self.accounts)
@@ -294,7 +259,8 @@ class OverviewPage(BasePage):
             str(len(self.accounts)),
             f"今日已签到 {sum(1 for iid in self._done if iid in self._by_iid)}"
             f" · 免签到 {no_checkin + skipped}")
-        self._update_card_credits()
+        self._build_balance_rows()
+        self._update_cards()
 
     def _render_status(self, iid: str, result: StatusResult) -> None:
         account = self._by_iid.get(iid)
@@ -325,7 +291,7 @@ class OverviewPage(BasePage):
                      (PALETTE["ok"] if checked else
                       (PALETTE["warn"] if checked is False else PALETTE["muted"])),
                      "balance": PALETTE["muted"]})
-        self._update_card_credits()
+        self._update_cards()
 
     def _render_credit(self, iid: str, snapshot: CreditSnapshot) -> None:
         account = self._by_iid.get(iid)
@@ -340,7 +306,7 @@ class OverviewPage(BasePage):
             changes["today"] = ""
             changes["_fg_map"]["today"] = PALETTE["muted"]
         self.checkin_table.model.update(iid, **changes)
-        self._update_card_credits()
+        self._update_cards()
 
     def _set_row(self, iid: str, lots) -> None:
         nearest_amount = 0.0
@@ -371,61 +337,99 @@ class OverviewPage(BasePage):
             return self._balance_error.get(iid) or "—"
         return f"{value:g}"
 
-    def _update_card_credits(self) -> None:
-        balance = sum(v for v in self._balances.values() if v is not None)
+    # ------------------------------------------------------------ 积分仪表盘
+    def _build_balance_rows(self) -> None:
+        """账号换了才重建：平时只改数值，避免每次刷新都抖动一次。"""
+        while self.balance_box.count():
+            item = self.balance_box.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.balance_rows = {}
+        if not self.accounts:
+            self.balance_empty.setText("还没有发现账号")
+            self.balance_empty.show()
+            return
+        self.balance_empty.hide()
+        for account in self.accounts[:BALANCE_ROWS]:
+            row = QWidget()
+            layout = QHBoxLayout(row)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(8)
+            name = label(account.name, "StatLabel")
+            name.setFixedWidth(92)
+            name.setToolTip(account.name)
+            bar = QProgressBar()
+            bar.setObjectName("ThinBar")
+            bar.setTextVisible(False)
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            value = label("—", "ValueLabel")
+            value.setFixedWidth(62)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            layout.addWidget(name)
+            layout.addWidget(bar, 1)
+            layout.addWidget(value)
+            self.balance_box.addWidget(row)
+            self.balance_rows[account.iid] = (bar, value)
+        extra = len(self.accounts) - BALANCE_ROWS
+        if extra > 0:
+            self.balance_empty.setText(f"另有 {extra} 个账号未显示")
+            self.balance_empty.show()
+        self._update_balance_bars()
+
+    def _update_balance_bars(self) -> None:
+        values = [v for v in self._balances.values() if v is not None]
+        peak = max(values) if values else 0
+        for iid, (bar, value) in self.balance_rows.items():
+            current = self._balances.get(iid)
+            if current is None:
+                bar.setValue(0)
+                value.setText(self._balance_error.get(iid) or "—")
+                continue
+            bar.setValue(int(current / peak * 100) if peak else 0)
+            value.setText(f"{current:g}")
+
+    def _apply_stats(self, stats: dict | None) -> None:
+        self._stats = stats or {}
+        total = float(self._stats.get("total") or 0)
+        gained = float(self._stats.get("gained") or 0)
+        spent = float(self._stats.get("spent") or 0)
+        baseline = str(self._stats.get("baseline") or "")
         dated = [v for v in self._expiry.values() if v]
         nearest = min(dated) if dated else ""
-        hint = (f"今日已签到 {sum(1 for iid in self._done if iid in self._by_iid)}"
-                f" · 免签到 {sum(1 for a in self.accounts if not a.requires_checkin)}")
-        if self._balances:
-            hint += f" · 剩余 {balance:g} 积分"
+        hint = f"{self._stats.get('accounts') or 0} 个账号有余额记录"
         if nearest:
             hint += f" · 最近到期 {nearest}"
-        self.card_checkin.set_value(str(len(self.accounts)), hint)
-        self.win.set_summary("overview", hint)
+        self.card_credit.set_value(f"{total:g}", hint)
 
-    def _render_snapshot(self) -> None:
-        if self.snap is None:
-            self.card_pending.set_value("—", "未找到 WorkBuddy 数据目录")
-            self.card_sessions.set_value("—", "读取失败")
-            self.card_trash.set_value("—", "读取失败")
-            return
-        snap = self.snap
-        restore_total = sum(len(rows) for rows in snap.restores.values())
-        self.card_pending.set_value(
-            str(snap.pending), f"待恢复可见 {restore_total} 条 · 同步前自动备份")
-        self.card_sessions.set_value(
-            str(len(snap.unified)),
-            f"有正文 {sum(1 for r in snap.unified if r['has_body'])} 条 · "
-            f"{fmt_size(snap.total_size)}")
-        self.card_trash.set_value(
-            str(len(snap.trash)), f"黑名单 {snap.tomb_count} 条 · 备份 {len(snap.backups)} 份")
+        compare = f"较 {baseline[5:]} 的记录" if baseline else "还没有可对比的记录"
+        self.card_gain.set_value(f"+{gained:g}" if gained else "0", compare)
+        self.card_spend.set_value(f"-{spent:g}" if spent else "0", compare)
 
-        counts = {}
-        for row in snap.unified:
-            counts[row["source_label"]] = counts.get(row["source_label"], 0) + 1
-        peak = max(list(counts.values()) + [1])
-        for name, (bar, value) in self.source_bars.items():
-            count = counts.get(name, 0)
-            bar.setValue(int(count / peak * 100))
-            value.setText(str(count))
-
-        for key, badge in self.status_rows.items():
-            ep = Edition(key)
-            running = winproc.process_running(ep.proc)
-            badge.setText("运行中" if running else "已关闭")
-            badge.set_tone("warn" if running else "ok")
-
-        if snap.backups:
-            latest = snap.backups[0]
-            self.backup_hint.setText(
-                f"最近备份 {latest['tag']} · {latest['count']} 条 · "
-                f"{str(latest['created']).replace('T', ' ')}")
+        trend = self._stats.get("trend") or []
+        self.trend.set_points(trend)
+        if len(trend) >= 2:
+            first, last = trend[0][1], trend[-1][1]
+            delta = last - first
+            self.trend_hint.setText(
+                f"{first:g} → {last:g}（{delta:+g}）" if delta else f"稳定在 {last:g}")
+        elif trend:
+            self.trend_hint.setText(f"今天首次记录 {trend[-1][1]:g}，明天起这里显示变化")
         else:
-            self.backup_hint.setText("还没有备份记录，首次同步时会自动创建")
-        self.size_hint.setText(
-            f"WorkBuddy 国内 {snap.cn_total} 条 / 国际 {snap.intl_total} 条，"
-            f"当前可见 {snap.cn_visible} / {snap.intl_visible}")
+            self.trend_hint.setText("历史从第一次刷新开始累积，之后每次刷新都会留下记录")
+        self._update_cards()
+
+    def _update_cards(self) -> None:
+        done = sum(1 for iid in self._done if iid in self._by_iid)
+        no_checkin = sum(1 for a in self.accounts if not a.requires_checkin)
+        hint = f"今日已签到 {done} · 免签到 {no_checkin}"
+        self.card_checkin.set_value(str(len(self.accounts)), hint)
+        self._update_balance_bars()
+        total = sum(v for v in self._balances.values() if v is not None)
+        self.win.set_summary(
+            "overview",
+            f"{len(self.accounts)} 个账号 · 今日已签到 {done} · 剩余 {total:g} 积分")
 
     # ------------------------------------------------------------------ 动作
     def checkin_all(self) -> None:
@@ -433,9 +437,3 @@ class OverviewPage(BasePage):
         page = self.win.page("checkin")
         if page is not None:
             page.checkin(all_accounts=True)
-
-    def goto_sync(self) -> None:
-        self.win.navigate("sessions")
-        page = self.win.page("sessions")
-        if page is not None:
-            page.sync_all()

@@ -79,8 +79,8 @@ app/sessions/           会话域
   profiles.py / backup.py / trash.py / cloud.py / codebuddy.py
 
 data/                   运行期数据：config.json、accounts.dat、checked.json、
-                        daily.json、credits.json、session_index.json、backups/、
-                        logs/、profiles/、trash/
+                        daily.json、credits.json、credit_history.json、
+                        session_index.json、backups/、logs/、profiles/、trash/
 legacy/                 历史版本 zip 归档，只读
 tools/                  一次性脚本（图标生成、截图）
 ```
@@ -161,6 +161,7 @@ tools/                  一次性脚本（图标生成、截图）
 - **每日轮询签到**：启动时跑一轮，之后每 6 小时一轮（`mainwindow.DAILY_INTERVAL_MS`），顺序固定为「日期检测 → 账号状态校验 → 调用签到接口」。启动那一轮必定执行（当天已签也会先校验状态），结果通过气泡和账号中心工具栏的「HH:MM · 成功 / 已签 / 等待 / 失败」反馈。`data/daily.json` 记当日已签成功的 iid，同一账号当天不再重复调用；接口给 `next_at` 且还没到点就跳过，等下一轮。**没有**「每日自动签到开关 / 签到时刻」配置，不要再加回来
 - **冷却口径两套**：`cooldown_hours = 0` 按自然日（次日 0 点可签）；`24` 按上次签到 + 24h（Qoder）。`service.next_checkin_at()` 只按本地记录推算，界面文案统一用「约」
 - **积分批次不含获得时间**：平台接口只返回「金额 + 到期日 + 名称」。`live_credit=True`（WorkBuddy / Trae）**从不写台账**，`live_credit=False`（Qoder）才由 `ledger.add()` 记录发放时刻
+- **积分增减来自余额快照**：接口只给当前余额，`creditlog.note()` 在每次查到余额时按天记一笔（`data/credit_history.json`，保留 60 天）。「今日增加 / 消耗」= 今天与上一次记录的差值，**不要**改回从台账推算（台账只覆盖 Qoder）；同一天多次刷新只保留最后一次，否则增减会被刷成 0
 - **账号主键**：`iid = f"{platform}:{account_id}"`，被账号库、积分台账、签到记录、UI 行 key 共用；改主键等于改四处存储
 - **官方客户端 SQLite**：只读连接用 `mode=ro`；写前必须关闭进程并 `PRAGMA wal_checkpoint(TRUNCATE)`
 - **会话恢复只改归属引用**：同一版本里一条会话只有一份正文（`projects/<slug>/<sid>.jsonl`），恢复 = 把 `sessions.user_id` 指向当前账号、清掉 `deleted_at`，**不复制正文、不替换 workbuddy.db**。`data/session_index.json` 记 `origin`（原始账号）与 `refs`（引用过的账号）。账号切换登录自动恢复切换前账号的会话；手动登录不自动恢复，由「恢复会话」触发。`profiles.py` 只切登录态与 storage，**绝不能**再用档案里的 DB 覆盖会话库

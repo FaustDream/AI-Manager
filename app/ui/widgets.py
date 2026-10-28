@@ -177,6 +177,60 @@ class StatCard(QFrame):
             self.hint.setText(hint)
 
 
+class TrendBars(QWidget):
+    """近 N 天的走势柱：只画柱子和首尾日期，看趋势够用，也不用引图表库。"""
+
+    def __init__(self, parent=None, height: int = 104, tone: str = "accent"):
+        super().__init__(parent)
+        self._points: list[tuple[str, float]] = []
+        self._tone = tone
+        self.setFixedHeight(height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_points(self, points) -> None:
+        self._points = [(str(day), float(value or 0)) for day, value in points]
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt 接口
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        area = self.rect().adjusted(0, 6, 0, -16)
+        points = self._points
+        if not points or not any(value for _day, value in points):
+            painter.setPen(QColor(PALETTE["muted"]))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                             "还没有历史数据")
+            painter.end()
+            return
+
+        peak = max(value for _day, value in points) or 1.0
+        count = len(points)
+        gap = 3.0
+        width = max(3.0, (area.width() - gap * (count - 1)) / count)
+        color = QColor(PALETTE.get(self._tone, PALETTE["accent"]))
+        baseline = area.bottom()
+        for position, (_day, value) in enumerate(points):
+            height = max(2.0, area.height() * value / peak)
+            x = area.left() + position * (width + gap)
+            rect = QRectF(x, baseline - height, width, height)
+            last = position == count - 1
+            color.setAlpha(255 if last else 110)
+            painter.setBrush(color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(rect, 3.0, 3.0)
+
+        painter.setPen(QColor(PALETTE["muted"]))
+        font = QFont("Microsoft YaHei UI", 8)
+        painter.setFont(font)
+        painter.drawText(QRectF(area.left(), baseline + 2, area.width(), 14),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                         points[0][0][5:])
+        painter.drawText(QRectF(area.left(), baseline + 2, area.width(), 14),
+                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                         points[-1][0][5:])
+        painter.end()
+
+
 class PageHeader(QWidget):
     def __init__(self, title: str, subtitle: str = "", parent=None):
         super().__init__(parent)
