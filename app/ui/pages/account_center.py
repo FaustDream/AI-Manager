@@ -11,9 +11,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QVBoxLayout,
-                               QWidget)
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QMenu,
+                               QVBoxLayout, QWidget)
 
 from ...checkin import daily, ledger, service, store, switcher
 from ...checkin.base import (Account, ActionResult, CreditSnapshot, StatusResult,
@@ -223,6 +224,9 @@ class AccountCenterPage(BasePage):
             lambda index: self._double_clicked(index.row()))
         self.table.selectionModel().selectionChanged.connect(
             lambda *_: self._on_selection())
+        # uid 不摆在界面上，需要时右键复制
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._table_menu)
         table_layout.addWidget(self.table, 1)
 
         self.empty = EmptyState("还没有发现任何账号",
@@ -272,6 +276,34 @@ class AccountCenterPage(BasePage):
         self._sync_buttons()
         row = self.table.current_row()
         self._show_detail(row["id"] if row else "")
+
+    def _table_menu(self, point) -> None:
+        """右键菜单：uid 不显示，但允许复制。"""
+        row = self.table.current_row()
+        account = self.accounts.get(row["id"]) if row else None
+        if account is None:
+            return
+        menu = QMenu(self)
+        copy_uid = menu.addAction("复制 UID")
+        copy_name = menu.addAction("复制账号名")
+        chosen = menu.exec(self.table.viewport().mapToGlobal(point))
+        if chosen is copy_uid:
+            QGuiApplication.clipboard().setText(self._account_uid(account))
+            self.notify("已复制 UID")
+        elif chosen is copy_name:
+            QGuiApplication.clipboard().setText(account.name)
+            self.notify("已复制账号名")
+
+    @staticmethod
+    def _account_uid(account: Account) -> str:
+        return str(account.meta.get("uid") or account.account_id or "")
+
+    def _nickname(self, uid: str) -> str:
+        """uid → 昵称：日志与提示只说人话，不把 id 摆到界面上。"""
+        for account in self.accounts.values():
+            if self._account_uid(account) == uid:
+                return account.name
+        return "该账号"
 
     def _show_detail(self, iid: str) -> None:
         account = self.accounts.get(iid) if iid else None
@@ -588,10 +620,12 @@ class AccountCenterPage(BasePage):
         self._pack_issues = {key.split("/", 1)[-1]: why for key, why in broken.items()}
         if filled:
             self.log(f"已为 {len(filled)} 份档案补全登录票据："
-                     + "、".join(item.split("/")[-1][:8] for item in filled), "dim")
+                     + "、".join(self._nickname(item.split("/", 1)[-1])
+                                for item in filled), "dim")
         if broken:
-            detail = "；".join(f"{uid.split('/')[-1][:8]}：{why}"
-                              for uid, why in broken.items())
+            detail = "；".join(
+                f"{self._nickname(uid.split('/', 1)[-1])}：{why}"
+                for uid, why in broken.items())
             self.log(f"有 {len(broken)} 份档案不完整：{detail}", "warn")
             self.notify(f"{len(broken)} 份账号档案不完整，切换前请先在客户端登录一次", "warn")
         for account in self.accounts.values():
@@ -1335,7 +1369,7 @@ class AccountCenterPage(BasePage):
                 self.log(f"客户端已接受 {account.name} 的登录票据", "dim")
                 return
             self.log(f"客户端没有接受 {account.name} 的登录票据"
-                     f"（现在 .info 是 {info_uid[:8] or '空'}），需要重新登录一次", "warn")
+                     "（客户端当前的登录账号不是它），需要重新登录一次", "warn")
             self.notify("切换后客户端仍要求登录：该账号票据已失效，请登录一次", "warn")
 
         tasks.submit(check, on_done=done,
@@ -1379,8 +1413,8 @@ class AccountCenterPage(BasePage):
             return None
         info_uid = profiles.auth_uid(ep)
         if info_uid and info_uid != uid:
-            self.log(f"登录态与账号快照不一致（{info_uid[:8]} / {uid[:8]}），"
-                     "本次不自动存档，等客户端把状态写完再存", "dim")
+            self.log("登录态与账号快照不一致，本次不自动存档，"
+                     "等客户端把状态写完再存", "dim")
             return None
         return ep, uid
 
@@ -1433,7 +1467,7 @@ class AccountCenterPage(BasePage):
         try:
             profiles.save_current(ep, uid)
             self._last_save = time.monotonic()
-            self.log(f"账号档案已保存（退出）：{uid[:8]}", "dim")
+            self.log("账号档案已保存（客户端已退出）", "dim")
         except Exception as exc:      # 退出路径上不能再抛，只留日志
             self.log(f"退出前保存账号档案失败：{exc}", "error")
 
@@ -1496,7 +1530,10 @@ class AccountCenterPage(BasePage):
 
         def done(report) -> None:
             self._set_busy(False)
-            self.info("恢复会话", report.detail())
+            # 恢复完不再弹说明框：客户端已经在 worker 里重新打开，
+            # 结果只落日志 + 一句气泡，别打断用户
+            self.log(report.summary(), "ok")
+            self.notify("会话已恢复，客户端已重新打开")
             bus.BUS.data_changed.emit("sessions")
             self.refresh()
 
@@ -1609,7 +1646,7 @@ class AccountCenterPage(BasePage):
         def done(changed) -> None:
             self._ticket_syncing = False
             if changed:
-                self.log(f"已同步 {uid[:8]} 的最新登录票据到档案", "dim")
+                self.log(f"已同步 {self._nickname(uid)} 的最新登录票据到档案", "dim")
 
         def failed(message: str) -> None:
             self._ticket_syncing = False

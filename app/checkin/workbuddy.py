@@ -167,7 +167,7 @@ class WorkBuddyProvider(Provider):
                     platform=self.key,
                     platform_label="WorkBuddy 国际版" if intl else "WorkBuddy 国内版",
                     account_id=account_id,
-                    name=str(nickname or phone or uid[:8]),
+                    name=str(nickname or phone or "未命名账号"),
                     token=token,
                     expires_at=parse_iso(auth.get("expiresAt")),
                     source=str(path),

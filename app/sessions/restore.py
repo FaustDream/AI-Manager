@@ -267,7 +267,7 @@ def _merge_packs(ep: Edition, log) -> int:
                     dict(buddy) if buddy is not None else None,
                 ))
         except sqlite3.Error as exc:
-            log(f"读取旧档案 {db.parent.name[:8]} 失败：{exc}", "warn")
+            log(f"读取旧档案失败：{exc}", "warn")
         finally:
             conn.close()
 

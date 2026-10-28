@@ -47,6 +47,7 @@ class SessionsPage(BasePage):
         self._target_map: dict[str, dict] = {}
         self._first_load = True
         self._labels: dict[str, str] = {}
+        self._names: dict[str, str] = {}
         self._known_uids: tuple[str, str] = ("", "")
         self._build()
         self._load_options()
@@ -238,10 +239,30 @@ class SessionsPage(BasePage):
             return
         self._set_busy(True, "正在读取四个来源的会话…")
         include_deleted = self.opt_deleted.isChecked()
-        tasks.submit(
-            lambda emit: service.build_snapshot(include_deleted, with_cloud=True,
-                                                log=lambda m, lv="info": self.log(m, lv)),
-            on_done=self._apply_snapshot, on_error=self._load_failed)
+        def worker(emit):
+            snap = service.build_snapshot(
+                include_deleted, with_cloud=True,
+                log=lambda m, lv="info": self.log(m, lv))
+            return {"snap": snap, "names": self._account_names()}
+
+        tasks.submit(worker, on_done=self._apply_snapshot, on_error=self._load_failed)
+
+    def _account_names(self) -> dict[str, str]:
+        """uid → 昵称：会话表里只显示昵称，不把 uid 摆出来。"""
+        try:
+            from ...checkin import service as checkin_service
+            names = {}
+            for account in checkin_service.collect(self.cfg,
+                                                   lambda m, lv="info": None):
+                if account.platform != "workbuddy":
+                    continue
+                uid = str(account.meta.get("uid") or "")
+                if uid:
+                    names[uid] = account.name
+            return names
+        except Exception as exc:
+            self.log(f"读取账号昵称失败：{exc}", "dim")
+            return {}
 
     def _check_account_change(self) -> None:
         """定时对比客户端当前登录 uid，变了（换号了）就自动刷新列表。"""
@@ -262,7 +283,13 @@ class SessionsPage(BasePage):
         self.log(message, "error")
         self.notify("读取会话失败，详情见运行日志", "error")
 
-    def _apply_snapshot(self, snap) -> None:
+    def _apply_snapshot(self, payload) -> None:
+        if isinstance(payload, dict):
+            snap = payload.get("snap")
+            self._names = payload.get("names") or {}
+        else:
+            snap = payload
+            self._names = {}
         self.snap = snap
         self._labels = {}
         self._set_busy(False)
@@ -314,8 +341,10 @@ class SessionsPage(BasePage):
             names[self.snap.cn_uid] = "国内版"
             names[self.snap.intl_uid] = "国际版"
         tag = names.get(uid)
-        short = uid[:8]
-        return f"{short}（{tag}）" if tag else f"{short}（旧账号）"
+        nickname = self._names.get(uid)
+        if nickname:
+            return f"{nickname}（{tag}）" if tag else nickname
+        return f"{tag}（旧账号）" if tag else "旧账号"
 
     def _passes(self, row: dict) -> bool:
         if self.f_source.currentText() != "全部" \

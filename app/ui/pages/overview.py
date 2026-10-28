@@ -10,7 +10,7 @@ from ...checkin.base import CreditSnapshot, StatusResult, summarize_lots
 from ...core import tasks
 from ..models import Column
 from ..theme import PALETTE
-from ..widgets import DataTable, StatCard, hline, label, make_button
+from ..widgets import DataTable, StatCard, make_button
 from .base import BasePage
 
 # 表格独占整行，宽列让账号名吸收多余空间，其余列保持紧凑
@@ -47,14 +47,10 @@ class OverviewPage(BasePage):
         self._expiry: dict[str, str] = {}
         self._done: set[str] = set()
         self._stats: dict = {}
-        self._first = True
         self._build()
 
     # ------------------------------------------------------------------ 界面
     def _build(self) -> None:
-        self.btn_refresh = make_button("刷新全部", "ghost", "refresh")
-        self.btn_refresh.clicked.connect(self.refresh)
-        self.header.add_action(self.btn_refresh)
         self.btn_credit = make_button("刷新积分", "ghost", "clock")
         self.btn_credit.clicked.connect(self.refresh_credits)
         self.header.add_action(self.btn_credit)
@@ -69,34 +65,21 @@ class OverviewPage(BasePage):
             stats.addWidget(card, 1)
         self.body.addLayout(stats)
 
-        # ---- 今日签到：整行铺满 ----
+        # ---- 签到表：整行铺满，不再有标题栏与按钮 ----
         checkin_card = QFrame()
         checkin_card.setObjectName("Card")
         checkin_layout = QVBoxLayout(checkin_card)
         checkin_layout.setContentsMargins(0, 0, 0, 0)
         checkin_layout.setSpacing(0)
-        head = QHBoxLayout()
-        head.setContentsMargins(16, 12, 16, 10)
-        head.setSpacing(8)
-        head.addWidget(label("今日签到", "SectionTitle"))
-        self.checkin_hint = label("", "SectionHint")
-        head.addWidget(self.checkin_hint)
-        head.addStretch(1)
-        self.btn_all = make_button("全部签到", "primary", "bolt")
-        self.btn_all.clicked.connect(self.checkin_all)
-        head.addWidget(self.btn_all)
-        checkin_layout.addLayout(head)
-        checkin_layout.addWidget(hline())
         self.checkin_table = DataTable(CHECKIN_COLS, key="id", row_height=34)
         self.checkin_table.setMinimumHeight(220)
-        checkin_layout.addWidget(self.checkin_table, 1)
+        checkin_layout.addWidget(self.checkin_table)
         self.body.addWidget(checkin_card, 1)
 
     # ------------------------------------------------------------------ 数据
     def on_show(self) -> None:
-        if self._first:
-            self._first = False
-            self.refresh()
+        # 手动「刷新全部」已移除：每次切回总览都重扫一遍，否则签到状态会一直停在首次加载
+        self.refresh()
 
     def refresh(self) -> None:
         if self.busy:
@@ -209,7 +192,6 @@ class OverviewPage(BasePage):
                 },
             })
         self.checkin_table.set_rows(rows)
-        self.checkin_hint.setText("" if rows else "未发现账号")
         self._update_cards()
 
     def _render_status(self, iid: str, result: StatusResult) -> None:
@@ -304,10 +286,3 @@ class OverviewPage(BasePage):
         self.win.set_summary(
             "overview",
             f"{len(self.accounts)} 个账号 · 今日已签到 {done} · 剩余 {total:g} 积分")
-
-    # ------------------------------------------------------------------ 动作
-    def checkin_all(self) -> None:
-        self.win.navigate("checkin")
-        page = self.win.page("checkin")
-        if page is not None:
-            page.checkin(all_accounts=True)
