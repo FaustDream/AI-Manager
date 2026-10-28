@@ -125,9 +125,12 @@ tools/                  一次性脚本（图标生成、截图）
     - 启动客户端/打开目录一律 `winproc.start_exe()` / `open_path()`（`os.startfile`，不产生窗口）
     - 进程存在性判断用 `winproc.process_running()`（ctypes 快照），不要用 `tasklist`
     - 运维脚本若由用户双击，必须提供 `.vbs` 静默入口（参考 `setup.vbs`），不能让 bat 直接弹黑框
+    - **venv 里的 `pythonw.exe` 可能是控制台子系统**（uv 建环境时的行为），双击会弹一个常驻 cmd 窗口。验证方法：PE 头 `Subsystem` 必须是 `2`（GUI），`3` 说明是坏的。修复：用 `home` 指向的基础解释器里的 `Lib\venv\scripts\nt\pythonw.exe` 覆盖 `.venv\Scripts\pythonw.exe`。`一键安装.vbs` 与 `setup.vbs` 已自动做这一步
 12. **不手工修改 `.venv`**。环境异常一律用 `setup.vbs` / `uv sync` 重建，不要在里面 `pip install` 或删文件
-13. **`一键安装.vbs` 与 `setup.vbs` 必须以 UTF-16 LE（带 BOM）保存**。Windows Script Host 按系统 ANSI 代码页解析 `.vbs`，一旦存成 UTF-8，中文会报 `Unterminated string constant`。编辑后若编码被改回 UTF-8，重新转换：
-    `$t=[IO.File]::ReadAllText($p,[Text.Encoding]::UTF8); [IO.File]::WriteAllText($p,$t,[Text.Encoding]::Unicode)`
+13. **两个 `.vbs` 的编码规则不同，不要混**。Windows Script Host 按系统 ANSI（GBK）代码页解析 `.vbs`，中文处理不当就报 `Unterminated string constant`：
+    - `一键安装.vbs`：**UTF-16 LE + BOM**，可以写中文提示。转换：
+      `$t=[IO.File]::ReadAllText($p,[Text.Encoding]::UTF8); [IO.File]::WriteAllText($p,$t,[Text.Encoding]::Unicode)`
+    - `setup.vbs`：**必须纯 ASCII**，注释和提示一律英文。加一行中文就会让后面的代码解析错位（表现为莫名其妙的 `Invalid 'exit' statement`）
 
 ## 5. 验证与验收
 

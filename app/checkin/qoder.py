@@ -250,24 +250,36 @@ class _QoderBase(Provider):
     _DAILY_SPAN = (86300, 86400)
 
     @classmethod
+    def _daily(cls, benefits: list[dict]) -> dict | None:
+        """当前窗口里的每日签到活动；只有一次性活动时返回 None。"""
+        for item in benefits:
+            start = item.get("startAt")
+            end = item.get("endAt")
+            if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+                continue
+            if cls._DAILY_SPAN[0] <= end - start <= cls._DAILY_SPAN[1]:
+                return item
+        return None
+
+    @staticmethod
+    def _opened_at(campaign: dict) -> datetime | None:
+        """活动窗口的开放时刻（本地 naive）。"""
+        moment = parse_iso(campaign.get("startAt"))
+        return moment.astimezone().replace(tzinfo=None) if moment else None
+
+    @classmethod
     def _next_window(cls, benefits: list[dict]) -> datetime | None:
         """本轮已签后，下一次可签的本地时刻。
 
         接口只下发当前窗口，没有“下一轮排期”字段（客户端也是 5 分钟轮询等它出现），
         所以按同一节奏用 startAt + 24 小时推算；实际开放时间会漂，以接口下发为准。
         """
-        for item in benefits:
-            start = item.get("startAt")
-            end = item.get("endAt")
-            if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
-                continue
-            if not cls._DAILY_SPAN[0] <= end - start <= cls._DAILY_SPAN[1]:
-                continue
-            opened = parse_iso(start)
-            if opened is not None:
-                # 先在 UTC 上加一天再换本地时区，跨夏令时也不会偏一小时
-                return (opened + timedelta(hours=24)).astimezone().replace(tzinfo=None)
-        return None
+        daily = cls._daily(benefits)
+        opened = parse_iso(daily.get("startAt")) if daily else None
+        if opened is None:
+            return None
+        # 先在 UTC 上加一天再换本地时区，跨夏令时也不会偏一小时
+        return (opened + timedelta(hours=24)).astimezone().replace(tzinfo=None)
 
     def _quota(self, session: requests.Session) -> tuple[str, float | None, list[CreditLot]]:
         payload = self._get(session, "/api/v2/quota/usage")
@@ -329,16 +341,26 @@ class _QoderBase(Provider):
         try:
             benefits = self._benefits(self._campaigns(session))
             pending = [c for c in benefits if c.get("claimStatus") == "CLAIMABLE"]
-            if benefits:
-                if pending:
+            daily = self._daily(benefits)
+            today = datetime.now().date()
+            if pending:
+                checked = False
+                summary += f"；可领 {len(pending)} 项"
+            elif daily is not None:
+                opened = self._opened_at(daily)
+                claim_status = daily.get("claimStatus")
+                if claim_status == "CLAIMABLE":
                     checked = False
-                    summary += f"；可领 {len(pending)} 项"
-                elif all(c.get("claimStatus") == "CLAIMED" for c in benefits):
-                    checked = True
-                    next_at = self._next_window(benefits)
-                else:
-                    checked = None
-            # 没有发币活动时保持 None：活动未下发，不等于“今天已签”。
+                elif claim_status == "CLAIMED" and opened is not None:
+                    if opened.date() == today:
+                        checked = True
+                        next_at = self._next_window(benefits)
+                    elif opened.date() < today:
+                        # 上次签的还是昨天 10:00 那一轮，今天这轮还没下发：
+                        # “已领取”只能说明昨天领过，不能说今天已签
+                        checked = False
+                        next_at = self._next_window(benefits)
+            # 其余情况保持 None：活动未下发或状态异常，都不猜“今天已签”。
         except Exception:
             pass
         return StatusResult(checked, summary, balance, lots, next_at)
@@ -349,8 +371,15 @@ class _QoderBase(Provider):
         benefits = self._benefits(campaigns)
         targets = [c for c in benefits if c.get("claimStatus") == "CLAIMABLE"]
         if not targets:
+            daily = self._daily(benefits)
+            opened = self._opened_at(daily) if daily else None
+            if opened is not None and opened.date() < datetime.now().date():
+                nxt = self._next_window(benefits)
+                hint = f"{nxt:%H:%M}" if nxt else "10:00"
+                return ActionResult(True, f"本轮已领取，今日 {hint} 后开放下一轮",
+                                    already=True)
             if benefits:
-                return ActionResult(True, "今日已领取")
+                return ActionResult(True, "今日已领取", already=True)
             return ActionResult(False, "签到活动未下发（通常 10:00 UTC+8 后开放）")
 
         claimed = 0

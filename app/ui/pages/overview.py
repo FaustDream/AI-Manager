@@ -260,7 +260,7 @@ class OverviewPage(BasePage):
             self._render_snapshot()
 
     def _render_accounts(self) -> None:
-        checked_ids = checkin_service.checked_ids()
+        checked_ids = checkin_service.checked_ids(self.accounts)
         skip = set(self.cfg.get("skip") or [])
         self._by_iid = {account.iid: account for account in self.accounts}
         self._balances = {}
@@ -306,10 +306,12 @@ class OverviewPage(BasePage):
             self._done.add(iid)
         elif result.checked_in is False:
             self._done.discard(iid)
-        if result.checked_in is None:
-            checked = True if iid in self._done else None
-        else:
+        if result.checked_in is not None:
             checked = result.checked_in
+        elif checkin_service.next_from_api(account.platform):
+            checked = None
+        else:
+            checked = True if iid in self._done else None
         self._set_row(iid, result.lots)
         requires = account.requires_checkin
         if not requires:

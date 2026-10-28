@@ -100,6 +100,9 @@ class ActionResult:
     message: str
     granted: float | None = None
     validity_days: int | None = None
+    # 本轮早就领过、这次没有任何新发放：调用不算失败，但不能当成“今天签过了”。
+    # 例如 Qoder 08:30 去签，签的还是昨天 10:00 那一轮。
+    already: bool = False
 
 
 class ProviderError(RuntimeError):
