@@ -1,17 +1,23 @@
 # -*- coding: utf-8 -*-
-"""会话管理：四个来源的会话汇总、预览、同步、删除。"""
+"""会话管理：本机会话的浏览、正文预览、空间回收与删除。
+
+不做跨版本同步——账号之间的会话恢复在账号中心完成，这一页只回答
+「本机有哪些会话、里面写了什么、占多少空间、删哪些」。
+"""
 from __future__ import annotations
 
+import html
 import os
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QHBoxLayout, QInputDialog,
-                               QLineEdit, QSplitter, QTextBrowser, QVBoxLayout, QWidget)
+                               QLineEdit, QSplitter, QTextBrowser, QVBoxLayout)
 
 from ...core import bus, tasks, winproc
 from ...core.format import fmt_size, fmt_time
-from ...sessions import service
+from ...sessions import preview, service
 from ...sessions.editions import Edition
 from ..models import Column
 from ..theme import PALETTE
@@ -19,18 +25,26 @@ from ..widgets import Badge, Card, DataTable, hline, label, make_button
 from .base import BasePage
 
 COLUMNS = [
-    Column("title", "会话标题", 320, stretch=True),
-    Column("source", "软件", 130),
-    Column("account", "账号", 150),
-    Column("state", "状态", 68, "center"),
-    Column("last", "最后活动", 118, "center"),
-    Column("msgs", "记录", 56, "right"),
-    Column("size", "大小", 76, "right"),
+    Column("title", "会话标题", 240, stretch=True),
+    Column("source", "软件", 136),
+    Column("account", "账号", 170),
+    Column("state", "状态", 66, "center"),
+    Column("last", "最后活动", 132, "center"),
+    Column("msgs", "记录", 50, "right"),
+    Column("size", "大小", 70, "right"),
 ]
 
 SOURCES = ["全部", "WorkBuddy 国内版", "WorkBuddy 国际版", "CodeBuddy IDE", "IDEA 插件"]
-DIRECTIONS = {"双向同步": "both", "国内版 → 国际版": "cn2intl", "国际版 → 国内版": "intl2cn"}
-DIRECTION_LABEL = {v: k for k, v in DIRECTIONS.items()}
+RANGES = {"当前账号": "current", "全部会话": "all", "旧账号": "old",
+          "已删除": "deleted", "无正文": "empty", "半年未动": "stale"}
+RANGE_LABEL = {value: key for key, value in RANGES.items()}
+
+# 表头第几列按哪个字段排序；文本列升序，时间/数量列默认降序
+SORT_COLUMNS = {"title": 0, "source": 1, "account": 2, "state": 3,
+                "last": 4, "msgs": 5, "size": 6}
+COLUMN_SORT = {index: key for key, index in SORT_COLUMNS.items()}
+NUMERIC_SORTS = ("last", "msgs", "size")
+STATE_RANK = {"可见": 0, "有正文": 0, "云端": 1, "旧账号": 2, "无正文": 3, "已删除": 4}
 
 
 class SessionsPage(BasePage):
@@ -40,19 +54,24 @@ class SessionsPage(BasePage):
 
     def __init__(self, win):
         super().__init__(win)
-        self.snap = None
+        self.cat: service.Catalog | None = None
         self.rows: list[dict] = []
         self.row_index: dict[str, dict] = {}
-        self.targets: list[dict] = []
-        self._target_map: dict[str, dict] = {}
-        self._first_load = True
         self._labels: dict[str, str] = {}
         self._names: dict[str, str] = {}
+        self._unknown: dict[str, str] = {}
         self._known_uids: tuple[str, str] = ("", "")
+        self._cloud: dict = {}
+        self._preview_cache: dict[str, dict] = {}
+        self._preview_token = 0
+        self._detail_row: dict | None = None
+        self._first_load = True
+        self._sort_key = "last"
+        self._sort_desc = True
         self._build()
         self._load_options()
 
-        # 账号切换检测：客户端换号后 uid 会变，变了就自动重拉（含云端会话列表）
+        # 账号切换检测：客户端换号后 uid 会变，变了就自动重拉
         self._uid_timer = QTimer(self)
         self._uid_timer.setInterval(30_000)
         self._uid_timer.timeout.connect(self._check_account_change)
@@ -63,12 +82,10 @@ class SessionsPage(BasePage):
         self.btn_refresh = make_button("刷新", "ghost", "refresh")
         self.btn_refresh.clicked.connect(self.refresh)
         self.header.add_action(self.btn_refresh)
-        self.btn_preview = make_button("预览计划", "ghost")
-        self.btn_preview.clicked.connect(self.preview)
-        self.header.add_action(self.btn_preview)
-        self.btn_sync = make_button("一键同步", "primary", "sync")
-        self.btn_sync.clicked.connect(self.sync_all)
-        self.header.add_action(self.btn_sync)
+        self.btn_cloud = make_button("拉取云端", "ghost", "external")
+        self.btn_cloud.setToolTip("从服务端拉一份会话列表，用来对照本地缺了哪些")
+        self.btn_cloud.clicked.connect(self.pull_cloud)
+        self.header.add_action(self.btn_cloud)
 
         filters = Card(padding=14, spacing=9)
         line1 = QHBoxLayout()
@@ -99,32 +116,35 @@ class SessionsPage(BasePage):
         self.opt_body.stateChanged.connect(self._on_opt_change)
         line1.addWidget(self.opt_body)
         line1.addStretch(1)
-        self.pending_badge = Badge("待同步 —", "accent")
+        self.pending_badge = Badge("可回收 —", "muted")
         line1.addWidget(self.pending_badge)
         filters.body.addLayout(line1)
 
         line2 = QHBoxLayout()
         line2.setSpacing(8)
-        line2.addWidget(label("方向", "StatLabel"))
-        self.direction = QComboBox()
-        self.direction.addItems(list(DIRECTIONS.keys()))
-        self.direction.setFixedWidth(140)
-        self.direction.currentTextChanged.connect(lambda _t: self._save_options())
-        line2.addWidget(self.direction)
-        self.opt_restore = QCheckBox("恢复可见")
-        self.opt_deleted = QCheckBox("含已删除")
-        self.opt_restart = QCheckBox("完成后重启客户端")
-        for box in (self.opt_restore, self.opt_deleted, self.opt_restart):
-            box.stateChanged.connect(self._on_opt_change)
-            line2.addWidget(box)
+        line2.addWidget(label("范围", "StatLabel"))
+        self.range_box = QComboBox()
+        self.range_box.addItems(list(RANGES.keys()))
+        self.range_box.setFixedWidth(120)
+        self.range_box.currentTextChanged.connect(lambda _t: self._on_opt_change())
+        line2.addWidget(self.range_box)
+        self.space_hint = label("", "SectionHint")
+        line2.addWidget(self.space_hint)
         line2.addStretch(1)
-        self.btn_delete_all = make_button("清空全部会话", "danger-ghost")
+        self.btn_clean = make_button("清理空间", "ghost", "archive")
+        self.btn_clean.clicked.connect(self.cleanup_space)
+        line2.addWidget(self.btn_clean)
+        self.btn_delete = make_button("删除选中", "danger-ghost")
+        self.btn_delete.clicked.connect(self.delete_selected)
+        line2.addWidget(self.btn_delete)
+        self.btn_delete_all = make_button("清空全部", "danger-ghost")
         self.btn_delete_all.clicked.connect(self.delete_all)
         line2.addWidget(self.btn_delete_all)
         filters.body.addLayout(line2)
         self.body.addWidget(filters)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # 上下分栏：表格占满宽度才放得下七列，正文也才有足够横向空间阅读
+        splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
 
         table_card = QFrame()
@@ -139,14 +159,15 @@ class SessionsPage(BasePage):
         self.list_hint = label("", "SectionHint")
         head.addWidget(self.list_hint)
         head.addStretch(1)
-        self.btn_delete = make_button("删除选中", "danger-ghost")
-        self.btn_delete.clicked.connect(self.delete_selected)
-        head.addWidget(self.btn_delete)
         table_layout.addLayout(head)
         table_layout.addWidget(hline())
         self.table = DataTable(COLUMNS, key="rowid", parent=self)
         self.table.selectionModel().selectionChanged.connect(lambda *_: self._on_select())
         self.table.doubleClicked.connect(lambda _i: self.open_session_dir())
+        header = self.table.horizontalHeader()
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        header.sectionClicked.connect(self._on_header_click)
         table_layout.addWidget(self.table, 1)
         splitter.addWidget(table_card)
 
@@ -165,18 +186,6 @@ class SessionsPage(BasePage):
             f"QTextBrowser {{ background: transparent; border: none; color: {PALETTE['text']}; }}")
         detail_layout.addWidget(self.detail, 1)
 
-        target_row = QHBoxLayout()
-        target_row.setSpacing(6)
-        target_row.addWidget(label("同步到", "StatLabel"))
-        self.target = QComboBox()
-        self.target.setMinimumWidth(150)
-        target_row.addWidget(self.target, 1)
-        detail_layout.addLayout(target_row)
-
-        self.btn_sync_one = make_button("同步选中会话", "primary", "sync")
-        self.btn_sync_one.clicked.connect(self.sync_selected)
-        detail_layout.addWidget(self.btn_sync_one)
-
         actions = QHBoxLayout()
         actions.setSpacing(6)
         for text, handler in (("复制 ID", self.copy_id), ("打开目录", self.open_session_dir)):
@@ -184,17 +193,20 @@ class SessionsPage(BasePage):
             button.clicked.connect(handler)
             actions.addWidget(button)
         actions.addStretch(1)
-        delete_button = make_button("删除", "danger-ghost")
-        delete_button.clicked.connect(self.delete_selected)
-        actions.addWidget(delete_button)
+        self.btn_delete_one = make_button("删除", "danger-ghost")
+        self.btn_delete_one.clicked.connect(self.delete_selected)
+        actions.addWidget(self.btn_delete_one)
         detail_layout.addLayout(actions)
 
-        detail_card.setMinimumWidth(330)
-        detail_card.setMaximumWidth(420)
+        detail_card.setMinimumHeight(160)
         splitter.addWidget(detail_card)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
-        splitter.setSizes([820, 360])
+        splitter.setSizes([360, 230])
+        # 没选中会话时收起详情：列表是主界面，800px 高的窗口里行数比空面板重要
+        detail_card.setVisible(False)
+        self.detail_card = detail_card
+        self.splitter = splitter
         self.body.addWidget(splitter, 1)
 
         self._show_placeholder()
@@ -202,27 +214,45 @@ class SessionsPage(BasePage):
     # ------------------------------------------------------------------ 选项
     def _load_options(self) -> None:
         opts = self.cfg.get("session_opts") or {}
-        self.direction.setCurrentText(
-            DIRECTION_LABEL.get(opts.get("direction", "both"), "双向同步"))
-        self.opt_restore.setChecked(bool(opts.get("restore", True)))
-        self.opt_deleted.setChecked(bool(opts.get("include_deleted", True)))
-        self.opt_restart.setChecked(bool(opts.get("restart", True)))
+        self.range_box.setCurrentText(
+            RANGE_LABEL.get(opts.get("range", "current"), "当前账号"))
         self.opt_body.setChecked(bool(opts.get("only_body", False)))
+        self._sort_key = opts.get("sort") if opts.get("sort") in SORT_COLUMNS else "last"
+        self._sort_desc = bool(opts.get("sort_desc", True))
+        self._update_sort_indicator()
 
     def _save_options(self) -> None:
         self.cfg["session_opts"] = {
-            "direction": DIRECTIONS.get(self.direction.currentText(), "both"),
-            "restore": self.opt_restore.isChecked(),
-            "include_deleted": self.opt_deleted.isChecked(),
-            "restart": self.opt_restart.isChecked(),
+            "range": RANGES.get(self.range_box.currentText(), "current"),
             "only_body": self.opt_body.isChecked(),
+            "sort": self._sort_key,
+            "sort_desc": self._sort_desc,
         }
         self.win.save_cfg()
 
     def _on_opt_change(self, *_args) -> None:
         self._save_options()
-        if self.snap is not None:
+        if self.cat is not None:
             self._fill_table()
+
+    def _update_sort_indicator(self) -> None:
+        column = SORT_COLUMNS.get(self._sort_key, 4)
+        order = (Qt.SortOrder.DescendingOrder if self._sort_desc
+                 else Qt.SortOrder.AscendingOrder)
+        self.table.horizontalHeader().setSortIndicator(column, order)
+
+    def _on_header_click(self, index: int) -> None:
+        key = COLUMN_SORT.get(index)
+        if not key:
+            return
+        if key == self._sort_key:
+            self._sort_desc = not self._sort_desc
+        else:
+            self._sort_key = key
+            self._sort_desc = key in NUMERIC_SORTS
+        self._update_sort_indicator()
+        self._save_options()
+        self._fill_table()
 
     # ------------------------------------------------------------------ 加载
     def on_show(self) -> None:
@@ -237,15 +267,19 @@ class SessionsPage(BasePage):
     def refresh(self) -> None:
         if self.busy:
             return
-        self._set_busy(True, "正在读取四个来源的会话…")
-        include_deleted = self.opt_deleted.isChecked()
-        def worker(emit):
-            snap = service.build_snapshot(
-                include_deleted, with_cloud=True,
-                log=lambda m, lv="info": self.log(m, lv))
-            return {"snap": snap, "names": self._account_names()}
+        self._set_busy(True, "正在读取本机会话…")
+        self.list_hint.setText("正在读取本机会话…")
+        cloud = dict(self._cloud) if self._cloud else None
 
-        tasks.submit(worker, on_done=self._apply_snapshot, on_error=self._load_failed)
+        def worker(emit):
+            cat = service.build_catalog(log=lambda m, lv="info": self.log(m, lv))
+            if cloud:
+                # 复用上次拉到的云端列表，避免每次刷新都打一遍接口
+                cat.cloud_rows = cloud
+                service.build_unified(cat)
+            return {"cat": cat, "names": self._account_names()}
+
+        tasks.submit(worker, on_done=self._apply_catalog, on_error=self._load_failed)
 
     def _account_names(self) -> dict[str, str]:
         """uid → 昵称：会话表里只显示昵称，不把 uid 摆出来。"""
@@ -274,88 +308,134 @@ class SessionsPage(BasePage):
             return
         if current != self._known_uids:
             self._known_uids = current
-            self.log("检测到客户端账号变化，自动刷新会话列表（含云端）", "dim")
+            self.log("检测到客户端账号变化，自动刷新会话列表", "dim")
             if not self.busy:
                 self.refresh()
 
     def _load_failed(self, message: str) -> None:
         self._set_busy(False)
+        self.list_hint.setText("读取失败，可点右上角「刷新」重试")
         self.log(message, "error")
         self.notify("读取会话失败，详情见运行日志", "error")
 
-    def _apply_snapshot(self, payload) -> None:
+    def _apply_catalog(self, payload) -> None:
         if isinstance(payload, dict):
-            snap = payload.get("snap")
+            cat = payload.get("cat")
             self._names = payload.get("names") or {}
         else:
-            snap = payload
+            cat = payload
             self._names = {}
-        self.snap = snap
+        self.cat = cat
         self._labels = {}
+        self._preview_cache = {}
         self._set_busy(False)
+
         counts = {}
-        for row in snap.unified:
+        for row in cat.unified:
             counts[row["source_label"]] = counts.get(row["source_label"], 0) + 1
         summary = " · ".join(f"{name} {counts.get(name, 0)}" for name in SOURCES[1:])
         self.header.set_subtitle(
-            f"{summary}　|　合计 {len(snap.unified)} 条，有正文 "
-            f"{sum(1 for r in snap.unified if r['has_body'])} 条　|　"
-            f"国内版可见 {snap.cn_visible} / 国际版可见 {snap.intl_visible}")
-        restore_total = sum(len(rows) for rows in snap.restores.values())
-        self.pending_badge.setText(f"待同步 {snap.pending} · 待恢复 {restore_total}")
-        self.pending_badge.set_tone("accent" if snap.pending or restore_total else "muted")
-        self.win.set_summary(
-            "sessions", f"{len(snap.unified)} 条会话 · 待同步 {snap.pending} 条")
+            f"{summary}　|　合计 {len(cat.unified)} 条 · 正文 "
+            f"{fmt_size(cat.space.get('bytes', 0))}")
 
-        accounts = ["全部", "当前账号"] + sorted({self._account_label(row["account"])
-                                                  for row in snap.unified
-                                                  if self._account_label(row["account"]) != "当前账号"})
+        space = cat.space or {}
+        reclaim = int(space.get("deleted_bytes", 0)) + int(space.get("orphan_bytes", 0))
+        self.pending_badge.setText(f"可回收 {self._size(reclaim)}")
+        self.pending_badge.set_tone("accent" if reclaim else "muted")
+        self.space_hint.setText(
+            f"已删除 {space.get('deleted_rows', 0)} 条 / "
+            f"{self._size(space.get('deleted_bytes', 0))} · "
+            f"孤立正文 {space.get('orphan_files', 0)} 个 / "
+            f"{self._size(space.get('orphan_bytes', 0))} · "
+            f"空壳 {space.get('empty_rows', 0)} 条")
+        self.btn_clean.setEnabled(bool(reclaim))
+
+        self._unknown = self._unknown_labels(cat)
+        accounts = ["全部", "当前账号"] + sorted(
+            {self._account_label(row["account"]) for row in cat.unified
+             if self._account_label(row["account"]) not in ("当前账号", "未登录")})
         current = self.f_account.currentText()
         self.f_account.blockSignals(True)
         self.f_account.clear()
         self.f_account.addItems(accounts)
-        # 默认只看当前账号的会话；旧账号的切换到「全部」或按账号筛选才出现
-        self.f_account.setCurrentText(
-            current if current in accounts else "当前账号")
+        self.f_account.setCurrentText(current if current in accounts else "当前账号")
         self.f_account.blockSignals(False)
 
-        self._fill_targets()
         self._fill_table()
-        self._show_placeholder()
-        self.log(f"刷新完成：WorkBuddy 国内 {snap.cn_total} / 国际 {snap.intl_total}，"
-                 f"CodeBuddy {len(snap.cb_sessions)} 条，合并 {len(snap.unified)} 条", "dim")
+        self.win.set_summary(
+            "sessions", f"{len(cat.unified)} 条会话 · 可回收 {self._size(reclaim)}")
+        self.log(f"刷新完成：WorkBuddy 国内 {cat.cn_total} / 国际 {cat.intl_total}，"
+                 f"CodeBuddy {len(cat.cb_sessions)} 条，合并 {len(cat.unified)} 条", "dim")
 
     # ------------------------------------------------------------------ 表格
+    @staticmethod
+    def _size(value) -> str:
+        """fmt_size(0) 会返回「—」，空间统计里 0 应该读成 0 B。"""
+        return fmt_size(value) if value else "0 B"
+
+    def _unknown_labels(self, cat: service.Catalog) -> dict[str, str]:
+        """没有昵称、也不是当前登录账号的 uid，按会话数编成「账号 A/B…」。
+
+        CodeBuddy 的历史账号只有目录名（uid），界面又不显示 uid；
+        编号至少能让它们在筛选里区分开。
+        """
+        counts: dict[str, int] = {}
+        for row in cat.unified:
+            uid = row["account"]
+            if uid:
+                counts[uid] = counts.get(uid, 0) + 1
+        known = set(self._names) | {cat.cn_uid, cat.intl_uid, "", "default"}
+        unknown = sorted((uid for uid in counts if uid not in known),
+                         key=lambda uid: (-counts[uid], uid))
+        return {uid: f"账号 {chr(65 + index)}"
+                for index, uid in enumerate(unknown) if index < 26}
+
     def _account_label(self, uid: str) -> str:
-        label_text = self._labels.get(uid)
-        if label_text is None:
-            label_text = self._build_account_label(uid)
-            self._labels[uid] = label_text
-        return label_text
+        cached = self._labels.get(uid)
+        if cached is not None:
+            return cached
+        text = self._build_account_label(uid)
+        self._labels[uid] = text
+        return text
 
     def _build_account_label(self, uid: str) -> str:
         if not uid or uid == "default":
             return "未登录"
-        names = {}
-        if self.snap:
-            names[self.snap.cn_uid] = "国内版"
-            names[self.snap.intl_uid] = "国际版"
-        tag = names.get(uid)
+        tag = ""
+        if self.cat is not None:
+            if uid == self.cat.cn_uid:
+                tag = "国内版"
+            elif uid == self.cat.intl_uid:
+                tag = "国际版"
         nickname = self._names.get(uid)
         if nickname:
             return f"{nickname}（{tag}）" if tag else nickname
-        return f"{tag}（旧账号）" if tag else "旧账号"
+        return tag or self._unknown.get(uid, "未知账号")
+
+    def _in_range(self, row: dict, value: str) -> bool:
+        if value == "old":
+            return row["state"] == "旧账号"
+        if value == "deleted":
+            return row["state"] == "已删除"
+        if value == "empty":
+            return not row["has_body"] and row["state"] != "云端"
+        if value == "stale":
+            cutoff = time.time() * 1000 - service.STALE_DAYS * 86_400_000
+            return bool(row["last"]) and row["last"] < cutoff
+        if value == "all":
+            return True
+        # current：旧账号的会话保留本地但不进当前账号列表
+        return row["state"] != "旧账号"
 
     def _passes(self, row: dict) -> bool:
         if self.f_source.currentText() != "全部" \
                 and row["source_label"] != self.f_source.currentText():
             return False
         account = self.f_account.currentText()
-        if account == "当前账号":
-            # 旧账号的会话保留本地但不进当前账号列表；无主（default/空）视为当前
-            if row.get("state") == "旧账号":
-                return False
-        elif account != "全部" and self._account_label(row["account"]) != account:
+        if account not in ("全部", "当前账号") \
+                and self._account_label(row["account"]) != account:
+            return False
+        if not self._in_range(row, RANGES.get(self.range_box.currentText(), "current")):
             return False
         if self.opt_body.isChecked() and not row["has_body"]:
             return False
@@ -364,15 +444,26 @@ class SessionsPage(BasePage):
             return False
         return True
 
+    def _sort_value(self, row: dict):
+        key = self._sort_key
+        if key == "state":
+            return STATE_RANK.get(row["state"], 9)
+        if key in NUMERIC_SORTS:
+            return int(row.get(key) or 0)
+        return str(row.get(key) or "").lower()
+
     def _fill_table(self) -> None:
-        if not self.snap:
+        if not self.cat:
             return
         selected = {row["rowid"] for row in self.table.selected_rows()}
-        self.rows = [row for row in self.snap.unified if self._passes(row)]
+        rows = [row for row in self.cat.unified if self._passes(row)]
+        rows.sort(key=self._sort_value, reverse=self._sort_desc)
+        self.rows = rows
         display = []
         self.row_index = {}
-        for index, row in enumerate(self.rows):
-            rowid = f'{row["source_key"]}|{row["account"]}|{row["id"]}|{index}'
+        for row in rows:
+            # rowid 不含行号：排序或筛选后选中项还能对上
+            rowid = f'{row["kind"]}|{row["source_key"]}|{row["account"]}|{row["id"]}'
             row["rowid"] = rowid
             self.row_index[rowid] = row
             display.append({
@@ -388,10 +479,12 @@ class SessionsPage(BasePage):
                 "_tip_map": {"title": row["title"]},
             })
         self.table.set_rows(display)
-        self.list_hint.setText(f"显示 {len(display)} / {len(self.snap.unified)} 条")
+        self.list_hint.setText(f"显示 {len(display)} / {len(self.cat.unified)} 条")
         keep = [rowid for rowid in selected if rowid in self.row_index]
         if keep:
             self.table.select_key(keep[0])
+        else:
+            self._show_placeholder()
 
     @staticmethod
     def _state_color(state: str) -> str:
@@ -405,19 +498,28 @@ class SessionsPage(BasePage):
             return PALETTE["accent"]
         return PALETTE["muted"]
 
-    def _fill_targets(self) -> None:
-        self.targets = service.all_targets(self.snap) if self.snap else []
-        self._target_map = {item["label"]: item for item in self.targets}
-        current = self.target.currentText()
-        self.target.blockSignals(True)
-        self.target.clear()
-        self.target.addItems([item["label"] for item in self.targets])
-        if current in self._target_map:
-            self.target.setCurrentText(current)
-        self.target.blockSignals(False)
-
     def _show_placeholder(self) -> None:
-        self.detail.setHtml("")
+        self._detail_row = None
+        self._preview_token += 1
+        self.detail.setHtml(
+            f'<div style="color:{PALETTE["muted"]};font-size:12px">'
+            "选中左侧任意一条会话，这里会显示它的对话内容。</div>")
+        self._show_detail(False)
+
+    def _show_detail(self, visible: bool) -> None:
+        if self.detail_card.isVisible() == visible:
+            return
+        self.detail_card.setVisible(visible)
+        if visible:
+            # 刚显示时布局还没算完，等这一轮事件处理完再分配高度
+            QTimer.singleShot(0, self._balance_splitter)
+
+    def _balance_splitter(self) -> None:
+        total = self.splitter.height()
+        if total <= 0:
+            return
+        detail = max(180, min(300, int(total * 0.42)))
+        self.splitter.setSizes([total - detail, detail])
 
     # ------------------------------------------------------------------ 详情
     def _on_select(self) -> None:
@@ -430,291 +532,312 @@ class SessionsPage(BasePage):
         self._render_detail(row)
 
     def _render_detail(self, row: dict) -> None:
-        pairs = [
-            ("标题", row["title"]),
-            ("软件", row["source_label"]),
-            ("账号", self._account_label(row["account"])),
-            ("状态", row["state"]),
-            ("会话 ID", row["id"]),
-            ("最后活动", fmt_time(row["last"])),
-        ]
-        if row["kind"] == "workbuddy":
-            pairs.append(("消息记录", f"{row['msgs']} 条"))
-            pairs.append(("占用大小", fmt_size(row["size"])))
-            if row.get("cwd"):
-                pairs.append(("工作目录", row["cwd"]))
-            if row.get("client_status"):
-                pairs.append(("客户端状态", row["client_status"]))
-            if row.get("state") == "云端":
-                body = "（云端会话：正文在服务端，打开对应客户端登录该账号即可继续对话）"
-            else:
-                body = "\n".join(row["files"]) if row["files"] else "（无正文文件）"
-        else:
-            pairs.append(("消息文件", f"{row['msgs']} 个"))
-            pairs.append(("占用大小", fmt_size(row["size"])))
-            pairs.append(("工作区", row["raw"]["workspace"][:12] if row.get("raw") else ""))
-            body = row["path"] or "（无正文目录）"
-
-        html = ['<div style="font-size:12px;line-height:1.7">']
-        for key, value in pairs:
-            html.append(
-                f'<div style="color:{PALETTE["muted"]};font-size:10px;margin-top:8px">{key}</div>'
-                f'<div style="color:{PALETTE["text"]};word-wrap:break-word">{value}</div>')
-        html.append(
-            f'<div style="color:{PALETTE["muted"]};font-size:10px;margin-top:10px">正文位置</div>'
-            f'<div style="color:{PALETTE["text_2"]};font-size:11px;word-wrap:break-word">'
-            f'{body}</div></div>')
-        self.detail.setHtml("".join(html))
-
-        kinds = {row["kind"]}
-        self.btn_sync_one.setEnabled(bool(kinds))
-        self._preferred_target(row)
-
-    def _preferred_target(self, row: dict) -> None:
-        options = [item for item in self.targets if item["kind"] == row["kind"]]
-        if not options:
+        self._detail_row = row
+        self._show_detail(True)
+        cached = self._preview_cache.get(row["rowid"])
+        if cached is not None:
+            self._paint_detail(row, cached)
             return
-        labels = [item["label"] for item in options]
-        self.target.blockSignals(True)
-        self.target.clear()
-        self.target.addItems(labels)
-        self.target.blockSignals(False)
-        if row["kind"] == "workbuddy":
-            for item in options:
-                if item["key"] != row["source_key"]:
-                    self.target.setCurrentText(item["label"])
-                    return
-        else:
-            for item in options:
-                if item["key"] != (row["source_key"], row["account"]):
-                    self.target.setCurrentText(item["label"])
-                    return
-        self.target.setCurrentIndex(0)
+        self._paint_detail(row, None)
+        self._preview_token += 1
+        token = self._preview_token
 
-    # ------------------------------------------------------------------ 动作
-    def preview(self) -> None:
+        def worker(_emit):
+            return preview.load(row)
+
+        def done(result):
+            if token != self._preview_token:
+                return                     # 用户已经选了别的会话
+            self._preview_cache[row["rowid"]] = result
+            self._paint_detail(row, result)
+
+        def failed(message: str):
+            if token != self._preview_token:
+                return
+            self._paint_detail(row, {"messages": [], "total": 0, "dropped": 0,
+                                     "truncated": False, "note": message})
+
+        tasks.submit(worker, on_done=done, on_error=failed)
+
+    def _paint_detail(self, row: dict, result: dict | None) -> None:
+        muted, text, text2 = PALETTE["muted"], PALETTE["text"], PALETTE["text_2"]
+
+        def item(key: str, value) -> str:
+            return (f'<span style="color:{muted}">{key}</span> '
+                    f'<span style="color:{text}">{html.escape(str(value))}</span>')
+
+        # 顶部只留两行摘要：面板高度有限，纵向空间要留给对话内容
+        lines = [" · ".join([item("软件", row["source_label"]),
+                             item("账号", self._account_label(row["account"]))])]
+        if row["kind"] == "workbuddy":
+            lines.append(" · ".join([item("状态", row["state"]),
+                                     item("最后活动", fmt_time(row["last"])),
+                                     item("记录", f"{row['msgs']} 条"),
+                                     item("大小", fmt_size(row["size"]))]))
+            if row.get("state") == "云端":
+                location = "云端（正文在服务端，登录该账号的客户端即可继续对话）"
+            else:
+                location = "\n".join(row["files"]) if row["files"] else "（无正文文件）"
+            extra = [("工作目录", row.get("cwd") or "")]
+            if row.get("client_status"):
+                extra.append(("客户端状态", row["client_status"]))
+        else:
+            lines.append(" · ".join([item("状态", row["state"]),
+                                     item("最后活动", fmt_time(row["last"])),
+                                     item("消息文件", f"{row['msgs']} 个"),
+                                     item("大小", fmt_size(row["size"]))]))
+            location = row["path"] or "（无正文目录）"
+            extra = []
+
+        parts = [f'<div style="font-size:11px;line-height:1.85">', "<br>".join(lines), "</div>",
+                 f'<div style="border-top:1px solid {PALETTE["border"]};margin:8px 0"></div>']
+        parts.append(self._messages_html(row, result))
+
+        # 诊断信息放最后：平时不需要，需要时往下滚一眼
+        tail = [f'<div style="color:{muted};font-size:10px;margin-top:14px">正文位置</div>',
+                f'<div style="color:{text2};font-size:10px;word-wrap:break-word">'
+                f'{html.escape(location)}</div>']
+        for key, value in extra:
+            if value:
+                tail.append(f'<div style="color:{muted};font-size:10px;margin-top:6px">{key}</div>'
+                            f'<div style="color:{text2};font-size:10px;word-wrap:break-word">'
+                            f'{html.escape(str(value))}</div>')
+        tail.append(f'<div style="color:{muted};font-size:10px;margin-top:6px">会话 ID</div>'
+                    f'<div style="color:{text2};font-size:10px;word-wrap:break-word">'
+                    f'{html.escape(row["id"])}</div>')
+        parts.extend(tail)
+        self.detail.setHtml("".join(parts))
+        self.detail.verticalScrollBar().setValue(0)
+
+    def _messages_html(self, row: dict, result: dict | None) -> str:
+        head = (f'<div style="color:{PALETTE["muted"]};font-size:10px">对话内容</div>')
+        if result is None:
+            return head + (f'<div style="color:{PALETTE["muted"]};font-size:11px;'
+                           'margin-top:4px">正在读取正文…</div>')
+        messages = result.get("messages") or []
+        if not messages:
+            note = result.get("note") or "这条会话没有可显示的正文"
+            return head + (f'<div style="color:{PALETTE["muted"]};font-size:11px;'
+                           f'margin-top:4px">{html.escape(note)}</div>')
+        blocks = [head]
+        if result.get("note"):
+            blocks.append(f'<div style="color:{PALETTE["muted"]};font-size:10px;'
+                          f'margin-top:2px">{html.escape(result["note"])}</div>')
+        for message in messages:
+            if message.get("role") == "gap":
+                blocks.append(
+                    f'<div style="color:{PALETTE["muted"]};font-size:10px;text-align:center;'
+                    f'margin:8px 0">{html.escape(message.get("text") or "")}</div>')
+                continue
+            mine = message.get("role") == "user"
+            tone = PALETTE["accent"] if mine else PALETTE["text_2"]
+            who = "你" if mine else "AI"
+            body = html.escape(message.get("text") or "").replace("\n", "<br>")
+            blocks.append(
+                f'<div style="margin-top:10px">'
+                f'<div style="color:{tone};font-size:10px">{who}</div>'
+                f'<div style="color:{PALETTE["text"]};font-size:11px;line-height:1.6">'
+                f'{body}</div></div>')
+        return "".join(blocks)
+
+    # ------------------------------------------------------------------ 云端
+    def pull_cloud(self) -> None:
+        if not self.cat:
+            self.refresh()
+            return
         if self.busy:
             return
-        mode = DIRECTIONS.get(self.direction.currentText(), "both")
-        include_deleted = self.opt_deleted.isChecked()
-        self._set_busy(True, "正在生成同步计划…")
+        self._set_busy(True, "正在拉取云端会话列表…")
 
-        def worker(emit):
-            lines = []
-            total = 0
-            for src_key, dst_key in service.directions(mode):
-                src, dst = Edition(src_key), Edition(dst_key)
-                if not (src.exists and dst.exists):
-                    lines.append(f"{src.label} 或 {dst.label} 数据目录不存在，跳过")
-                    continue
-                from ...sessions import wbdb
-                items, skipped = wbdb.build_plan(src, dst, include_deleted, True)
-                total += len(items)
-                lines.append(f"【{src.label} → {dst.label}】{len(items)} 条")
-                for item in items[:12]:
-                    action = {"insert": "新增", "update": "更新", "resurrect": "恢复"}[item.action]
-                    lines.append(f"   {action}  {item.title or '(无标题)'} "
-                                 f"[{fmt_size(item.size)}]")
-                if len(items) > 12:
-                    lines.append(f"   … 其余 {len(items) - 12} 条")
-                for row, why in skipped[:6]:
-                    lines.append(f"   跳过 {row.get('title') or row['id']}：{why}")
-            return total, lines
+        def worker(_emit):
+            total = service.pull_cloud(self.cat, lambda m, lv="info": self.log(m, lv))
+            service.build_unified(self.cat)
+            return total
 
-        def done(payload):
+        def done(total: int):
             self._set_busy(False)
-            total, lines = payload
-            for line in lines:
-                self.log(line)
-            restore_hint = ""
-            if self.snap:
-                restore_hint = ("\n本机恢复：" + "，".join(
-                    f"{Edition(key).short} {len(rows)} 条"
-                    for key, rows in self.snap.restores.items())) \
-                    if self.snap.restores and self.opt_restore.isChecked() else ""
-            self.log(f"预览：跨版本待同步 {total} 条{restore_hint}", "ok")
-            self.info("同步计划",
-                      f"跨版本待同步 {total} 条{restore_hint}\n\n详细清单见下方运行日志。")
+            self._cloud = dict(self.cat.cloud_rows or {})
+            self._fill_table()
+            if total:
+                self.log(f"云端会话已拉取：{total} 条", "ok")
+                self.notify(f"云端会话 {total} 条")
+            else:
+                self.notify("没有拉到云端会话，详情见运行日志", "warn")
 
         tasks.submit(worker, on_done=done, on_error=self._load_failed)
 
-    def sync_all(self) -> None:
-        if self.busy:
-            return
-        if not self.snap:
-            self.info("请稍候", "会话数据还在读取，请稍后再试。")
-            return
-        mode = DIRECTIONS.get(self.direction.currentText(), "both")
-        include_deleted = self.opt_deleted.isChecked()
-        do_restore = self.opt_restore.isChecked()
-        restart = self.opt_restart.isChecked()
-        total = self.snap.pending
-        restore_total = sum(len(rows) for rows in self.snap.restores.values()) \
-            if do_restore else 0
-        if total == 0 and restore_total == 0:
-            self.info("无需同步", "两边已经是同一份数据，没有需要搬运或恢复的会话。")
-            return
-        if not self.confirm(
-                "确认同步",
-                f"将同步 {total} 条会话、恢复 {restore_total} 条本机会话。\n"
-                "同步前会自动备份两个版本的数据库与将被覆盖的正文，可随时回滚。\n\n继续吗？"):
-            return
-
-        running = [ep for ep in (Edition("cn"), Edition("intl"))
-                   if winproc.process_running(ep.proc)]
-        if running:
-            names = "、".join(ep.label for ep in running)
-            if not self.confirm(
-                    "需要关闭客户端",
-                    f"{names} 正在运行，写入前必须关闭，否则内存缓存会覆盖改动。\n\n"
-                    "现在自动关闭并在结束后重新打开吗？"):
-                return
-
-        self._set_busy(True, "正在同步…")
-
-        def worker(emit):
-            return service.perform_sync(mode, include_deleted, do_restore,
-                                        lambda m, lv="info": self.log(m, lv), restart)
-
-        def done(stats):
-            self._set_busy(False)
-            if stats.get("skipped"):
-                self.info("无需同步", "两边已经是同一份数据。")
-                return
-            text = (f"搬运 {stats['moved']} 条，恢复 {stats['restored']} 条，"
-                    f"失败 {stats['failed']} 次")
-            self.log(f"同步完成：{text} · 备份 {stats['tag']}", "ok")
-            self.notify(f"同步完成：{text}")
-            bus.BUS.data_changed.emit("sessions")
-            self.refresh()
-
-        tasks.submit(worker, on_done=done, on_error=self._sync_failed)
-
-    def _sync_failed(self, message: str) -> None:
-        self._set_busy(False)
-        self.log(message, "error")
-        self.error("同步失败", message.splitlines()[0])
-
-    def sync_selected(self) -> None:
-        if self.busy or not self.snap:
-            return
-        rows = [self.row_index[r["rowid"]] for r in self.table.selected_rows()
-                if r["rowid"] in self.row_index]
-        if not rows:
-            self.info("未选择", "请先在列表里选中要同步的会话（可 Ctrl 多选）。")
-            return
-        kinds = {row["kind"] for row in rows}
-        if len(kinds) != 1:
-            self.info("混合选择",
-                      "WorkBuddy 与 CodeBuddy 的会话不能放在一次同步里，请分两次选。")
-            return
-        kind = kinds.pop()
-        target = self._target_map.get(self.target.currentText())
-        if not target:
-            self.info("选择目标", "请先在「同步到」里选择目标软件和账号。")
-            return
-        if kind == "workbuddy":
-            todo = [row for row in rows if row["source_key"] != target["key"]]
-            target_desc = target["label"]
-        else:
-            todo = [row for row in rows
-                    if (row["source_key"], row["account"]) != target["key"]]
-            target_desc = target["label"]
-        if not todo:
-            self.info("无需同步", "选中的会话已经在目标里了。")
-            return
-        if not self.confirm("确认同步",
-                            f"将把 {len(todo)} 条会话写入 {target_desc}。\n"
-                            + ("WorkBuddy 写入数据库前需要关闭对应客户端。\n\n"
-                               if kind == "workbuddy" else "目标端需要重开 IDE 或插件才能看到。\n\n")
-                            + "继续吗？"):
-            return
-
-        self._set_busy(True, "正在同步选中会话…")
-
-        def worker(emit):
-            return service.copy_selected(todo, kind, target["key"],
-                                         lambda m, lv="info": self.log(m, lv))
-
-        def done(stats):
-            self._set_busy(False)
-            text = f"成功 {stats['ok']}，跳过 {stats['skip']}，失败 {stats['fail']}"
-            self.log(f"同步选中完成：{text}", "ok" if not stats["fail"] else "error")
-            self.notify(f"同步完成：{text}")
-            bus.BUS.data_changed.emit("sessions")
-            self.refresh()
-
-        tasks.submit(worker, on_done=done, on_error=self._sync_failed)
+    # ------------------------------------------------------------------ 删除
+    def _selected(self) -> list[dict]:
+        return [self.row_index[item["rowid"]] for item in self.table.selected_rows()
+                if item["rowid"] in self.row_index]
 
     def delete_selected(self) -> None:
-        if self.busy or not self.snap:
+        if self.busy or not self.cat:
             return
-        rows = [self.row_index[r["rowid"]] for r in self.table.selected_rows()
-                if r["rowid"] in self.row_index]
+        rows = self._selected()
         if not rows:
             self.info("未选择", "请先在列表里选中要删除的会话（可 Ctrl 多选）。")
             return
-        if any(row["kind"] != "workbuddy" for row in rows):
-            self.info("暂不支持",
-                      "CodeBuddy 的会话删除未开放，这里只能删除 WorkBuddy 的会话。\n"
-                      "先在「软件」筛选里选 WorkBuddy 再试。")
+        wb_ids = list(dict.fromkeys(row["id"] for row in rows
+                                    if row["kind"] == "workbuddy" and row["state"] != "云端"))
+        cb_rows = [row["raw"] for row in rows if row["kind"] == "codebuddy"]
+        cloud = [row for row in rows if row["state"] == "云端"]
+        if not wb_ids and not cb_rows:
+            self.info("无法删除",
+                      "云端会话的正文在服务端，本工具删不掉，请打开对应客户端删除。"
+                      if cloud else "没有可删除的会话。")
             return
-        ids = list(dict.fromkeys(row["id"] for row in rows))
-        self._delete_flow(ids, f"删除选中的 {len(ids)} 条会话")
 
-    def delete_all(self) -> None:
-        if self.busy or not self.snap:
-            return
-        ids = list({row["id"] for row in self.snap.rows})
-        if not ids:
-            self.info("没有会话", "两个版本都没有历史会话。")
-            return
-        text, ok = QInputDialog.getText(
-            self, "清空全部会话",
-            f"这会删除本机全部 {len(ids)} 条会话（国内版与国际版一起）。\n"
-            "文件会移入回收站，但会话会进入黑名单，之后同步也不会再出现。\n\n"
-            "请输入「删除」确认：")
-        if not ok:
-            return
-        if text.strip() != "删除":
-            self.info("已取消", "输入内容不匹配，未做任何删除。")
-            return
-        self._delete_flow(ids, "清空本机全部会话")
-
-    def _delete_flow(self, ids: list[str], action: str) -> None:
-        warn = ""
-        if self.snap and self.snap.cloud_total:
-            warn = (f"\n注意：检测到 {self.snap.cloud_total} 条云端会话，"
-                    "云端数据无法由本工具删除，重新登录后可能再次出现。\n")
-        if not self.confirm(
-                "确认删除",
-                f"{action}。\n\n"
-                "将从国内版与国际版同时删除数据库记录、正文文件和任务文件。\n"
-                "删除后加入黑名单，之后同步不会再把这些会话带回来。\n"
-                f"文件先移入回收站，可在「备份与清理」里恢复。{warn}\n确定删除吗？"):
+        parts = []
+        if wb_ids:
+            parts.append(f"WorkBuddy {len(wb_ids)} 条")
+        if cb_rows:
+            parts.append(f"CodeBuddy {len(cb_rows)} 条")
+        detail = (f"将删除 {'、'.join(parts)}会话。\n\n"
+                  "数据库记录与正文文件会先移入回收站，可在「备份与清理」里恢复；"
+                  "删除过的会话会加入黑名单，之后「恢复会话」不会再把它关联回来。")
+        if cb_rows:
+            detail += "\n\nCodeBuddy 的索引文件会被改写，建议先退出 IDE / IDEA。"
+        if cloud:
+            detail += f"\n\n另有 {len(cloud)} 条云端会话已跳过（本工具无法删除服务端数据）。"
+        if not self.confirm("确认删除", detail):
             return
 
         running = [ep for ep in (Edition("cn"), Edition("intl"))
-                   if winproc.process_running(ep.proc)]
+                   if wb_ids and winproc.process_running(ep.proc)]
         if running and not self.confirm(
                 "需要关闭客户端",
                 "、".join(ep.label for ep in running)
                 + " 正在运行，删除前必须关闭，否则客户端会把会话写回来。\n\n现在自动关闭吗？"):
             return
 
-        self._set_busy(True, f"正在删除 {len(ids)} 条会话…")
+        self._set_busy(True, "正在删除会话…")
 
-        def worker(emit):
-            return service.delete_ids(ids, lambda m, lv="info": self.log(m, lv))
+        def worker(_emit):
+            stats = {}
+            if wb_ids:
+                stats["workbuddy"] = service.delete_ids(
+                    wb_ids, lambda m, lv="info": self.log(m, lv))
+            if cb_rows:
+                stats["codebuddy"] = service.delete_codebuddy(
+                    cb_rows, lambda m, lv="info": self.log(m, lv))
+            return stats
 
-        def done(stats):
+        def done(_stats):
             self._set_busy(False)
-            self.log(f"已删除 {len(stats.get('ids') or ids)} 条会话并加入黑名单", "ok")
-            self.notify(f"已删除 {len(ids)} 条会话")
+            count = len(wb_ids) + len(cb_rows)
+            self.log(f"已删除 {count} 条会话（文件在回收站）", "ok")
+            self.notify(f"已删除 {count} 条会话")
             bus.BUS.data_changed.emit("sessions")
             self.refresh()
 
-        tasks.submit(worker, on_done=done, on_error=self._sync_failed)
+        tasks.submit(worker, on_done=done, on_error=self._failed)
+
+    def delete_all(self) -> None:
+        if self.busy or not self.cat:
+            return
+        ids = [row["id"] for row in self.cat.rows]
+        cb_sessions = list(self.cat.cb_sessions)
+        if not ids and not cb_sessions:
+            self.info("没有会话", "本机没有可删除的历史会话。")
+            return
+        text, ok = QInputDialog.getText(
+            self, "清空全部会话",
+            f"这会删除本机全部会话：WorkBuddy {len(ids)} 条、"
+            f"CodeBuddy {len(cb_sessions)} 条。\n"
+            "文件会移入回收站，会话会进入黑名单，之后「恢复会话」不会再带回它们。\n\n"
+            "请输入「删除」确认：")
+        if not ok:
+            return
+        if text.strip() != "删除":
+            self.info("已取消", "输入内容不匹配，未做任何删除。")
+            return
+        if not self.confirm("确认清空",
+                            "两个版本的客户端都需要关闭，删除期间请勿打开。\n\n继续吗？"):
+            return
+
+        self._set_busy(True, "正在清空会话…")
+
+        def worker(_emit):
+            stats = {"workbuddy": 0, "codebuddy": 0}
+            if ids:
+                stats["workbuddy"] = service.delete_ids(
+                    ids, lambda m, lv="info": self.log(m, lv))["deleted"]
+            if cb_sessions:
+                stats["codebuddy"] = service.delete_codebuddy(
+                    cb_sessions, lambda m, lv="info": self.log(m, lv))["sessions"]
+            return stats
+
+        def done(stats):
+            self._set_busy(False)
+            self.log(f"清空完成：WorkBuddy {stats['workbuddy']} 条、"
+                     f"CodeBuddy {stats['codebuddy']} 条", "ok")
+            self.notify("会话已清空")
+            bus.BUS.data_changed.emit("sessions")
+            self.refresh()
+
+        tasks.submit(worker, on_done=done, on_error=self._failed)
+
+    # ------------------------------------------------------------------ 空间
+    def cleanup_space(self) -> None:
+        if self.busy or not self.cat:
+            return
+        space = self.cat.space or {}
+        deleted_ids = [row["id"] for row in self.cat.rows
+                       if row["cn"] == "deleted" or row["intl"] == "deleted"]
+        orphans = list(self.cat.orphans)
+        if not deleted_ids and not orphans:
+            self.info("没有可回收的空间", "本机没有已删除或孤立的会话文件。")
+            return
+        lines = ["将清理以下内容："]
+        if deleted_ids:
+            lines.append(f"· 已删除的会话 {len(deleted_ids)} 条，"
+                         f"{fmt_size(space.get('deleted_bytes', 0))}")
+        if orphans:
+            lines.append(f"· 没有会话指向的孤立正文 {space.get('orphan_files', 0)} 个文件，"
+                         f"{fmt_size(space.get('orphan_bytes', 0))}")
+        lines.append("\n文件都会移入回收站，可在「备份与清理」里恢复。继续吗？")
+        if not self.confirm("清理空间", "\n".join(lines)):
+            return
+
+        running = [ep for ep in (Edition("cn"), Edition("intl"))
+                   if deleted_ids and winproc.process_running(ep.proc)]
+        if running and not self.confirm(
+                "需要关闭客户端",
+                "、".join(ep.label for ep in running)
+                + " 正在运行，写入前必须关闭。\n\n现在自动关闭吗？"):
+            return
+
+        self._set_busy(True, "正在清理…")
+
+        def worker(_emit):
+            stats = {"deleted": 0, "orphans": 0, "bytes": 0}
+            if deleted_ids:
+                result = service.delete_ids(deleted_ids,
+                                            lambda m, lv="info": self.log(m, lv))
+                stats["deleted"] = len(result.get("ids") or [])
+                stats["bytes"] += int(result.get("bytes") or 0)
+            if orphans:
+                result = service.purge_orphans(self.cat,
+                                               lambda m, lv="info": self.log(m, lv))
+                stats["orphans"] = result.get("files", 0)
+                stats["bytes"] += int(result.get("bytes") or 0)
+            return stats
+
+        def done(stats):
+            self._set_busy(False)
+            self.log(f"清理完成：会话 {stats['deleted']} 条、孤立文件 {stats['orphans']} 个，"
+                     f"释放 {fmt_size(stats['bytes'])}", "ok")
+            self.notify(f"已释放 {fmt_size(stats['bytes'])}")
+            bus.BUS.data_changed.emit("sessions")
+            self.refresh()
+
+        tasks.submit(worker, on_done=done, on_error=self._failed)
+
+    def _failed(self, message: str) -> None:
+        self._set_busy(False)
+        self.log(message, "error")
+        self.error("操作失败", message.splitlines()[0])
 
     # ------------------------------------------------------------------ 其他
     def copy_id(self) -> None:

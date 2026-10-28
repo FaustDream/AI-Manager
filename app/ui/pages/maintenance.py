@@ -70,6 +70,10 @@ class MaintenancePage(BasePage):
         open_backup = make_button("打开备份目录", "ghost", "folder")
         open_backup.clicked.connect(lambda: os.startfile(str(paths.BACKUP_ROOT)))
         head.addWidget(open_backup)
+        self.btn_snapshot = make_button("立即备份", "primary", "archive")
+        self.btn_snapshot.setToolTip("把两个版本的会话库各存一份，回滚时用")
+        self.btn_snapshot.clicked.connect(self.snapshot)
+        head.addWidget(self.btn_snapshot)
         self.btn_rollback = make_button("回滚选中备份", "ghost")
         self.btn_rollback.clicked.connect(self.rollback)
         head.addWidget(self.btn_rollback)
@@ -155,28 +159,22 @@ class MaintenancePage(BasePage):
         self._refreshing = True
         self.btn_refresh.setEnabled(False)
         self.trash_hint.setText("正在统计备份、回收站与会话…")
-        # 会话页已经扫过 CodeBuddy 的话直接复用，省掉一次 1.6 秒的全量遍历
-        cached = None
-        sessions_page = self.win.page("sessions")
-        snap = getattr(sessions_page, "snap", None) if sessions_page is not None else None
-        if snap is not None and snap.cb_sessions:
-            cached = list(snap.cb_sessions)
-        tasks.submit(lambda emit: self._collect(emit, cached),
+        tasks.submit(self._collect,
                      on_done=self._apply, on_error=self._load_failed)
 
     @staticmethod
-    def _collect(emit, cached_sessions=None) -> dict:
+    def _collect(emit) -> dict:
         data = {
             "backups": backup.list_backups(),
             "trash": trash.list_trash(),
             "tombstones": len(trash.load_tombstones()),
-            "sessions": cached_sessions or [],
+            "sessions": [],
         }
-        if cached_sessions is None:
-            try:
-                data["sessions"] = cb.scan()
-            except Exception:      # 客户端正在写索引时可能读失败，不影响其他统计
-                data["sessions"] = []
+        try:
+            # codebuddy.scan 自带 60 秒缓存，会话页刚扫过这里就不再重复遍历
+            data["sessions"] = cb.scan()
+        except OSError:      # 客户端正在写索引时可能读失败，不影响其他统计
+            data["sessions"] = []
         return data
 
     def _apply(self, data: dict) -> None:
@@ -188,7 +186,7 @@ class MaintenancePage(BasePage):
         rows = [{
             "tag": item["tag"],
             "created": str(item["created"]).replace("T", " "),
-            "count": item["count"],
+            "count": "整库" if item.get("kind") == "db-snapshot" else item["count"],
             "size": fmt_size(item["size"]),
             "path": item["path"],
         } for item in backups]
@@ -213,7 +211,7 @@ class MaintenancePage(BasePage):
         self.tomb_badge.setText(f"{tombstones} 条")
         self.tomb_badge.set_tone("warn" if tombstones else "muted")
         self.btn_clear_tomb.setEnabled(bool(tombstones))
-        self.tomb_hint.setText("被删除且不再参与同步的会话 ID" if tombstones
+        self.tomb_hint.setText("被删除、且不再参与会话恢复的 ID" if tombstones
                                else "当前没有被拦截的会话")
 
         sessions = data.get("sessions") or []
@@ -232,6 +230,27 @@ class MaintenancePage(BasePage):
         self.log(f"读取备份与回收站失败：{message.splitlines()[0]}", "error")
 
     # ------------------------------------------------------------------ 动作
+    def snapshot(self) -> None:
+        """手动整库快照：同步取消后，回滚之前得先有东西可回。"""
+        if self.busy:
+            return
+        if not self.confirm("立即备份",
+                            "将把国内版与国际版的会话库各存一份快照。\n"
+                            "只备份数据库，不含正文文件；备份期间请勿关闭软件。\n\n继续吗？"):
+            return
+        self._set_busy(True, "正在备份会话库…")
+
+        def worker(_emit):
+            return service.backup_now(lambda m, lv="info": self.log(m, lv))
+
+        def done(path):
+            self._set_busy(False)
+            self.log(f"会话库已备份：{path}", "ok")
+            self.notify("会话库已备份")
+            self.refresh()
+
+        tasks.submit(worker, on_done=done, on_error=self._failed)
+
     def rollback(self) -> None:
         row = self.backup_table.current_row()
         if not row:
@@ -239,8 +258,9 @@ class MaintenancePage(BasePage):
             return
         tag = row["tag"]
         if not self.confirm("确认回滚",
-                            f"将把两个版本的数据库和正文恢复到备份 {tag} 的状态。\n"
-                            "此操作会覆盖当前数据，确定继续吗？"):
+                            f"将把两个版本的会话库整体恢复到备份 {tag} 的状态。\n"
+                            "备份之后新增或修改的会话会丢失，正文文件也会按备份清单还原。\n"
+                            "此操作不可撤销，确定继续吗？"):
             return
         self._set_busy(True, "正在回滚…")
 
@@ -304,7 +324,7 @@ class MaintenancePage(BasePage):
             return
         if not self.confirm("清空黑名单",
                             f"将移除 {count} 条拦截记录。\n"
-                            "注意：如果旧数据还留在另一个版本里，下次同步会把它们重新带回来。\n"
+                            "清空后，这些会话可能被「恢复会话」重新关联回当前账号。\n"
                             "继续吗？"):
             return
         removed = service.clear_blacklist()

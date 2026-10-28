@@ -18,13 +18,12 @@ def defaults() -> dict:
         # 账号表：拖出来的顺序与用户调过的列宽
         "account_order": [],
         "account_columns": [],
-        # 会话页的持久化选项：方向 / 含已删除 / 恢复可见 / 完成后重启
+        # 会话页的视图状态：筛选范围 / 只看有正文 / 排序
         "session_opts": {
-            "direction": "both",
-            "include_deleted": True,
-            "restore": True,
-            "restart": True,
+            "range": "current",
             "only_body": False,
+            "sort": "last",
+            "sort_desc": True,
         },
     }
 
@@ -59,7 +58,13 @@ def _coerce(raw: Any) -> dict:
     for key in ("window", "session_opts"):
         value = raw.get(key)
         if isinstance(value, dict):
-            cfg[key] = {**cfg[key], **value}
+            if key == "window":
+                cfg[key] = {**cfg[key], **value}
+            else:
+                # 会话页的选项按已知键逐个取值：旧配置里的方向/重启等字段已经废弃，
+                # 原样合并会让它们一直留在 config.json 里
+                cfg[key] = {name: value.get(name, default)
+                            for name, default in cfg[key].items()}
     return cfg
 
 

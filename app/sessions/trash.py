@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """删除黑名单与回收站。
 
-删除会话时文件先搬到回收站（可恢复），同时把会话 ID 加入黑名单，
-保证之后的同步不会把刚删掉的会话再搬回来。
+删除会话时文件先搬到回收站（可恢复），同时把会话 ID 加入黑名单：
+同步已经取消，但「恢复会话」会看这份名单，删掉的会话不该被再次关联回来。
 """
 from __future__ import annotations
 
@@ -112,7 +112,11 @@ def write_manifest(tag: str, items: list) -> Path:
 
 
 def restore_trash(tag) -> int:
-    """把某次删除的会话放回原处，并从黑名单移除，之后同步可以再带走。"""
+    """把某次删除的内容放回原处，并从黑名单移除。
+
+    WorkBuddy 的条目按 edition 还原数据库行；CodeBuddy 的条目交给
+    codebuddy.restore_item 搬回目录并重新登记索引。
+    """
     target_dir = TRASH_ROOT / tag
     meta = target_dir / "manifest.json"
     if not meta.exists():
@@ -121,6 +125,11 @@ def restore_trash(tag) -> int:
     restored = 0
     ids = []
     for item in data.get("items", []):
+        if item.get("kind") == "codebuddy":
+            from . import codebuddy
+            if codebuddy.restore_item(item, target_dir):
+                restored += 1
+            continue
         edition = Edition(item["edition"])
         for rel in item.get("files", []):
             src = target_dir / item["edition"] / rel
