@@ -12,7 +12,8 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QVBoxLayout,
+                               QWidget)
 
 from ...checkin import daily, ledger, service, store, switcher
 from ...checkin.base import (Account, ActionResult, CreditSnapshot, StatusResult,
@@ -63,6 +64,37 @@ def _error_text(balance, summary: str) -> str:
     if "过期" in text:
         return "已过期"
     return ""
+
+
+def _round_text(result) -> str:
+    """把一轮轮询的结果翻成一句人话，作为启动/定时轮询的可见反馈。"""
+    if result.success:
+        text = f"每日签到成功：{result.success} 个账号"
+        if result.failed:
+            text += f"，{result.failed} 个失败"
+        return text
+    if result.failed:
+        return f"每日签到失败：{result.failed} 个账号，详情见运行日志"
+    if result.waiting:
+        return f"每日签到：{result.waiting} 个账号等待窗口开放"
+    if result.already:
+        return f"每日签到：{result.already} 个账号本轮已领过"
+    if not result.scanned:
+        return "每日签到检查完成：没有发现账号"
+    return "每日签到检查完成：今天都已签到，无需重复"
+
+
+def _round_short(result) -> str:
+    """工具栏上的一行短结果，成功后一直留在这里，不随气泡消失。"""
+    if result.success:
+        return f"成功 {result.success}"
+    if result.failed:
+        return f"失败 {result.failed}"
+    if result.waiting:
+        return f"等待 {result.waiting}"
+    if result.already:
+        return f"已领 {result.already}"
+    return "已签"
 
 
 def _short_time(value, prefix: str = "") -> str:
@@ -149,11 +181,12 @@ class AccountCenterPage(BasePage):
         }, ctx=self._btn_ctx)
         self.btn_all = checkin_buttons.get("checkin.checkin_all")
         row.addStretch(1)
-        # 原来的「每日自动签到 + 时刻」换成固定节奏的轮询，这里只留一句短说明
-        hint = label(f"启动一次 + 每 {daily.INTERVAL_HOURS} 小时", "SectionHint")
-        hint.setToolTip("每日轮询签到：确认进入新的一天后，先校验账号状态，"
-                        "再对可签的账号调用签到接口")
-        row.addWidget(hint)
+        # 原来的「每日自动签到 + 时刻」换成固定节奏的轮询，这里留一句状态
+        self.round_hint = label(
+            f"启动一次 + 每 {daily.INTERVAL_HOURS} 小时", "SectionHint")
+        self.round_hint.setToolTip(
+            "每日轮询签到：确认进入新的一天后，先校验账号状态，再对可签的账号调用签到接口")
+        row.addWidget(self.round_hint)
         toolbar.body.addLayout(row)
 
         self.body.addWidget(toolbar)
@@ -452,8 +485,11 @@ class AccountCenterPage(BasePage):
         self._reload_profiles()
 
     # ------------------------------------------------------------ 每日轮询
-    def run_daily_round(self) -> bool:
+    def run_daily_round(self, startup: bool = False) -> bool:
         """主窗口按「启动一次 + 每 6 小时一次」的节奏调用，返回是否真的开跑。
+
+        启动那一轮即使当天已经签过也会完整跑一遍：先查接口状态，再决定签谁，
+        最后由 _daily_done 给出明确的结果提示，不让用户以为「什么都没发生」。
 
         与手动扫描共用 busy：轮询期间按钮与行内操作一起禁用，
         避免用户点「全部签到」和后台轮询同时打接口、重复写签到记录。
@@ -461,7 +497,10 @@ class AccountCenterPage(BasePage):
         if self.busy:
             return False
         self._set_busy(True, "正在执行每日签到轮询…")
-        self.log("每日轮询：开始检测日期与账号状态", "dim")
+        if startup:
+            self.log("启动轮询：立即执行一次签到检查", "dim")
+        else:
+            self.log("每日轮询：开始检测日期与账号状态", "dim")
         tasks.submit(self._daily_worker, on_done=self._daily_done,
                      on_error=self._fail, on_partial=self._apply)
         return True
@@ -473,8 +512,16 @@ class AccountCenterPage(BasePage):
     def _daily_done(self, result) -> None:
         self._set_busy(False)
         self._update_summary()
-        if result is not None and result.success:
-            self.notify(f"每日签到完成：成功 {result.success} 个账号", "ok")
+        if result is None:
+            return
+        text = _round_text(result)
+        self.notify(text, "warn" if result.failed and not result.success else "ok")
+        # 气泡会消失，工具栏这行一直留着，回头也能看到上次的结果
+        self.round_hint.setText(f"{result.when:%H:%M} · {_round_short(result)}")
+        self.round_hint.setToolTip(f"{text}（每 {daily.INTERVAL_HOURS} 小时轮询一次）")
+        if result.success and not self.win.isActiveWindow():
+            # 窗口在后台时闪任务栏，避免错过签到成功
+            QApplication.alert(self.win)
 
     # ------------------------------------------------------------------ 档案
     def _reload_profiles(self) -> None:
