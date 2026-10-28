@@ -75,6 +75,17 @@ class RowModel(QAbstractTableModel):
             return self.columns[section].title
         return None
 
+    def flags(self, index):  # noqa: N802 - Qt 接口
+        """行可拖可放：拖拽排序靠这两个标志才会真正开始拖动。"""
+        base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if not index.isValid():
+            return base | Qt.ItemFlag.ItemIsDropEnabled
+        return base | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled
+
+    def supportedDropActions(self):  # noqa: N802 - Qt 接口
+        # 只做行内重排，Move 才能让视图显示「移动」光标；Copy 语义在这里没意义
+        return Qt.DropAction.MoveAction
+
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
@@ -113,12 +124,35 @@ class RowModel(QAbstractTableModel):
     def set_rows(self, rows: list[dict]) -> None:
         self.beginResetModel()
         self.rows = list(rows)
+        self._reindex()
+        self.endResetModel()
+
+    def _reindex(self) -> None:
         self._index = {}
         for position, row in enumerate(self.rows):
             value = row.get(self.key)
             if value is not None:
                 self._index[str(value)] = position
-        self.endResetModel()
+
+    def move_row(self, source: int, target: int) -> bool:
+        """把 source 行移到 target（移除源行后的插入位置）。
+
+        用 beginMoveRows 而不是整表 reset：选中行、滚动位置和行内控件都跟着走，
+        拖完不会出现「选中丢了、详情面板关了」的跳变。
+        """
+        if source == target:
+            return False
+        if not (0 <= source < len(self.rows)) or not (0 <= target < len(self.rows)):
+            return False
+        # beginMoveRows 的落点是「插到第几行之前」，向下移动要跳过自己占的那一格
+        destination = target + 1 if target > source else target
+        if not self.beginMoveRows(QModelIndex(), source, source,
+                                  QModelIndex(), destination):
+            return False
+        self.rows.insert(target, self.rows.pop(source))
+        self._reindex()
+        self.endMoveRows()
+        return True
 
     def row_dict(self, row_index: int) -> dict | None:
         if 0 <= row_index < len(self.rows):

@@ -106,6 +106,8 @@ tools/                  一次性脚本（图标生成、截图）
 - 新增 UI 控件类名需在 `theme.py` 的 `qss()` 中补样式，否则外观会掉出设计体系
 - 时间一律转本地时区再显示，紧凑格式用 `%m-%d %H:%M`
 - 表格列已接近饱和（账号表 9 列）；单个账号的明细优先做成表格下方的面板，不要继续加列
+- 表格行拖动排序只在 `DataTable(reorder=True)` 时开启（目前只有账号中心），落点语义是「移除源行后的插入位置」；重排必须走 `RowModel.move_row`（`beginMoveRows`），**不要**用 `set_rows` 重建，否则选中与详情面板会丢
+- 账号表顺序存在 `config.json` 的 `account_order`（iid 列表）、列宽存在 `account_columns`；`config._coerce` 必须原样读回这两项，否则重启就退回默认
 
 ## 4. 禁区与红线
 

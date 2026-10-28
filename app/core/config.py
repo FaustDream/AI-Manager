@@ -16,6 +16,9 @@ def defaults() -> dict:
         "extra_sources": {"trae": [], "qoder": [], "qoder_intl": [], "workbuddy": []},
         "window": {},
         "last_page": "overview",
+        # 账号表：拖出来的顺序与用户调过的列宽
+        "account_order": [],
+        "account_columns": [],
         # 会话页的持久化选项：方向 / 含已删除 / 恢复可见 / 完成后重启
         "session_opts": {
             "direction": "both",
@@ -33,6 +36,20 @@ def _coerce(raw: Any) -> dict:
         return cfg
     cfg["skip"] = [str(x) for x in raw.get("skip") or [] if isinstance(x, str)]
     cfg["last_page"] = str(raw.get("last_page") or "overview")
+
+    # 拖动排序的顺序必须原样读回来，否则每次重启都会退回默认顺序
+    cfg["account_order"] = [str(x) for x in raw.get("account_order") or []
+                            if isinstance(x, str)]
+    columns = raw.get("account_columns")
+    if isinstance(columns, list):
+        widths = []
+        for value in columns:
+            try:
+                widths.append(int(value))
+            except (TypeError, ValueError):
+                widths = []
+                break
+        cfg["account_columns"] = widths
 
     extra = raw.get("extra_sources")
     if isinstance(extra, dict):
