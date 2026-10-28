@@ -108,17 +108,6 @@ def next_from_api(platform: str) -> bool:
     return bool(getattr(provider, "next_from_api", False))
 
 
-def checkin_due(account: Account, now: datetime | None = None) -> bool:
-    """现在是否已经可以签到。
-
-    只在接口没给签到状态时兜底，按自然日判断：过 0 点就算新的一天。
-    活动制平台的真实窗口由接口决定，这里只是避免同一自然日反复打接口。
-    """
-    moment = now or datetime.now()
-    at = checked_at(account.iid)
-    return not (at and at.date() == moment.date())
-
-
 def next_checkin_at(account: Account, now: datetime | None = None) -> datetime | None:
     """下一次可以签到的本地时刻；现在就能签、或本就不需要签到，返回 None。
 

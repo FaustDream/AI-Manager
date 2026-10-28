@@ -53,9 +53,9 @@ app/core/               基础设施层，不含业务逻辑
 
 app/ui/                 表现层，只做渲染与交互
   theme.py              PALETTE 色板 + qss() 全局样式
-  widgets.py            Card / Badge / DataTable / EmptyState / TimeField 等通用控件
+  widgets.py            Card / Badge / DataTable / EmptyState 等通用控件
   models.py             RowModel（QAbstractTableModel）
-  mainwindow.py         导航、页面懒加载、日志面板；PAGES / NAV_ITEMS 在此注册
+  mainwindow.py         导航、页面懒加载、日志面板、每日签到轮询定时器；PAGES / NAV_ITEMS 在此注册
   button_config.py      按钮可见性与排序配置
   dialogs.py            添加账号等对话框
   pages/                各功能页，均继承 pages/base.py 的 BasePage
@@ -64,6 +64,7 @@ app/checkin/            签到域
   base.py               Provider 抽象（scan / status / credits / checkin / client_exe）
   registry.py           平台注册表（PROVIDERS / LABELS / ORDER）
   service.py            编排：扫描、查询、签到、时刻推算
+  daily.py              每日签到轮询：日期检测 → 状态校验 → 签到，含当日去重
   store.py              账号库（Windows DPAPI 加密）
   ledger.py             积分台账（记录本工具亲眼发放的批次）
   logins.py             浏览器回调与设备码登录流程
@@ -77,7 +78,7 @@ app/sessions/           会话域
   profiles.py / backup.py / trash.py / cloud.py / codebuddy.py
 
 data/                   运行期数据：config.json、accounts.dat、checked.json、
-                        credits.json、backups/、logs/、profiles/、trash/
+                        daily.json、credits.json、backups/、logs/、profiles/、trash/
 legacy/                 历史版本 zip 归档，只读
 tools/                  一次性脚本（图标生成、截图）
 ```
@@ -153,6 +154,7 @@ tools/                  一次性脚本（图标生成、截图）
 这几条是最容易被误改的契约，改动前先确认影响面：
 
 - **签到状态以接口为准**：`data/checked.json` 只记录本工具成功签到的**时刻**（保留 3 天），接口返回 `checked_in` 时以接口为准，本地记录只做兜底
+- **每日轮询签到**：启动时跑一轮，之后每 6 小时一轮（`mainwindow.DAILY_INTERVAL_MS`），顺序固定为「日期检测 → 账号状态校验 → 调用签到接口」。`data/daily.json` 记当日已签成功的 iid，同一账号当天不再重复调用；接口给 `next_at` 且还没到点就跳过，等下一轮。**没有**「每日自动签到开关 / 签到时刻」配置，不要再加回来
 - **冷却口径两套**：`cooldown_hours = 0` 按自然日（次日 0 点可签）；`24` 按上次签到 + 24h（Qoder）。`service.next_checkin_at()` 只按本地记录推算，界面文案统一用「约」
 - **积分批次不含获得时间**：平台接口只返回「金额 + 到期日 + 名称」。`live_credit=True`（WorkBuddy / Trae）**从不写台账**，`live_credit=False`（Qoder）才由 `ledger.add()` 记录发放时刻
 - **账号主键**：`iid = f"{platform}:{account_id}"`，被账号库、积分台账、签到记录、UI 行 key 共用；改主键等于改四处存储

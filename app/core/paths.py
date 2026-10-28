@@ -33,6 +33,7 @@ ASSETS_DIR = resource_path("assets")
 CONFIG_FILE = DATA_DIR / "config.json"
 ACCOUNTS_FILE = DATA_DIR / "accounts.dat"      # DPAPI 加密
 CHECKED_FILE = DATA_DIR / "checked.json"       # 今日已签到记录
+DAILY_FILE = DATA_DIR / "daily.json"           # 每日轮询状态（日期 + 当日已签账号）
 LEDGER_FILE = DATA_DIR / "credits.json"        # 签到积分台账
 PROFILE_ROOT = DATA_DIR / "profiles"           # 账号档案（含登录态）
 LOG_FILE = LOG_DIR / "app.log"

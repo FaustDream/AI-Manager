@@ -11,10 +11,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QTime, QTimer
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QVBoxLayout, QWidget)
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QWidget
 
-from ...checkin import ledger, service, store, switcher
+from ...checkin import daily, ledger, service, store, switcher
 from ...checkin.base import (Account, ActionResult, CreditSnapshot, StatusResult,
                              summarize_lots)
 from ...checkin.registry import LABELS
@@ -25,7 +25,7 @@ from .. import button_config
 from ..dialogs import AddAccountDialog
 from ..models import Column
 from ..theme import PALETTE
-from ..widgets import (Badge, Card, DataTable, EmptyState, TimeField, hline, label,
+from ..widgets import (Badge, Card, DataTable, EmptyState, hline, label,
                        make_button)
 from .base import BasePage
 
@@ -51,8 +51,6 @@ ACTION_COL = len(COLUMNS) - 1
 # 一次整包拷贝动辄上百 MB，切页面太频繁时没必要每次都重存
 AUTO_SAVE_INTERVAL = 300
 EXIT_SAVE_INTERVAL = 60
-# 自动签到未到点/失败后不要每 30 秒撞一次接口
-AUTO_RETRY_INTERVAL = 1800
 
 
 def _error_text(balance, summary: str) -> str:
@@ -99,13 +97,10 @@ class AccountCenterPage(BasePage):
         self._action_buttons: list[tuple[QWidget, bool]] = []
         # 接口最近一次返回的签到状态：True 已签 / False 可签 / None 接口没给
         self._status_checked: dict[str, bool | None] = {}
-        # 扫描完成后要不要接着签到（开机自启、每日自动签到走这条）
-        self._pending_checkin = ""
         # 只记「哪个版本下有哪些 uid」，用来判断该账号能否免登录恢复
         self._packs: dict[str, set[str]] = {"cn": set(), "intl": set()}
         self._profile_gen = 0
         self._last_save = 0.0
-        self._last_auto_try = 0.0
         self._saving = False
         self._client_was_running = False
         # 积分明细面板：只在有选中行时显示；倒计时只刷文案，不重读文件
@@ -119,7 +114,6 @@ class AccountCenterPage(BasePage):
         self._width_timer.timeout.connect(self._save_columns)
 
         self._build()
-        self._load_auto()
 
         self._timer = QTimer(self)
         self._timer.setInterval(30_000)
@@ -155,13 +149,11 @@ class AccountCenterPage(BasePage):
         }, ctx=self._btn_ctx)
         self.btn_all = checkin_buttons.get("checkin.checkin_all")
         row.addStretch(1)
-
-        self.auto_check = QCheckBox("每日自动签到")
-        self.auto_check.stateChanged.connect(self._save_auto)
-        row.addWidget(self.auto_check)
-        self.time_edit = TimeField()
-        self.time_edit.timeChanged.connect(lambda _t: self._save_auto())
-        row.addWidget(self.time_edit)
+        # 原来的「每日自动签到 + 时刻」换成固定节奏的轮询，这里只留一句短说明
+        hint = label(f"启动一次 + 每 {daily.INTERVAL_HOURS} 小时", "SectionHint")
+        hint.setToolTip("每日轮询签到：确认进入新的一天后，先校验账号状态，"
+                        "再对可签的账号调用签到接口")
+        row.addWidget(hint)
         toolbar.body.addLayout(row)
 
         self.body.addWidget(toolbar)
@@ -406,10 +398,6 @@ class AccountCenterPage(BasePage):
         if updated:
             self.log(f"积分自动轮询更新 {updated} 个账号", "dim")
 
-    def apply_auto_settings(self) -> None:
-        """设置页改了自动签到后同步到这里。"""
-        self._load_auto()
-
     # ------------------------------------------------------- 旧入口 / 按钮配置
     def sub(self, _key: str = ""):
         """旧代码按「子页」取实例，合并后就是本页。"""
@@ -462,41 +450,31 @@ class AccountCenterPage(BasePage):
         self._update_summary()
         self._sync_buttons()
         self._reload_profiles()
-        # 状态已经刷新完，这时再决定签谁，不靠过期缓存
-        if self._pending_checkin:
-            reason = self._pending_checkin
-            self._pending_checkin = ""
-            self._auto_checkin_from_status(reason)
 
-    # ------------------------------------------------------------ 自动签到
-    def request_boot_checkin(self) -> None:
-        """开机自启：重新扫一遍（含签到状态）后再签。"""
-        self._pending_checkin = "开机自启"
-        self.refresh()
+    # ------------------------------------------------------------ 每日轮询
+    def run_daily_round(self) -> bool:
+        """主窗口按「启动一次 + 每 6 小时一次」的节奏调用，返回是否真的开跑。
 
-    def _auto_checkin_from_status(self, reason: str) -> None:
-        """按刚查回来的接口状态挑人签到，已签的直接跳过。
-
-        先 status 后签到：本地那点记录只能当兜底，接口说已签就绝不再调签到接口。
+        与手动扫描共用 busy：轮询期间按钮与行内操作一起禁用，
+        避免用户点「全部签到」和后台轮询同时打接口、重复写签到记录。
         """
-        due = []
-        for account in self.accounts.values():
-            if not account.requires_checkin or account.iid in self.skip:
-                continue
-            state = self._status_checked.get(account.iid)
-            if state is True:                 # 接口明确：今天已经签过
-                continue
-            if state is None and not service.checkin_due(account):
-                continue                      # 接口没给状态，退回本地自然日兜底
-            target = service.next_checkin_at(account)
-            if target is not None and target > datetime.now():
-                continue                      # 接口给了下一轮时刻且还没到，别空跑
-            due.append(account)
-        if not due:
-            self.log(f"{reason}：状态已是最新，没有需要签到的账号", "dim")
-            return
-        self.log(f"{reason}：{len(due)} 个账号待签到", "dim")
-        self._start_checkin(due)
+        if self.busy:
+            return False
+        self._set_busy(True, "正在执行每日签到轮询…")
+        self.log("每日轮询：开始检测日期与账号状态", "dim")
+        tasks.submit(self._daily_worker, on_done=self._daily_done,
+                     on_error=self._fail, on_partial=self._apply)
+        return True
+
+    def _daily_worker(self, emit):
+        # 日期检测 → 状态校验 → 签到，三步都在 daily.run_round 里按顺序完成
+        return daily.run_round(self.cfg, self.log, emit)
+
+    def _daily_done(self, result) -> None:
+        self._set_busy(False)
+        self._update_summary()
+        if result is not None and result.success:
+            self.notify(f"每日签到完成：成功 {result.success} 个账号", "ok")
 
     # ------------------------------------------------------------------ 档案
     def _reload_profiles(self) -> None:
@@ -1346,7 +1324,11 @@ class AccountCenterPage(BasePage):
         self.info(
             "签到说明",
             "· 账号来自各客户端已登录的本地凭证，签到走官方 Web 接口，不模拟界面点击。\n"
-            "· 免签到：勾选后「全部签到」和每日自动都会跳过它，但仍会刷新积分与到期。\n"
+            f"· 每日轮询：软件启动时检查一次，之后每 {daily.INTERVAL_HOURS} 小时一次；"
+            "确认进入新的一天后，先校验账号状态，再对可签的账号调用签到接口。\n"
+            "· 同一账号当天签到成功后不再重复调用；接口给了下一轮开放时刻时，"
+            "会等窗口开了再签。\n"
+            "· 免签到：勾选后「全部签到」和每日轮询都会跳过它，但仍会刷新积分与到期。\n"
             "· WorkBuddy 国际版没有签到玩法，自动标记为免签到，不参与后台签到。\n"
             "· 手动「签到选中」对免签到账号依然有效（强制签到）。\n"
             "· 剩余积分来自平台实时接口；最近到期和临期积分按积分批次计算，"
@@ -1355,23 +1337,7 @@ class AccountCenterPage(BasePage):
         )
 
     # ------------------------------------------------------------------ 定时
-    def _load_auto(self) -> None:
-        self.auto_check.setChecked(bool(self.cfg.get("auto")))
-        text = str(self.cfg.get("auto_time") or "08:30")
-        try:
-            hour, minute = (int(part) for part in text.split(":"))
-            self.time_edit.set_time(QTime(hour, minute))
-        except (ValueError, TypeError):
-            self.time_edit.set_time(QTime(8, 30))
-
-    def _save_auto(self, *_args) -> None:
-        current = self.time_edit.time()
-        self.cfg["auto"] = self.auto_check.isChecked()
-        self.cfg["auto_time"] = f"{current.hour():02d}:{current.minute():02d}"
-        self.win.save_cfg()
-
     def _tick(self) -> None:
-        self._tick_auto()
         self._watch_client_closed()
 
     def _watch_client_closed(self) -> None:
@@ -1386,25 +1352,4 @@ class AccountCenterPage(BasePage):
             if self._client_was_running and not running:
                 self._auto_save("客户端已关闭", force=True)
         self._client_was_running = running
-
-    def _tick_auto(self) -> None:
-        """到点先刷新签到状态，再由扫描回调决定签谁。
-
-        不直接拿缓存判断：Qoder 的活动窗口由服务端下发、每天开放时间会漂，
-        只有现查接口才知道这一轮到底开没开。
-        """
-        if not self.auto_check.isChecked() or self.busy:
-            return
-        if not self.accounts:
-            return
-        target = self.time_edit.time()
-        now = datetime.now()
-        if now.hour * 60 + now.minute < target.hour() * 60 + target.minute():
-            return
-        if time.monotonic() - self._last_auto_try < AUTO_RETRY_INTERVAL:
-            return
-        self._last_auto_try = time.monotonic()
-        self.log("到达设定时间：先刷新签到状态，再决定签谁", "dim")
-        self._pending_checkin = "每日自动签到"
-        self.refresh()
 

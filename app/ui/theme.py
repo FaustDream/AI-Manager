@@ -294,8 +294,7 @@ QPushButton#RowAction:disabled {{
 
 /* ------------------------------------------------------------ 输入
    注意：QTimeEdit / QSpinBox 这类 QAbstractSpinBox 千万不要在 QSS 里写
-   border 或 padding —— Qt 的样式层会把内部编辑区算成 0，文字直接不显示。
-   时间输入用 widgets.TimeField：边框画在外层容器上，内部只留颜色和字号。 */
+   border 或 padding —— Qt 的样式层会把内部编辑区算成 0，文字直接不显示。 */
 QLineEdit, QComboBox, QSpinBox {{
     background: {p['card']};
     border: 1px solid {p['border']};
@@ -344,48 +343,6 @@ QCheckBox::indicator:checked {{
     background: {p['accent']};
     border-color: {p['accent']};
     {check_rule}
-}}
-
-/* ------------------------------------------------------------ 时间输入
-   容器负责边框与焦点态，内部 QTimeEdit 去掉自带边框和步进按钮，
-   避免原生 spinbox 的箭头被圆角裁切。 */
-QFrame#TimeField {{
-    background: {p['card']};
-    border: 1px solid {p['border']};
-    border-radius: 8px;
-}}
-QFrame#TimeField:hover {{
-    border-color: {p['border_strong']};
-}}
-QFrame#TimeField[active="true"] {{
-    border-color: {p['accent']};
-}}
-QFrame#TimeField:disabled {{
-    background: #F7F8FA;
-    border-color: {p['border']};
-}}
-QTimeEdit#TimeFieldInput {{
-    background: transparent;
-    font-size: 13px;
-    font-weight: 600;
-    color: {p['text']};
-    selection-background-color: {p['accent']};
-    selection-color: #FFFFFF;
-}}
-QTimeEdit#TimeFieldInput:disabled {{
-    color: {p['muted']};
-}}
-QToolButton#TimeStep {{
-    border: none;
-    border-radius: 3px;
-    background: transparent;
-    padding: 0;
-}}
-QToolButton#TimeStep:hover {{
-    background: {p['hover']};
-}}
-QToolButton#TimeStep:pressed {{
-    background: #E3E8F2;
 }}
 
 /* ------------------------------------------------------------ 表格 */

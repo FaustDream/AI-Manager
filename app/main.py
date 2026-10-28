@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         from .checkin import service
         return service.selftest()
 
-    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtCore import Qt
     from PySide6.QtGui import QGuiApplication, QIcon
     from PySide6.QtWidgets import QApplication
 
@@ -112,7 +112,6 @@ def main(argv: list[str] | None = None) -> int:
 
     migrated = migrate.run_once()
     cfg = config.load()
-    boot_checkin = "--boot-checkin" in argv
 
     window = create_window(cfg)
     window.show()
@@ -120,9 +119,6 @@ def main(argv: list[str] | None = None) -> int:
     if migrated:
         window.log(f"已从旧版本迁移数据：{'、'.join(migrated)}", "ok")
     window.log(f"AI Manager {APP_VERSION} 启动完成 · 数据目录 {paths.DATA_DIR}", "dim")
-    if boot_checkin:
-        # 开机时系统刚起来，先让窗口画出来再扫描，避免和登录项抢磁盘
-        QTimer.singleShot(2500, window.boot_checkin)
 
     return app.exec()
 

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QTime, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel,
                                QScrollArea, QVBoxLayout, QWidget)
 
 from ... import APP_VERSION
-from ...checkin import service
+from ...checkin import daily, service
 from ...core import autostart, paths, shortcut, tasks
 from ..theme import PALETTE
-from ..widgets import Badge, Card, TimeField, hline, label, make_button
+from ..widgets import Badge, Card, hline, label, make_button
 from .base import BasePage
 
 
@@ -37,23 +37,29 @@ class SettingsPage(BasePage):
         column.setSpacing(12)
 
         # ---------------------------------------------------------- 签到
-        auto_card = Card(padding=16, spacing=10)
-        auto_card.add_title("签到")
+        daily_card = Card(padding=16, spacing=10)
+        daily_card.add_title(
+            "每日签到", f"启动时检查一次，之后每 {daily.INTERVAL_HOURS} 小时轮询")
         row = QHBoxLayout()
         row.setSpacing(10)
-        self.auto_check = QCheckBox("每日自动签到")
-        self.auto_check.stateChanged.connect(self._save_auto)
-        row.addWidget(self.auto_check)
-        self.time_edit = TimeField()
-        self.time_edit.timeChanged.connect(lambda _t: self._save_auto())
-        row.addWidget(self.time_edit)
-        self.auto_hint = label("", "SectionHint")
-        row.addWidget(self.auto_hint)
-        row.addStretch(1)
+        row.addWidget(label("轮询机制", "StatLabel"))
+        self.daily_badge = Badge("已启用", "ok")
+        row.addWidget(self.daily_badge)
+        self.daily_hint = label("", "SectionHint")
+        self.daily_hint.setWordWrap(True)
+        row.addWidget(self.daily_hint, 1)
         self.btn_selftest = make_button("运行只读自检", "ghost")
         self.btn_selftest.clicked.connect(self.selftest)
         row.addWidget(self.btn_selftest)
-        auto_card.body.addLayout(row)
+        daily_card.body.addLayout(row)
+
+        note = label(
+            "每轮顺序：确认已进入新的一天 → 校验各账号签到状态 → 只对可签的账号调用签到接口。"
+            "同一账号当天签到成功后不再重复调用；接口给出下一轮开放时刻时，会等窗口开了再签。",
+            "SectionHint")
+        note.setWordWrap(True)
+        daily_card.body.addWidget(note)
+        daily_card.body.addWidget(hline())
 
         row2 = QHBoxLayout()
         row2.setSpacing(10)
@@ -68,9 +74,8 @@ class SettingsPage(BasePage):
         row2.addWidget(self.poll_combo)
         row2.addWidget(label("到点自动刷新各账号剩余积分与到期，不影响签到", "SectionHint"))
         row2.addStretch(1)
-        auto_card.body.addLayout(row2)
-        auto_card.body.addWidget(hline())
-        column.addWidget(auto_card)
+        daily_card.body.addLayout(row2)
+        column.addWidget(daily_card)
 
         # ---------------------------------------------------------- 目录
         dirs = Card(padding=16, spacing=8)
@@ -104,7 +109,7 @@ class SettingsPage(BasePage):
         boot = QHBoxLayout()
         boot.setSpacing(10)
         boot.addWidget(label("开机自启", "StatLabel"))
-        self.boot_check = QCheckBox("登录 Windows 后自动启动，先刷新签到状态再签到")
+        self.boot_check = QCheckBox("登录 Windows 后自动启动，启动时执行一次签到轮询")
         self.boot_check.stateChanged.connect(self._save_autostart)
         boot.addWidget(self.boot_check)
         boot.addStretch(1)
@@ -118,7 +123,7 @@ class SettingsPage(BasePage):
         text = QLabel(
             "功能范围\n"
             "· 签到：Trae CN / Qoder CN / Qoder 国际版 / WorkBuddy 国内版 / WorkBuddy 国际版的"
-            "本地登录态扫描、签到、剩余积分与到期统计、免签到、每日自动签到、"
+            "本地登录态扫描、签到、剩余积分与到期统计、免签到、每日轮询签到、"
             "浏览器授权添加账号、写回客户端登录态。\n"
             "· 会话：WorkBuddy 国内版 ⇄ 国际版会话同步、CodeBuddy IDE ⇄ IDEA 插件历史同步、"
             "本机旧账号/已删除会话恢复可见、删除进回收站、黑名单、备份回滚、"
@@ -165,17 +170,7 @@ class SettingsPage(BasePage):
         self.reload()
 
     def reload(self) -> None:
-        self.auto_check.blockSignals(True)
-        self.auto_check.setChecked(bool(self.cfg.get("auto")))
-        self.auto_check.blockSignals(False)
-        text = str(self.cfg.get("auto_time") or "08:30")
-        try:
-            hour, minute = (int(part) for part in text.split(":"))
-            self.time_edit.set_time(QTime(hour, minute))
-        except (ValueError, TypeError):
-            pass
-        last = self.cfg.get("last_auto") or "还没有执行过"
-        self.auto_hint.setText(f"上次自动签到：{last}")
+        self.daily_hint.setText(daily.describe())
 
         self.poll_combo.blockSignals(True)
         minutes = 5 if "credit_interval" not in self.cfg \
@@ -196,14 +191,6 @@ class SettingsPage(BasePage):
         self.boot_check.setChecked(autostart.is_enabled())
         self.boot_check.blockSignals(False)
 
-    def _save_auto(self, *_args) -> None:
-        current = self.time_edit.time()
-        self.cfg["auto"] = self.auto_check.isChecked()
-        self.cfg["auto_time"] = f"{current.hour():02d}:{current.minute():02d}"
-        self.win.save_cfg()
-        self.win.sync_auto(self.cfg)
-        self.auto_hint.setText(f"上次自动签到：{self.cfg.get('last_auto') or '还没有执行过'}")
-
     def _save_poll(self, *_args) -> None:
         self.cfg["credit_interval"] = int(self.poll_combo.currentData() or 0)
         self.win.save_cfg()
@@ -223,8 +210,9 @@ class SettingsPage(BasePage):
         if enabled:
             self.log(f"已开启开机自启：{command}", "dim")
             self.info("已开启开机自启",
-                      "下次登录 Windows 会自动启动，并先刷新各账号的签到状态，"
-                      f"再决定签谁。\n\n注册表命令：\n{command}")
+                      "下次登录 Windows 会自动启动，并立即执行一次签到轮询："
+                      "确认进入新的一天 → 校验账号状态 → 对可签的账号签到。"
+                      f"\n\n注册表命令：\n{command}")
         else:
             self.log("已关闭开机自启", "dim")
 

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMainWindow, QMessag
                                QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import APP_TITLE, APP_VERSION
-from ..core import bus, logbook, paths
+from ..core import bus, logbook, paths, tasks
 from . import icons
 from .pages.account_center import AccountCenterPage
 from .pages.maintenance import MaintenancePage
@@ -35,6 +35,13 @@ PAGES = {
 
 # 旧入口兼容：原「签到中心 / 账号列表 / 账号档案」三个页面已合成账号中心的一张账号表
 LEGACY_TABS = {"checkin": "checkin", "accounts": "accounts", "profiles": "profiles"}
+
+# 每日签到轮询：启动后先跑一轮，之后每 6 小时一轮。
+# 启动后等各页面把首屏扫描跑完再开始；忙就 1 分钟后再来，最多等半小时。
+DAILY_INTERVAL_MS = 6 * 60 * 60 * 1000
+DAILY_START_DELAY_MS = 12_000
+DAILY_RETRY_MS = 60_000
+DAILY_MAX_RETRY = 30
 
 
 class NavButton(QPushButton):
@@ -93,6 +100,14 @@ class MainWindow(QMainWindow):
         self._credit_timer.timeout.connect(self._poll_credits)
         self._apply_credit_interval()
         self._credit_polling = False
+
+        # 每日签到轮询：启动先跑一轮，之后每 6 小时一轮，与界面上的页面切换无关
+        self._daily_retry = 0
+        self._daily_timer = QTimer(self)
+        self._daily_timer.setInterval(DAILY_INTERVAL_MS)
+        self._daily_timer.timeout.connect(self._daily_poll)
+        self._daily_timer.start()
+        QTimer.singleShot(DAILY_START_DELAY_MS, self._daily_poll)
 
         self.navigate(self.cfg.get("last_page") or "overview", save=False)
         QTimer.singleShot(300, lambda: self.log("AI Manager 已启动", "dim"))
@@ -281,18 +296,30 @@ class MainWindow(QMainWindow):
         """统计文案仍缓存，页面切换时如需恢复展示可直接取用。"""
         self._summary[scope] = text
 
-    def boot_checkin(self) -> None:
-        """开机自启调用：进账号中心，先刷新状态再决定签谁。"""
-        self.navigate("account_center")
-        page = self.page("account_center")
-        if page is not None:
-            page.request_boot_checkin()
+    # ---------------------------------------------------------- 每日签到轮询
+    def _daily_poll(self) -> None:
+        """日期轮询入口：启动一次，之后每 6 小时一次。
 
-    def sync_auto(self, cfg: dict) -> None:
-        self.cfg = cfg
-        page = self.page("checkin")        # 已并入账号中心的签到 Tab
-        if page is not None:
-            page.apply_auto_settings()
+        先等界面空闲：启动瞬间页面正在扫描，两边同时打同一批接口既慢，
+        也容易让状态显示错乱。忙就延后重试，别把这一天的签到让过去。
+        """
+        if self._credit_polling or any(getattr(page, "busy", False)
+                                       for page in self.pages.values()):
+            self._daily_defer()
+            return
+        page = self._ensure_page("account_center")
+        runner = getattr(page, "run_daily_round", None)
+        if not callable(runner) or not runner():
+            self._daily_defer()
+            return
+        self._daily_retry = 0
+
+    def _daily_defer(self) -> None:
+        if self._daily_retry >= DAILY_MAX_RETRY:
+            self.log("每日轮询等待界面空闲超时，跳过本轮", "warn")
+            return
+        self._daily_retry += 1
+        QTimer.singleShot(DAILY_RETRY_MS, self._daily_poll)
 
     # ------------------------------------------------------------------ 日志
     def log(self, message: str, level: str = "info") -> None:
@@ -411,7 +438,6 @@ class MainWindow(QMainWindow):
             self._credit_polling = False
             self.log(f"积分自动轮询失败：{message}", "dim")
 
-        from ..core import tasks
         tasks.submit(worker, on_done=done, on_error=failed)
 
     def _on_credits(self, snapshots: dict) -> None:

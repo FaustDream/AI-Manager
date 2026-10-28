@@ -12,9 +12,6 @@ from . import paths
 
 def defaults() -> dict:
     return {
-        "auto": False,
-        "auto_time": "08:30",
-        "last_auto": "",
         "skip": [],
         "extra_sources": {"trae": [], "qoder": [], "qoder_intl": [], "workbuddy": []},
         "window": {},
@@ -34,9 +31,6 @@ def _coerce(raw: Any) -> dict:
     cfg = defaults()
     if not isinstance(raw, dict):
         return cfg
-    cfg["auto"] = bool(raw.get("auto", False))
-    cfg["auto_time"] = str(raw.get("auto_time") or "08:30")
-    cfg["last_auto"] = str(raw.get("last_auto") or "")
     cfg["skip"] = [str(x) for x in raw.get("skip") or [] if isinstance(x, str)]
     cfg["last_page"] = str(raw.get("last_page") or "overview")
 
