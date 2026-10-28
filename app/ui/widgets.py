@@ -357,10 +357,13 @@ class DataTable(QTableView):
         header.setStretchLastSection(False)
         for position, column in enumerate(columns):
             self.setColumnWidth(position, column.width)
-            header.setSectionResizeMode(
-                position,
-                QHeaderView.ResizeMode.Stretch if column.stretch
-                else QHeaderView.ResizeMode.Interactive)
+            if column.fixed:
+                mode = QHeaderView.ResizeMode.Fixed
+            elif column.stretch:
+                mode = QHeaderView.ResizeMode.Stretch
+            else:
+                mode = QHeaderView.ResizeMode.Interactive
+            header.setSectionResizeMode(position, mode)
 
         # 行拖动排序：Qt 的模型不支持 moveRows，dropEvent 只负责算目标行并发信号
         self.setDragEnabled(True)
@@ -381,7 +384,7 @@ class DataTable(QTableView):
             return
         header = self.horizontalHeader()
         for index, width in enumerate(widths[:len(self.columns)]):
-            if self.columns[index].stretch:
+            if self.columns[index].stretch or self.columns[index].fixed:
                 continue
             try:
                 value = int(width)

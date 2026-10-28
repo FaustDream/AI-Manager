@@ -38,7 +38,8 @@ def _cell_font(mono: bool, bold: bool) -> QFont:
 
 class Column:
     def __init__(self, key: str, title: str, width: int = 120, align: str = "left",
-                 fmt: Callable | None = None, mono: bool = False, stretch: bool = False):
+                 fmt: Callable | None = None, mono: bool = False, stretch: bool = False,
+                 fixed: bool = False):
         self.key = key
         self.title = title
         self.width = width
@@ -46,6 +47,8 @@ class Column:
         self.fmt = fmt
         self.mono = mono
         self.stretch = stretch
+        # 固定列：宽度由定义决定，用户拖不动，也不被历史列宽配置覆盖
+        self.fixed = fixed
 
 
 class RowModel(QAbstractTableModel):

@@ -5,6 +5,10 @@
 签到活动（/sash/api/v1/me/campaigns）从 2026-09-26 起要求请求携带
 Cosy-Machine* 设备标识，否则服务端不会下发每日活动。设备标识不伪造，
 直接运行 Qoder 客户端自带的 resources/umid/runtime-info.exe 获取。
+
+签到的时机同样只认接口：服务端只下发当前这一轮的 startAt / endAt / claimStatus，
+没有“下一轮排期”字段，客户端自己也是每 5 分钟轮询一次。所以下次可签时刻由
+本轮窗口推算（startAt + 24 小时），实际开放时间以接口下发为准。
 """
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ import os
 import platform
 import socket
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -136,8 +141,8 @@ class _QoderBase(Provider):
     label = "Qoder CN"
     base = API_CN
     profile = PROFILE_CN
-    # Qoder 的签到是严格的滚动 24 小时，不是每天 0 点重置
-    cooldown_hours = 24
+    # 签到窗口由活动接口下发，本地不推算（滚动 24 小时、固定 10:00 都不成立）
+    next_from_api = True
     intl = False
 
     def _accounts_from(self, auth: dict, source: Path) -> Account:
@@ -240,6 +245,30 @@ class _QoderBase(Provider):
             out.append(item)
         return out
 
+    # 每日签到窗口正好 23 小时 59 分（10:00:00 → 次日 09:59:00），
+    # 一次性活动不会是这个长度，靠它把两类发币活动区分开。
+    _DAILY_SPAN = (86300, 86400)
+
+    @classmethod
+    def _next_window(cls, benefits: list[dict]) -> datetime | None:
+        """本轮已签后，下一次可签的本地时刻。
+
+        接口只下发当前窗口，没有“下一轮排期”字段（客户端也是 5 分钟轮询等它出现），
+        所以按同一节奏用 startAt + 24 小时推算；实际开放时间会漂，以接口下发为准。
+        """
+        for item in benefits:
+            start = item.get("startAt")
+            end = item.get("endAt")
+            if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+                continue
+            if not cls._DAILY_SPAN[0] <= end - start <= cls._DAILY_SPAN[1]:
+                continue
+            opened = parse_iso(start)
+            if opened is not None:
+                # 先在 UTC 上加一天再换本地时区，跨夏令时也不会偏一小时
+                return (opened + timedelta(hours=24)).astimezone().replace(tzinfo=None)
+        return None
+
     def _quota(self, session: requests.Session) -> tuple[str, float | None, list[CreditLot]]:
         payload = self._get(session, "/api/v2/quota/usage")
         if isinstance(payload.get("qoderUsage"), dict):
@@ -296,6 +325,7 @@ class _QoderBase(Provider):
         summary, balance, lots = self._quota(session)
 
         checked: bool | None = None
+        next_at: datetime | None = None
         try:
             benefits = self._benefits(self._campaigns(session))
             pending = [c for c in benefits if c.get("claimStatus") == "CLAIMABLE"]
@@ -305,12 +335,13 @@ class _QoderBase(Provider):
                     summary += f"；可领 {len(pending)} 项"
                 elif all(c.get("claimStatus") == "CLAIMED" for c in benefits):
                     checked = True
+                    next_at = self._next_window(benefits)
                 else:
                     checked = None
             # 没有发币活动时保持 None：活动未下发，不等于“今天已签”。
         except Exception:
             pass
-        return StatusResult(checked, summary, balance, lots)
+        return StatusResult(checked, summary, balance, lots, next_at)
 
     def checkin(self, account: Account, log: LogFn) -> ActionResult:
         session = self._session(account.token)

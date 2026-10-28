@@ -53,12 +53,6 @@ BUTTONS: dict[str, dict] = {
         "requires": ["rows"], "enable_when": "has_rows",
         "note": "为所有参与签到的账号执行签到（跳过免签到）",
     },
-    "checkin.checkin_selected": {
-        "panel": "checkin", "position": "toolbar", "order": 20,
-        "text": "签到选中", "kind": "ghost", "icon": None,
-        "requires": ["selected", "checkin_account"], "enable_when": "selection",
-        "note": "只为选中的账号签到（对免签到账号强制有效）",
-    },
     "checkin.query_status": {
         "panel": "checkin", "position": "toolbar", "order": 30,
         "text": "查询状态", "kind": "ghost", "icon": "refresh",
