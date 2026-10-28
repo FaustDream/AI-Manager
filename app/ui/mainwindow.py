@@ -37,11 +37,11 @@ PAGES = {
 LEGACY_TABS = {"checkin": "checkin", "accounts": "accounts", "profiles": "profiles"}
 
 # 每日签到轮询：启动后先跑一轮，之后每 6 小时一轮。
-# 启动后等各页面把首屏扫描跑完再开始；忙就 1 分钟后再来，最多等半小时。
+# 启动后等各页面把首屏扫描跑完再开始；忙就 5 秒后再看，最多等半小时。
 DAILY_INTERVAL_MS = 6 * 60 * 60 * 1000
 DAILY_START_DELAY_MS = 12_000
-DAILY_RETRY_MS = 60_000
-DAILY_MAX_RETRY = 30
+DAILY_RETRY_MS = 5_000
+DAILY_MAX_RETRY = 360
 
 
 class NavButton(QPushButton):
@@ -103,6 +103,7 @@ class MainWindow(QMainWindow):
 
         # 每日签到轮询：启动先跑一轮，之后每 6 小时一轮，与界面上的页面切换无关
         self._daily_retry = 0
+        self._daily_startup = True
         self._daily_timer = QTimer(self)
         self._daily_timer.setInterval(DAILY_INTERVAL_MS)
         self._daily_timer.timeout.connect(self._daily_poll)
@@ -309,9 +310,10 @@ class MainWindow(QMainWindow):
             return
         page = self._ensure_page("account_center")
         runner = getattr(page, "run_daily_round", None)
-        if not callable(runner) or not runner():
+        if not callable(runner) or not runner(startup=self._daily_startup):
             self._daily_defer()
             return
+        self._daily_startup = False
         self._daily_retry = 0
 
     def _daily_defer(self) -> None:

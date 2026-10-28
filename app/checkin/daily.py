@@ -93,6 +93,8 @@ class RoundResult:
     already: int = 0
     failed: int = 0
     skipped: int = 0
+    # 接口给了下一轮开放时刻、还没到点的账号数（例如 Qoder 10:00 前）
+    waiting: int = 0
     when: datetime = field(default_factory=datetime.now)
 
     def summary(self) -> str:
@@ -103,9 +105,11 @@ class RoundResult:
             parts.append(f"成功 {self.success}")
         if self.already:
             parts.append(f"已领 {self.already}")
+        if self.waiting:
+            parts.append(f"等待窗口 {self.waiting}")
         if self.failed:
             parts.append(f"失败 {self.failed}")
-        if not self.due and not self.already:
+        if not self.due and not self.already and not self.waiting:
             parts.append("无需签到")
         return " · ".join(parts)
 
@@ -172,7 +176,8 @@ def run_round(cfg: dict, log, emit=None, now: datetime | None = None) -> RoundRe
             continue
         nxt = status.next_at if status is not None else None
         if nxt is not None and nxt > moment:
-            result.skipped += 1       # 下一轮窗口还没开，等下一次轮询
+            result.skipped += 1
+            result.waiting += 1       # 下一轮窗口还没开，等下一次轮询
             continue
         due.append(account)
 
