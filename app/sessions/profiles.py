@@ -266,6 +266,88 @@ def find_auth_backup(ep: Edition, uid: str) -> Path | None:
     return best[1] if best else None
 
 
+def audit_pack(ep: Edition, uid: str) -> dict:
+    """档案是否自洽：登录态、账号快照、会话库、登录票据齐不齐。
+
+    免登录切换要求这四样都指向同一个账号，缺一项客户端就会把它判成无效登录。
+    """
+    pack = _pack_dir(ep, uid)
+    snapshot_uid = ""
+    snap = pack / "storage" / "skeleton" / "account-snapshot.json"
+    if snap.exists():
+        try:
+            snapshot_uid = str((json.loads(snap.read_text(encoding="utf-8"))
+                                .get("primary") or {}).get("uid") or "")
+        except (OSError, ValueError):
+            snapshot_uid = "?"
+    ticket_uid = ""
+    ticket = pack_auth_path(ep, uid)
+    if ticket.exists():
+        try:
+            ticket_uid = str((json.loads(ticket.read_text(encoding="utf-8"))
+                              .get("account") or {}).get("uid") or "")
+        except (OSError, ValueError):
+            ticket_uid = "?"
+    return {
+        "uid": uid,
+        "session": (pack / "app" / "session").exists(),
+        "storage": (pack / "storage").exists(),
+        "db": (pack / "workbuddy.db").exists(),
+        "ticket": ticket.exists(),
+        "snapshot_uid": snapshot_uid,
+        "ticket_uid": ticket_uid,
+    }
+
+
+def pack_problems(info: dict) -> list[str]:
+    """把 audit_pack 的结果翻成人话，空列表表示这份档案可以直接切。"""
+    problems = []
+    if not info.get("session"):
+        problems.append("缺登录态")
+    if not info.get("storage"):
+        problems.append("缺本地数据")
+    if not info.get("ticket"):
+        problems.append("缺登录票据")
+    elif info.get("ticket_uid") != info.get("uid"):
+        problems.append("票据不属于该账号")
+    if info.get("snapshot_uid") != info.get("uid"):
+        problems.append("账号快照对不上")
+    return problems
+
+
+def ensure_pack_ticket(ep: Edition, uid: str) -> bool:
+    """档案里缺票据时，从客户端自己的备份补一份，让档案不再依赖外部文件。
+
+    客户端清理 .bak 之后，档案仍然能自己完成切换。
+    """
+    if not uid or has_pack_auth(ep, uid):
+        return False
+    source = find_auth_backup(ep, uid)
+    if source is None:
+        return False
+    try:
+        target = pack_auth_path(ep, uid)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    except OSError:
+        return False
+    return True
+
+
+def repair_packs(editions) -> dict:
+    """补全所有档案的票据，返回 {已补全: [...], 仍不完整: {uid: 原因}}。"""
+    filled: list[str] = []
+    broken: dict[str, str] = {}
+    for ep in editions:
+        for uid in list_pack_uids(ep):
+            if ensure_pack_ticket(ep, uid):
+                filled.append(f"{ep.key}/{uid}")
+            problems = pack_problems(audit_pack(ep, uid))
+            if problems:
+                broken[f"{ep.key}/{uid}"] = "、".join(problems)
+    return {"filled": filled, "broken": broken}
+
+
 def switch(ep: Edition, uid: str) -> tuple[bool, str]:
     """切到指定账号：先保存当前账号，再换入目标档案（调用方负责先关客户端）。"""
     if winproc.process_running(ep.proc):

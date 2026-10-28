@@ -169,12 +169,15 @@ class StatCard(QFrame):
 
         self.hint = label(hint, "StatHint")
         self.hint.setWordWrap(True)
+        # 空说明整行收起：不传文案的卡片只留图标 + 标题 + 数字
+        self.hint.setVisible(bool(hint))
         outer.addWidget(self.hint)
 
     def set_value(self, value: str, hint: str | None = None) -> None:
         self.value.setText(value)
         if hint is not None:
             self.hint.setText(hint)
+            self.hint.setVisible(bool(hint))
 
 
 class TrendBars(QWidget):
@@ -243,6 +246,7 @@ class PageHeader(QWidget):
         self.title = label(title, "PageTitle")
         text_box.addWidget(self.title)
         self.subtitle = label(subtitle, "PageSub")
+        self.subtitle.setVisible(bool(subtitle))
         text_box.addWidget(self.subtitle)
         layout.addLayout(text_box)
         layout.addStretch(1)
@@ -257,6 +261,7 @@ class PageHeader(QWidget):
 
     def set_subtitle(self, text: str) -> None:
         self.subtitle.setText(text)
+        self.subtitle.setVisible(bool(text))
 
 
 class EmptyState(QWidget):

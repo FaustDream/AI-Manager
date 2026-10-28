@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
-"""总览：一屏看清今日签到与积分收支。"""
+"""总览：今日签到一屏看完，顶部只留四个关键数字。"""
 from __future__ import annotations
 
-from datetime import datetime
-
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QProgressBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout
 
 from ...checkin import creditlog
 from ...checkin import service as checkin_service
@@ -13,20 +10,17 @@ from ...checkin.base import CreditSnapshot, StatusResult, summarize_lots
 from ...core import tasks
 from ..models import Column
 from ..theme import PALETTE
-from ..widgets import (Card, DataTable, StatCard, TrendBars, hline, label,
-                       make_button)
+from ..widgets import DataTable, StatCard, hline, label, make_button
 from .base import BasePage
 
+# 表格独占整行，宽列让账号名吸收多余空间，其余列保持紧凑
 CHECKIN_COLS = [
-    Column("platform", "平台", 118, "center"),
-    Column("name", "账号", 170),
-    Column("today", "今日", 76, "center"),
-    Column("balance", "剩余积分", 92, "right"),
-    Column("expire", "最近到期", 128, "center", stretch=True),
+    Column("platform", "平台", 140, "center"),
+    Column("name", "账号", 220, stretch=True),
+    Column("today", "今日", 96, "center"),
+    Column("balance", "剩余积分", 110, "right"),
+    Column("expire", "最近到期", 150, "center"),
 ]
-
-# 右侧「各账号积分」最多列几个：再多就把卡片撑得比左边还高
-BALANCE_ROWS = 8
 
 
 def _error_text(balance, summary: str) -> str:
@@ -43,7 +37,6 @@ def _error_text(balance, summary: str) -> str:
 class OverviewPage(BasePage):
     key = "overview"
     title = "总览"
-    subtitle = "今日签到与积分收支"
 
     def __init__(self, win):
         super().__init__(win)
@@ -54,7 +47,6 @@ class OverviewPage(BasePage):
         self._expiry: dict[str, str] = {}
         self._done: set[str] = set()
         self._stats: dict = {}
-        self.balance_rows: dict[str, tuple] = {}
         self._first = True
         self._build()
 
@@ -69,18 +61,15 @@ class OverviewPage(BasePage):
 
         stats = QHBoxLayout()
         stats.setSpacing(12)
-        self.card_checkin = StatCard("checkin", "签到账号", "—", "正在读取…")
-        self.card_credit = StatCard("bolt", "积分总额", "—", "正在读取…")
-        self.card_gain = StatCard("plus", "今日增加", "—", "正在读取…", "ok")
-        self.card_spend = StatCard("clock", "今日消耗", "—", "正在读取…", "warn")
+        self.card_checkin = StatCard("checkin", "签到账号")
+        self.card_credit = StatCard("bolt", "积分总额")
+        self.card_gain = StatCard("plus", "今日增加", tone="ok")
+        self.card_spend = StatCard("clock", "今日消耗", tone="warn")
         for card in (self.card_checkin, self.card_credit, self.card_gain, self.card_spend):
             stats.addWidget(card, 1)
         self.body.addLayout(stats)
 
-        columns = QHBoxLayout()
-        columns.setSpacing(12)
-
-        # ---- 左：今日签到 ----
+        # ---- 今日签到：整行铺满 ----
         checkin_card = QFrame()
         checkin_card.setObjectName("Card")
         checkin_layout = QVBoxLayout(checkin_card)
@@ -101,37 +90,7 @@ class OverviewPage(BasePage):
         self.checkin_table = DataTable(CHECKIN_COLS, key="id", row_height=34)
         self.checkin_table.setMinimumHeight(220)
         checkin_layout.addWidget(self.checkin_table, 1)
-        columns.addWidget(checkin_card, 1)
-
-        # ---- 右：积分趋势 + 各账号积分 ----
-        right = QVBoxLayout()
-        right.setSpacing(12)
-
-        trend_card = Card(padding=16, spacing=8)
-        trend_card.add_title("积分趋势", f"近 {creditlog.TREND_DAYS} 天余额合计")
-        self.trend = TrendBars()
-        trend_card.body.addWidget(self.trend)
-        self.trend_hint = label("", "KeyLabel")
-        self.trend_hint.setWordWrap(True)
-        trend_card.body.addWidget(self.trend_hint)
-        right.addWidget(trend_card)
-
-        balance_card = Card(padding=16, spacing=8)
-        balance_card.add_title("各账号积分", "按当前余额")
-        self.balance_box = QVBoxLayout()
-        self.balance_box.setSpacing(7)
-        balance_card.body.addLayout(self.balance_box)
-        self.balance_empty = label("正在读取…", "SectionHint")
-        self.balance_empty.setWordWrap(True)
-        balance_card.body.addWidget(self.balance_empty)
-        right.addWidget(balance_card)
-        right.addStretch(1)
-
-        holder = QWidget()
-        holder.setLayout(right)
-        holder.setFixedWidth(320)
-        columns.addWidget(holder)
-        self.body.addLayout(columns, 1)
+        self.body.addWidget(checkin_card, 1)
 
     # ------------------------------------------------------------------ 数据
     def on_show(self) -> None:
@@ -155,7 +114,7 @@ class OverviewPage(BasePage):
                 emit((kind, (iid, result)))
 
             tasks.parallel_map(accounts, query)
-            # 余额快照在上面每个账号查完时就已落盘，这里统一算一次合计与走势
+            # 余额快照在上面每个账号查完时就已落盘，这里统一算一次合计
             emit(("stats", creditlog.summary()))
             return True
 
@@ -251,15 +210,6 @@ class OverviewPage(BasePage):
             })
         self.checkin_table.set_rows(rows)
         self.checkin_hint.setText("" if rows else "未发现账号")
-        self.header.set_subtitle(
-            f"{datetime.now():%Y年%m月%d日} · {len(self.accounts)} 个签到账号")
-        no_checkin = sum(1 for a in self.accounts if not a.requires_checkin)
-        skipped = sum(1 for a in self.accounts if a.requires_checkin and a.iid in skip)
-        self.card_checkin.set_value(
-            str(len(self.accounts)),
-            f"今日已签到 {sum(1 for iid in self._done if iid in self._by_iid)}"
-            f" · 免签到 {no_checkin + skipped}")
-        self._build_balance_rows()
         self._update_cards()
 
     def _render_status(self, iid: str, result: StatusResult) -> None:
@@ -337,95 +287,19 @@ class OverviewPage(BasePage):
             return self._balance_error.get(iid) or "—"
         return f"{value:g}"
 
-    # ------------------------------------------------------------ 积分仪表盘
-    def _build_balance_rows(self) -> None:
-        """账号换了才重建：平时只改数值，避免每次刷新都抖动一次。"""
-        while self.balance_box.count():
-            item = self.balance_box.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self.balance_rows = {}
-        if not self.accounts:
-            self.balance_empty.setText("还没有发现账号")
-            self.balance_empty.show()
-            return
-        self.balance_empty.hide()
-        for account in self.accounts[:BALANCE_ROWS]:
-            row = QWidget()
-            layout = QHBoxLayout(row)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(8)
-            name = label(account.name, "StatLabel")
-            name.setFixedWidth(92)
-            name.setToolTip(account.name)
-            bar = QProgressBar()
-            bar.setObjectName("ThinBar")
-            bar.setTextVisible(False)
-            bar.setRange(0, 100)
-            bar.setValue(0)
-            value = label("—", "ValueLabel")
-            value.setFixedWidth(62)
-            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            layout.addWidget(name)
-            layout.addWidget(bar, 1)
-            layout.addWidget(value)
-            self.balance_box.addWidget(row)
-            self.balance_rows[account.iid] = (bar, value)
-        extra = len(self.accounts) - BALANCE_ROWS
-        if extra > 0:
-            self.balance_empty.setText(f"另有 {extra} 个账号未显示")
-            self.balance_empty.show()
-        self._update_balance_bars()
-
-    def _update_balance_bars(self) -> None:
-        values = [v for v in self._balances.values() if v is not None]
-        peak = max(values) if values else 0
-        for iid, (bar, value) in self.balance_rows.items():
-            current = self._balances.get(iid)
-            if current is None:
-                bar.setValue(0)
-                value.setText(self._balance_error.get(iid) or "—")
-                continue
-            bar.setValue(int(current / peak * 100) if peak else 0)
-            value.setText(f"{current:g}")
-
     def _apply_stats(self, stats: dict | None) -> None:
         self._stats = stats or {}
         total = float(self._stats.get("total") or 0)
         gained = float(self._stats.get("gained") or 0)
         spent = float(self._stats.get("spent") or 0)
-        baseline = str(self._stats.get("baseline") or "")
-        dated = [v for v in self._expiry.values() if v]
-        nearest = min(dated) if dated else ""
-        hint = f"{self._stats.get('accounts') or 0} 个账号有余额记录"
-        if nearest:
-            hint += f" · 最近到期 {nearest}"
-        self.card_credit.set_value(f"{total:g}", hint)
-
-        compare = f"较 {baseline[5:]} 的记录" if baseline else "还没有可对比的记录"
-        self.card_gain.set_value(f"+{gained:g}" if gained else "0", compare)
-        self.card_spend.set_value(f"-{spent:g}" if spent else "0", compare)
-
-        trend = self._stats.get("trend") or []
-        self.trend.set_points(trend)
-        if len(trend) >= 2:
-            first, last = trend[0][1], trend[-1][1]
-            delta = last - first
-            self.trend_hint.setText(
-                f"{first:g} → {last:g}（{delta:+g}）" if delta else f"稳定在 {last:g}")
-        elif trend:
-            self.trend_hint.setText(f"今天首次记录 {trend[-1][1]:g}，明天起这里显示变化")
-        else:
-            self.trend_hint.setText("历史从第一次刷新开始累积，之后每次刷新都会留下记录")
+        self.card_credit.set_value(f"{total:g}")
+        self.card_gain.set_value(f"+{gained:g}" if gained else "0")
+        self.card_spend.set_value(f"-{spent:g}" if spent else "0")
         self._update_cards()
 
     def _update_cards(self) -> None:
         done = sum(1 for iid in self._done if iid in self._by_iid)
-        no_checkin = sum(1 for a in self.accounts if not a.requires_checkin)
-        hint = f"今日已签到 {done} · 免签到 {no_checkin}"
-        self.card_checkin.set_value(str(len(self.accounts)), hint)
-        self._update_balance_bars()
+        self.card_checkin.set_value(str(len(self.accounts)))
         total = sum(v for v in self._balances.values() if v is not None)
         self.win.set_summary(
             "overview",
