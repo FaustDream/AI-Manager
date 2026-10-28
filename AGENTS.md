@@ -159,6 +159,9 @@ tools/                  一次性脚本（图标生成、截图）
 - 远端：`https://github.com/FaustDream/AI-Manager.git`，主分支 `main`
 - 每次完整改动并验证后创建**一个** commit；一个 commit 对应一个可独立回退的改动，不混入格式化改动
 - 提交信息用中文，格式 `<类型>: <一句话说明>`，类型取 `修复 / 新增 / 重构 / 文档 / 依赖 / 发布`
+- 本机**没有配置全局 `user.name` / `user.email`**。提交时用临时身份，不要写全局配置：
+  `git -c user.name="FaustDream" -c user.email="FaustDream@users.noreply.github.com" commit -m "..."`
+  （打 annotated tag 同样需要，`git tag -a` 前也要带这两个 `-c`）
 - 高风险改动（`data/`、`app/checkin/store.py`、`app/sessions/wbdb.py`）动手前先提交一个已验证版本作为回滚点
 - 入库范围由 `.gitignore` 决定：`data/`、`legacy/`、`.venv/`、`.idea/`、`.codebuddy/`、`.workbuddy/`、`__pycache__/` 一律不入库
 - 不提交任何 token、DPAPI 解密结果、账号明文
