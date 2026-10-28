@@ -117,6 +117,23 @@ class SettingsPage(BasePage):
         launch.body.addWidget(hline())
         column.addWidget(launch)
 
+        # ---------------------------------------------------------- 快捷操作
+        quick = Card(padding=16, spacing=8)
+        quick.add_title("快捷操作", "直接跳到常用页面，总览页不再放这些入口")
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        for text, icon_name, key in (
+            ("签到中心", "checkin", "checkin"),
+            ("会话管理", "sessions", "sessions"),
+            ("账号档案", "profiles", "profiles"),
+        ):
+            button = make_button(text, "ghost", icon_name)
+            button.clicked.connect(lambda _c=False, k=key: self.win.navigate(k))
+            row.addWidget(button)
+        row.addStretch(1)
+        quick.body.addLayout(row)
+        column.addWidget(quick)
+
         # ---------------------------------------------------------- 关于
         about = Card(padding=16, spacing=8)
         about.add_title(f"关于 AI Manager {APP_VERSION}")

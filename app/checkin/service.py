@@ -9,7 +9,7 @@ import json
 from datetime import datetime, time, timedelta
 
 from ..core import paths, tasks
-from . import ledger, logins, store
+from . import creditlog, ledger, logins, store
 from .base import Account, ActionResult, CreditSnapshot, StatusResult
 from .registry import PROVIDERS, PROVIDER_MAP
 
@@ -188,15 +188,19 @@ def query_one(account: Account, skip: bool, log) -> tuple[str, str, object]:
     iid = account.iid
     if skip or not provider.requires_checkin(account):
         try:
-            return "credit", iid, provider.credits(account, lambda m: log(m))
+            snapshot = provider.credits(account, lambda m: log(m))
         except Exception as exc:
-            return "credit", iid, CreditSnapshot(f"积分读取失败：{exc}")
+            snapshot = CreditSnapshot(f"积分读取失败：{exc}")
+        creditlog.note(iid, snapshot.balance)     # 每次看到余额都留一笔快照
+        return "credit", iid, snapshot
     if account.expired:
         return "status", iid, StatusResult(None, "登录态已过期")
     try:
-        return "status", iid, provider.status(account, lambda m: log(m))
+        result = provider.status(account, lambda m: log(m))
     except Exception as exc:
-        return "status", iid, StatusResult(None, f"查询失败：{exc}")
+        result = StatusResult(None, f"查询失败：{exc}")
+    creditlog.note(iid, result.balance)
+    return "status", iid, result
 
 
 def query_credit(account: Account, log) -> CreditSnapshot:
@@ -208,9 +212,11 @@ def query_credit(account: Account, log) -> CreditSnapshot:
     account = logins.ensure_fresh(account, log)
     provider = PROVIDER_MAP[account.platform]
     try:
-        return provider.credits(account, lambda m: log(m))
+        snapshot = provider.credits(account, lambda m: log(m))
     except Exception as exc:
         return CreditSnapshot(f"积分读取失败：{exc}")
+    creditlog.note(account.iid, snapshot.balance)
+    return snapshot
 
 
 def query_credits(accounts: list[Account], log) -> dict[str, object]:

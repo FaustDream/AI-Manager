@@ -35,6 +35,7 @@ ACCOUNTS_FILE = DATA_DIR / "accounts.dat"      # DPAPI 加密
 CHECKED_FILE = DATA_DIR / "checked.json"       # 今日已签到记录
 DAILY_FILE = DATA_DIR / "daily.json"           # 每日轮询状态（日期 + 当日已签账号）
 LEDGER_FILE = DATA_DIR / "credits.json"        # 签到积分台账
+CREDIT_HISTORY_FILE = DATA_DIR / "credit_history.json"  # 积分余额按天快照（算增减用）
 SESSION_INDEX_FILE = DATA_DIR / "session_index.json"  # 会话归属索引（原始账号 / 引用方）
 PROFILE_ROOT = DATA_DIR / "profiles"           # 账号档案（含登录态）
 LOG_FILE = LOG_DIR / "app.log"
