@@ -123,6 +123,7 @@ class AccountCenterPage(BasePage):
         self._packs: dict[str, set[str]] = {"cn": set(), "intl": set()}
         self._packs_loaded = False
         self._packs_loading = False
+        self._pack_issues: dict[str, str] = {}
         self._profile_gen = 0
         self._last_save = 0.0
         self._saving = False
@@ -536,9 +537,14 @@ class AccountCenterPage(BasePage):
         generation = self._profile_gen
 
         def worker(_emit):
+            editions = [Edition("cn"), Edition("intl")]
+            # 顺手补全旧档案缺的登录票据：补过之后档案自给自足，
+            # 不再依赖客户端的 .bak 备份（那些文件客户端会自己清理）
+            repair = profiles.repair_packs(editions)
             return {
-                "cn": profiles.list_pack_uids(Edition("cn")),
-                "intl": profiles.list_pack_uids(Edition("intl")),
+                "cn": profiles.list_pack_uids(editions[0]),
+                "intl": profiles.list_pack_uids(editions[1]),
+                "repair": repair,
             }
 
         def failed(message: str) -> None:
@@ -553,8 +559,21 @@ class AccountCenterPage(BasePage):
         self._packs_loading = False
         if generation != self._profile_gen:      # 期间又发起了一次，结果作废
             return
-        self._packs = {key: set(value) for key, value in data.items()}
+        self._packs = {key: set(value) for key, value in (data or {}).items()
+                       if key in ("cn", "intl")}
         self._packs_loaded = True
+        repair = (data or {}).get("repair") or {}
+        filled = repair.get("filled") or []
+        broken = repair.get("broken") or {}
+        self._pack_issues = {key.split("/", 1)[-1]: why for key, why in broken.items()}
+        if filled:
+            self.log(f"已为 {len(filled)} 份档案补全登录票据："
+                     + "、".join(item.split("/")[-1][:8] for item in filled), "dim")
+        if broken:
+            detail = "；".join(f"{uid.split('/')[-1][:8]}：{why}"
+                              for uid, why in broken.items())
+            self.log(f"有 {len(broken)} 份档案不完整：{detail}", "warn")
+            self.notify(f"{len(broken)} 份账号档案不完整，切换前请先在客户端登录一次", "warn")
         for account in self.accounts.values():
             row = self.table.model.row_dict(self.table.model.index_of(account.iid)) or {}
             tips = dict(row.get("_tip_map") or {})
@@ -582,10 +601,14 @@ class AccountCenterPage(BasePage):
             return ""
         if not self._packs_loaded:
             return "正在读取账号档案…"
+        uid = str(account.meta.get("uid") or "")
         if switcher.is_current(account):
             return "客户端当前登录的就是这个账号，不需要存档；关闭客户端时会自动补存一份"
+        issue = self._pack_issues.get(uid)
+        if issue:
+            return f"档案不完整（{issue}），切换前请先在客户端登录一次该账号"
         if self._has_pack(account):
-            return "已保存登录票据，切换时可直接进入，不用重新登录"
+            return "登录票据、登录态、账号快照都齐，切换时可直接进入，不用重新登录"
         return "还没有存档：关闭该账号的客户端后会自动保存，之后切换就不用重新登录"
 
     def _has_pack(self, account: Account | None) -> bool:
@@ -727,7 +750,7 @@ class AccountCenterPage(BasePage):
             iid, today=today,
             balance=self._balance_text(iid),
             _fg_map=colors,
-            _tip_map={"balance": result.summary or ""})
+            _tip_map=self._merge_tips(iid, balance=result.summary or ""))
         self._update_credit_cells(iid)
         self._update_summary()
         if iid == self._detail_iid:
@@ -745,7 +768,7 @@ class AccountCenterPage(BasePage):
         self._balance_error[iid] = _error_text(snapshot.balance, snapshot.summary)
         changes = {
             "balance": self._balance_text(iid),
-            "_tip_map": {"balance": snapshot.summary or ""},
+            "_tip_map": self._merge_tips(iid, balance=snapshot.summary or ""),
         }
         if not self._needs.get(iid, True):
             changes["today"] = "免签到"
@@ -767,7 +790,7 @@ class AccountCenterPage(BasePage):
             self._ledger[iid] = ledger.summary(iid)
         changes = {
             "balance": self._balance_text(iid),
-            "_tip_map": {"balance": result.message},
+            "_tip_map": self._merge_tips(iid, balance=result.message),
         }
         if not account.requires_checkin:
             changes["today"] = "免签到"
@@ -828,6 +851,19 @@ class AccountCenterPage(BasePage):
                                 expire=expire_text,
                                 _fg_map=existing,
                                 _tip_map=tips)
+
+    def _merge_tips(self, iid: str, **values) -> dict:
+        """合并行内提示。
+
+        _tip_map 在模型里是整块替换的，直接传 {"balance": ...} 会把「来源」「档案」
+        的说明一起冲掉，鼠标悬停就只剩余额那一句。
+        """
+        position = self.table.model.index_of(iid)
+        tips = {}
+        if position >= 0:
+            tips = dict(self.table.model.rows[position].get("_tip_map") or {})
+        tips.update(values)
+        return tips
 
     def _update_summary(self) -> None:
         total = len(self.accounts)
