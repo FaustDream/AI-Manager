@@ -108,6 +108,7 @@ tools/                  一次性脚本（图标生成、截图）
 - 表格列已接近饱和（账号表 9 列）；单个账号的明细优先做成表格下方的面板，不要继续加列
 - 表格行拖动排序只在 `DataTable(reorder=True)` 时开启（目前只有账号中心），落点语义是「移除源行后的插入位置」；重排必须走 `RowModel.move_row`（`beginMoveRows`），**不要**用 `set_rows` 重建，否则选中与详情面板会丢
 - 账号表顺序存在 `config.json` 的 `account_order`（iid 列表）、列宽存在 `account_columns`；`config._coerce` 必须原样读回这两项，否则重启就退回默认
+- **界面不显示 uid**：日志、提示、表格一律用昵称（`Account.name`）；需要 uid 时走右键「复制 UID」。`uid[:8]` 这种截断显示不要再往界面里加
 
 ## 4. 禁区与红线
 

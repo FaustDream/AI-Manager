@@ -133,7 +133,7 @@ class ProfilesPage(BasePage):
         packs = data["packs"]
         running = data["running"]
         self.current_label.setText(
-            f"当前账号 {uid[:8] or '未登录'} · 本地会话 {data['sessions']} 条"
+            f"当前账号 {'已登录' if uid else '未登录'} · 本地会话 {data['sessions']} 条"
             f" · 档案 {len(packs)} 个")
         self.status_badge.set("运行中" if running else "已关闭",
                               "warn" if running else "ok")
@@ -281,7 +281,7 @@ class ProfilesPage(BasePage):
             return
         ep = self._edition()
         if profiles.delete_pack(ep, uid):
-            self.log(f"已删除账号档案 {uid[:8]}", "dim")
+            self.log("已删除账号档案", "dim")
             self.notify("已删除档案")
             self.reload()
         else:

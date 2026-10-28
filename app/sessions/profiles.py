@@ -403,7 +403,7 @@ def switch(ep: Edition, uid: str) -> tuple[bool, str]:
         return False, "找不到该账号的档案"
     save_current(ep)
     _restore(ep, uid)
-    return True, f"已切换到 {uid[:8]}"
+    return True, "已切换到该账号"
 
 
 def logout_and_restart(ep: Edition) -> tuple[bool, str]:

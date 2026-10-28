@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""主窗口：左侧导航 + 页面栈 + 运行日志抽屉 + 状态栏。"""
+"""主窗口：左侧导航 + 页面栈。"""
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, QTimer
@@ -16,7 +16,7 @@ from .pages.overview import OverviewPage
 from .pages.sessions import SessionsPage
 from .pages.settings import SettingsPage
 from .theme import PALETTE
-from .widgets import LogView, Toast, hline, label
+from .widgets import Toast
 
 NAV_ITEMS = [
     ("overview", "总览", "overview"),
@@ -68,10 +68,7 @@ class MainWindow(QMainWindow):
         self.nav_buttons: dict[str, NavButton] = {}
         self._summary: dict[str, str] = {}
         self._current = ""
-        self._log_level = ""
         self._pages_built: list[str] = []
-        self._log_lines: list[tuple[str, str]] = []
-        self._log_shown = False
 
         self.setObjectName("MainWindow")
         self.setWindowTitle(APP_TITLE)
@@ -151,7 +148,6 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         content.addWidget(self.stack, 1)
-        content.addWidget(self._build_log_drawer())
 
         # 页面改为首次进入时再构建（见 _ensure_page）：
         # 七个页面全量构造会在启动时同步扫描磁盘，白白卡住三秒以上。
@@ -194,45 +190,6 @@ class MainWindow(QMainWindow):
 
 
         return sidebar
-
-    def _build_log_drawer(self) -> QWidget:
-        wrap = QWidget()
-        wrap_layout = QVBoxLayout(wrap)
-        wrap_layout.setContentsMargins(24, 4, 24, 8)
-        wrap_layout.setSpacing(0)
-
-        self.log_bar = QFrame()
-        self.log_bar.setObjectName("LogBar")
-        self.log_bar_layout = QVBoxLayout(self.log_bar)
-        self.log_bar_layout.setContentsMargins(0, 0, 0, 0)
-        self.log_bar_layout.setSpacing(0)
-
-        head = QWidget()
-        head.setFixedHeight(34)
-        head_layout = QHBoxLayout(head)
-        head_layout.setContentsMargins(12, 0, 8, 0)
-        head_layout.setSpacing(8)
-        head_layout.addWidget(label("运行日志", "LogTitle"))
-        self.log_preview = QLabel("就绪")
-        self.log_preview.setObjectName("StatusText")
-        self.log_preview.setMaximumWidth(760)
-        head_layout.addWidget(self.log_preview, 1)
-        self.btn_clear_log = QPushButton("清空")
-        self.btn_clear_log.setObjectName("Link")
-        self.btn_clear_log.clicked.connect(self._clear_log)
-        head_layout.addWidget(self.btn_clear_log)
-        self.btn_toggle_log = QPushButton("展开")
-        self.btn_toggle_log.setObjectName("Link")
-        self.btn_toggle_log.clicked.connect(self.toggle_log)
-        head_layout.addWidget(self.btn_toggle_log)
-        bar_layout = self.log_bar_layout
-        bar_layout.addWidget(head)
-
-        # 日志框默认收起：创建它、以及往隐藏控件里逐行 appendHtml 都不便宜，
-        # 改成展开时再建、平时只留内存缓冲（_log_lines）。
-        self.log_view = None
-        wrap_layout.addWidget(self.log_bar)
-        return wrap
 
     # ------------------------------------------------------------------ 导航
     def _ensure_page(self, key: str) -> QWidget | None:
@@ -323,43 +280,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 日志
     def log(self, message: str, level: str = "info") -> None:
-        line = logbook.append(message)
-        self._log_lines.append((line, level))
-        if len(self._log_lines) > 800:
-            del self._log_lines[:200]
-        if self.log_view is not None:
-            self.log_view.append(line, level)
-        self.log_preview.setText(line)
-        # 逐行 setStyleSheet 会触发整表重新解析，扫描/同步时非常吃 CPU；
-        # 只有级别变化时才重设一次。
-        if level != self._log_level:
-            self._log_level = level
-            color = {"ok": PALETTE["ok"], "error": PALETTE["danger"],
-                     "dim": PALETTE["muted"], "warn": PALETTE["warn"]}.get(
-                         level, PALETTE["text_2"])
-            self.log_preview.setStyleSheet(f"color: {color}; font-size: 11px;")
-        if level == "error" and not self._log_shown:
-            self.toggle_log(True)
-
-    def toggle_log(self, expand: bool | None = None) -> None:
-        show = (not self._log_shown) if expand is None else expand
-        if show and self.log_view is None:
-            self.log_view = LogView()
-            self.log_view.setFixedHeight(132)
-            self.log_bar_layout.addWidget(self.log_view)
-            for line, level in self._log_lines:
-                self.log_view.append(line, level)
-            self._log_lines.clear()
-        if self.log_view is not None:
-            self.log_view.setVisible(show)
-        self._log_shown = show
-        self.btn_toggle_log.setText("收起" if show else "展开")
-
-    def _clear_log(self) -> None:
-        self._log_lines.clear()
-        if self.log_view is not None:
-            self.log_view.clear()
-        self.log_preview.setText("日志已清空")
+        """界面不再展示日志，只按级别落盘到 data/logs/app.log。"""
+        logbook.append(message)
 
     def notify(self, message: str, level: str = "info") -> None:
         self.toast.show_message(message, level)

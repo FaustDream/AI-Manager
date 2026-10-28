@@ -455,9 +455,9 @@ def all_targets(snap: Snapshot) -> list[dict]:
     """可选同步目标：WorkBuddy 两个版本 + CodeBuddy 两平台 × 各账号。"""
     targets = [
         {"kind": "workbuddy", "key": "cn",
-         "label": f"WorkBuddy 国内版 · {snap.cn_uid[:8] or '未登录'}"},
+         "label": "WorkBuddy 国内版"},
         {"kind": "workbuddy", "key": "intl",
-         "label": f"WorkBuddy 国际版 · {snap.intl_uid[:8] or '未登录'}"},
+         "label": "WorkBuddy 国际版"},
     ]
     seen = set()
     for session in snap.cb_sessions:

@@ -322,13 +322,12 @@ def switch_workbuddy(account: Account, log) -> str:
         cur_uid = snap_uid or info_uid
         if info_uid and snap_uid and info_uid != snap_uid:
             # .info 已被改写但客户端还没按新账号起来：这时存档只会张冠李戴
-            log(f"[{account.platform_label}] 登录态与账号快照不一致"
-                f"（{info_uid[:8]} / {snap_uid[:8]}），跳过本次存档")
+            log(f"[{account.platform_label}] 登录态与账号快照不一致，跳过本次存档")
             cur_uid = ""
         if cur_uid and cur_uid != target_uid:
             wb_profiles.save_current(ep, cur_uid)
             notes.append("已存档当前账号的登录态，之后可从账号档案一键切回")
-            log(f"[{account.platform_label}] 已存档当前账号 {cur_uid[:8]} 的登录态")
+            log(f"[{account.platform_label}] 已存档当前账号的登录态")
     except Exception as exc:  # 存档失败不应阻断切换
         log(f"[{account.platform_label}] 存档当前账号失败（切换继续）：{exc}")
 
@@ -338,8 +337,8 @@ def switch_workbuddy(account: Account, log) -> str:
         try:
             wb_profiles.restore_pack(ep, target_uid)
             auth_ready = wb_profiles.has_pack_auth(ep, target_uid)
-            notes.append(f"已恢复 {target_uid[:8]} 之前保存的登录态（免重新登录）")
-            log(f"[{account.platform_label}] 已恢复目标账号 {target_uid[:8]} 的登录态")
+            notes.append("已恢复该账号之前保存的登录态（免重新登录）")
+            log(f"[{account.platform_label}] 已恢复 {account.name} 的登录态")
             try:
                 from ..sessions import restore as session_restore
                 report = session_restore.restore_for_account(
@@ -375,7 +374,7 @@ def switch_workbuddy(account: Account, log) -> str:
             # 本机没有这个账号的 Chromium 登录态，无论 token 怎么写都要重新登录
             notes.append("本机没有该账号的登录态存档，客户端会停在登录页，需要重新登录一次；"
                          "登录后点「恢复会话」可把已有项目会话关联过来")
-            log(f"[{account.platform_label}] 目标账号 {target_uid[:8] or '未知'} 无档案，"
+            log(f"[{account.platform_label}] {account.name} 在本机没有档案，"
                 "切换后需要重新登录一次")
         template = json.loads(path.read_text(encoding="utf-8"))
         data = build_workbuddy_info(account, template)

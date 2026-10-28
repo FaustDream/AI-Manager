@@ -167,7 +167,7 @@ def sync_session(session, dst_platform, dst_uid) -> tuple[bool, str]:
         shutil.rmtree(dst_conv)
     shutil.copytree(src_dir, dst_conv)
     _write_json(index_path, index)
-    return True, f"已写入 {PLATFORM_LABEL.get(dst_platform, dst_platform)} / {dst_uid[:8]}"
+    return True, f"已写入 {PLATFORM_LABEL.get(dst_platform, dst_platform)}"
 
 
 def cleanup_empty(mode="junk") -> dict:
