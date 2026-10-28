@@ -1,0 +1,16 @@
+[project]
+name = "ai-manager"
+version = "1.0.0"
+description = "AI Manager：签到 / 会话 / 账号一体化桌面工作台"
+requires-python = ">=3.10"
+dependencies = [
+    # 只用 QtCore/QtGui/QtWidgets/QtSvg，essentials 足够；
+    # 装完整 PySide6 会多带 addons + webengine + pdf，体积多出约 450MB
+    "pyside6-essentials>=6.8,<7",
+    "requests>=2.31,<3",
+    "cryptography>=42,<51",
+]
+
+# 这是应用而不是要发布的库：不需要 build-system，uv 只负责建环境与装依赖
+[tool.uv]
+package = false
