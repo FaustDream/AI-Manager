@@ -19,7 +19,7 @@ from app.core import config, paths  # noqa: E402
 from app.ui import theme  # noqa: E402
 from app.ui.mainwindow import MainWindow  # noqa: E402
 
-PAGES = ["overview", "checkin", "accounts", "sessions", "profiles", "maintenance", "settings"]
+PAGES = ["overview", "account_center", "sessions", "maintenance", "settings"]
 
 
 def wait(ms: int) -> None:

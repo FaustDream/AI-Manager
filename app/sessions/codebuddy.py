@@ -9,8 +9,8 @@
             index.json          {"messages":[{id,type,role,isComplete},...]}
             messages\\<msgId>.json  {"role":..., "message":"<内层JSON字符串>"}
 
-两个插件的结构完全一致，所以可以在两边互相同步；WorkBuddy 用的是 SQLite，
-格式不同，只能各管各的。
+两个插件的结构完全一致，各账号、各平台目录互相独立；WorkBuddy 用的是 SQLite，
+格式不同，两边各管各的。
 """
 from __future__ import annotations
 
@@ -18,14 +18,28 @@ import json
 import os
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from ..core import paths
 
 CB_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "CodeBuddyExtension" / "Data"
 PLATFORMS = ("CodeBuddyIDE", "JetBrains")
 PLATFORM_LABEL = {"CodeBuddyIDE": "CodeBuddy IDE", "JetBrains": "IDEA 插件"}
 UID_RE = re.compile(r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|default)$")
+
+# 全量扫描要读几百个工作区索引，两秒起步；会话页和备份页共用这一份结果
+_CACHE: tuple[float, list[dict]] | None = None
+_CACHE_TTL = 60.0
+
+
+def invalidate() -> None:
+    """删改之后必须让缓存失效，否则刷新还会看到刚删掉的会话。"""
+    global _CACHE
+    _CACHE = None
+
 
 
 def _valid_uid(name: str) -> bool:
@@ -55,17 +69,6 @@ def _write_json(path: Path, data):
     os.replace(tmp, path)
 
 
-def accounts() -> list[str]:
-    """所有出现过的账号 uid（来自目录名）。"""
-    if not CB_ROOT.exists():
-        return []
-    seen = []
-    for uid_dir in sorted(CB_ROOT.iterdir()):
-        if uid_dir.is_dir() and _valid_uid(uid_dir.name) and uid_dir.name not in seen:
-            seen.append(uid_dir.name)
-    return seen
-
-
 def sources() -> list[tuple]:
     """(平台, 账号uid, history 目录) 三元组，已存在的才算。"""
     out = []
@@ -87,8 +90,13 @@ def sources() -> list[tuple]:
     return out
 
 
-def scan() -> list[dict]:
-    """扫描全部平台/账号/工作区，返回会话列表。"""
+def scan(force: bool = False) -> list[dict]:
+    """扫描全部平台/账号/工作区，返回会话列表（结果缓存 60 秒）。"""
+    global _CACHE
+    now = time.monotonic()
+    if not force and _CACHE is not None and now - _CACHE[0] < _CACHE_TTL:
+        return [dict(item) for item in _CACHE[1]]
+
     sessions = []
     for platform, uid, hist in sources():
         try:
@@ -128,46 +136,99 @@ def scan() -> list[dict]:
                     "has_body": msgs > 0,
                 })
     sessions.sort(key=lambda s: s["last"], reverse=True)
-    return sessions
+    _CACHE = (now, sessions)
+    return [dict(item) for item in sessions]
 
 
 def _target_ws(platform, uid, workspace) -> Path:
     return CB_ROOT / uid / platform / uid / "history" / workspace
 
 
-def sync_session(session, dst_platform, dst_uid) -> tuple[bool, str]:
-    """把一条会话复制到另一个平台/账号，返回 (ok, message)。"""
-    if not session.get("has_body"):
-        return False, "源会话没有正文（0 条消息），跳过"
-    src_dir = Path(session["path"])
-    if not src_dir.is_dir():
-        return False, "源会话目录不存在"
+def _drop_recent(ws_dir: Path, cid: str) -> None:
+    """recent.json 里也留着这条会话，不清掉客户端列表还会显示它。"""
+    recent_path = ws_dir / "recent.json"
+    recent = _read_json(recent_path)
+    if not isinstance(recent, list):
+        return
+    kept = [x for x in recent
+            if (x.get("id") if isinstance(x, dict) else x) != cid]
+    if len(kept) != len(recent):
+        _write_json(recent_path, kept)
 
-    ws_dir = _target_ws(dst_platform, dst_uid, session["workspace"])
+
+def remove_session(session: dict, tag: str) -> dict | None:
+    """把一条会话从工作区索引摘掉，目录移入回收站；返回回收站清单条目。"""
+    cid = session.get("id") or ""
+    if not cid:
+        return None
+    platform = session.get("platform") or ""
+    uid = session.get("uid") or ""
+    workspace = session.get("workspace") or ""
+    cdir = Path(session.get("path") or "")
+    ws_dir = cdir.parent if str(cdir) else None
+
+    size = 0
+    rel = Path("cb") / platform / uid / workspace / cid
+    dest = paths.TRASH_ROOT / tag / rel
+    if cdir.is_dir():
+        try:
+            size = sum(f.stat().st_size for f in cdir.rglob("*") if f.is_file())
+        except OSError:
+            size = 0
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.move(str(cdir), str(dest))
+
+    if ws_dir is not None:
+        index_path = ws_dir / "index.json"
+        if index_path.exists():
+            index = _read_json(index_path) or {}
+            convs = [c for c in (index.get("conversations") or [])
+                     if c.get("id") != cid]
+            index["conversations"] = convs
+            if index.get("current") == cid:
+                index["current"] = convs[0]["id"] if convs else None
+            _write_json(index_path, index)
+            _drop_recent(ws_dir, cid)
+
+    invalidate()
+    return {"kind": "codebuddy", "sid": cid, "edition": "cb",
+            "platform": platform, "uid": uid, "workspace": workspace,
+            "conv": session.get("meta") or {"id": cid, "name": session.get("name") or ""},
+            "trash_rel": str(rel), "size": size,
+            "files": [], "row": None, "usage": None}
+
+
+def restore_item(item: dict, tag_dir: Path) -> bool:
+    """回收站恢复：目录搬回原位，并重新登记到工作区索引。"""
+    platform = item.get("platform") or ""
+    uid = item.get("uid") or ""
+    workspace = item.get("workspace") or ""
+    cid = item.get("sid") or ""
+    if not (platform and uid and cid):
+        return False
+    src = tag_dir / str(item.get("trash_rel") or "")
+    ws_dir = _target_ws(platform, uid, workspace)
     ws_dir.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        dest = ws_dir / cid
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.move(str(src), str(dest))
+
     index_path = ws_dir / "index.json"
     index = _read_json(index_path) or {"conversations": [], "current": None}
-    index.setdefault("conversations", [])
-
-    existing = next((c for c in index["conversations"]
-                     if c.get("id") == session["id"]), None)
-    if existing and _iso_ms(existing.get("lastMessageAt")) >= session["last"]:
-        if (ws_dir / session["id"]).is_dir():
-            return False, "目标已存在且不旧于源，跳过"
-
-    if existing:
-        index["conversations"] = [c for c in index["conversations"]
-                                  if c.get("id") != session["id"]]
-    index["conversations"].append(session["meta"])
+    convs = index.setdefault("conversations", [])
+    conv = item.get("conv") or {"id": cid}
+    if not any(c.get("id") == cid for c in convs):
+        convs.append(conv)
     if not index.get("current"):
-        index["current"] = session["id"]
-
-    dst_conv = ws_dir / session["id"]
-    if dst_conv.exists():
-        shutil.rmtree(dst_conv)
-    shutil.copytree(src_dir, dst_conv)
+        index["current"] = cid
     _write_json(index_path, index)
-    return True, f"已写入 {PLATFORM_LABEL.get(dst_platform, dst_platform)}"
+    invalidate()
+    return True
+
 
 
 def cleanup_empty(mode="junk") -> dict:
@@ -251,13 +312,6 @@ def cleanup_empty(mode="junk") -> dict:
             except OSError:
                 # IDE 正在写索引时可能短暂占用文件，跳过这个工作区，继续处理下一个
                 stats["failed"] += 1
+    if stats["sessions"] or stats["workspaces"]:
+        invalidate()
     return stats
-
-
-def targets() -> list[tuple]:
-    """可选的同步目标（已有或可创建的平台×账号组合）。"""
-    return [(platform, uid) for uid in accounts() for platform in PLATFORMS]
-
-
-def ws_label(session) -> str:
-    return session["workspace"][:8]

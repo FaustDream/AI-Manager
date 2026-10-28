@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""同步前的数据库 + 正文备份，以及按备份回滚。
+"""会话库快照与按快照回滚。
 
-备份目录沿用 ~/.workbuddy-session-sync/backups，旧版本的备份仍然可以直接回滚。
+备份目录沿用 ~/.workbuddy-session-sync/backups，历史备份仍然可以直接回滚。
 """
 from __future__ import annotations
 
@@ -32,65 +32,27 @@ def backup_db(ep: Edition, dest: Path) -> None:
         src_conn.close()
 
 
-def make_backup(plans, tag: str) -> Path:
-    """plans: [(src, dst, items, skipped)]，只备份「会被覆盖」的文件。"""
+def make_snapshot(tag: str) -> Path:
+    """整库快照：两个版本的会话库各存一份，用于回滚。
+
+    同步取消后不再有「同步前自动备份」，回滚之前得先有东西可回，
+    所以快照改由用户显式触发（备份与清理页的「立即备份」）。
+    """
     bdir = BACKUP_ROOT / tag
     (bdir / "db").mkdir(parents=True, exist_ok=True)
-    # 两个版本的库都要备份：本版本内恢复也会改另一个库
     for key in ("cn", "intl"):
         ep = Edition(key)
         if ep.exists:
             backup_db(ep, bdir / "db" / f"{key}.db")
 
-    touched = {}
-    for src, dst, items, _ in plans:
-        touched[dst.key] = (dst, items)
-    for key, (ep, items) in touched.items():
-        for item in items:
-            dst_dir = ep.projects / item.slug
-            for path in item.files:
-                target = dst_dir / path.name
-                if not target.exists():
-                    continue
-                rel = target.relative_to(ep.root)
-                save = bdir / "files" / key / rel
-                save.parent.mkdir(parents=True, exist_ok=True)
-                if target.is_dir():
-                    if save.exists():
-                        remove_path(save)
-                    shutil.copytree(target, save)
-                else:
-                    shutil.copy2(target, save)
-            for target in (ep.tasks / item.sid, ep.todos / f"{item.sid}.json"):
-                if not target.exists():
-                    continue
-                save = bdir / "files" / key / target.relative_to(ep.root)
-                save.parent.mkdir(parents=True, exist_ok=True)
-                if target.is_dir():
-                    if save.exists():
-                        remove_path(save)
-                    shutil.copytree(target, save)
-                else:
-                    shutil.copy2(target, save)
-
     manifest = {
         "tag": tag,
+        "kind": "db-snapshot",
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "plans": [
-            {
-                "src": src.key, "dst": dst.key,
-                "items": [
-                    {"sid": item.sid, "action": item.action, "slug": item.slug,
-                     "files": [f.name for f in item.files]}
-                    for item in items
-                ],
-            }
-            for src, dst, items, _ in plans
-        ],
+        "plans": [],
     }
     (bdir / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return bdir
 
 
@@ -108,6 +70,7 @@ def list_backups() -> list[dict]:
             continue
         out.append({
             "tag": entry.name,
+            "kind": data.get("kind") or "plans",
             "count": sum(len(p.get("items", [])) for p in data.get("plans", [])),
             "created": data.get("created_at", ""),
             "path": str(entry),

@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
-"""会话编排层：把两个版本、两个 CodeBuddy 平台的会话摊平成一张表，并提供同步动作。"""
+"""会话编排层：把两个版本、两个 CodeBuddy 平台的会话摊平成一份可管理的清单。
+
+只读本地会话库与正文目录，回答「本机有哪些会话、占多少空间、删哪些」。
+账号之间的会话恢复由 app/sessions/restore.py 负责，这一层不做任何跨版本搬运。
+"""
 from __future__ import annotations
 
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +24,8 @@ SOURCE_LABELS = {
     "CodeBuddyIDE": "CodeBuddy IDE",
     "JetBrains": "IDEA 插件",
 }
+
+STALE_DAYS = 180
 
 
 def count_messages(files) -> int:
@@ -59,21 +66,22 @@ def side_state(row, uid: str) -> str:
     return "visible"
 
 
-class Snapshot:
+class Catalog:
+    """一次扫描的结果：会话清单 + 空间账本 + 可选的云端列表。"""
+
     def __init__(self) -> None:
         self.cn = Edition("cn")
         self.intl = Edition("intl")
         self.cn_uid = ""
         self.intl_uid = ""
-        self.rows: list[dict] = []
-        self.unified: list[dict] = []
-        self.plans: list[dict] = []
-        self.restores: dict = {}
+        self.rows: list[dict] = []          # 合并后的本地会话（两个版本按 id 去重）
+        self.unified: list[dict] = []       # 表格行：来源 × 账号 × 会话
+        self.cb_sessions: list[dict] = []
+        self.cloud_rows: dict = {}          # {edition_key: [云端行]}，未拉取时为空
+        self.orphans: list[dict] = []       # 没有任何会话行指向的正文文件
+        self.space: dict = {}
         self.backups: list[dict] = []
         self.trash: list[dict] = []
-        self.cb_sessions: list[dict] = []
-        self.cloud_rows: dict = {}      # {edition_key: [标准化云端行]}，拉取失败为 None
-        self.pending = 0
         self.tomb_count = 0
         self.cloud_total = 0
         self.cn_total = 0
@@ -92,27 +100,33 @@ class Snapshot:
         return sum(row["size"] for row in self.rows)
 
 
-def build_inventory(snap: Snapshot) -> None:
-    cn_rows = {row["id"]: row for row in wbdb.list_local_sessions(snap.cn)}
-    intl_rows = {row["id"]: row for row in wbdb.list_local_sessions(snap.intl)}
+def build_inventory(cat: Catalog) -> None:
+    cn_rows = {row["id"]: row for row in wbdb.list_local_sessions(cat.cn)}
+    intl_rows = {row["id"]: row for row in wbdb.list_local_sessions(cat.intl)}
+    cn_files = wbdb.project_files(cat.cn)
+    intl_files = wbdb.project_files(cat.intl)
+
     merged = []
     for sid in set(cn_rows) | set(intl_rows):
         cn_row, intl_row = cn_rows.get(sid), intl_rows.get(sid)
-        files_cn = wbdb.find_session_files(snap.cn, sid)
-        files_intl = wbdb.find_session_files(snap.intl, sid)
+        files_cn = cn_files.get(sid, [])
+        files_intl = intl_files.get(sid, [])
         files = files_cn or files_intl
         base = cn_row or intl_row or {}
+        size_cn = sum(path_size(f) for f in files_cn)
+        size_intl = sum(path_size(f) for f in files_intl)
         merged.append({
             "id": sid,
             "title": base.get("custom_title") or base.get("title") or sid,
-            "cn": side_state(cn_row, snap.cn_uid),
-            "intl": side_state(intl_row, snap.intl_uid),
+            "cn": side_state(cn_row, cat.cn_uid),
+            "intl": side_state(intl_row, cat.intl_uid),
             "cn_row": cn_row,
             "intl_row": intl_row,
             "last": max(int((cn_row or {}).get("last_activity_at") or 0),
                         int((intl_row or {}).get("last_activity_at") or 0)),
-            "size": max(sum(path_size(f) for f in files_cn),
-                        sum(path_size(f) for f in files_intl)),
+            "size": max(size_cn, size_intl),
+            "size_cn": size_cn,
+            "size_intl": size_intl,
             "messages": count_messages(files),
             "files_cn": [str(f) for f in files_cn],
             "files_intl": [str(f) for f in files_intl],
@@ -121,23 +135,51 @@ def build_inventory(snap: Snapshot) -> None:
             "status": base.get("status") or "",
         })
     merged.sort(key=lambda r: r["last"], reverse=True)
-    snap.rows = merged
-    snap.cn_total = len(cn_rows)
-    snap.intl_total = len(intl_rows)
-    snap.cloud_total = wbdb.cloud_count(snap.cn) + wbdb.cloud_count(snap.intl)
-    snap.cn_visible = sum(1 for r in merged if r["cn"] == "visible")
-    snap.intl_visible = sum(1 for r in merged if r["intl"] == "visible")
+    cat.rows = merged
+    cat.cn_total = len(cn_rows)
+    cat.intl_total = len(intl_rows)
+    cat.cn_visible = sum(1 for r in merged if r["cn"] == "visible")
+    cat.intl_visible = sum(1 for r in merged if r["intl"] == "visible")
+    cat.cloud_total = wbdb.cloud_count(cat.cn) + wbdb.cloud_count(cat.intl)
+    build_space(cat, cn_files, intl_files)
 
 
-def _is_deleted(row: dict) -> bool:
-    # 云端行用 deleted_at = -1 表示“未删除”（与客户端视图口径一致）
-    value = row.get("deleted_at")
-    return value is not None and value != -1
+def build_space(cat: Catalog, cn_files: dict, intl_files: dict) -> None:
+    """空间账本：正文总量、已删除仍占盘、没有会话行指向的孤立文件。"""
+    space = {"files": 0, "bytes": 0, "deleted_rows": 0, "deleted_bytes": 0,
+             "empty_rows": 0, "orphan_files": 0, "orphan_bytes": 0}
+    cat.orphans = []
+    for key, ep, index in (("cn", cat.cn, cn_files), ("intl", cat.intl, intl_files)):
+        known = wbdb.all_session_ids(ep)
+        for sid, files in index.items():
+            size = sum(path_size(f) for f in files)
+            space["files"] += len(files)
+            space["bytes"] += size
+            if sid in known:
+                continue
+            space["orphan_files"] += len(files)
+            space["orphan_bytes"] += size
+            cat.orphans.append({"edition": key, "sid": sid,
+                                "files": [str(f) for f in files], "size": size})
+
+    deleted = set()
+    for row in cat.rows:
+        if row["cn"] == "deleted":
+            deleted.add(row["id"])
+            space["deleted_bytes"] += row["size_cn"]
+        if row["intl"] == "deleted":
+            deleted.add(row["id"])
+            space["deleted_bytes"] += row["size_intl"]
+        if not row["files_cn"] and not row["files_intl"]:
+            space["empty_rows"] += 1
+    space["deleted_rows"] = len(deleted)
+    cat.space = space
 
 
 def _row_state(row: dict, uid: str) -> str:
-    """归属判定：这一行在‘当前账号的会话列表’里应该显示成什么。"""
-    if _is_deleted(row):
+    """归属判定：这一行在「当前账号的会话列表」里应该显示成什么。"""
+    value = row.get("deleted_at")
+    if value is not None and value != -1:
         return "已删除"
     owner = row.get("user_id") or ""
     if uid and owner and owner != uid:
@@ -147,21 +189,21 @@ def _row_state(row: dict, uid: str) -> str:
     return "可见"
 
 
-def build_unified(snap: Snapshot) -> None:
+def build_unified(cat: Catalog) -> None:
     """把 WorkBuddy 两个版本、CodeBuddy 两个平台的会话摊平成一张列表。
 
-    每条记录代表“某个来源、某个账号下的一条会话”，归属判定：
+    每条记录代表「某个来源、某个账号下的一条会话」，归属判定：
       · WorkBuddy：sessions.user_id 与该版本 account-snapshot 的 uid 比对，
-        旧账号的行保留在本地但标「旧账号」，默认不进当前账号列表；
+        其他账号的行标「旧账号」，默认不进当前账号列表；
       · CodeBuddy：目录结构 <uid>/<平台>/<uid>/history 天然按账号隔离，
         目录名 uid 就是归属账号。
     云端行（transport='cloud' 或接口拉回的）没有本地正文，标「云端」。
     """
     rows = []
-    info_by_id = {r["id"]: r for r in snap.rows}
+    info_by_id = {r["id"]: r for r in cat.rows}
     for key, label in (("cn", SOURCE_LABELS["cn"]), ("intl", SOURCE_LABELS["intl"])):
-        ep = snap.cn if key == "cn" else snap.intl
-        uid = snap.cn_uid if key == "cn" else snap.intl_uid
+        ep = cat.cn if key == "cn" else cat.intl
+        uid = cat.cn_uid if key == "cn" else cat.intl_uid
         seen_ids: set[str] = set()
         for row in wbdb.list_all_sessions(ep):
             seen_ids.add(row["id"])
@@ -177,7 +219,8 @@ def build_unified(snap: Snapshot) -> None:
                 "title": row.get("custom_title") or row.get("title") or row["id"],
                 "last": int(row.get("last_activity_at") or row.get("created_at") or 0),
                 "msgs": info.get("messages", 0),
-                "size": info.get("size", 0),
+                "size": (info.get("size_cn") if key == "cn"
+                         else info.get("size_intl")) or 0,
                 "state": state,
                 "has_body": bool(info.get("files_cn") or info.get("files_intl")),
                 "files": info.get("files_cn") if key == "cn" else info.get("files_intl"),
@@ -187,7 +230,7 @@ def build_unified(snap: Snapshot) -> None:
                 "raw": None,
             })
         # 服务端拉回、本地还没有的会话：只列条目（无正文，打开客户端后由它补全）
-        for crow in (snap.cloud_rows.get(key) or []):
+        for crow in (cat.cloud_rows.get(key) or []):
             if crow["id"] in seen_ids:
                 continue
             rows.append({
@@ -208,7 +251,7 @@ def build_unified(snap: Snapshot) -> None:
                 "client_status": crow.get("status") or "",
                 "raw": None,
             })
-    for session in snap.cb_sessions:
+    for session in cat.cb_sessions:
         rows.append({
             "kind": "codebuddy",
             "source_key": session["platform"],
@@ -228,74 +271,45 @@ def build_unified(snap: Snapshot) -> None:
             "raw": session,
         })
     rows.sort(key=lambda r: r["last"], reverse=True)
-    snap.unified = rows
+    cat.unified = rows
 
 
-def fetch_cloud_rows(snap: Snapshot, log=None) -> None:
-    """为每个版本的当前账号拉取云端会话列表，写入 snap.cloud_rows。
+def pull_cloud(cat: Catalog, log=None) -> int:
+    """按需拉取两个版本当前账号的云端会话列表。
 
-    同步时机之一：账号切换检测到 uid 变化、或用户点「刷新」时触发。
-    登录态失效/网络失败都只记日志，本地列表照常出。
+    登录态失效/网络失败都只记日志：本地列表照常出，云端只是补充信息。
     """
     log = log or (lambda m, lv="info": None)
-    snap.cloud_rows = {}
-    for key, uid in (("cn", snap.cn_uid), ("intl", snap.intl_uid)):
+    cat.cloud_rows = {}
+    for key, uid in (("cn", cat.cn_uid), ("intl", cat.intl_uid)):
         if not uid:
-            snap.cloud_rows[key] = None
+            cat.cloud_rows[key] = None
             continue
         account = cloud.find_account(uid)
         if account is None:
-            snap.cloud_rows[key] = None
+            cat.cloud_rows[key] = None
             continue
-        snap.cloud_rows[key] = cloud.fetch_for_account(account, log)
+        cat.cloud_rows[key] = cloud.fetch_for_account(account, log)
+    return sum(len(rows or []) for rows in cat.cloud_rows.values())
 
 
-def build_snapshot(include_deleted: bool = True, with_cloud: bool = True,
-                   log=None) -> Snapshot:
-    snap = Snapshot()
-    snap.cn_uid = snap.cn.current_uid()[0]
-    snap.intl_uid = snap.intl.current_uid()[0]
+def build_catalog(with_cloud: bool = False, log=None) -> Catalog:
+    cat = Catalog()
+    cat.cn_uid = cat.cn.current_uid()[0]
+    cat.intl_uid = cat.intl.current_uid()[0]
     if with_cloud:
-        fetch_cloud_rows(snap, log)
-    if snap.cn.exists or snap.intl.exists:
-        build_inventory(snap)
-        for src, dst in ((snap.cn, snap.intl), (snap.intl, snap.cn)):
-            if not (src.exists and dst.exists):
-                continue
-            items, _skipped = wbdb.build_plan(src, dst, include_deleted, True)
-            snap.plans.append({"src": src, "dst": dst, "items": items})
-        for ep in (snap.cn, snap.intl):
-            if not ep.exists:
-                continue
-            uid = snap.cn_uid if ep.key == "cn" else snap.intl_uid
-            rows = wbdb.build_local_restore(ep, uid)
-            if rows:
-                snap.restores[ep.key] = rows
-        snap.pending = sum(len(plan["items"]) for plan in snap.plans)
-    snap.cb_sessions = cb.scan()
-    build_unified(snap)
-    snap.backups = backup.list_backups()
-    snap.trash = trash.list_trash()
-    snap.tomb_count = len(trash.tombstone_ids())
-    return snap
+        pull_cloud(cat, log)
+    if cat.cn.exists or cat.intl.exists:
+        build_inventory(cat)
+    cat.cb_sessions = cb.scan()
+    build_unified(cat)
+    cat.backups = backup.list_backups()
+    cat.trash = trash.list_trash()
+    cat.tomb_count = len(trash.tombstone_ids())
+    return cat
 
 
-# ------------------------------------------------------------------ 同步动作
-def directions(mode: str) -> list[tuple[str, str]]:
-    if mode == "cn2intl":
-        return [("cn", "intl")]
-    if mode == "intl2cn":
-        return [("intl", "cn")]
-    return [("cn", "intl"), ("intl", "cn")]
-
-
-def ensure_ready() -> None:
-    cn, intl = Edition("cn"), Edition("intl")
-    missing = [ep.label for ep in (cn, intl) if not ep.exists]
-    if missing:
-        raise RuntimeError("找不到以下版本的数据目录：" + "、".join(missing))
-
-
+# ------------------------------------------------------------------ 写入动作
 def close_clients(log) -> list[Edition]:
     """写入前必须关客户端：内存缓存会覆盖改动，WAL 也可能不落盘。"""
     closed = []
@@ -310,124 +324,94 @@ def close_clients(log) -> list[Edition]:
     return closed
 
 
-def perform_sync(mode: str, include_deleted: bool, do_restore: bool,
-                 log, restart: bool = True) -> dict:
-    ensure_ready()
-    cn, intl = Edition("cn"), Edition("intl")
-    pairs = []
-    for src_key, dst_key in directions(mode):
-        src = cn if src_key == "cn" else intl
-        dst = intl if src_key == "cn" else cn
-        items, skipped = wbdb.build_plan(src, dst, include_deleted, True)
-        pairs.append((src, dst, items, skipped))
-
-    restores = {}
-    if do_restore:
-        for ep in (cn, intl):
-            rows = wbdb.build_local_restore(ep, ep.current_uid()[0])
-            if rows:
-                restores[ep.key] = (ep, rows)
-
-    total = sum(len(items) for _, _, items, _ in pairs)
-    restore_total = sum(len(rows) for _, rows in restores.values())
-    if total == 0 and restore_total == 0:
-        return {"skipped": True, "moved": 0, "restored": 0, "failed": 0,
-                "tag": "", "backup": "", "restore_total": 0}
-
-    closed = close_clients(log)
-    tag = trash.new_tag(backup.BACKUP_ROOT)
-    log(f"开始备份（{tag}）…")
-    bdir = backup.make_backup(pairs, tag)
-    log(f"备份完成：{bdir}")
-
-    moved = failed = 0
-    for key, (ep, rows) in restores.items():
-        uid = ep.current_uid()[0]
-        try:
-            count = wbdb.apply_local_restore(ep, rows, uid)
-            log(f"♻️ {ep.label} 恢复 {count} 条会话可见")
-        except Exception as exc:
-            failed += 1
-            log(f"❌ {ep.label} 恢复失败：{exc}", "error")
-
-    for src, dst, items, _ in pairs:
-        if not items:
-            continue
-        target_uid = dst.current_uid()[0]
-        log(f"🔄 {src.label} → {dst.label}（{len(items)} 条）")
-        for item in items:
-            try:
-                wbdb.apply_item(src, dst, item, target_uid)
-                moved += 1
-                log(f"   ✅ {item.title or item.sid}")
-            except Exception as exc:
-                failed += 1
-                log(f"   ❌ {item.title or item.sid}：{exc}", "error")
-
-    if restart:
-        for ep in closed:
-            log(f"重新启动 {ep.label}…")
-            winproc.start_exe(ep.exe)
-
-    return {"skipped": False, "moved": moved, "restored": restore_total,
-            "failed": failed, "tag": tag, "backup": str(bdir)}
-
-
-def copy_selected(rows: list[dict], kind: str, target, log) -> dict:
-    """把选中的会话搬到指定目标（WorkBuddy 版本 或 CodeBuddy 平台+账号）。"""
-    if not rows:
-        return {"ok": 0, "skip": 0, "fail": 0}
-    ok = skip = fail = 0
-    if kind == "workbuddy":
-        closed = close_clients(log)
-        for row in rows:
-            if row["source_key"] == target:
-                skip += 1
-                continue
-            try:
-                done, message = wbdb.copy_single_session(row["source_key"], target, row["id"])
-            except Exception as exc:
-                fail += 1
-                log(f"   ❌ {row['title']}：{exc}", "error")
-                continue
-            if done:
-                ok += 1
-                log(f"   ✅ {row['title']} → {message}")
-            else:
-                skip += 1
-                log(f"   ↷ {row['title']}：{message}")
-        for ep in closed:
-            winproc.start_exe(ep.exe)
-        return {"ok": ok, "skip": skip, "fail": fail}
-
-    dst_platform, dst_uid = target
-    for row in rows:
-        if (row["source_key"], row["account"]) == (dst_platform, dst_uid):
-            skip += 1
-            continue
-        try:
-            done, message = cb.sync_session(row["raw"], dst_platform, dst_uid)
-        except Exception as exc:
-            fail += 1
-            log(f"   ❌ {row['title']}：{exc}", "error")
-            continue
-        if done:
-            ok += 1
-            log(f"   ✅ {row['title']} → {message}")
-        else:
-            skip += 1
-            log(f"   ↷ {row['title']}：{message}")
-    return {"ok": ok, "skip": skip, "fail": fail}
-
-
 def delete_ids(ids: list[str], log) -> dict:
+    """删除 WorkBuddy 会话：数据库行 + 正文 + 任务/待办，文件先进回收站。"""
     if not ids:
-        return {"deleted": 0, "files": 0, "bytes": 0, "trash": ""}
+        return {"deleted": 0, "files": 0, "bytes": 0, "trash": "", "ids": []}
     close_clients(log)
     stats = wbdb.delete_sessions(ids)
     log(f"🗑 删除完成：数据库 {stats['deleted']} 行，文件 {stats['files']} 个，"
         f"释放 {stats['bytes'] / 1048576:.1f} MB")
     return stats
+
+
+def delete_codebuddy(sessions: list[dict], log) -> dict:
+    """删除 CodeBuddy 会话：目录移入回收站，并从工作区索引里摘掉。"""
+    stats = {"sessions": 0, "files": 0, "bytes": 0, "trash": ""}
+    if not sessions:
+        return stats
+    tag = trash.new_tag(trash.TRASH_ROOT)
+    items = []
+    for session in sessions:
+        try:
+            item = cb.remove_session(session, tag)
+        except OSError as exc:
+            log(f"❌ {session.get('name') or session.get('id')}：{exc}", "error")
+            continue
+        if item:
+            items.append(item)
+            stats["sessions"] += 1
+            stats["bytes"] += int(item.get("size") or 0)
+    if items:
+        trash.write_manifest(tag, items)
+        stats["trash"] = str(trash.TRASH_ROOT / tag)
+        log(f"🗑 CodeBuddy 会话 {stats['sessions']} 条，"
+            f"释放 {stats['bytes'] / 1048576:.1f} MB")
+    return stats
+
+
+def purge_orphans(cat: Catalog, log) -> dict:
+    """把没有会话行指向的正文文件移入回收站。
+
+    客户端删会话时只清数据库行，projects 下的正文可能留下来；这些文件
+    不会再被任何界面引用，是纯占用。
+    """
+    stats = {"groups": 0, "files": 0, "bytes": 0, "trash": ""}
+    if not cat.orphans:
+        return stats
+    tag = trash.new_tag(trash.TRASH_ROOT)
+    items = []
+    for group in cat.orphans:
+        ep = Edition(group["edition"])
+        record = {"sid": group["sid"], "edition": ep.key, "files": [],
+                  "size": 0, "row": None, "usage": None}
+        for raw in group["files"]:
+            path = Path(raw)
+            try:
+                rel = path.relative_to(ep.root)
+            except ValueError:
+                continue
+            dest = trash.TRASH_ROOT / tag / ep.key / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                continue
+            try:
+                shutil.move(str(path), str(dest))
+            except OSError as exc:
+                log(f"移动孤立文件失败：{exc}", "warn")
+                continue
+            record["files"].append(str(rel))
+            record["size"] += path_size(dest)
+            stats["files"] += 1
+        if record["files"]:
+            items.append(record)
+            stats["groups"] += 1
+            stats["bytes"] += record["size"]
+    if items:
+        trash.write_manifest(tag, items)
+        stats["trash"] = str(trash.TRASH_ROOT / tag)
+        log(f"🧹 清理孤立正文 {stats['files']} 个文件，"
+            f"释放 {stats['bytes'] / 1048576:.1f} MB")
+    return stats
+
+
+def backup_now(log) -> str:
+    """手动整库快照：同步去掉之后，回滚之前得先有东西可回。"""
+    tag = trash.new_tag(backup.BACKUP_ROOT)
+    log(f"正在备份会话库（{tag}）…")
+    path = backup.make_snapshot(tag)
+    log(f"备份完成：{path}")
+    return str(path)
 
 
 def cleanup_codebuddy(mode: str) -> dict:
@@ -449,28 +433,6 @@ def purge_trash(tag: str | None = None) -> int:
 
 def clear_blacklist() -> int:
     return trash.clear_tombstones()
-
-
-def all_targets(snap: Snapshot) -> list[dict]:
-    """可选同步目标：WorkBuddy 两个版本 + CodeBuddy 两平台 × 各账号。"""
-    targets = [
-        {"kind": "workbuddy", "key": "cn",
-         "label": "WorkBuddy 国内版"},
-        {"kind": "workbuddy", "key": "intl",
-         "label": "WorkBuddy 国际版"},
-    ]
-    seen = set()
-    for session in snap.cb_sessions:
-        key = (session["platform"], session["uid"])
-        if key in seen:
-            continue
-        seen.add(key)
-        targets.append({
-            "kind": "codebuddy", "key": key,
-            "label": f'{cb.PLATFORM_LABEL.get(session["platform"], session["platform"])}'
-                     f' · {session["uid"][:8]}',
-        })
-    return targets
 
 
 def save_profile(ep: Edition) -> Path:
