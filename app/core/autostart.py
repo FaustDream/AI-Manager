@@ -2,7 +2,8 @@
 """开机自启：写当前用户的 Run 注册表项，不依赖任何第三方库。
 
 用 HKCU 而不是 HKLM：不需要管理员权限，卸载时也不会在其他账号下留垃圾。
-启动命令带 --boot-checkin，程序起来后先刷新签到状态再决定签谁。
+启动命令不再带额外参数：每日签到轮询是程序启动后的固定动作，开机自启
+与手动双击走同一条路径。
 """
 from __future__ import annotations
 
@@ -12,7 +13,6 @@ from pathlib import Path
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 VALUE_NAME = "AI Manager"
-BOOT_FLAG = "--boot-checkin"
 
 
 def _command() -> str:
@@ -23,8 +23,8 @@ def _command() -> str:
         if windowless.exists():
             exe = windowless
         root = Path(__file__).resolve().parents[2]
-        return f'"{exe}" "{root / "run.pyw"}" {BOOT_FLAG}'
-    return f'"{exe}" {BOOT_FLAG}'
+        return f'"{exe}" "{root / "run.pyw"}"'
+    return f'"{exe}"'
 
 
 def command_line() -> str:

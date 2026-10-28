@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import html
 
-from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, QTime, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRectF, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QFrame, QHBoxLayout,
-                               QHeaderView, QLabel, QPlainTextEdit, QPushButton,
-                               QSizePolicy, QTableView, QTimeEdit, QToolButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QHeaderView,
+                               QLabel, QPlainTextEdit, QPushButton, QSizePolicy,
+                               QTableView, QVBoxLayout, QWidget)
 
 from . import icons
 from .models import Column, RowModel
@@ -98,104 +97,6 @@ class Spinner(QWidget):
         # Qt 的角度单位是 1/16 度；负角度顺时针旋转
         painter.drawArc(rect, -self._angle * 16, 270 * 16)
         painter.end()
-
-
-class TimeField(QFrame):
-    """HH:mm 时间输入框。
-
-    原生 QTimeEdit 的上下按钮在圆角边框里会被裁掉半个箭头，尺寸也很难对齐。
-    这里改成「无按钮的时间输入 + 自绘步进按钮」，外观完全交给 QSS，
-    对外接口与 QTimeEdit 一致：time() / set_time() / timeChanged。
-    """
-
-    timeChanged = Signal(QTime)
-
-    def __init__(self, parent=None, step_minutes: int = 1):
-        super().__init__(parent)
-        self.setObjectName("TimeField")
-        self.setProperty("active", False)
-        self.setFixedHeight(34)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self._step = max(1, int(step_minutes))
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(9, 0, 4, 0)
-        row.setSpacing(4)
-
-        icon = QLabel()
-        icon.setPixmap(icons.pixmap("clock", PALETTE["muted"], 14))
-        icon.setFixedSize(14, 14)
-        icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        row.addWidget(icon)
-
-        self.edit = QTimeEdit()
-        self.edit.setObjectName("TimeFieldInput")
-        self.edit.setDisplayFormat("HH:mm")
-        self.edit.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.edit.setFrame(False)  # 边框由外层容器画，避免和 QSS 打架
-        self.edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.edit.setFixedWidth(54)
-        self.edit.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self.edit.setTime(QTime(8, 30))
-        self.edit.setToolTip("可直接键入时间，↑ ↓ 微调；按住右侧箭头连续调整")
-        self.edit.installEventFilter(self)
-        self.edit.timeChanged.connect(self.timeChanged)
-        row.addWidget(self.edit)
-
-        steps = QVBoxLayout()
-        steps.setContentsMargins(0, 3, 0, 3)
-        steps.setSpacing(0)
-        self.btn_up = self._step_button("chevron-up", 1)
-        self.btn_down = self._step_button("chevron-down", -1)
-        steps.addWidget(self.btn_up)
-        steps.addWidget(self.btn_down)
-        row.addLayout(steps)
-
-        self.setFixedWidth(105)
-
-    # ------------------------------------------------------------------ 内部
-    def _step_button(self, icon_name: str, direction: int) -> QToolButton:
-        button = QToolButton(self)
-        button.setObjectName("TimeStep")
-        button.setIcon(icons.icon(icon_name, PALETTE["text_2"], 10))
-        button.setIconSize(QSize(10, 10))
-        button.setFixedSize(16, 13)
-        button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setAutoRaise(True)
-        button.setAutoRepeat(True)
-        button.setAutoRepeatDelay(280)
-        button.setAutoRepeatInterval(90)
-        button.clicked.connect(lambda: self._bump(direction))
-        return button
-
-    def _bump(self, direction: int) -> None:
-        # 以分钟为单位整体步进，比按「当前选中的时/分」加减更符合直觉
-        self.edit.setTime(self.edit.time().addSecs(direction * self._step * 60))
-
-    # ------------------------------------------------------------------ 接口
-    def time(self) -> QTime:
-        return self.edit.time()
-
-    def set_time(self, value: QTime) -> None:
-        blocked = self.edit.blockSignals(True)
-        self.edit.setTime(value)
-        self.edit.blockSignals(blocked)
-
-    # ------------------------------------------------------------------ 事件
-    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 接口
-        self.edit.setFocus(Qt.FocusReason.MouseFocusReason)
-        super().mousePressEvent(event)
-
-    def eventFilter(self, obj, event):  # noqa: N802 - Qt 接口
-        if obj is self.edit:
-            if event.type() == QEvent.Type.FocusIn:
-                self.setProperty("active", True)
-                repolish(self)
-            elif event.type() == QEvent.Type.FocusOut:
-                self.setProperty("active", False)
-                repolish(self)
-        return super().eventFilter(obj, event)
 
 
 class Badge(QLabel):
