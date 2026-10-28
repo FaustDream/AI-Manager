@@ -75,10 +75,12 @@ app/sessions/           会话域
   editions.py           客户端版本目录与只读 SQLite 连接
   wbdb.py               会话库读写（写前必须 checkpoint）
   service.py            快照聚合 build_snapshot / build_unified
+  restore.py            账号维度的会话恢复：只改 user_id 引用，不复制正文
   profiles.py / backup.py / trash.py / cloud.py / codebuddy.py
 
 data/                   运行期数据：config.json、accounts.dat、checked.json、
-                        daily.json、credits.json、backups/、logs/、profiles/、trash/
+                        daily.json、credits.json、session_index.json、backups/、
+                        logs/、profiles/、trash/
 legacy/                 历史版本 zip 归档，只读
 tools/                  一次性脚本（图标生成、截图）
 ```
@@ -159,6 +161,7 @@ tools/                  一次性脚本（图标生成、截图）
 - **积分批次不含获得时间**：平台接口只返回「金额 + 到期日 + 名称」。`live_credit=True`（WorkBuddy / Trae）**从不写台账**，`live_credit=False`（Qoder）才由 `ledger.add()` 记录发放时刻
 - **账号主键**：`iid = f"{platform}:{account_id}"`，被账号库、积分台账、签到记录、UI 行 key 共用；改主键等于改四处存储
 - **官方客户端 SQLite**：只读连接用 `mode=ro`；写前必须关闭进程并 `PRAGMA wal_checkpoint(TRUNCATE)`
+- **会话恢复只改归属引用**：同一版本里一条会话只有一份正文（`projects/<slug>/<sid>.jsonl`），恢复 = 把 `sessions.user_id` 指向当前账号、清掉 `deleted_at`，**不复制正文、不替换 workbuddy.db**。`data/session_index.json` 记 `origin`（原始账号）与 `refs`（引用过的账号）。账号切换登录自动恢复切换前账号的会话；手动登录不自动恢复，由「恢复会话」触发。`profiles.py` 只切登录态与 storage，**绝不能**再用档案里的 DB 覆盖会话库
 - **单实例**：`Local\` 命名空间互斥体，句柄持有到进程退出，不要手工 `CloseHandle`
 
 ## 7. Git 与版本管理
