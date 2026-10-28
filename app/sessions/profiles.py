@@ -334,6 +334,51 @@ def ensure_pack_ticket(ep: Edition, uid: str) -> bool:
     return True
 
 
+def pack_stale(ep: Edition, uid: str, slack: int = 60) -> bool:
+    """档案里的登录态是否比客户端旧。
+
+    客户端关着的时候才能整包刷新，所以先比 app/session 的修改时间：
+    档案用 copy2 保存，mtime 与保存那一刻的客户端一致，比一下就够。
+    """
+    pack = _pack_dir(ep, uid)
+    live = ep.root / "app" / "session"
+    saved = pack / "app" / "session"
+    if not live.exists() or not saved.exists():
+        return False
+    try:
+        return live.stat().st_mtime > saved.stat().st_mtime + slack
+    except OSError:
+        return False
+
+
+def refresh_pack_ticket(ep: Edition, uid: str) -> bool:
+    """把客户端最新的 .info 同步进档案。
+
+    token 会随客户端刷新而轮换，档案里留着旧票据的话，切回去可能被判失效。
+    只更新 8KB 的票据，不动几十 MB 的登录态：客户端运行时 Cookies 是独占的，
+    但 .info 随时可读。
+    """
+    if not uid or not has_pack(ep, uid):
+        return False
+    live = auth_file(ep)
+    target = pack_auth_path(ep, uid)
+    try:
+        if not live.exists():
+            return False
+        if target.exists() and target.stat().st_mtime >= live.stat().st_mtime:
+            return False            # 没变化，不用每次 tick 都重写
+        data = json.loads(live.read_text(encoding="utf-8"))
+        if str((data.get("account") or {}).get("uid") or "") != uid:
+            return False            # 客户端已经换成别的账号，别污染这份档案
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def repair_packs(editions) -> dict:
     """补全所有档案的票据，返回 {已补全: [...], 仍不完整: {uid: 原因}}。"""
     filled: list[str] = []
