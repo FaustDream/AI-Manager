@@ -553,16 +553,37 @@ class AccountCenterPage(BasePage):
         self._packs = {key: set(value) for key, value in data.items()}
         self._packs_loaded = True
         for account in self.accounts.values():
-            self.table.model.update(account.iid, pack=self._pack_text(account))
+            row = self.table.model.row_dict(self.table.model.index_of(account.iid)) or {}
+            tips = dict(row.get("_tip_map") or {})
+            tips["pack"] = self._pack_tip(account)
+            self.table.model.update(account.iid, pack=self._pack_text(account),
+                                    _tip_map=tips)
         self._install_actions()
 
     def _pack_text(self, account: Account | None) -> str:
-        """档案列的文案：非 WorkBuddy 没有档案；加载中显示省略号，避免误判为空。"""
+        """档案列的文案。
+
+        当前登录的账号不靠档案运行——客户端里的登录态就是它本身，所以显示
+        「当前」而不是「—」，避免「明明登录了却说没存档」的误判。
+        """
         if account is None or account.platform != "workbuddy":
             return "—"
         if not self._packs_loaded:
             return "…"
+        if switcher.is_current(account):
+            return "当前"
         return "有" if self._has_pack(account) else "—"
+
+    def _pack_tip(self, account: Account | None) -> str:
+        if account is None or account.platform != "workbuddy":
+            return ""
+        if not self._packs_loaded:
+            return "正在读取账号档案…"
+        if switcher.is_current(account):
+            return "客户端当前登录的就是这个账号，不需要存档；关闭客户端时会自动补存一份"
+        if self._has_pack(account):
+            return "已保存登录票据，切换时可直接进入，不用重新登录"
+        return "还没有存档：关闭该账号的客户端后会自动保存，之后切换就不用重新登录"
 
     def _has_pack(self, account: Account | None) -> bool:
         if account is None or account.platform != "workbuddy":
@@ -630,7 +651,8 @@ class AccountCenterPage(BasePage):
                 "pack": self._pack_text(account),
                 "action": "",
                 "_fg_map": self._colors(iid, account),
-                "_tip_map": {"name": f"来源：{account.source or '浏览器登录'}"},
+                "_tip_map": {"name": f"来源：{account.source or '浏览器登录'}",
+                             "pack": self._pack_tip(account)},
             })
         self.table.set_rows(rows)
         self._install_actions()
@@ -1192,7 +1214,7 @@ class AccountCenterPage(BasePage):
         running = switcher.client_running_for(account)
         hint = ("\n检测到客户端正在运行：切换前会自动关闭它，完成后自动重新打开。"
                 if running else "")
-        # 免登录靠的是本机档案里的 Chromium 登录态，目标没档案就只能重新登录一次
+        # 免登录靠的是本机档案里的登录票据（.info）+ Chromium 登录态
         if account.platform == "workbuddy":
             ep = self._edition_for(account)
             uid = str(account.meta.get("uid") or "")
@@ -1200,6 +1222,10 @@ class AccountCenterPage(BasePage):
                 hint += ("\n\n注意：本机没有保存过这个账号的登录态，切换后客户端会停在登录页，"
                          "需要重新登录一次。登录后点「恢复会话」可把已有项目会话关联过来；"
                          "关闭客户端后本工具会自动存档登录态。")
+            elif not profiles.has_pack_auth(ep, uid) and \
+                    profiles.find_auth_backup(ep, uid) is None:
+                hint += ("\n\n注意：这份档案是旧版保存的，里面没有登录票据，"
+                         "切换后可能仍要重新登录一次；之后关闭客户端会补存票据。")
         if not self.confirm(
                 "切换账号",
                 f"将把 {account.platform_label} 官方客户端的登录态切换为：\n{account.name}\n\n"
@@ -1248,9 +1274,9 @@ class AccountCenterPage(BasePage):
     def _save_target(self) -> tuple[Edition, str] | None:
         """按客户端实际登录的账号决定存哪份档案。
 
-        .info 里的 uid 可能已经被「切换」改写成目标账号，而客户端真正登录的是
-        account-snapshot.json 里记的那个；以 snapshot 为准，避免把旧会话存成
-        新账号的档案，把档案内容污染掉。
+        .info 和 account-snapshot 都可能滞后：前者会被「切换」提前改写，
+        后者要等客户端自己刷新。两者不一致说明状态在中间态（切换了但客户端
+        没起来），这时宁可跳过存档，也不要把 A 的会话存成 B 的档案。
         """
         account = self._current_workbuddy()
         if account is None:
@@ -1258,6 +1284,11 @@ class AccountCenterPage(BasePage):
         ep = self._edition_for(account)
         uid = profiles.current_uid(ep) or str(account.meta.get("uid") or "")
         if not uid:
+            return None
+        info_uid = profiles.auth_uid(ep)
+        if info_uid and info_uid != uid:
+            self.log(f"登录态与账号快照不一致（{info_uid[:8]} / {uid[:8]}），"
+                     "本次不自动存档，等客户端把状态写完再存", "dim")
             return None
         return ep, uid
 
@@ -1446,7 +1477,9 @@ class AccountCenterPage(BasePage):
             "· 会话恢复：把当前版本已有的项目会话按归属关联到当前账号，只改引用、"
             "不复制正文，可重复执行。账号切换登录会自动恢复切换前账号的会话；"
             "手动登录不自动恢复，需要点「恢复会话」。\n"
-            "· 「档案」列只表示该账号在本机有没有保存过登录态，只有 WorkBuddy 有；"
+            "· 「档案」列：只有 WorkBuddy 有。当前正在登录的账号显示「当前」（客户端里的"
+            "登录态就是它本身，不需要存档）；其他账号「有」表示已保存登录票据，切换时"
+            "可直接进入；「—」表示还没存过，关闭该账号的客户端后会自动保存。"
             "Qoder / Trae 恒为「—」，会话恢复也不再依赖档案。\n"
             "· 账号顺序：按住任意一行上下拖动即可调整，顺序会记住；"
             "拖到某行上半放前面、下半放后面，拖到空白处放最后。\n"

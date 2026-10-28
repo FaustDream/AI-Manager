@@ -265,7 +265,14 @@ def switch_workbuddy(account: Account, log) -> str:
 
     # 1) 切换前：把当前客户端的登录态存档，之前的账号随时可一键换回
     try:
-        cur_uid = str(wb_profiles.current_uid(ep) or "")
+        info_uid = str(wb_profiles.auth_uid(ep) or "")
+        snap_uid = str(wb_profiles.current_uid(ep) or "")
+        cur_uid = snap_uid or info_uid
+        if info_uid and snap_uid and info_uid != snap_uid:
+            # .info 已被改写但客户端还没按新账号起来：这时存档只会张冠李戴
+            log(f"[{account.platform_label}] 登录态与账号快照不一致"
+                f"（{info_uid[:8]} / {snap_uid[:8]}），跳过本次存档")
+            cur_uid = ""
         if cur_uid and cur_uid != target_uid:
             wb_profiles.save_current(ep, cur_uid)
             notes.append("已存档当前账号的登录态，之后可从账号档案一键切回")
@@ -274,9 +281,11 @@ def switch_workbuddy(account: Account, log) -> str:
         log(f"[{account.platform_label}] 存档当前账号失败（切换继续）：{exc}")
 
     # 2) 目标账号已有档案：先恢复登录态，再把切换前账号的会话按引用关联过来
+    auth_ready = False
     if target_uid and wb_profiles.has_pack(ep, target_uid):
         try:
             wb_profiles.restore_pack(ep, target_uid)
+            auth_ready = wb_profiles.has_pack_auth(ep, target_uid)
             notes.append(f"已恢复 {target_uid[:8]} 之前保存的登录态（免重新登录）")
             log(f"[{account.platform_label}] 已恢复目标账号 {target_uid[:8]} 的登录态")
             try:
@@ -294,21 +303,43 @@ def switch_workbuddy(account: Account, log) -> str:
                 log(f"[{account.platform_label}] 会话恢复失败（登录态已切换）：{exc}", "error")
         except Exception as exc:
             log(f"[{account.platform_label}] 恢复目标账号登录态失败（按全新登录处理）：{exc}")
-    else:
-        # 本机没有这个账号的 Chromium 登录态，无论 token 怎么写都要重新登录
-        notes.append("本机没有该账号的登录态存档，客户端会停在登录页，需要重新登录一次；"
-                     "登录后点「恢复会话」可把已有项目会话关联过来")
-        log(f"[{account.platform_label}] 目标账号 {target_uid[:8] or '未知'} 无档案，"
-            "切换后需要重新登录一次")
 
-    template = json.loads(path.read_text(encoding="utf-8"))
-    data = build_workbuddy_info(account, template)
-    backup = _backup(path)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    log(f"[{account.platform_label}] 已切换客户端登录态，备份：{backup.name}")
+    # 3) 档案里没有登录票据（旧档案）：优先用客户端自己留的同账号备份，
+    #    最后才退回「用 token 重建」——重建出来的 sessionState 服务端不认，
+    #    客户端会回到登录页，所以只当兜底
+    if not auth_ready and target_uid:
+        backup_auth = wb_profiles.find_auth_backup(ep, target_uid)
+        if backup_auth is not None:
+            try:
+                wb_profiles.write_auth(ep, backup_auth)
+                auth_ready = True
+                notes.append("已从客户端备份恢复该账号的登录票据")
+                log(f"[{account.platform_label}] 用客户端备份 {backup_auth.name} 恢复登录票据")
+            except OSError as exc:
+                log(f"[{account.platform_label}] 写回登录票据失败：{exc}", "error")
+
+    if not auth_ready:
+        if not target_uid or not wb_profiles.has_pack(ep, target_uid):
+            # 本机没有这个账号的 Chromium 登录态，无论 token 怎么写都要重新登录
+            notes.append("本机没有该账号的登录态存档，客户端会停在登录页，需要重新登录一次；"
+                         "登录后点「恢复会话」可把已有项目会话关联过来")
+            log(f"[{account.platform_label}] 目标账号 {target_uid[:8] or '未知'} 无档案，"
+                "切换后需要重新登录一次")
+        template = json.loads(path.read_text(encoding="utf-8"))
+        data = build_workbuddy_info(account, template)
+        _backup(path)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if target_uid and wb_profiles.has_pack(ep, target_uid):
+            notes.append("旧档案没有登录票据，本次用 token 重建，可能仍要重新登录一次；"
+                         "关闭客户端后会自动补存票据")
+            log(f"[{account.platform_label}] 旧档案缺少 auth.info，已按 token 重建登录态", "warn")
+    else:
+        log(f"[{account.platform_label}] 登录票据已原样恢复，客户端会直接进入该账号")
+
+    log(f"[{account.platform_label}] 已切换客户端登录态")
     _restart_client(account, log)
 
-    msg = f"{account.platform_label} 已切换到 {account.name}。\n备份：{backup.name}"
+    msg = f"{account.platform_label} 已切换到 {account.name}。"
     if notes:
         msg += "\n" + "；".join(notes)
     return msg

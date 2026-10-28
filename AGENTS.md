@@ -163,6 +163,7 @@ tools/                  一次性脚本（图标生成、截图）
 - **积分批次不含获得时间**：平台接口只返回「金额 + 到期日 + 名称」。`live_credit=True`（WorkBuddy / Trae）**从不写台账**，`live_credit=False`（Qoder）才由 `ledger.add()` 记录发放时刻
 - **积分增减来自余额快照**：接口只给当前余额，`creditlog.note()` 在每次查到余额时按天记一笔（`data/credit_history.json`，保留 60 天）。「今日增加 / 消耗」= 今天与上一次记录的差值，**不要**改回从台账推算（台账只覆盖 Qoder）；同一天多次刷新只保留最后一次，否则增减会被刷成 0
 - **账号主键**：`iid = f"{platform}:{account_id}"`，被账号库、积分台账、签到记录、UI 行 key 共用；改主键等于改四处存储
+- **WorkBuddy 登录票据不能重建**：客户端的 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`（国际版 `-ai.info`）里除了加密 token 还有 `sessionState`，**它由服务端每次登录签发**（同一账号多次登录各不相同）。档案必须原样保存并在切换时原样写回，`switcher.build_workbuddy_info()` 里生成 uuid 只能当最后兜底，重建出来的登录态客户端会跳登录页。`profiles.save_current()` 只在该 `.info` 的 uid 与目标 uid 一致时才把它打进档案（`auth.info`）
 - **官方客户端 SQLite**：只读连接用 `mode=ro`；写前必须关闭进程并 `PRAGMA wal_checkpoint(TRUNCATE)`
 - **会话恢复只改归属引用**：同一版本里一条会话只有一份正文（`projects/<slug>/<sid>.jsonl`），恢复 = 把 `sessions.user_id` 指向当前账号、清掉 `deleted_at`，**不复制正文、不替换 workbuddy.db**。`data/session_index.json` 记 `origin`（原始账号）与 `refs`（引用过的账号）。账号切换登录自动恢复切换前账号的会话；手动登录不自动恢复，由「恢复会话」触发。`profiles.py` 只切登录态与 storage，**绝不能**再用档案里的 DB 覆盖会话库
 - **单实例**：`Local\` 命名空间互斥体，句柄持有到进程退出，不要手工 `CloseHandle`
