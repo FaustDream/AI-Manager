@@ -29,16 +29,17 @@ from ..widgets import (Badge, Card, DataTable, EmptyState, TimeField, hline, lab
                        make_button)
 from .base import BasePage
 
+# 全列左对齐：行内信息密度高，居中对齐会让长短不一的文本看起来参差
 COLUMNS = [
-    Column("platform", "平台", 92, "center"),
-    Column("name", "账号", 160, stretch=True),
-    Column("login", "登录态", 84, "center"),
-    Column("current", "当前", 46, "center"),
-    Column("today", "今日签到", 72, "center"),
-    Column("balance", "剩余积分", 78, "right"),
-    Column("expire", "最近到期", 108, "center"),
-    Column("pack", "档案", 52, "center"),
-    Column("action", "操作", 158, "center"),
+    Column("platform", "平台", 150, "left", fixed=True),
+    Column("name", "账号", 160, "left", stretch=True),
+    Column("login", "登录态", 84, "left"),
+    Column("current", "当前", 46, "left"),
+    Column("today", "今日签到", 72, "left"),
+    Column("balance", "剩余积分", 78, "left"),
+    Column("expire", "最近到期", 108, "left"),
+    Column("pack", "档案", 52, "left"),
+    Column("action", "操作", 158, "left"),
 ]
 
 # 明细列表最多展示几条：再多就要滚动，反而挡住下面的表格
@@ -145,7 +146,6 @@ class AccountCenterPage(BasePage):
         row.setSpacing(8)
         checkin_buttons = self.btn_bar.build(row, "checkin", "toolbar", {
             "checkin.checkin_all": lambda: self.checkin(all_accounts=True),
-            "checkin.checkin_selected": lambda: self.checkin(all_accounts=False),
             "checkin.query_status": lambda: self.query(selected_only=False),
             "checkin.refresh_credits": self.refresh_credits,
             "checkin.refresh_login": self.refresh,
@@ -154,7 +154,6 @@ class AccountCenterPage(BasePage):
             "checkin.open_client": self.open_client,
         }, ctx=self._btn_ctx)
         self.btn_all = checkin_buttons.get("checkin.checkin_all")
-        self.btn_one = checkin_buttons.get("checkin.checkin_selected")
         row.addStretch(1)
 
         self.auto_check = QCheckBox("每日自动签到")
@@ -267,7 +266,8 @@ class AccountCenterPage(BasePage):
             self.detail.setVisible(False)
             return
         self._detail_iid = iid
-        # 下次签到时刻只在这里算一次（要读 checked.json），倒计时不重复读盘
+        # 下次签到时刻只在这里取一次（Qoder 取接口缓存，其余读 checked.json），
+        # 倒计时每秒只做减法，不重复读盘/发请求
         self._detail_target = service.next_checkin_at(account)
         self.detail.setVisible(True)
         self._paint_detail(account)
@@ -300,15 +300,24 @@ class AccountCenterPage(BasePage):
         self._paint_records(iid)
 
     def _tick_detail(self) -> None:
-        """每秒只改一行文案；无选中时不做事。"""
+        """每秒只改一行文案；无选中时不做事。
+
+        文案要区分「接口说现在可签」和「接口没给时间」：后者不能写成可签，
+        否则活动还没下发时用户会以为能点。
+        """
         if not self._detail_iid:
             return
-        text = service.countdown_text(self._detail_target)
-        if self._detail_target is None:
+        checked = self._status_checked.get(self._detail_iid)
+        target = self._detail_target
+        if checked is False:
             self.detail_next.setText("下次签到 现在可签")
-        else:
+        elif target is not None and target > datetime.now():
             self.detail_next.setText(
-                f"下次签到 约 {self._detail_target:%m-%d %H:%M} · {text}")
+                f"下次签到 约 {target:%m-%d %H:%M} · {service.countdown_text(target)}")
+        elif checked is True:
+            self.detail_next.setText("下次签到 本轮已签，等下一轮下发")
+        else:
+            self.detail_next.setText("下次签到 —")
 
     def _paint_records(self, iid: str) -> None:
         while self.detail_rows.count():
@@ -468,7 +477,7 @@ class AccountCenterPage(BasePage):
             if state is True:                 # 接口明确：今天已经签过
                 continue
             if state is None and not service.checkin_due(account):
-                continue                      # 接口没给状态，退回本地冷却判断
+                continue                      # 接口没给状态，退回本地自然日兜底
             due.append(account)
         if not due:
             self.log(f"{reason}：状态已是最新，没有需要签到的账号", "dim")
@@ -552,8 +561,7 @@ class AccountCenterPage(BasePage):
             elif iid in self._checked:
                 today = "已签到"
             else:
-                left = service.cooldown_left(account)
-                today = f"冷却 {left}" if left else "—"
+                today = "—"
             rows.append({
                 "id": iid,
                 "platform": account.platform_label,
@@ -599,6 +607,8 @@ class AccountCenterPage(BasePage):
         if account is None:
             return
         self._status_checked[iid] = result.checked_in
+        # 下次可签时刻以接口下发为准，Qoder 这类活动制平台本地推算不成立
+        service.note_next_at(iid, result.next_at)
         if result.lots is None:
             self.live_lots.pop(iid, None)
         else:
@@ -619,8 +629,7 @@ class AccountCenterPage(BasePage):
         elif checked is False:
             today = "待签到"
         else:
-            left = service.cooldown_left(account)
-            today = "已签到" if iid in self._checked else (f"冷却 {left}" if left else "—")
+            today = "已签到" if iid in self._checked else "—"
         colors = self._colors(iid, account)
         if requires and checked:
             colors["today"] = PALETTE["ok"]
@@ -635,6 +644,7 @@ class AccountCenterPage(BasePage):
         self._update_credit_cells(iid)
         self._update_summary()
         if iid == self._detail_iid:
+            self._detail_target = service.next_checkin_at(account)
             self._paint_detail(account)
 
     def _render_credit(self, iid: str, snapshot: CreditSnapshot) -> None:
@@ -1345,7 +1355,8 @@ class AccountCenterPage(BasePage):
     def _tick_auto(self) -> None:
         """到点先刷新签到状态，再由扫描回调决定签谁。
 
-        不直接拿缓存判断：Qoder 是滚动 24 小时，缓存过期就可能白打一次签到接口。
+        不直接拿缓存判断：Qoder 的活动窗口由服务端下发、每天开放时间会漂，
+        只有现查接口才知道这一轮到底开没开。
         """
         if not self.auto_check.isChecked() or self.busy:
             return

@@ -82,7 +82,6 @@ class CheckinPage(BasePage):
         self.btn_bar = button_config.ButtonBar(self.cfg)
         buttons = self.btn_bar.build(row, "checkin", "toolbar", {
             "checkin.checkin_all": lambda: self.checkin(all_accounts=True),
-            "checkin.checkin_selected": lambda: self.checkin(all_accounts=False),
             "checkin.query_status": lambda: self.query(selected_only=False),
             "checkin.refresh_credits": self.refresh_credits,
             "checkin.refresh_login": self.refresh,
@@ -91,7 +90,6 @@ class CheckinPage(BasePage):
             "checkin.open_client": self.open_client,
         }, ctx=self._btn_ctx)
         self.btn_all = buttons.get("checkin.checkin_all")
-        self.btn_one = buttons.get("checkin.checkin_selected")
         self.btn_status = buttons.get("checkin.query_status")
         self.btn_credit = buttons.get("checkin.refresh_credits")
         self.btn_refresh = buttons.get("checkin.refresh_login")

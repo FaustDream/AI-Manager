@@ -82,6 +82,9 @@ class StatusResult:
     summary: str
     balance: float | None = None
     lots: list[CreditLot] | None = None
+    # 下一次可签的本地时刻：只由平台接口下发，None 表示现在就能签或接口没给。
+    # 不能用本地时钟推算，Qoder 的活动窗口是服务端排期、每天下发时间会漂。
+    next_at: datetime | None = None
 
 
 @dataclass
@@ -132,8 +135,8 @@ class Provider:
     key = ""
     label = ""
     live_credit = False
-    # 签到的冷却小时数：0 表示按自然日（过 0 点即可），24 表示距上次签到满一天才能再签
-    cooldown_hours = 0
+    # 下次可签时刻只认接口下发（活动制平台）：本地按自然日或固定时刻推算都不成立
+    next_from_api = False
 
     def requires_checkin(self, account: Account) -> bool:
         return getattr(account, "requires_checkin", True)

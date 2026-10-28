@@ -13,8 +13,8 @@ from . import ledger, logins, store
 from .base import Account, ActionResult, CreditSnapshot, StatusResult
 from .registry import PROVIDERS, PROVIDER_MAP
 
-# 记录的是「上次成功签到的时刻」，不是日期：Qoder 按滚动 24 小时算，
-# 只存日期会把「昨天 20:00 签的」当成「今天可以签」。
+# 记录的是「上次成功签到的时刻」，不是日期：跨零点、跨活动窗口都要精确到秒，
+# 只存日期分不清「窗口内刚签过」和「新窗口已经开了」。
 _TIME_FMT = "%Y-%m-%dT%H:%M:%S"
 _KEEP_DAYS = 3
 
@@ -85,62 +85,47 @@ def checked_ids() -> set[str]:
 
 
 # ------------------------------------------------------------- 可签时机
-def cooldown_hours(platform: str) -> int:
+# 接口最近一次给出的下次可签时刻（本地 naive）。活动制平台（Qoder）只认这个口径，
+# 任何「距上次签到满 N 小时」「次日 0 点」的本地推算在它们身上都是错的。
+_NEXT_AT: dict[str, datetime] = {}
+
+
+def note_next_at(iid: str, moment: datetime | None) -> None:
+    """记下接口下发的下次可签时刻；None 表示现在可签或接口没给。"""
+    _NEXT_AT[iid] = moment
+
+
+def next_from_api(platform: str) -> bool:
     provider = PROVIDER_MAP.get(platform)
-    return int(getattr(provider, "cooldown_hours", 0) or 0)
+    return bool(getattr(provider, "next_from_api", False))
 
 
 def checkin_due(account: Account, now: datetime | None = None) -> bool:
     """现在是否已经可以签到。
 
-    24 小时制的平台（Qoder）看上次签到时刻 + 冷却；其余平台按自然日，
-    过 0 点就算新的一天。
+    只在接口没给签到状态时兜底，按自然日判断：过 0 点就算新的一天。
+    活动制平台的真实窗口由接口决定，这里只是避免同一自然日反复打接口。
     """
     moment = now or datetime.now()
     at = checked_at(account.iid)
-    hours = cooldown_hours(account.platform)
-    if hours:
-        return at is None or moment - at >= timedelta(hours=hours)
     return not (at and at.date() == moment.date())
-
-
-def cooldown_left(account: Account) -> str:
-    """剩余冷却时长的简短文案；不需要等待或已到期时返回空串。"""
-    hours = cooldown_hours(account.platform)
-    if not hours:
-        return ""
-    at = checked_at(account.iid)
-    if at is None:
-        return ""
-    left = at + timedelta(hours=hours) - datetime.now()
-    seconds = left.total_seconds()
-    if seconds <= 0:
-        return ""
-    minutes = int(seconds // 60)
-    if minutes >= 60:
-        return f"{minutes // 60}h{minutes % 60:02d}m"
-    return f"{max(minutes, 1)}m"
 
 
 def next_checkin_at(account: Account, now: datetime | None = None) -> datetime | None:
     """下一次可以签到的本地时刻；现在就能签、或本就不需要签到，返回 None。
 
-    自然日制看次日 0 点，滚动制看上次签到 + 冷却小时数。只按本地记录推算，
-    接口若另有口径以接口为准——所以界面文案用「约」而不是承诺。
+    活动制平台（Qoder）直接返回接口给出的时刻，接口没给就不猜；
+    其余平台按自然日推算到次日 0 点。界面文案因此用「约」而不是承诺。
     """
     if not account.requires_checkin:
         return None
+    if next_from_api(account.platform):
+        return _NEXT_AT.get(account.iid)
     moment = now or datetime.now()
     at = checked_at(account.iid)
-    hours = cooldown_hours(account.platform)
-    if hours:
-        if at is None:
-            return None
-        target = at + timedelta(hours=hours)
-    else:
-        if at is None or at.date() != moment.date():
-            return None
-        target = datetime.combine(at.date() + timedelta(days=1), time.min)
+    if at is None or at.date() != moment.date():
+        return None
+    target = datetime.combine(at.date() + timedelta(days=1), time.min)
     return target if target > moment else None
 
 
