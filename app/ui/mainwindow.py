@@ -110,7 +110,8 @@ class MainWindow(QMainWindow):
         self._daily_timer.start()
         QTimer.singleShot(DAILY_START_DELAY_MS, self._daily_poll)
 
-        self.navigate(self.cfg.get("last_page") or "overview", save=False)
+        # 每次启动都从总览进入：上次停在设置页不该成为下次的默认位置
+        self.navigate("overview")
         QTimer.singleShot(300, lambda: self.log("AI Manager 已启动", "dim"))
 
     # ------------------------------------------------------------------ 构建
@@ -248,12 +249,12 @@ class MainWindow(QMainWindow):
         self._pages_built.append(key)
         return page
 
-    def navigate(self, key: str, save: bool = True) -> None:
+    def navigate(self, key: str) -> None:
         tab = LEGACY_TABS.get(key)
         if tab:                      # 旧入口：跳到账号中心并切到对应 Tab
             key = "account_center"
         page = self._ensure_page(key)
-        if page is None:                 # 配置里记了不存在的页面时兜底到总览
+        if page is None:                 # 页面名不存在时兜底到总览
             key = "overview"
             page = self._ensure_page(key)
             if page is None:
@@ -270,9 +271,6 @@ class MainWindow(QMainWindow):
             button.setChecked(nav_key == key)
             button.blockSignals(False)
             button._sync_icon(nav_key == key)
-        if save:
-            self.cfg["last_page"] = key
-            self.save_cfg()
         if tab and hasattr(page, "select_tab"):
             page.select_tab(tab)
         else:

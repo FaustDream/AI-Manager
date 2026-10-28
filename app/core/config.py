@@ -15,7 +15,6 @@ def defaults() -> dict:
         "skip": [],
         "extra_sources": {"trae": [], "qoder": [], "qoder_intl": [], "workbuddy": []},
         "window": {},
-        "last_page": "overview",
         # 账号表：拖出来的顺序与用户调过的列宽
         "account_order": [],
         "account_columns": [],
@@ -35,7 +34,6 @@ def _coerce(raw: Any) -> dict:
     if not isinstance(raw, dict):
         return cfg
     cfg["skip"] = [str(x) for x in raw.get("skip") or [] if isinstance(x, str)]
-    cfg["last_page"] = str(raw.get("last_page") or "overview")
 
     # 拖动排序的顺序必须原样读回来，否则每次重启都会退回默认顺序
     cfg["account_order"] = [str(x) for x in raw.get("account_order") or []
