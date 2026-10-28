@@ -129,6 +129,7 @@ class AccountCenterPage(BasePage):
         self._saving = False
         self._client_was_running = False
         self._switch_gen = 0
+        self._ticket_syncing = False
         # 后台每日轮询是否在跑：不占用 busy，只锁会写登录态的动作
         self._daily_running = False
         # 积分明细面板：只在有选中行时显示；倒计时只刷文案，不重读文件
@@ -477,18 +478,22 @@ class AccountCenterPage(BasePage):
         self._auto_save_if_missing()
 
     def _auto_save_if_missing(self) -> None:
-        """客户端已经关着、但当前账号还没有档案：直接补一份。
+        """客户端已经关着时，把档案补齐或刷新到最新。
 
-        以前只在「客户端从运行变成关闭」那一刻存档，所以工具没开着的时候关掉
-        客户端就永远存不上，用户得再开关一次客户端才行。
+        两种要处理的情况：还没有档案（首次发现该账号），以及客户端在工具没开着
+        的时候被用过、登录态已经比档案新。只在客户端关闭时做，运行中 Cookies 被
+        独占，拷不完整。
         """
         target = self._save_target()
         if target is None:
             return
         ep, uid = target
-        if profiles.has_pack(ep, uid) or winproc.process_running(ep.proc):
+        if winproc.process_running(ep.proc):
             return
-        self._auto_save("首次发现该账号", force=True)
+        if not profiles.has_pack(ep, uid):
+            self._auto_save("首次发现该账号", force=True)
+        elif profiles.pack_stale(ep, uid):
+            self._auto_save("客户端数据有更新", force=True)
 
     # ------------------------------------------------------------ 每日轮询
     # 后台轮询只锁会写登录态/账号库的动作，其余按钮保持可用：
@@ -1580,6 +1585,37 @@ class AccountCenterPage(BasePage):
     # ------------------------------------------------------------------ 定时
     def _tick(self) -> None:
         self._watch_client_closed()
+        self._sync_ticket()
+
+    def _sync_ticket(self) -> None:
+        """客户端运行中定期把最新票据同步进档案。
+
+        token 会被客户端轮换，档案里留旧票据的话，过几天切回去就可能被判失效。
+        只同步 8KB 的 .info，几十 MB 的登录态仍只在客户端关闭时整体保存。
+        """
+        if self._ticket_syncing or self.busy:
+            return
+        target = self._save_target()
+        if target is None:
+            return
+        ep, uid = target
+        if not profiles.has_pack(ep, uid):
+            return
+        self._ticket_syncing = True
+
+        def worker(_emit):
+            return profiles.refresh_pack_ticket(ep, uid)
+
+        def done(changed) -> None:
+            self._ticket_syncing = False
+            if changed:
+                self.log(f"已同步 {uid[:8]} 的最新登录票据到档案", "dim")
+
+        def failed(message: str) -> None:
+            self._ticket_syncing = False
+            self.log(f"同步登录票据失败：{message.splitlines()[0]}", "dim")
+
+        tasks.submit(worker, on_done=done, on_error=failed)
 
     def _watch_client_closed(self) -> None:
         """客户端从「运行中」变成「已关闭」的那一刻补存一次档案。
