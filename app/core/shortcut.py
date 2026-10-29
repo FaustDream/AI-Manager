@@ -15,6 +15,7 @@ import os
 import sys
 from pathlib import Path
 
+from .. import brand
 from . import paths, winproc
 
 SHORTCUT_NAME = "AI Manager"
@@ -94,7 +95,7 @@ $sc.TargetPath = {_ps_quote(str(exe))}
 $sc.Arguments = {_ps_quote(args)}
 $sc.WorkingDirectory = {_ps_quote(str(paths.APP_HOME))}
 $sc.IconLocation = {_ps_quote(str(icon))}
-$sc.Description = {_ps_quote('AI Manager - 签到 / 会话 / 账号一体化工作台')}
+$sc.Description = {_ps_quote(f'AI Manager - 签到 / 会话 / 账号一体化工作台 · by {brand.AUTHOR}')}
 $sc.WindowStyle = 1
 $sc.Save()
 Write-Output $lnk

@@ -113,6 +113,7 @@ class ProfilesPage(BasePage):
         generation = self._gen
         ep = self._edition()
         self.current_label.setText("正在统计账号档案…")
+        self.win.set_busy(True, "正在统计账号档案…", self.key)
         tasks.submit(lambda emit: self._collect(ep),
                      on_done=lambda data: self._apply(generation, data),
                      on_error=self._load_failed)
@@ -127,8 +128,9 @@ class ProfilesPage(BasePage):
         }
 
     def _apply(self, generation: int, data: dict) -> None:
-        if generation != self._gen:      # 期间切换了版本，结果作废
+        if generation != self._gen:      # 期间切换了版本，结果作废（新的一轮还在跑）
             return
+        self.win.set_busy(False, "", self.key)
         uid = data["uid"]
         packs = data["packs"]
         running = data["running"]
@@ -169,6 +171,7 @@ class ProfilesPage(BasePage):
         self._sync_buttons()
 
     def _load_failed(self, message: str) -> None:
+        self.win.set_busy(False, "", self.key)
         self.current_label.setText("档案统计失败，可点右上角「打开档案目录」检查")
         self.log(f"读取账号档案失败：{message.splitlines()[0]}", "error")
 

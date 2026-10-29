@@ -69,4 +69,4 @@ class BasePage(QWidget):
 
     def _set_busy(self, busy: bool, text: str = "") -> None:
         self.busy = busy
-        self.win.set_busy(busy, text)
+        self.win.set_busy(busy, text, self.key)

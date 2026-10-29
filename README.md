@@ -2,6 +2,9 @@
 
 Windows 桌面工具：Trae / Qoder / WorkBuddy 三家 AI 编程平台的每日签到，加上本地会话库、账号档案与积分管理。
 
+> **作者：FaustDream** · 来源：[github.com/FaustDream/AI-Manager](https://github.com/FaustDream/AI-Manager)
+> 本软件免费使用，但**不得去除署名后再分发或转售**，详见 [LICENSE](LICENSE)。
+
 ## 安装（不需要懂命令）
 
 1. 点页面右上角 **Code → Download ZIP**，下载后解压到任意目录
@@ -55,3 +58,14 @@ uv sync --python 3.12              # 建环境（或双击 setup.vbs）
 ## 说明
 
 本工具读取各客户端本机已登录的凭证来调用官方 Web 接口，不模拟界面点击，也不修改官方客户端的登录文件（切换账号功能会先备份再写回）。自动化签到可能违反平台服务条款，请自行评估风险。
+
+## 作者与授权
+
+- 作者：**FaustDream**
+- 来源：[github.com/FaustDream/AI-Manager](https://github.com/FaustDream/AI-Manager)
+- 版权：© 2026 FaustDream，保留所有权利
+- 授权：可自由使用、复制与分发原版；**不得去除或替换作者署名后再分发，不得商业转售**。完整条款见 [LICENSE](LICENSE)
+
+程序启动时会校验署名（侧栏顶部 `by FaustDream` 与「设置 → 关于」里的作者信息）。署名被改动的副本会在启动时提示「非官方副本」并在侧栏标红——这只是来源声明，不影响功能，也不上传任何数据。
+
+如需商业授权或以本项目为基础提供服务，请通过仓库 Issue 联系。
