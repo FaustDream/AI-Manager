@@ -120,6 +120,16 @@ def make_archive(version: str) -> Path:
     return Path(target)
 
 
+def _force_utf8_stdout() -> None:
+    """CI 的 Windows runner 控制台是 cp1252，直接 print 中文会 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def clean_outputs() -> None:
     """删掉上一次的产物；删不动就明确报错，不要带着旧文件继续打包。"""
     for path in (DIST, BUILD):
@@ -132,6 +142,7 @@ def clean_outputs() -> None:
 
 
 def main() -> int:
+    _force_utf8_stdout()
     version = read_version()
     check_pyinstaller()
     clean_outputs()
