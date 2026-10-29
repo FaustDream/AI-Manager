@@ -8,3 +8,9 @@
 *.toml text eol=lf
 *.lock text eol=lf
 *.bat  text eol=crlf
+
+# CI 工作流在 Linux runner 上由 bash 执行，CRLF 会让脚本报
+# "$'\r': command not found"，必须强制 LF
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.txt  text eol=lf

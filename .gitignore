@@ -8,6 +8,11 @@ legacy/
 # 项目内虚拟环境（226MB），由 setup.vbs / uv sync 重建
 .venv/
 
+# 打包用：独立的构建环境与中间产物，只在本机/CI 生成
+.venv-build/
+build/
+dist/
+
 # Python
 __pycache__/
 *.py[cod]

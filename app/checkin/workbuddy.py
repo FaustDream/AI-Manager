@@ -14,6 +14,7 @@ from pathlib import Path
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from ..core import paths
 from ..sessions.editions import Edition
 from .base import (Account, ActionResult, CreditLot, CreditSnapshot, LogFn, Provider,
                    StatusResult, parse_iso)
@@ -22,7 +23,7 @@ API_BASE_CN = "https://copilot.tencent.com/v2/billing/meter"
 API_BASE_INTL = "https://www.workbuddy.ai/v2/billing/meter"
 # 兼容旧引用；实际请求会按账号域名选择基址。
 API_BASE = API_BASE_CN
-AUTH_DIR = Path(os.environ.get("LOCALAPPDATA", "")) / "CodeBuddyExtension" / "Data" / "Public" / "auth"
+AUTH_DIR = (paths.user_local_dir() / "CodeBuddyExtension" / "Data" / "Public" / "auth")
 
 _AT_REST_SECRET = "Sik9U5aXhCdwTVEwsEySDOmDoB9r9ntFxHF1fst9LQI="
 _WB_KEY = hashlib.sha256(_AT_REST_SECRET.encode("utf-8")).digest()
@@ -354,7 +355,7 @@ class WorkBuddyProvider(Provider):
             return exe
         if intl:
             return None
-        base = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs"
+        base = paths.user_local_dir() / "Programs"
         for name in ("CodeBuddy CN", "WorkBuddy", "CodeBuddy"):
             candidate = base / name / f"{name}.exe"
             if candidate.exists():

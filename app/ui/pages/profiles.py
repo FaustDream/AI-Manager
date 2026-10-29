@@ -294,4 +294,4 @@ class ProfilesPage(BasePage):
         ep = self._edition()
         target = paths.PROFILE_ROOT / ep.key
         target.mkdir(parents=True, exist_ok=True)
-        os.startfile(str(target))
+        winproc.open_path(target)

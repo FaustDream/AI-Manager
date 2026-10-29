@@ -6,7 +6,29 @@ Windows 桌面工具：Trae / Qoder / WorkBuddy 三家 AI 编程平台的每日�
 >
 > 本软件免费使用，但**不得去除署名后再分发或转售**，详见 [LICENSE](LICENSE)。
 
-## 安装（不需要懂命令）
+## 下载
+
+到 [Releases](https://github.com/FaustDream/AI-Manager/releases/latest) 下载对应平台的免安装包，解压即用：
+
+| 平台 | 文件 | 支持程度 |
+| --- | --- | --- |
+| Windows 10 / 11（64 位） | `AI-Manager-<版本>-windows-x64.zip` | **正式支持**，解压后双击 `AIManager\AIManager.exe` |
+| Linux（x64） | `AI-Manager-<版本>-linux-x64.tar.gz` | 实验性，运行 `AIManager/AIManager` |
+| macOS（Apple Silicon） | `AI-Manager-<版本>-macos-arm64.tar.gz` | 实验性，同上 |
+
+数据都写在程序目录的 `data/` 里，整个文件夹拷走就能带走配置。
+
+**Linux / macOS 为什么是实验性**：本工具管理的 Trae / Qoder / WorkBuddy 客户端只有 Windows 版，
+账号库在 Windows 上也用系统 DPAPI 加密。非 Windows 包只保证能启动、界面可用；读取客户端登录态、
+切换账号、桌面快捷方式、开机自启都不可用，账号库改用 `data/.accounts.key` 本地密钥加密（与 Windows 不互通）。
+
+macOS 首次打开若提示「无法验证开发者」，在终端执行：
+
+```bash
+xattr -dr com.apple.quarantine AIManager
+```
+
+## 安装（从源码运行，不需要懂命令）
 
 1. 点页面右上角 **Code → Download ZIP**，下载后解压到任意目录
 2. 双击解压目录里的 **`一键安装.vbs`**
@@ -40,7 +62,7 @@ Windows 桌面工具：Trae / Qoder / WorkBuddy 三家 AI 编程平台的每日�
 
 ## 环境要求
 
-- Windows 10 / 11（64 位）
+- Windows 10 / 11（64 位）——下面这套源码安装方式只支持 Windows
 - 需要联网下载运行环境：uv + Python 3.12 + PySide6 等，约 250MB
 - **不需要预装 Python，也不需要管理员权限**
 
@@ -55,6 +77,26 @@ uv sync --python 3.12              # 建环境（或双击 setup.vbs）
 - 项目约定见 [`AGENTS.md`](AGENTS.md)
 - 更新记录见 [`CHANGELOG.md`](CHANGELOG.md)
 - 运行期数据在 `data/`（不进仓库），删掉该目录等于恢复出厂设置
+
+### 打包发布
+
+本地打包（产物在 `dist/`，会生成 `AI-Manager-<版本>-<平台>-<架构>.zip|tar.gz`）：
+
+```powershell
+uv venv .venv-build --python 3.12
+uv pip install --python .venv-build pyside6-essentials requests cryptography -r packaging/requirements-build.txt
+.venv-build\Scripts\python.exe packaging\build.py
+```
+
+正式发布走 CI：改好 `app/__init__.py` 的 `APP_VERSION` 与 `pyproject.toml`、补 `CHANGELOG.md`，
+提交后打标签推送即可，三个平台会自动构建并建 Release。
+
+```powershell
+git tag v1.3.0
+git push origin main --tags
+```
+
+版本号不一致（tag 与 `APP_VERSION` 对不上）时 CI 会直接失败，避免发出去的包和标签不符。
 
 ## 说明
 

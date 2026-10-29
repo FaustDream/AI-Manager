@@ -12,6 +12,9 @@ import os
 import sys
 from pathlib import Path
 
+IS_WINDOWS = os.name == "nt"
+IS_MACOS = sys.platform == "darwin"
+
 
 def app_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -31,7 +34,8 @@ LOG_DIR = DATA_DIR / "logs"
 ASSETS_DIR = resource_path("assets")
 
 CONFIG_FILE = DATA_DIR / "config.json"
-ACCOUNTS_FILE = DATA_DIR / "accounts.dat"      # DPAPI 加密
+ACCOUNTS_FILE = DATA_DIR / "accounts.dat"      # DPAPI / Fernet 加密
+ACCOUNTS_KEY_FILE = DATA_DIR / ".accounts.key"  # 非 Windows 的本地加密密钥
 CHECKED_FILE = DATA_DIR / "checked.json"       # 今日已签到记录
 DAILY_FILE = DATA_DIR / "daily.json"           # 每日轮询状态（日期 + 当日已签账号）
 LEDGER_FILE = DATA_DIR / "credits.json"        # 签到积分台账
@@ -57,3 +61,28 @@ LEGACY_SYNC_HOME = Path.home() / ".workbuddy-session-sync"
 def ensure_dirs() -> None:
     for path in (DATA_DIR, LOG_DIR, PROFILE_ROOT, BACKUP_ROOT, TRASH_ROOT):
         path.mkdir(parents=True, exist_ok=True)
+
+
+def user_appdata_dir() -> Path:
+    """被管理的客户端存配置的目录（%APPDATA% 那一层）。
+
+    三家客户端只有 Windows 版，非 Windows 上这里永远扫不到东西；但至少要返回一个
+    合法绝对路径——环境变量为空时直接拼 `Path("") / "com.qoder.app.stable"` 会变成
+    相对路径，等于拿当前工作目录去碰运气。
+    """
+    raw = os.environ.get("APPDATA")
+    if raw:
+        return Path(raw)
+    if IS_MACOS:
+        return Path.home() / "Library" / "Application Support"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+
+
+def user_local_dir() -> Path:
+    """客户端的安装目录（%LOCALAPPDATA% 那一层），语义同 user_appdata_dir。"""
+    raw = os.environ.get("LOCALAPPDATA")
+    if raw:
+        return Path(raw)
+    if IS_MACOS:
+        return Path.home() / "Library" / "Application Support"
+    return Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))

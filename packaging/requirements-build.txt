@@ -1,0 +1,5 @@
+# 打包专用依赖（只有构建机需要，不进用户环境）
+#
+# 用户端依赖仍然只有 pyproject.toml 里那三个；PyInstaller 只在打 release 包时
+# 装进一个独立的 .venv-build 环境，不写进 pyproject、也不进 uv.lock。
+pyinstaller>=6.10,<7

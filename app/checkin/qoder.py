@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import base64
 import ctypes
-import ctypes.wintypes as wt
 import json
 import os
 import platform
 import socket
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -26,14 +26,14 @@ from pathlib import Path
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from ..core import winproc
+from ..core import paths, winproc
 from .base import (Account, ActionResult, CreditLot, CreditSnapshot, LogFn, Provider,
                    StatusResult, parse_iso)
 
 API_CN = "https://openapi.qoder.com.cn"
 API_INTL = "https://openapi.qoder.sh"
-PROFILE_CN = Path(os.environ.get("APPDATA", "")) / "com.qodercn.app.stable"
-PROFILE_INTL = Path(os.environ.get("APPDATA", "")) / "com.qoder.app.stable"
+PROFILE_CN = paths.user_appdata_dir() / "com.qodercn.app.stable"
+PROFILE_INTL = paths.user_appdata_dir() / "com.qoder.app.stable"
 CLIENT_TYPE = "10"
 CLIENT_VERSION = "0.3.4"
 TIMEOUT = 20
@@ -41,12 +41,19 @@ TIMEOUT = 20
 _RISK_CACHE: dict[str, tuple[float, dict]] = {}
 _RISK_TTL = 1800
 
+IS_WINDOWS = sys.platform == "win32"
 
-class _Blob(ctypes.Structure):
-    _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+if IS_WINDOWS:
+    import ctypes.wintypes as wt
+
+    class _Blob(ctypes.Structure):
+        _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
 
 def dpapi_unprotect(data: bytes) -> bytes:
+    if not IS_WINDOWS:
+        # Qoder 客户端只有 Windows 版，这里的密文本来也只会在 Windows 上出现
+        raise OSError("DPAPI 解密只支持 Windows")
     kernel32 = ctypes.windll.kernel32
     blob_in, blob_out = _Blob(), _Blob()
     blob_in.cbData = len(data)
@@ -75,7 +82,7 @@ def load_auth(path: Path | None = None) -> dict:
 
 
 def _install_dir(intl: bool) -> Path | None:
-    base = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs"
+    base = paths.user_local_dir() / "Programs"
     names = ("Qoder",) if intl else ("Qoder CN", "Qoder")
     for name in names:
         root = base / name
@@ -428,7 +435,7 @@ class _QoderBase(Provider):
         root = _install_dir(self.intl)
         if root is None:
             return None
-        base = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs"
+        base = paths.user_local_dir() / "Programs"
         name = root.name
         exe = base / name / f"{name}.exe"
         return exe if exe.exists() else None

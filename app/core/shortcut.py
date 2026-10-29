@@ -20,6 +20,9 @@ from . import paths, winproc
 
 SHORTCUT_NAME = "AI Manager"
 
+# .lnk 是 Windows 独有的东西；其他平台（实验性构建）只把入口置灰，不做假实现
+SUPPORTED = os.name == "nt"
+
 _desktop_cache: Path | None = None
 
 
@@ -82,6 +85,8 @@ def desktop_dir(refresh: bool = False) -> Path:
 
 
 def create_desktop_shortcut(name: str = SHORTCUT_NAME) -> Path:
+    if not SUPPORTED:
+        raise RuntimeError("桌面快捷方式只支持 Windows")
     exe, args = _launcher()
     icon = paths.ICON_FILE if paths.ICON_FILE.exists() else exe
     script = f"""
