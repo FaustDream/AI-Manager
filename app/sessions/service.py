@@ -7,12 +7,11 @@
 from __future__ import annotations
 
 import re
-import shutil
 from datetime import datetime
 from pathlib import Path
 
 from ..core import winproc
-from . import backup, cloud, codebuddy as cb, profiles, trash, wbdb
+from . import backup, codebuddy as cb, profiles, trash, wbdb
 from .editions import Edition, path_size
 
 MSG_PAT = re.compile(rb'"type"\s*:\s*"message"')
@@ -77,9 +76,6 @@ class Catalog:
         self.rows: list[dict] = []          # 合并后的本地会话（两个版本按 id 去重）
         self.unified: list[dict] = []       # 表格行：来源 × 账号 × 会话
         self.cb_sessions: list[dict] = []
-        self.cloud_rows: dict = {}          # {edition_key: [云端行]}，未拉取时为空
-        self.orphans: list[dict] = []       # 没有任何会话行指向的正文文件
-        self.space: dict = {}
         self.backups: list[dict] = []
         self.trash: list[dict] = []
         self.tomb_count = 0
@@ -141,39 +137,6 @@ def build_inventory(cat: Catalog) -> None:
     cat.cn_visible = sum(1 for r in merged if r["cn"] == "visible")
     cat.intl_visible = sum(1 for r in merged if r["intl"] == "visible")
     cat.cloud_total = wbdb.cloud_count(cat.cn) + wbdb.cloud_count(cat.intl)
-    build_space(cat, cn_files, intl_files)
-
-
-def build_space(cat: Catalog, cn_files: dict, intl_files: dict) -> None:
-    """空间账本：正文总量、已删除仍占盘、没有会话行指向的孤立文件。"""
-    space = {"files": 0, "bytes": 0, "deleted_rows": 0, "deleted_bytes": 0,
-             "empty_rows": 0, "orphan_files": 0, "orphan_bytes": 0}
-    cat.orphans = []
-    for key, ep, index in (("cn", cat.cn, cn_files), ("intl", cat.intl, intl_files)):
-        known = wbdb.all_session_ids(ep)
-        for sid, files in index.items():
-            size = sum(path_size(f) for f in files)
-            space["files"] += len(files)
-            space["bytes"] += size
-            if sid in known:
-                continue
-            space["orphan_files"] += len(files)
-            space["orphan_bytes"] += size
-            cat.orphans.append({"edition": key, "sid": sid,
-                                "files": [str(f) for f in files], "size": size})
-
-    deleted = set()
-    for row in cat.rows:
-        if row["cn"] == "deleted":
-            deleted.add(row["id"])
-            space["deleted_bytes"] += row["size_cn"]
-        if row["intl"] == "deleted":
-            deleted.add(row["id"])
-            space["deleted_bytes"] += row["size_intl"]
-        if not row["files_cn"] and not row["files_intl"]:
-            space["empty_rows"] += 1
-    space["deleted_rows"] = len(deleted)
-    cat.space = space
 
 
 def _row_state(row: dict, uid: str) -> str:
@@ -197,16 +160,14 @@ def build_unified(cat: Catalog) -> None:
         其他账号的行标「旧账号」，默认不进当前账号列表；
       · CodeBuddy：目录结构 <uid>/<平台>/<uid>/history 天然按账号隔离，
         目录名 uid 就是归属账号。
-    云端行（transport='cloud' 或接口拉回的）没有本地正文，标「云端」。
+    云端行（transport='cloud'）没有本地正文，标「云端」。
     """
     rows = []
     info_by_id = {r["id"]: r for r in cat.rows}
     for key, label in (("cn", SOURCE_LABELS["cn"]), ("intl", SOURCE_LABELS["intl"])):
         ep = cat.cn if key == "cn" else cat.intl
         uid = cat.cn_uid if key == "cn" else cat.intl_uid
-        seen_ids: set[str] = set()
         for row in wbdb.list_all_sessions(ep):
-            seen_ids.add(row["id"])
             state = _row_state(row, uid)
             info = info_by_id.get(row["id"], {})
             owner = row.get("user_id") or ""
@@ -227,28 +188,6 @@ def build_unified(cat: Catalog) -> None:
                 "path": "",
                 "cwd": row.get("cwd") or "",
                 "client_status": row.get("status") or "",
-                "raw": None,
-            })
-        # 服务端拉回、本地还没有的会话：只列条目（无正文，打开客户端后由它补全）
-        for crow in (cat.cloud_rows.get(key) or []):
-            if crow["id"] in seen_ids:
-                continue
-            rows.append({
-                "kind": "workbuddy",
-                "source_key": key,
-                "source_label": label,
-                "account": crow.get("user_id") or uid,
-                "id": crow["id"],
-                "title": crow.get("title") or crow["id"],
-                "last": crow.get("last_activity_at") or crow.get("updated_at") or 0,
-                "msgs": 0,
-                "size": 0,
-                "state": "云端",
-                "has_body": False,
-                "files": [],
-                "path": "",
-                "cwd": crow.get("work_dir") or "",
-                "client_status": crow.get("status") or "",
                 "raw": None,
             })
     for session in cat.cb_sessions:
@@ -274,31 +213,10 @@ def build_unified(cat: Catalog) -> None:
     cat.unified = rows
 
 
-def pull_cloud(cat: Catalog, log=None) -> int:
-    """按需拉取两个版本当前账号的云端会话列表。
-
-    登录态失效/网络失败都只记日志：本地列表照常出，云端只是补充信息。
-    """
-    log = log or (lambda m, lv="info": None)
-    cat.cloud_rows = {}
-    for key, uid in (("cn", cat.cn_uid), ("intl", cat.intl_uid)):
-        if not uid:
-            cat.cloud_rows[key] = None
-            continue
-        account = cloud.find_account(uid)
-        if account is None:
-            cat.cloud_rows[key] = None
-            continue
-        cat.cloud_rows[key] = cloud.fetch_for_account(account, log)
-    return sum(len(rows or []) for rows in cat.cloud_rows.values())
-
-
-def build_catalog(with_cloud: bool = False, log=None) -> Catalog:
+def build_catalog(log=None) -> Catalog:
     cat = Catalog()
     cat.cn_uid = cat.cn.current_uid()[0]
     cat.intl_uid = cat.intl.current_uid()[0]
-    if with_cloud:
-        pull_cloud(cat, log)
     if cat.cn.exists or cat.intl.exists:
         build_inventory(cat)
     cat.cb_sessions = cb.scan()
@@ -356,51 +274,6 @@ def delete_codebuddy(sessions: list[dict], log) -> dict:
         trash.write_manifest(tag, items)
         stats["trash"] = str(trash.TRASH_ROOT / tag)
         log(f"🗑 CodeBuddy 会话 {stats['sessions']} 条，"
-            f"释放 {stats['bytes'] / 1048576:.1f} MB")
-    return stats
-
-
-def purge_orphans(cat: Catalog, log) -> dict:
-    """把没有会话行指向的正文文件移入回收站。
-
-    客户端删会话时只清数据库行，projects 下的正文可能留下来；这些文件
-    不会再被任何界面引用，是纯占用。
-    """
-    stats = {"groups": 0, "files": 0, "bytes": 0, "trash": ""}
-    if not cat.orphans:
-        return stats
-    tag = trash.new_tag(trash.TRASH_ROOT)
-    items = []
-    for group in cat.orphans:
-        ep = Edition(group["edition"])
-        record = {"sid": group["sid"], "edition": ep.key, "files": [],
-                  "size": 0, "row": None, "usage": None}
-        for raw in group["files"]:
-            path = Path(raw)
-            try:
-                rel = path.relative_to(ep.root)
-            except ValueError:
-                continue
-            dest = trash.TRASH_ROOT / tag / ep.key / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.exists():
-                continue
-            try:
-                shutil.move(str(path), str(dest))
-            except OSError as exc:
-                log(f"移动孤立文件失败：{exc}", "warn")
-                continue
-            record["files"].append(str(rel))
-            record["size"] += path_size(dest)
-            stats["files"] += 1
-        if record["files"]:
-            items.append(record)
-            stats["groups"] += 1
-            stats["bytes"] += record["size"]
-    if items:
-        trash.write_manifest(tag, items)
-        stats["trash"] = str(trash.TRASH_ROOT / tag)
-        log(f"🧹 清理孤立正文 {stats['files']} 个文件，"
             f"释放 {stats['bytes'] / 1048576:.1f} MB")
     return stats
 

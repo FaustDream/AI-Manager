@@ -18,9 +18,8 @@ def defaults() -> dict:
         # 账号表：拖出来的顺序与用户调过的列宽
         "account_order": [],
         "account_columns": [],
-        # 会话页的视图状态：筛选范围 / 只看有正文 / 排序
+        # 会话页的视图状态：只看有正文 / 排序
         "session_opts": {
-            "range": "current",
             "only_body": False,
             "sort": "last",
             "sort_desc": True,

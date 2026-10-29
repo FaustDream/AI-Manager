@@ -54,17 +54,6 @@ def list_all_sessions(ep: Edition) -> list[dict]:
         conn.close()
 
 
-def all_session_ids(ep: Edition) -> set[str]:
-    """库里出现过的全部会话 ID（含云端行），用来判断正文文件是否还有主。"""
-    conn = connect_ro(ep.db)
-    if conn is None:
-        return set()
-    try:
-        return {str(row[0]) for row in conn.execute("SELECT id FROM sessions")}
-    finally:
-        conn.close()
-
-
 def find_session_files(ep: Edition, sid: str) -> list[Path]:
     """定位正文与附属文件：<sid>.jsonl / <sid>.file-rollback.ndjson / <sid>/tool-results。"""
     hits = []
@@ -108,29 +97,6 @@ def slug_of(files, cwd: str) -> str:
         return files[0].parent.name
     from .editions import cwd_to_slug
     return cwd_to_slug(cwd)
-
-
-def visible_rows(ep: Edition) -> list[dict]:
-    """完全照客户端 sidebar 的查询条件取一次，用来确认「点了之后能不能看到」。"""
-    uid = ep.current_uid()[0]
-    conn = connect_ro(ep.db)
-    if conn is None:
-        return []
-    try:
-        conn.row_factory = sqlite3.Row
-        return [dict(row) for row in conn.execute(
-            "SELECT id, title, custom_title, last_activity_at FROM sessions "
-            "WHERE transport = 'local' AND deleted_at IS NULL "
-            "AND (user_id = ? OR user_id = '') "
-            "ORDER BY COALESCE(last_activity_at, created_at) DESC, id ASC",
-            (uid,),
-        )]
-    finally:
-        conn.close()
-
-
-def visible_count(ep: Edition) -> int:
-    return len(visible_rows(ep))
 
 
 def cloud_count(ep: Edition) -> int:

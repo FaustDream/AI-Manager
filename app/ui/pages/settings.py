@@ -83,7 +83,7 @@ class SettingsPage(BasePage):
         for name, path, note in (
             ("数据目录", paths.DATA_DIR, "配置、账号库、积分台账、账号档案"),
             ("运行日志", paths.LOG_FILE, "按时间戳记录每次操作"),
-            ("备份目录", paths.BACKUP_ROOT, "同步前的数据库与正文备份"),
+            ("备份目录", paths.BACKUP_ROOT, "会话库快照与历史备份，回滚时用"),
             ("回收站", paths.TRASH_ROOT, "被删除会话的临时存放处"),
         ):
             dirs.body.addLayout(self._path_row(name, path, note))
@@ -117,23 +117,6 @@ class SettingsPage(BasePage):
         launch.body.addWidget(hline())
         column.addWidget(launch)
 
-        # ---------------------------------------------------------- 快捷操作
-        quick = Card(padding=16, spacing=8)
-        quick.add_title("快捷操作", "直接跳到常用页面，总览页不再放这些入口")
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        for text, icon_name, key in (
-            ("签到中心", "checkin", "checkin"),
-            ("会话管理", "sessions", "sessions"),
-            ("账号档案", "profiles", "profiles"),
-        ):
-            button = make_button(text, "ghost", icon_name)
-            button.clicked.connect(lambda _c=False, k=key: self.win.navigate(k))
-            row.addWidget(button)
-        row.addStretch(1)
-        quick.body.addLayout(row)
-        column.addWidget(quick)
-
         # ---------------------------------------------------------- 关于
         about = Card(padding=16, spacing=8)
         about.add_title(f"关于 AI Manager {APP_VERSION}")
@@ -142,14 +125,13 @@ class SettingsPage(BasePage):
             "· 签到：Trae CN / Qoder CN / Qoder 国际版 / WorkBuddy 国内版 / WorkBuddy 国际版的"
             "本地登录态扫描、签到、剩余积分与到期统计、免签到、每日轮询签到、"
             "浏览器授权添加账号、写回客户端登录态。\n"
-            "· 会话：WorkBuddy 国内版 ⇄ 国际版会话同步、CodeBuddy IDE ⇄ IDEA 插件历史同步、"
-            "本机旧账号/已删除会话恢复可见、删除进回收站、黑名单、备份回滚、"
-            "CodeBuddy 空壳清理、账号档案切换。\n\n"
+            "· 会话：WorkBuddy 国内/国际版、CodeBuddy IDE、IDEA 插件的本机会话清单与"
+            "正文预览，删除进回收站、黑名单、备份与回滚、CodeBuddy 空壳清理、账号档案切换。\n\n"
             "风险提示\n"
             "· 自动化签到与客户端登录态写回可能违反各平台服务条款，请自行评估。\n"
             "· 客户端升级可能改变密钥或存储格式，届时相关功能需要更新。\n"
-            "· 会话同步基于本地 SQLite/JSON 文件，写入前请保持客户端关闭，"
-            "工具会先备份，但仍建议重要数据自行留档。"
+            "· 会话的读取与删除基于本地 SQLite/JSON 文件，删除前请保持客户端关闭；"
+            "工具会把文件先移入回收站，但仍建议重要数据自行留档。"
         )
         text.setWordWrap(True)
         text.setStyleSheet(f"color: {PALETTE['text_2']}; font-size: 12px; line-height: 1.7;")

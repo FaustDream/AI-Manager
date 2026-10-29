@@ -27,6 +27,7 @@ TEXT_KINDS = ("text", "input_text", "output_text")
 _SYSTEM_BLOCK = re.compile(r"<system-reminder\b.*?</system-reminder>", re.S | re.I)
 _USER_INFO = re.compile(r"<user_info>.*?</user_info>", re.S | re.I)
 _PROJECT_CONTEXT = re.compile(r"<project_context>.*?</project_context>", re.S | re.I)
+_ADDITIONAL_DATA = re.compile(r"<additional_data>.*?</additional_data>", re.S | re.I)
 _USER_TAGS = re.compile(r"</?user_query>", re.I)
 
 
@@ -34,6 +35,7 @@ def _clean(text: str) -> str:
     text = _SYSTEM_BLOCK.sub("", text)
     text = _USER_INFO.sub("", text)
     text = _PROJECT_CONTEXT.sub("", text)
+    text = _ADDITIONAL_DATA.sub("", text)
     text = _USER_TAGS.sub("", text)
     return text.strip()
 
