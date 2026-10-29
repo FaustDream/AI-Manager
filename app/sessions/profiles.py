@@ -27,8 +27,7 @@ DB_FILES = ("workbuddy.db", "workbuddy.db-wal", "workbuddy.db-shm")
 # 客户端的登录票据：token、sessionState、uin 都在这个文件里。
 # 以前只存 app/session 不存它，切换时只能拿别的账号的文件当模板重新拼一份，
 # 拼出来的 sessionState 服务端不认，客户端就回到登录页——这是「有档案也要重登」的根因。
-AUTH_DIR = (Path(os.environ.get("LOCALAPPDATA", "")) / "CodeBuddyExtension"
-            / "Data" / "Public" / "auth")
+AUTH_DIR = paths.user_local_dir() / "CodeBuddyExtension" / "Data" / "Public" / "auth"
 AUTH_NAMES = {"cn": "workbuddy-desktop.info", "intl": "workbuddy-desktop-ai.info"}
 PACK_AUTH = "auth.info"
 

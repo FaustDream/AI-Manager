@@ -14,6 +14,7 @@ import requests
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from ..core import paths
 from .base import (Account, ActionResult, CreditLot, CreditSnapshot, LogFn, Provider,
                    StatusResult, parse_iso)
 
@@ -104,7 +105,7 @@ class TraeProvider(Provider):
     live_credit = True
 
     def scan(self, log: LogFn, extra_paths: tuple = ()) -> list[Account]:
-        files = [Path(os.environ.get("APPDATA", "")) / name / "User" / "globalStorage" / "storage.json"
+        files = [paths.user_appdata_dir() / name / "User" / "globalStorage" / "storage.json"
                  for name in CLIENT_DIRS]
         extras = [Path(path) for path in extra_paths]
         accounts: list[Account] = []
@@ -250,7 +251,7 @@ class TraeProvider(Provider):
         return ActionResult(False, str(message))
 
     def client_exe(self, account: Account | None = None) -> Path | None:
-        base = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs"
+        base = paths.user_local_dir() / "Programs"
         for name in CLIENT_DIRS:
             exe = base / name / f"{name}.exe"
             if exe.exists():

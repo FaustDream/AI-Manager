@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel
 
 from ... import APP_VERSION, brand
 from ...checkin import daily, service
-from ...core import autostart, paths, shortcut, tasks
+from ...core import autostart, paths, shortcut, tasks, winproc
 from ..theme import PALETTE
 from ..widgets import Badge, Card, hline, label, make_button
 from .base import BasePage
@@ -188,7 +188,7 @@ class SettingsPage(BasePage):
         if not target.exists():
             self.warn("目录不存在", f"{target} 还没有生成。")
             return
-        os.startfile(str(target))
+        winproc.open_path(target)
 
     # ------------------------------------------------------------------ 数据
     def on_show(self) -> None:
@@ -205,7 +205,10 @@ class SettingsPage(BasePage):
         self.poll_combo.blockSignals(False)
 
         exists = shortcut.shortcut_exists()
-        if exists:
+        if not shortcut.SUPPORTED:
+            self.shortcut_badge.set("不支持", "dim")
+            self.shortcut_hint.setText("桌面快捷方式只在 Windows 上提供")
+        elif exists:
             self.shortcut_badge.set("已创建", "ok")
             self.shortcut_hint.setText(str(exists))
         else:
@@ -214,6 +217,9 @@ class SettingsPage(BasePage):
 
         self.boot_check.blockSignals(True)
         self.boot_check.setChecked(autostart.is_enabled())
+        self.boot_check.setEnabled(autostart.SUPPORTED)
+        if not autostart.SUPPORTED:
+            self.boot_check.setToolTip("开机自启只在 Windows 上提供")
         self.boot_check.blockSignals(False)
 
     def _save_poll(self, *_args) -> None:

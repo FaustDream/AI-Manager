@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""浏览器登录得到的账号：用 Windows DPAPI 加密保存在 data/accounts.dat。
+"""浏览器登录得到的账号：加密保存在 data/accounts.dat。
+
+Windows 走 DPAPI（跟当前用户绑定，把文件拷到别的机器也解不开）；Linux / macOS
+没有 DPAPI，退回 cryptography 的 Fernet + 本地密钥 data/.accounts.key（0600）。
+两边都是「只有本机本用户能解」，非 Windows 的强度取决于密钥文件权限。
 
 只保存登录流程拿到的 token，不修改官方客户端的任何文件。
 """
@@ -7,58 +11,83 @@ from __future__ import annotations
 
 import base64
 import ctypes
-import ctypes.wintypes as wt
 import json
+import os
+import sys
+
+from cryptography.fernet import Fernet, InvalidToken
 
 from ..core import paths
 from .base import Account, parse_iso
 from .registry import LABELS
 
+IS_WINDOWS = sys.platform == "win32"
 
-class _Blob(ctypes.Structure):
-    _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+if IS_WINDOWS:
+    import ctypes.wintypes as wt
 
+    class _Blob(ctypes.Structure):
+        _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
-def _make_blob(data: bytes) -> _Blob:
-    blob = _Blob()
-    blob.cbData = len(data)
-    blob.pbData = ctypes.create_string_buffer(data)
-    return blob
+    def _make_blob(data: bytes) -> _Blob:
+        blob = _Blob()
+        blob.cbData = len(data)
+        blob.pbData = ctypes.create_string_buffer(data)
+        return blob
 
+    def _protect(data: bytes) -> bytes:
+        kernel32 = ctypes.windll.kernel32
+        raw_in = _make_blob(data)
+        blob_out = _Blob()
+        ok = ctypes.windll.crypt32.CryptProtectData(
+            ctypes.byref(raw_in), None, None, None, None, 0x1, ctypes.byref(blob_out))
+        if not ok:
+            raise OSError(f"CryptProtectData 失败：{kernel32.GetLastError()}")
+        try:
+            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        finally:
+            kernel32.LocalFree(blob_out.pbData)
 
-def _protect(data: bytes) -> bytes:
-    kernel32 = ctypes.windll.kernel32
-    raw_in = _make_blob(data)
-    blob_out = _Blob()
-    ok = ctypes.windll.crypt32.CryptProtectData(
-        ctypes.byref(raw_in), None, None, None, None, 0x1, ctypes.byref(blob_out))
-    if not ok:
-        raise OSError(f"CryptProtectData 失败：{kernel32.GetLastError()}")
-    try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    finally:
-        kernel32.LocalFree(blob_out.pbData)
+    def _unprotect(data: bytes) -> bytes:
+        kernel32 = ctypes.windll.kernel32
+        raw_in = _make_blob(data)
+        blob_out = _Blob()
+        ok = ctypes.windll.crypt32.CryptUnprotectData(
+            ctypes.byref(raw_in), None, None, None, None, 0, ctypes.byref(blob_out))
+        if not ok:
+            raise OSError(f"CryptUnprotectData 失败：{kernel32.GetLastError()}")
+        try:
+            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        finally:
+            kernel32.LocalFree(blob_out.pbData)
+else:
+    def _fernet() -> Fernet:
+        """密钥首次使用时生成并落盘，权限收到 0600（Windows 上无意义，故不调）。"""
+        key_file = paths.ACCOUNTS_KEY_FILE
+        if key_file.exists():
+            key = key_file.read_bytes().strip()
+        else:
+            key_file.parent.mkdir(parents=True, exist_ok=True)
+            key = Fernet.generate_key()
+            key_file.write_bytes(key)
+            try:
+                os.chmod(key_file, 0o600)
+            except OSError:
+                pass
+        return Fernet(key)
 
+    def _protect(data: bytes) -> bytes:
+        return _fernet().encrypt(data)
 
-def _unprotect(data: bytes) -> bytes:
-    kernel32 = ctypes.windll.kernel32
-    raw_in = _make_blob(data)
-    blob_out = _Blob()
-    ok = ctypes.windll.crypt32.CryptUnprotectData(
-        ctypes.byref(raw_in), None, None, None, None, 0, ctypes.byref(blob_out))
-    if not ok:
-        raise OSError(f"CryptUnprotectData 失败：{kernel32.GetLastError()}")
-    try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    finally:
-        kernel32.LocalFree(blob_out.pbData)
+    def _unprotect(data: bytes) -> bytes:
+        return _fernet().decrypt(data)
 
 
 def load() -> list[dict]:
     try:
         blob = base64.b64decode(paths.ACCOUNTS_FILE.read_text(encoding="ascii"))
         items = json.loads(_unprotect(blob).decode("utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, InvalidToken):
         return []
     if not isinstance(items, list):
         return []

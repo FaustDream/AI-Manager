@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 import requests
 
-from ..core import winproc
+from ..core import paths, winproc
 from ..sessions import profiles as wb_profiles
 from ..sessions.editions import Edition
 from . import qoder as qoder_provider
@@ -27,11 +27,11 @@ from . import trae as trae_provider
 from .base import Account, parse_iso
 from .workbuddy import open_field, seal_field
 
-QODER_DIR_CN = Path(os.environ.get("APPDATA", "")) / "com.qodercn.app.stable"
-QODER_DIR_INTL = Path(os.environ.get("APPDATA", "")) / "com.qoder.app.stable"
-WB_FILE_CN = (Path(os.environ.get("LOCALAPPDATA", "")) / "CodeBuddyExtension"
+QODER_DIR_CN = paths.user_appdata_dir() / "com.qodercn.app.stable"
+QODER_DIR_INTL = paths.user_appdata_dir() / "com.qoder.app.stable"
+WB_FILE_CN = (paths.user_local_dir() / "CodeBuddyExtension"
               / "Data" / "Public" / "auth" / "workbuddy-desktop.info")
-WB_FILE_INTL = (Path(os.environ.get("LOCALAPPDATA", "")) / "CodeBuddyExtension"
+WB_FILE_INTL = (paths.user_local_dir() / "CodeBuddyExtension"
                 / "Data" / "Public" / "auth" / "workbuddy-desktop-ai.info")
 
 SUPPORTED = {"qoder": True, "qoder_intl": True, "workbuddy": True, "trae": False}

@@ -24,7 +24,7 @@ from pathlib import Path
 
 from ..core import paths
 
-CB_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "CodeBuddyExtension" / "Data"
+CB_ROOT = paths.user_local_dir() / "CodeBuddyExtension" / "Data"
 PLATFORMS = ("CodeBuddyIDE", "JetBrains")
 PLATFORM_LABEL = {"CodeBuddyIDE": "CodeBuddy IDE", "JetBrains": "IDEA 插件"}
 UID_RE = re.compile(r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"

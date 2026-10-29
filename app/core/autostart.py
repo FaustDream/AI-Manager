@@ -4,15 +4,24 @@
 用 HKCU 而不是 HKLM：不需要管理员权限，卸载时也不会在其他账号下留垃圾。
 启动命令不再带额外参数：每日签到轮询是程序启动后的固定动作，开机自启
 与手动双击走同一条路径。
+
+只有 Windows 有这条注册表路径；其他平台（实验性构建）一律当作「不支持」，
+is_enabled 恒为 False、enable 抛 OSError，界面沿用既有的失败提示，不需要额外分支。
 """
 from __future__ import annotations
 
 import sys
-import winreg
 from pathlib import Path
+
+try:
+    import winreg
+except ImportError:                     # 非 Windows 平台没有 winreg
+    winreg = None                       # type: ignore[assignment]
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 VALUE_NAME = "AI Manager"
+
+SUPPORTED = winreg is not None and sys.platform == "win32"
 
 
 def _command() -> str:
@@ -32,6 +41,8 @@ def command_line() -> str:
 
 
 def is_enabled() -> bool:
+    if not SUPPORTED:
+        return False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
             value, _kind = winreg.QueryValueEx(key, VALUE_NAME)
@@ -41,6 +52,8 @@ def is_enabled() -> bool:
 
 
 def enable() -> str:
+    if not SUPPORTED:
+        raise OSError("开机自启只支持 Windows")
     command = _command()
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
                             winreg.KEY_SET_VALUE) as key:
@@ -49,6 +62,8 @@ def enable() -> str:
 
 
 def disable() -> None:
+    if not SUPPORTED:
+        return
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
                             winreg.KEY_SET_VALUE) as key:

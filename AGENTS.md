@@ -84,6 +84,8 @@ data/                   运行期数据：config.json、accounts.dat、checked.j
                         session_index.json、backups/、logs/、profiles/、trash/
 legacy/                 历史版本 zip 归档，只读
 tools/                  一次性脚本（图标生成、截图）
+packaging/              打包：ai_manager.spec（PyInstaller）、build.py、requirements-build.txt
+.github/workflows/      release.yml：打 v* 标签自动构建三平台并建 Release
 ```
 
 改动定位原则：
@@ -188,17 +190,18 @@ tools/                  一次性脚本（图标生成、截图）
 
 ### 7.2 版本号
 
-三段式 `主.次.修订`，当前 **1.0.0**：
+三段式 `主.次.修订`，当前 **1.3.0**：
 
 | 段 | 含义 | 当前 |
 | --- | --- | --- |
 | `主` | 产品代次，只有结构性重写或用户明确要求才变 | `1` |
-| `次` | 阶段预留段，日常保持 `0` | `0` |
-| `修订` | 日常改动段，唯一日常递增的一位 | `0` |
+| `次` | 功能批次段，一轮新功能打包发布时递增（由用户确认） | `3` |
+| `修订` | 日常改动段，修复与小改动的日常递增位 | `0` |
 
 - 三段均为非负整数，不用前导零（`1.0.01` 会被读成 `1.0.1`）
-- 日常改动（优化、修复、新增功能）一律**修订 +1**：`1.0.0 → 1.0.1 → 1.0.2`，直接升级，无需确认
-- 不跨档跳号：不得从 `1.0.0` 直接跳到 `1.1.0`
+- 日常改动（优化、修复）默认**修订 +1**：`1.3.0 → 1.3.1`，直接升级，无需确认
+- 新功能成批发布时**次 +1、修订归零**：`1.3.1 → 1.4.0`，需用户确认
+- 不跨档跳号：一次只进一段（`1.2.9 → 1.3.0` 可以，`1.2.9 → 2.0.0` 不行）
 - 只有 `9` 结尾进位时才需要确认（`1.0.9 → 1.0.10`、`1.0.99 → 1.1.0`）；未确认则保持该 `9` 版本作为最新版本，后续改动并入该版本，不得自动进位
 - 版本号只升不降；同一版本号不重复发布不同内容
 - 两段式迁移为三段式：`A.B` 记作 `A.0.B`，只是格式换算，不算升级
@@ -217,12 +220,27 @@ tools/                  一次性脚本（图标生成、截图）
 
 1. 按第 5 节完成验证
 2. 同步三处版本号
-3. `git commit -m "发布: 1.0.1"`
-4. `git tag -a v1.0.1 -m "AI Manager 1.0.1"`
+3. `git commit -m "发布: 1.3.0"`
+4. `git tag -a v1.3.0 -m "AI Manager 1.3.0"`
 5. `git push && git push --tags`
-6. 在 GitHub Releases 用该 tag 建 Release，说明取 `CHANGELOG.md` 当前版本分组
+6. CI（`.github/workflows/release.yml`）自动构建三平台产物并建 Release，无需手工上传
 
-Tag 与 Release 标题统一用完整版本号前缀 `v`（`v1.0.1` / `AI Manager 1.0.1`）。
+Tag 与 Release 标题统一用完整版本号前缀 `v`（`v1.3.0` / `AI Manager 1.3.0`）。
+
+### 7.5 打包与三平台产物
+
+| 平台 | 产物 | 支持程度 |
+| --- | --- | --- |
+| Windows x64 | `AI-Manager-<版本>-windows-x64.zip` | 正式支持（唯一的完整功能平台） |
+| Linux x64 | `AI-Manager-<版本>-linux-x64.tar.gz` | 实验性：能启动，客户端相关功能不可用 |
+| macOS arm64 | `AI-Manager-<版本>-macos-arm64.tar.gz` | 同上 |
+
+- 打包用 PyInstaller onedir（`packaging/ai_manager.spec`），入口是 `run.pyw`，`console=False`
+- 构建依赖只在 `packaging/requirements-build.txt`，装进独立的 `.venv-build`，**不进 `pyproject.toml` / `uv.lock` / 用户环境**
+- 版本号只从 `app/__init__.py` 读；Windows exe 的版本资源由 `packaging/build.py` 生成，不要手写死
+- CI 会校验 `tag` 与 `APP_VERSION` 一致，不一致直接失败
+- 跨平台边界：`app/core/winproc.py`（进程/打开目录）、`app/core/autostart.py`、`app/core/shortcut.py`、`app/checkin/store.py`（加密）、`app/checkin/qoder.py`（DPAPI）。**新增 Windows API 调用必须同时给出非 Windows 分支**，否则 Linux/mac 构建一启动就崩
+- 非 Windows 账号库用 Fernet + `data/.accounts.key`，与 Windows 的 `accounts.dat` 不互通；不要把密钥写进日志或提交
 
 ## 8. 输出与协作方式
 

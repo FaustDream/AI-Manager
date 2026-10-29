@@ -31,8 +31,12 @@ PALETTE = {
     "sel": "#E8EFFF",
 }
 
-FONT_FAMILY = '"Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"'
-MONO_FAMILY = '"Cascadia Mono", "Consolas", "Courier New"'
+# 后面几个是 Linux / macOS 上的常见中文字体：Windows 首选微软雅黑，
+# 换平台时 Qt 会顺着列表往下找，找不到才退到系统默认
+FONT_FAMILY = ('"Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", '
+               '"PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif')
+MONO_FAMILY = ('"Cascadia Mono", "Consolas", "SF Mono", "Menlo", '
+               '"DejaVu Sans Mono", "Courier New", monospace')
 
 _CHECK_ICON_CACHE: str | None = None
 
@@ -566,7 +570,11 @@ QScrollArea > QWidget > QWidget {{
 
 def apply(app: QApplication) -> None:
     app.setStyle("Fusion")
-    font = QFont("Microsoft YaHei UI", 10)
+    font = QFont()
+    # setFamilies 才有多级回退；QFont("Microsoft YaHei UI") 在缺字体的平台上只会静默退化
+    font.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI",
+                      "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC"])
+    font.setPointSize(10)
     font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)
     app.setFont(font)
     app.setStyleSheet(qss())

@@ -1,0 +1,147 @@
+name: Release
+
+# 推送 v* 标签即发布：三平台各打一个免安装包，自动建 Release 并上传。
+# 手动触发（workflow_dispatch）只构建、传 artifact，不建 Release，用于验证打包链路。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: ubuntu-latest
+            platform: linux-x64
+          - os: macos-14          # Apple Silicon
+            platform: macos-arm64
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 装 Linux 运行库与 patchelf
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            patchelf libgl1 libegl1 libxkbcommon-x11-0 libdbus-1-3 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
+
+      - name: 装依赖
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "pyside6-essentials>=6.8,<7" "requests>=2.31,<3" "cryptography>=42,<51" \
+            -r packaging/requirements-build.txt
+
+      - name: 校验 tag 与 APP_VERSION 一致
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          VERSION=$(python - <<'PY'
+          import re, pathlib
+          text = pathlib.Path("app/__init__.py").read_text(encoding="utf-8")
+          print(re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text).group(1))
+          PY
+          )
+          echo "APP_VERSION=$VERSION  TAG=$GITHUB_REF_NAME"
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 app/__init__.py 的 APP_VERSION $VERSION 不一致，先改版本号再打标签"
+            exit 1
+          fi
+
+      - name: 打包
+        run: python packaging/build.py
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: 发布 Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 汇总产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出产物
+        run: ls -lh artifacts
+
+      - name: 创建 Release 并上传
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          body: |
+            AI Manager ${{ github.ref_name }}
+
+            ## 下载
+
+            | 平台 | 文件 | 说明 |
+            | --- | --- | --- |
+            | **Windows 10 / 11（64 位）** | `AI-Manager-*-windows-x64.zip` | **正式支持**。解压后双击 `AIManager/AIManager.exe` |
+            | Linux（x64） | `AI-Manager-*-linux-x64.tar.gz` | 实验性，见下方说明 |
+            | macOS（Apple Silicon） | `AI-Manager-*-macos-arm64.tar.gz` | 实验性，见下方说明 |
+
+            免安装：解压即用，数据写在程序目录的 `data/` 里，整个目录拷走就能带走配置。
+
+            ## 关于 Linux / macOS 版（实验性）
+
+            本工具管理的 Trae / Qoder / WorkBuddy 客户端**只有 Windows 版**，且账号库在
+            Windows 上用的是系统 DPAPI 加密。因此 Linux / macOS 包只保证「能启动、界面能开」：
+
+            - 账号库改用本地密钥（`data/.accounts.key`）加密，与 Windows 的 `accounts.dat` 不互通
+            - 读取客户端登录态、切换账号、写回登录态、桌面快捷方式、开机自启等功能不可用
+            - 会话库读取依赖 `~/.workbuddy*` 目录，若你在这些平台上没有对应数据，页面会是空的
+
+            ## 校验
+
+            每个包都可核对压缩包内的 `LICENSE` 与 `CHANGELOG.md`；版本号与 `app/__init__.py`
+            的 `APP_VERSION` 一致，CI 会在打标签时强制校验。
+
+      - name: 生成校验和
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "${{ github.ref_name }}" SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

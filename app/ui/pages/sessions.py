@@ -725,13 +725,13 @@ class SessionsPage(BasePage):
         if row["kind"] == "codebuddy":
             path = Path(row["path"])
             if path.exists():
-                os.startfile(str(path))
+                winproc.open_path(path)
             else:
                 self.info("目录不存在", "这条 CodeBuddy 会话没有正文目录。")
             return
         for item in row["files"] or []:
             parent = Path(item).parent
             if parent.exists():
-                os.startfile(str(parent))
+                winproc.open_path(parent)
                 return
         self.info("没有正文", "这条会话没有正文文件。")
