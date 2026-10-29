@@ -27,7 +27,7 @@ from .base import BasePage
 COLUMNS = [
     Column("title", "会话标题", 240, stretch=True),
     Column("source", "软件", 136),
-    Column("account", "账号", 170),
+    Column("account", "账号", 210),
     Column("state", "状态", 66, "center"),
     Column("last", "最后活动", 132, "center"),
     Column("msgs", "记录", 50, "right"),
@@ -315,14 +315,14 @@ class SessionsPage(BasePage):
         self._preview_cache = {}
         self._set_busy(False)
 
-        accounts = ["全部", "当前账号"] + sorted(
+        accounts = ["全部"] + sorted(
             {self._account_label(row["account"]) for row in cat.unified
-             if self._account_label(row["account"]) not in ("当前账号", "未登录")})
+             if self._account_label(row["account"]) not in ("不限账号", "未登录")})
         current = self.f_account.currentText()
         self.f_account.blockSignals(True)
         self.f_account.clear()
         self.f_account.addItems(accounts)
-        self.f_account.setCurrentText(current if current in accounts else "当前账号")
+        self.f_account.setCurrentText(current if current in accounts else "全部")
         self.f_account.blockSignals(False)
 
         self._fill_table()
@@ -353,12 +353,44 @@ class SessionsPage(BasePage):
             return f"{nickname}（{tag}）" if tag else nickname
         return tag or "未知账号"
 
+    def _active_filters(self) -> list[str]:
+        """当前生效的筛选条件；列表提示里要写出来，否则「看不见某类会话」分不清是
+        真的没有、还是被上一个筛选挡住了。"""
+        out = []
+        if self.f_source.currentText() != "全部":
+            out.append(f"软件={self.f_source.currentText()}")
+        account = self.f_account.currentText()
+        if account not in ("", "全部"):
+            out.append(f"账号={account}")
+        if self.opt_body.isChecked():
+            out.append("只看有正文")
+        query = self.search.text().strip()
+        if query:
+            out.append(f"搜索={query}")
+        return out
+
+    def _hint_text(self, shown: int) -> str:
+        """带上各来源的总条数：国际版到底有没有会话，一眼能对出来。"""
+        counts = {"cn": 0, "intl": 0, "codebuddy": 0}
+        for row in self.cat.unified:
+            key = "codebuddy" if row["kind"] == "codebuddy" else row["source_key"]
+            counts[key] = counts.get(key, 0) + 1
+        parts = [f"显示 {shown} / {len(self.cat.unified)} 条",
+                 f"国内 {counts['cn']}", f"国际 {counts['intl']}",
+                 f"CodeBuddy {counts['codebuddy']}"]
+        active = self._active_filters()
+        if active:
+            parts.append("筛选：" + "、".join(active))
+        if self.cat.errors:
+            parts.append("读取异常，详见运行日志")
+        return " · ".join(parts)
+
     def _passes(self, row: dict) -> bool:
         if self.f_source.currentText() != "全部" \
                 and row["source_label"] != self.f_source.currentText():
             return False
         account = self.f_account.currentText()
-        if account not in ("全部", "当前账号") \
+        if account not in ("", "全部") \
                 and self._account_label(row["account"]) != account:
             return False
         if self.opt_body.isChecked() and not row["has_body"]:
@@ -403,7 +435,7 @@ class SessionsPage(BasePage):
                 "_tip_map": {"title": row["title"]},
             })
         self.table.set_rows(display)
-        self.list_hint.setText(f"显示 {len(display)} / {len(self.cat.unified)} 条")
+        self.list_hint.setText(self._hint_text(len(display)))
         keep = [rowid for rowid in selected if rowid in self.row_index]
         if keep:
             self.table.select_key(keep[0])
@@ -467,13 +499,18 @@ class SessionsPage(BasePage):
         def worker(_emit):
             return preview.load(row)
 
+        # 正文在本地文件里，大的 jsonl 要读几百毫秒；走全局转圈，不占页面的 busy
+        self.win.set_busy(True, "正在读取会话正文…", "preview")
+
         def done(result):
+            self.win.set_busy(False, "", "preview")
             if token != self._preview_token:
                 return                     # 用户已经选了别的会话
             self._preview_cache[row["rowid"]] = result
             self._paint_detail(row, result)
 
         def failed(message: str):
+            self.win.set_busy(False, "", "preview")
             if token != self._preview_token:
                 return
             self._paint_detail(row, {"messages": [], "total": 0, "dropped": 0,

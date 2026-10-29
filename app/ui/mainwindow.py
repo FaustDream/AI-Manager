@@ -7,7 +7,7 @@ from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import APP_TITLE, APP_VERSION
+from .. import APP_TITLE, APP_VERSION, brand
 from ..core import bus, logbook, paths, tasks
 from . import icons
 from .pages.account_center import AccountCenterPage
@@ -16,7 +16,7 @@ from .pages.overview import OverviewPage
 from .pages.sessions import SessionsPage
 from .pages.settings import SettingsPage
 from .theme import PALETTE
-from .widgets import Toast
+from .widgets import BusyIndicator, Toast, label
 
 NAV_ITEMS = [
     ("overview", "总览", "overview"),
@@ -69,6 +69,9 @@ class MainWindow(QMainWindow):
         self._summary: dict[str, str] = {}
         self._current = ""
         self._pages_built: list[str] = []
+        # 正在加载的来源（页面 key / 后台任务名 → 文案）。按 key 记账而不是布尔量：
+        # 几处同时加载时，先结束的那个不能把别人的转圈一起关掉。
+        self._busy: dict[str, str] = {}
 
         self.setObjectName("MainWindow")
         self.setWindowTitle(APP_TITLE)
@@ -164,18 +167,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 16, 12, 12)
         layout.setSpacing(4)
 
-        brand = QHBoxLayout()
-        brand.setSpacing(10)
-        brand.setContentsMargins(6, 0, 4, 0)
-        logo = QLabel()
-        logo.setFixedSize(36, 36)
-        if paths.ICON_FILE.exists():
-            logo.setPixmap(QIcon(str(paths.ICON_FILE)).pixmap(36, 36))
-        else:
-            logo.setPixmap(icons.pixmap("bolt", PALETTE["accent"], 28))
-        brand.addWidget(logo)
-        # layout.addWidget(label("工作台", "NavGroup"))
-        layout.addSpacing(4)
+        layout.addLayout(self._build_brand())
+        layout.addSpacing(14)
         for key, text, icon_name in NAV_ITEMS:
             button = NavButton(key, text, icon_name)
             button.clicked.connect(lambda _c=False, k=key: self.navigate(k))
@@ -183,13 +176,50 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
 
         layout.addStretch(1)
+        self.busy_box = BusyIndicator(sidebar)
+        layout.addWidget(self.busy_box)
         settings = NavButton("settings", "设置", "settings")
         settings.clicked.connect(lambda _c=False: self.navigate("settings"))
         self.nav_buttons["settings"] = settings
         layout.addWidget(settings)
 
-
+        # 版权行贴在侧栏最底部：跟着窗口一直在，比「关于」卡片更难被顺手删掉
+        foot = label(f"{brand.COPYRIGHT} · v{APP_VERSION}", "BrandFoot")
+        foot.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(foot)
         return sidebar
+
+    def _build_brand(self) -> QHBoxLayout:
+        """侧栏顶部的品牌区：图标 + 产品名 + 作者署名。
+
+        署名放在侧栏而不是窗口标题：标题会被窗口管理器截断，
+        侧栏顶部每次都在，是改名再发布时最容易漏删的位置。
+        """
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.setContentsMargins(6, 0, 4, 0)
+
+        logo = QLabel()
+        logo.setFixedSize(36, 36)
+        if paths.ICON_FILE.exists():
+            logo.setPixmap(QIcon(str(paths.ICON_FILE)).pixmap(36, 36))
+        else:
+            logo.setPixmap(icons.pixmap("bolt", PALETTE["accent"], 28))
+        row.addWidget(logo)
+
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        text.setContentsMargins(0, 0, 0, 0)
+        text.addWidget(label("AI Manager", "BrandName"))
+        self.brand_by = label(brand.byline(), "BrandSub")
+        if not brand.intact():
+            self.brand_by.setText(brand.tampered_hint())
+            self.brand_by.setObjectName("BrandByWarn")
+        text.addWidget(self.brand_by)
+        row.addLayout(text)
+        row.addStretch(1)
+        return row
+
 
     # ------------------------------------------------------------------ 导航
     def _ensure_page(self, key: str) -> QWidget | None:
@@ -240,13 +270,24 @@ class MainWindow(QMainWindow):
         return self.pages.get(key)
 
     # ------------------------------------------------------------------ 状态
-    # 底部状态栏已移除。三个方法保留是因为页面与 bus 里已有十几处调用，
-    # 逐个删改的改动面远大于收益；空实现即可，调用方不用改。
+    # 底部状态栏已移除，进度文案改由侧栏底部的转圈承担（见 set_busy）。
     def set_status(self, text: str) -> None:
         """状态栏已移除，进度文案不再有展示位。"""
 
-    def set_busy(self, busy: bool, text: str = "") -> None:
-        """状态栏已移除，忙闲反馈由各页面自己的按钮与提示承担。"""
+    def set_busy(self, busy: bool, text: str = "", key: str = "") -> None:
+        """任一页面或后台任务在加载数据就转圈，全部结束才停。
+
+        key 区分来源：页面用自身的 key，后台轮询用 daily / credits。
+        同一 key 重复置忙只更新文案，不会叠出多个圈。
+        """
+        if busy:
+            self._busy[key] = text or "正在加载…"
+        else:
+            self._busy.pop(key, None)
+        if self._busy:
+            self.busy_box.start(list(self._busy.values())[-1])
+        else:
+            self.busy_box.stop()
 
     def set_summary(self, scope: str, text: str) -> None:
         """统计文案仍缓存，页面切换时如需恢复展示可直接取用。"""
@@ -343,6 +384,7 @@ class MainWindow(QMainWindow):
                for page in self.pages.values()):
             return
         self._credit_polling = True
+        self.set_busy(True, "正在刷新积分…", "credits")
 
         def worker(_emit):
             from ..checkin import service as checkin_service
@@ -353,12 +395,14 @@ class MainWindow(QMainWindow):
 
         def done(results: dict):
             self._credit_polling = False
+            self.set_busy(False, "", "credits")
             if results:
                 bus.BUS.credits.emit(results)
                 self.log(f"积分自动轮询完成（{len(results)} 个账号）", "dim")
 
         def failed(message: str):
             self._credit_polling = False
+            self.set_busy(False, "", "credits")
             self.log(f"积分自动轮询失败：{message}", "dim")
 
         tasks.submit(worker, on_done=done, on_error=failed)

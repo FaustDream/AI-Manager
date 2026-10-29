@@ -1,0 +1,50 @@
+AI Manager 授权条款 1.0
+Copyright (c) 2026 FaustDream. All rights reserved.
+
+本条款适用于本仓库内的全部源代码、图标、界面与文档（以下称「本软件」）。
+
+一、允许
+
+1. 免费下载、安装、使用本软件，包括在商业环境中使用。
+2. 完整、未经修改地复制与分发本软件，前提是保留本文件及全部作者署名。
+3. 阅读、修改源代码用于个人学习或自用。
+
+二、禁止
+
+1. 去除、隐藏、替换或篡改本软件的作者署名、版权声明、关于页面中的作者信息，
+   以及界面侧栏、启动日志中的署名标识。
+2. 修改作者署名后，以任何形式分发、发布或销售本软件及其衍生版本。
+3. 将本软件或其衍生版本作为自己的原创作品发表、申请著作权登记或用于商业转售。
+4. 移除本文件后分发。
+
+三、署名标识
+
+本软件的官方署名为 FaustDream，官方来源为
+https://github.com/FaustDream/AI-Manager
+
+程序内置署名校验：作者信息被修改后，启动时会提示「非官方副本」并在界面标红。
+该校验仅用于声明来源，不影响软件功能，也不收集任何数据。
+
+四、免责
+
+本软件按「现状」提供，不附带任何明示或暗示的担保。因使用本软件产生的任何直接或
+间接损失（包括但不限于账号风险、数据丢失、平台服务条款违约），作者不承担责任。
+自动化签到与客户端登录态写回可能违反相关平台的服务条款，请自行评估风险。
+
+五、其他
+
+本条款未授予商标使用权。如需商业授权、二次分发或以本软件为基础提供服务，
+请通过上述仓库地址联系作者。
+
+---
+
+English summary (the Chinese text above prevails):
+
+You may use, copy and redistribute this software free of charge, including in a
+commercial environment, provided that all author attributions remain intact.
+
+You may NOT remove, hide or replace the author attribution (FaustDream), nor
+redistribute or sell any version in which the attribution has been altered, nor
+claim authorship of this software or any derivative of it.
+
+The software is provided "AS IS", without warranty of any kind.

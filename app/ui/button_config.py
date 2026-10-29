@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QPushButton
 #   always           始终可点
 #   selection        选中行后才可点
 #   has_rows         有数据行才可点
+#   has_pending      有账号今天还能签才可点（全签过就置灰）
 # ---------------------------------------------------------------------------
 BUTTONS: dict[str, dict] = {
     # ---------------------------------------------------------- 账号列表面板
@@ -50,8 +51,8 @@ BUTTONS: dict[str, dict] = {
     "checkin.checkin_all": {
         "panel": "checkin", "position": "toolbar", "order": 10,
         "text": "全部签到", "kind": "primary", "icon": "bolt",
-        "requires": ["rows"], "enable_when": "has_rows",
-        "note": "为所有参与签到的账号执行签到（跳过免签到）",
+        "requires": ["rows"], "enable_when": "has_pending",
+        "note": "为所有参与签到的账号执行签到（跳过免签到与今日已签）",
     },
     "checkin.query_status": {
         "panel": "checkin", "position": "toolbar", "order": 30,
@@ -89,7 +90,8 @@ BUTTONS: dict[str, dict] = {
 
 PANEL_LABEL = {"accounts": "账号列表", "checkin": "签到", "profiles": "账号动作"}
 POSITION_LABEL = {"header": "页头", "toolbar": "工具行", "footer": "底栏"}
-ENABLE_LABEL = {"always": "始终可用", "selection": "选中后可用", "has_rows": "有数据可用"}
+ENABLE_LABEL = {"always": "始终可用", "selection": "选中后可用",
+                "has_rows": "有数据可用", "has_pending": "有待签账号"}
 REQUIRES_LABEL = {
     "selected": "需选中行", "stored_account": "仅浏览器账号",
     "checkin_account": "仅可签到账号", "rows": "需有数据行",
@@ -109,6 +111,8 @@ def rule_ok(enable_when: str, state: dict) -> bool:
         return bool(state.get("selected"))
     if enable_when == "has_rows":
         return bool(state.get("rows"))
+    if enable_when == "has_pending":
+        return bool(state.get("checkin_pending"))
     return True
 
 

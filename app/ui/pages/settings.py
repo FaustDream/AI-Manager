@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel,
                                QScrollArea, QVBoxLayout, QWidget)
 
-from ... import APP_VERSION
+from ... import APP_VERSION, brand
 from ...checkin import daily, service
 from ...core import autostart, paths, shortcut, tasks
 from ..theme import PALETTE
@@ -120,6 +120,32 @@ class SettingsPage(BasePage):
         # ---------------------------------------------------------- 关于
         about = Card(padding=16, spacing=8)
         about.add_title(f"关于 AI Manager {APP_VERSION}")
+
+        # 作者与授权放在功能说明之前：这是唯一一处能同时看到来源和条款的地方
+        who = QLabel()
+        who.setTextFormat(Qt.TextFormat.RichText)
+        who.setOpenExternalLinks(True)
+        who.setText(
+            f"<div style='line-height:1.9'>"
+            f"作者　{brand.AUTHOR}<br>"
+            f"来源　<a href='{brand.HOMEPAGE}'>{brand.HOMEPAGE}</a><br>"
+            f"版权　{brand.COPYRIGHT}，保留所有权利<br>"
+            f"授权　{brand.LICENSE_NAME}：{brand.LICENSE_BRIEF}"
+            f"</div>"
+        )
+        who.setWordWrap(True)
+        who.setStyleSheet(f"color: {PALETTE['text_2']}; font-size: 12px;")
+        about.body.addWidget(who)
+
+        state = label("", "SectionHint")
+        if brand.intact():
+            state.setText(f"本副本：官方原版（署名校验通过 {brand.signature()}）")
+        else:
+            state.setText(f"本副本：署名已被修改，非 {brand.AUTHOR} 官方发布，请从上方来源获取原版")
+            state.setStyleSheet(f"color: {PALETTE['danger']}; font-size: 12px;")
+        about.body.addWidget(state)
+        about.body.addWidget(hline())
+
         text = QLabel(
             "功能范围\n"
             "· 签到：Trae CN / Qoder CN / Qoder 国际版 / WorkBuddy 国内版 / WorkBuddy 国际版的"

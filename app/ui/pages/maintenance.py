@@ -159,6 +159,7 @@ class MaintenancePage(BasePage):
         self._refreshing = True
         self.btn_refresh.setEnabled(False)
         self.trash_hint.setText("正在统计备份、回收站与会话…")
+        self.win.set_busy(True, "正在统计备份与回收站…", self.key)
         tasks.submit(self._collect,
                      on_done=self._apply, on_error=self._load_failed)
 
@@ -181,6 +182,7 @@ class MaintenancePage(BasePage):
         self._refreshing = False
         self._stamp = time.monotonic()
         self.btn_refresh.setEnabled(True)
+        self.win.set_busy(False, "", self.key)
 
         backups = data.get("backups") or []
         rows = [{
@@ -226,6 +228,7 @@ class MaintenancePage(BasePage):
     def _load_failed(self, message: str) -> None:
         self._refreshing = False
         self.btn_refresh.setEnabled(True)
+        self.win.set_busy(False, "", self.key)
         self.trash_hint.setText("统计失败，可点右上角「刷新」重试")
         self.log(f"读取备份与回收站失败：{message.splitlines()[0]}", "error")
 

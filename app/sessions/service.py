@@ -75,6 +75,9 @@ class Catalog:
         self.intl_uid = ""
         self.rows: list[dict] = []          # 合并后的本地会话（两个版本按 id 去重）
         self.unified: list[dict] = []       # 表格行：来源 × 账号 × 会话
+        # 每个版本的全量 sessions 行，只读一次库：build_inventory 与 build_unified
+        # 原来各读一遍，第二遍失败（客户端正在写库）就会让整个版本的会话凭空消失
+        self.raw: dict[str, list[dict]] = {"cn": [], "intl": []}
         self.cb_sessions: list[dict] = []
         self.backups: list[dict] = []
         self.trash: list[dict] = []
@@ -97,8 +100,11 @@ class Catalog:
 
 
 def build_inventory(cat: Catalog) -> None:
-    cn_rows = {row["id"]: row for row in wbdb.list_local_sessions(cat.cn)}
-    intl_rows = {row["id"]: row for row in wbdb.list_local_sessions(cat.intl)}
+    cn_all = wbdb.list_all_sessions(cat.cn, cat.errors)
+    intl_all = wbdb.list_all_sessions(cat.intl, cat.errors)
+    cat.raw = {"cn": cn_all, "intl": intl_all}
+    cn_rows = {row["id"]: row for row in cn_all if row.get("transport") == "local"}
+    intl_rows = {row["id"]: row for row in intl_all if row.get("transport") == "local"}
     cn_files = wbdb.project_files(cat.cn)
     intl_files = wbdb.project_files(cat.intl)
 
@@ -136,7 +142,8 @@ def build_inventory(cat: Catalog) -> None:
     cat.intl_total = len(intl_rows)
     cat.cn_visible = sum(1 for r in merged if r["cn"] == "visible")
     cat.intl_visible = sum(1 for r in merged if r["intl"] == "visible")
-    cat.cloud_total = wbdb.cloud_count(cat.cn) + wbdb.cloud_count(cat.intl)
+    cat.cloud_total = (sum(1 for r in cn_all if r.get("transport") == "cloud")
+                       + sum(1 for r in intl_all if r.get("transport") == "cloud"))
 
 
 def _row_state(row: dict, uid: str) -> str:
@@ -165,9 +172,8 @@ def build_unified(cat: Catalog) -> None:
     rows = []
     info_by_id = {r["id"]: r for r in cat.rows}
     for key, label in (("cn", SOURCE_LABELS["cn"]), ("intl", SOURCE_LABELS["intl"])):
-        ep = cat.cn if key == "cn" else cat.intl
         uid = cat.cn_uid if key == "cn" else cat.intl_uid
-        for row in wbdb.list_all_sessions(ep):
+        for row in cat.raw.get(key, []):
             state = _row_state(row, uid)
             info = info_by_id.get(row["id"], {})
             owner = row.get("user_id") or ""
@@ -224,6 +230,9 @@ def build_catalog(log=None) -> Catalog:
     cat.backups = backup.list_backups()
     cat.trash = trash.list_trash()
     cat.tomb_count = len(trash.tombstone_ids())
+    if log is not None:
+        for message in cat.errors:
+            log(f"会话库：{message}", "warn")
     return cat
 
 

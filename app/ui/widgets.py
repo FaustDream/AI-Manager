@@ -99,6 +99,60 @@ class Spinner(QWidget):
         painter.end()
 
 
+class BusyIndicator(QFrame):
+    """转圈 + 一句文案，固定在侧栏底部，任何页面加载数据时都亮。
+
+    放在侧栏而不是页面里：页面顶部被工具行占满，浮层会盖住按钮；侧栏常驻，
+    每个页面看到的都是同一处反馈。延迟 120ms 才显示，几毫秒就结束的任务不会闪一下。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("BusyPill")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 5, 8, 5)
+        row.setSpacing(8)
+        self.spinner = Spinner(self, 18)
+        row.addWidget(self.spinner)
+        self.text = label("正在加载…", "BusyText")
+        # 文案不参与宽度计算：长账号名不能把侧栏撑开
+        self.text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        row.addWidget(self.text, 1)
+
+        self._delay = QTimer(self)
+        self._delay.setSingleShot(True)
+        self._delay.setInterval(120)
+        self._delay.timeout.connect(self.show)
+        self._full = "正在加载…"
+        self.hide()
+
+    def start(self, text: str = "") -> None:
+        self._full = text or "正在加载…"
+        self.text.setToolTip(self._full)
+        self._elide()
+        if not self.isVisible() and not self._delay.isActive():
+            self._delay.start()
+
+    def stop(self) -> None:
+        self._delay.stop()
+        self.hide()
+
+    def _elide(self) -> None:
+        # 侧栏宽度固定，超出的部分截断成省略号，不要硬裁半个字
+        avail = max(40, self.width() - self.spinner.width() - 28)
+        self.text.setText(
+            self.text.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, avail))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 接口
+        super().resizeEvent(event)
+        self._elide()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt 接口
+        # 隐藏期间布局不给宽度，_elide 会按旧宽度截断；露面前按真实宽度重算一次
+        super().showEvent(event)
+        self._elide()
+
+
 class Badge(QLabel):
     def __init__(self, text: str = "", tone: str = "muted", parent=None):
         super().__init__(text, parent)

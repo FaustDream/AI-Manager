@@ -105,6 +105,16 @@ QLabel#BrandTag {{
     border-radius: 4px;
     padding: 1px 5px;
 }}
+/* 署名被改掉时替换 BrandSub，用告警色让它一眼可见 */
+QLabel#BrandByWarn {{
+    font-size: 11px;
+    color: {p['danger']};
+}}
+QLabel#BrandFoot {{
+    font-size: 10px;
+    color: {p['muted']};
+    padding: 6px 0 2px 0;
+}}
 QLabel#NavGroup {{
     font-size: 10px;
     color: {p['muted']};
@@ -161,6 +171,15 @@ QLabel#SectionTitle {{
 QLabel#SectionHint {{
     font-size: 12px;
     color: {p['muted']};
+}}
+/* 侧栏底部的加载提示：转圈旁边的文案，跟着主色走，一眼能看出还在跑 */
+QFrame#BusyPill {{
+    background: {p['accent_soft']};
+    border-radius: 8px;
+}}
+QLabel#BusyText {{
+    font-size: 12px;
+    color: {p['accent']};
 }}
 
 /* ------------------------------------------------------------ 卡片 */

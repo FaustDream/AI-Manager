@@ -117,7 +117,10 @@ class AccountCenterPage(BasePage):
         self._balance_error: dict[str, str] = {}
         self._expiry: dict[str, str] = {}
         self._needs: dict[str, bool] = {}
-        self._action_buttons: list[tuple[QWidget, bool]] = []
+        # (按钮, 动作类型, 账号 iid)：能否点每次按当前签到状态现算，不能存死
+        self._action_buttons: list[tuple[QWidget, str, str]] = []
+        # 「是否客户端当前登录的账号」要读文件/解密，只在重画表格时算一次
+        self._current_map: dict[str, bool] = {}
         # 接口最近一次返回的签到状态：True 已签 / False 可签 / None 接口没给
         self._status_checked: dict[str, bool | None] = {}
         # 只记「哪个版本下有哪些 uid」，用来判断该账号能否免登录恢复
@@ -158,8 +161,9 @@ class AccountCenterPage(BasePage):
 
     # ------------------------------------------------------------------ 界面
     def _build(self) -> None:
-        # 页头只留标题：说明性副标题和按钮配置入口都已去掉
-        self.header.subtitle.hide()
+        # 页头整块去掉：左侧导航已经标出当前页，卡片标题也写着「账号」，
+        # 再摆一个「账号中心」大标题只是白占一行高度
+        self.header.hide()
 
         self.btn_bar = button_config.ButtonBar(self.cfg)
         self._action_buttons = []
@@ -545,6 +549,9 @@ class AccountCenterPage(BasePage):
             return False
         self._daily_running = True
         self._sync_buttons()
+        # 不占页面的 busy（轮询期间按钮照常可用），但要让侧栏转圈：
+        # 后台跑一轮扫描 + 状态查询要好几秒，没有反馈就像卡住了
+        self.win.set_busy(True, "正在检查签到状态…", "daily")
         if startup:
             self.log("启动轮询：立即执行一次签到检查", "dim")
         else:
@@ -559,6 +566,7 @@ class AccountCenterPage(BasePage):
 
     def _daily_done(self, result) -> None:
         self._daily_running = False
+        self.win.set_busy(False, "", "daily")
         self._sync_buttons()
         self._update_summary()
         if result is None:
@@ -572,6 +580,7 @@ class AccountCenterPage(BasePage):
     def _daily_failed(self, message: str) -> None:
         # 后台轮询不持有 busy，失败时也不要动它（可能正有手动任务在跑）
         self._daily_running = False
+        self.win.set_busy(False, "", "daily")
         self._sync_buttons()
         self.log(message, "error")
         self.notify("后台轮询失败，详情见运行日志", "error")
@@ -701,18 +710,23 @@ class AccountCenterPage(BasePage):
         if not self._packs_loaded:
             self._reload_profiles()      # 档案列与账号状态并行加载
         self.accounts = {account.iid: account for account in accounts}
-        self.live_lots = {}
-        self._balances = {}
-        self._balance_error = {}
-        self._expiry = {}
+        # 重扫会把整张表重画，但缓存不能跟着清空：免签到的账号（WorkBuddy 国际版）
+        # 不参与状态查询，清了就没人再给它们补余额，表格会一直停在「—」。
+        alive = set(self.accounts)
+        self.live_lots = {k: v for k, v in self.live_lots.items() if k in alive}
+        self._balances = {k: v for k, v in self._balances.items() if k in alive}
+        self._balance_error = {k: v for k, v in self._balance_error.items() if k in alive}
+        self._expiry = {k: v for k, v in self._expiry.items() if k in alive}
+        self._status_checked = {k: v for k, v in self._status_checked.items() if k in alive}
+        self._current_map = {k: v for k, v in self._current_map.items() if k in alive}
         self._needs = {account.iid: account.requires_checkin for account in accounts}
-        self._status_checked = {}
         self._refresh_caches()
 
         rows = []
         for account in accounts:
             iid = account.iid
             current = switcher.is_current(account)
+            self._current_map[iid] = current
             if not account.requires_checkin:
                 today = "免签到"
             elif iid in self._checked:
@@ -726,8 +740,8 @@ class AccountCenterPage(BasePage):
                 "login": account.expires_short(),
                 "current": "当前" if current else "",
                 "today": today,
-                "balance": "—",
-                "expire": "—",
+                "balance": self._balance_text(iid),
+                "expire": self._expiry.get(iid) or "—",
                 "pack": self._pack_text(account),
                 "action": "",
                 "_fg_map": self._colors(iid, account),
@@ -736,10 +750,10 @@ class AccountCenterPage(BasePage):
             })
         self.table.set_rows(rows)
         self._install_actions()
-        self._refresh_row_actions()
         for account in accounts:
             self._update_credit_cells(account.iid)
         self._update_summary()
+        self._sync_buttons()
         has_rows = bool(rows)
         self.table.setVisible(has_rows)
         self.empty.setVisible(not has_rows)
@@ -807,6 +821,8 @@ class AccountCenterPage(BasePage):
             _tip_map=self._merge_tips(iid, balance=result.summary or ""))
         self._update_credit_cells(iid)
         self._update_summary()
+        # 状态一回来，「签到」链接和「全部签到」都要跟着灰/亮
+        self._sync_buttons()
         if iid == self._detail_iid:
             self._detail_target = service.next_checkin_at(account)
             self._paint_detail(account)
@@ -837,11 +853,13 @@ class AccountCenterPage(BasePage):
         iid = account.iid
         if iid not in self.accounts:
             return
-        if result.ok and not result.already and account.requires_checkin:
-            self._checked.add(iid)
+        if result.ok and account.requires_checkin:
+            # 「本轮早已领过」同样表示今天不能再签，链接要跟着变灰
             self._status_checked[iid] = True
-            # 台账刚写过这一条，只重算这一个账号
-            self._ledger[iid] = ledger.summary(iid)
+            if not result.already:
+                self._checked.add(iid)
+                # 台账刚写过这一条，只重算这一个账号
+                self._ledger[iid] = ledger.summary(iid)
         changes = {
             "balance": self._balance_text(iid),
             "_tip_map": self._merge_tips(iid, balance=result.message),
@@ -857,6 +875,7 @@ class AccountCenterPage(BasePage):
         self.table.model.update(iid, **changes)
         self._update_credit_cells(iid)
         self._update_summary()
+        self._sync_buttons()
         if iid == self._detail_iid:
             self._paint_detail(account)
         self.log(f"[{account.platform_label}] {account.name}：{result.message}",
@@ -950,6 +969,7 @@ class AccountCenterPage(BasePage):
                 self.table.setIndexWidget(index, None)
                 continue
             self.table.setIndexWidget(index, self._action_widget(account))
+        self._refresh_row_actions()
 
     def _action_widget(self, account: Account) -> QWidget:
         host = QWidget()
@@ -957,29 +977,53 @@ class AccountCenterPage(BasePage):
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(2)
 
-        current = switcher.is_current(account)
+        # 只登记「哪个按钮代表哪个动作」，能不能点交给 _refresh_row_actions：
+        # 签到状态是扫描过程中陆续回来的，构建时定死就永远停在第一次的值
         specs = (
-            ("签到", "checkin", account.requires_checkin,
-             lambda: self.checkin_one(account.iid)),
-            ("切换", "switch", account.platform in SWITCHABLE and not current,
-             lambda: self.switch_login(account.iid)),
-            ("恢复会话", "restore",
-             account.platform == "workbuddy" and current,
-             lambda: self.restore_sessions(account.iid)),
+            ("签到", "checkin", lambda: self.checkin_one(account.iid)),
+            ("切换", "switch", lambda: self.switch_login(account.iid)),
+            ("恢复会话", "restore", lambda: self.restore_sessions(account.iid)),
         )
-        for text, kind, enabled, slot in specs:
+        for text, kind, slot in specs:
             button = make_button(text, "link")
             button.setObjectName("RowAction")
             button.setFixedHeight(24)
             button.clicked.connect(slot)
-            button.setEnabled(enabled and not self.busy)
-            self._action_buttons.append((button, enabled, kind))
+            self._action_buttons.append((button, kind, account.iid))
             layout.addWidget(button)
         return host
 
+    def _can_checkin(self, iid: str) -> bool:
+        """这个账号现在还能不能点签到：参与签到、没设免签、今天也还没签过。"""
+        account = self.accounts.get(iid)
+        if account is None or not account.requires_checkin or iid in self.skip:
+            return False
+        checked = self._status_checked.get(iid)
+        if checked is not None:
+            return checked is False
+        return iid not in self._checked
+
+    def _pending_accounts(self) -> list[Account]:
+        """今天还能签的账号；为空说明「全部签到」没有意义，按钮该置灰。"""
+        return [account for account in self.accounts.values()
+                if self._can_checkin(account.iid)]
+
     def _refresh_row_actions(self) -> None:
-        for button, enabled, kind in self._action_buttons:
-            blocked = self._daily_running and kind in ("checkin", "switch")
+        for button, kind, iid in self._action_buttons:
+            account = self.accounts.get(iid)
+            if account is None:
+                button.setEnabled(False)
+                continue
+            current = self._current_map.get(iid, False)
+            if kind == "checkin":
+                enabled = self._can_checkin(iid)
+                blocked = self._daily_running
+            elif kind == "switch":
+                enabled = account.platform in SWITCHABLE and not current
+                blocked = self._daily_running
+            else:
+                enabled = account.platform == "workbuddy" and current
+                blocked = False
             button.setEnabled(enabled and not self.busy and not blocked)
 
     def _account_of(self, iid: str | None) -> Account | None:
@@ -1032,6 +1076,8 @@ class AccountCenterPage(BasePage):
             "selected": row is not None,
             "checkin_account": bool(account and account.requires_checkin),
             "stored_account": bool(account and account.meta.get("stored")),
+            # 全部签到：今天还有账号能签才亮，全签过就置灰
+            "checkin_pending": bool(self._pending_accounts()),
         }
 
     def _blocked_by_daily(self, action: str) -> bool:
@@ -1058,7 +1104,7 @@ class AccountCenterPage(BasePage):
 
     def _set_busy(self, busy: bool, text: str = "") -> None:
         self.busy = busy
-        self.win.set_busy(busy, text)
+        self.win.set_busy(busy, text, self.key)
         self._sync_buttons()
 
     def query(self, selected_only: bool = False) -> None:
@@ -1140,14 +1186,12 @@ class AccountCenterPage(BasePage):
             self.info("暂无账号", "没有可签到的账号，请先登录对应客户端。")
             return
         if all_accounts:
-            targets = [a for a in self.accounts.values()
-                       if a.requires_checkin and a.iid not in self.skip]
-            skipped = sum(1 for a in self.accounts.values()
-                          if not a.requires_checkin or a.iid in self.skip)
+            targets = self._pending_accounts()
+            skipped = len(self.accounts) - len(targets)
             if skipped:
-                self.log(f"跳过 {skipped} 个免签到账号", "dim")
+                self.log(f"跳过 {skipped} 个免签到或今日已签账号", "dim")
             if not targets:
-                self.info("免签到", "所有账号都无需签到，没有需要签到的账号。")
+                self.info("今日已签", "参与签到的账号今天都已签到，无需重复。")
                 return
         else:
             account = self._account_of(None)
@@ -1250,6 +1294,7 @@ class AccountCenterPage(BasePage):
         self.table.model.update(iid, today="—" if iid in self.skip else "已签到",
                                 _fg_map=colors)
         self._update_summary()
+        self._sync_buttons()
         self.log(f"[{account.platform_label}] {account.name} {note}", "dim")
         if resumed:
             self.query_one(iid)

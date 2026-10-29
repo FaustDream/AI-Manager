@@ -157,6 +157,20 @@ def run_round(cfg: dict, log, emit=None, now: datetime | None = None) -> RoundRe
         with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
             list(pool.map(query, targets))
 
+    # 免签到账号（WorkBuddy 国际版、手动设了免签的）不走状态查询，但界面在
+    # emit("accounts") 时已经整表重画，不在这里补一次积分，它们的余额就一直是「—」。
+    target_ids = {account.iid for account in targets}
+    others = [account for account in accounts if account.iid not in target_ids]
+
+    def fetch_credit(account: Account) -> None:
+        snapshot = service.query_credit(account, log)
+        if emit is not None:
+            emit(("credit", (account.iid, snapshot)))
+
+    if others:
+        with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+            list(pool.map(fetch_credit, others))
+
     # 第三步：只对「今天还没签成功 + 接口说现在可签」的账号调用签到接口
     due: list[Account] = []
     for account in targets:

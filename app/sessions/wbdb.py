@@ -35,14 +35,19 @@ def list_local_sessions(ep: Edition) -> list[dict]:
         conn.close()
 
 
-def list_all_sessions(ep: Edition) -> list[dict]:
+def list_all_sessions(ep: Edition, errors: list[str] | None = None) -> list[dict]:
     """全量行（含 transport='cloud' 的云端缓存行）。
 
     云端行没有本地正文，但它是「会话实际存在」的一部分——
     只读 local 行会漏掉它们，正是“列表不显示”的来源之一。
+
+    errors 用于上报「库打不开 / 表读不出」：这里原来静默返回 []，
+    客户端正在写库时就会表现成「某个版本的会话整批消失」，且日志里查不到原因。
     """
     conn = connect_ro(ep.db)
     if conn is None:
+        if errors is not None and ep.db.exists():
+            errors.append(f"{ep.label}：会话库无法以只读方式打开（客户端可能正在写入）")
         return []
     try:
         conn.row_factory = sqlite3.Row
@@ -50,6 +55,10 @@ def list_all_sessions(ep: Edition) -> list[dict]:
             "SELECT * FROM sessions "
             "ORDER BY COALESCE(last_activity_at, created_at) DESC"
         )]
+    except sqlite3.Error as exc:
+        if errors is not None:
+            errors.append(f"{ep.label}：sessions 表读取失败（{exc}）")
+        return []
     finally:
         conn.close()
 

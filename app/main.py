@@ -6,7 +6,7 @@ import ctypes
 import sys
 import traceback
 
-from . import APP_TITLE, APP_VERSION
+from . import APP_TITLE, APP_VERSION, brand
 from .core import config, logbook, migrate, paths
 
 MUTEX_NAME = "Local\\AIManager.Desktop.Singleton"
@@ -118,7 +118,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if migrated:
         window.log(f"已从旧版本迁移数据：{'、'.join(migrated)}", "ok")
-    window.log(f"AI Manager {APP_VERSION} 启动完成 · 数据目录 {paths.DATA_DIR}", "dim")
+    window.log(f"AI Manager {APP_VERSION} 启动完成 · by {brand.AUTHOR} · 数据目录 {paths.DATA_DIR}",
+               "dim")
+
+    # 署名被改过就明确报一次：改动者可以继续用，但没法悄悄当成自己的作品发布
+    if not brand.intact():
+        window.log(f"署名校验失败（{brand.signature()}），本副本非 {brand.AUTHOR} 官方发布。", "warn")
+        window.warn(
+            "非官方副本",
+            f"本副本的作者署名已被修改，不是 {brand.AUTHOR} 发布的原版。\n\n"
+            f"官方来源：{brand.HOMEPAGE}\n"
+            f"授权：{brand.LICENSE_BRIEF}",
+        )
 
     return app.exec()
 
