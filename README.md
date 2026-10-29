@@ -3,6 +3,7 @@
 Windows 桌面工具：Trae / Qoder / WorkBuddy 三家 AI 编程平台的每日签到，加上本地会话库、账号档案与积分管理。
 
 > **作者：FaustDream** · 来源：[github.com/FaustDream/AI-Manager](https://github.com/FaustDream/AI-Manager)
+>
 > 本软件免费使用，但**不得去除署名后再分发或转售**，详见 [LICENSE](LICENSE)。
 
 ## 安装（不需要懂命令）
