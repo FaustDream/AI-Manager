@@ -77,7 +77,7 @@ app/sessions/           会话域
   service.py            目录聚合 build_catalog / build_unified、空间账本、删除
   preview.py            正文预览：jsonl / CodeBuddy 消息目录 → 可读对话
   restore.py            账号维度的会话恢复：只改 user_id 引用，不复制正文
-  profiles.py / backup.py / trash.py / cloud.py / codebuddy.py
+  profiles.py / backup.py / trash.py / codebuddy.py
 
 data/                   运行期数据：config.json、accounts.dat、checked.json、
                         daily.json、credits.json、credit_history.json、
@@ -110,7 +110,7 @@ tools/                  一次性脚本（图标生成、截图）
 - 表格行拖动排序只在 `DataTable(reorder=True)` 时开启（目前只有账号中心），落点语义是「移除源行后的插入位置」；重排必须走 `RowModel.move_row`（`beginMoveRows`），**不要**用 `set_rows` 重建，否则选中与详情面板会丢
 - 账号表顺序存在 `config.json` 的 `account_order`（iid 列表）、列宽存在 `account_columns`；`config._coerce` 必须原样读回这两项，否则重启就退回默认
 - **界面不显示 uid**：日志、提示、表格一律用昵称（`Account.name`）；需要 uid 时走右键「复制 UID」。`uid[:8]` 这种截断显示不要再往界面里加
-- 会话表的行 key 用 `kind|source|account|id`，**不要拼行号**：表头可排序、筛选会变，拼了行号选中项就会丢。CodeBuddy 里没有昵称的账号按会话数编号成「账号 A/B…」，不显示 uid
+- 会话表的行 key 用 `kind|source|account|id`，**不要拼行号**：表头可排序、筛选会变，拼了行号选中项就会丢。账号列一律显示昵称（`checkin/store.py` 的账号库里存着全部历史账号），界面任何位置都不出现 uid / 会话 ID
 
 ## 4. 禁区与红线
 
@@ -169,7 +169,7 @@ tools/                  一次性脚本（图标生成、截图）
 - **WorkBuddy 登录票据不能重建**：客户端的 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`（国际版 `-ai.info`）里除了加密 token 还有 `sessionState`，**它由服务端每次登录签发**（同一账号多次登录各不相同）。档案必须原样保存并在切换时原样写回，`switcher.build_workbuddy_info()` 里生成 uuid 只能当最后兜底，重建出来的登录态客户端会跳登录页。`profiles.save_current()` 只在该 `.info` 的 uid 与目标 uid 一致时才把它打进档案（`auth.info`）
 - **官方客户端 SQLite**：只读连接用 `mode=ro`；写前必须关闭进程并 `PRAGMA wal_checkpoint(TRUNCATE)`
 - **会话恢复只改归属引用**：同一版本里一条会话只有一份正文（`projects/<slug>/<sid>.jsonl`），恢复 = 把 `sessions.user_id` 指向当前账号、清掉 `deleted_at`，**不复制正文、不替换 workbuddy.db**。`data/session_index.json` 记 `origin`（原始账号）与 `refs`（引用过的账号）。账号切换登录自动恢复切换前账号的会话；手动登录不自动恢复，由「恢复会话」触发。`profiles.py` 只切登录态与 storage，**绝不能**再用档案里的 DB 覆盖会话库
-- **会话管理不做同步**：跨版本搬运（国内版 ↔ 国际版、CodeBuddy 平台互拷）已于 1.2.7 移除，`wbdb.build_plan / apply_item`、`codebuddy.sync_session`、`backup.make_backup` 都不要加回来。这一页只负责浏览、正文预览、空间回收与删除；账号间的会话归属由 `restore.py` 负责。云端会话列表改成手动「拉取云端」，不再随每次刷新请求接口。`config.json` 的 `session_opts` 只存视图状态（range / only_body / sort / sort_desc）
+- **会话管理不做同步**：跨版本搬运（国内版 ↔ 国际版、CodeBuddy 平台互拷）已于 1.2.7 移除，`wbdb.build_plan / apply_item`、`codebuddy.sync_session`、`backup.make_backup` 都不要加回来。这一页只负责浏览、正文预览与删除；账号间的会话归属由 `restore.py` 负责。1.2.8 起连云端列表拉取、空间账本也一并去掉，页面只有「筛选 + 表格 + 详情」，不要往筛选栏外面加统计文字或徽标。`config.json` 的 `session_opts` 只存视图状态（only_body / sort / sort_desc）
 - **单实例**：`Local\` 命名空间互斥体，句柄持有到进程退出，不要手工 `CloseHandle`
 
 ## 7. Git 与版本管理

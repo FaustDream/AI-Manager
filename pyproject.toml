@@ -1,6 +1,6 @@
 [project]
 name = "ai-manager"
-version = "1.2.7"
+version = "1.2.8"
 description = "AI Manager：签到 / 会话 / 账号一体化桌面工作台"
 requires-python = ">=3.10"
 dependencies = [
