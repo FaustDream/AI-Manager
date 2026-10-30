@@ -111,6 +111,38 @@ fn task_list(state: State<'_, AppState>) -> Vec<TaskView> {
     state.tasks.list()
 }
 
+// ------------------------------------------------------------------ 账号中心
+
+#[tauri::command]
+async fn account_list(state: State<'_, AppState>) -> std::result::Result<Vec<crate::app::accounts::AccountView>, String> {
+    let db = state.db.clone();
+    // 数据库调用必须在阻塞线程里跑，否则界面在等结果期间没有响应
+    let rows = tokio::task::spawn_blocking(move || crate::app::accounts::repo::list(&db))
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+        .map_err(err_text)?;
+    log::log(Level::Info, "accounts", format!("列表返回 {} 个账号", rows.len()));
+    Ok(rows)
+}
+
+#[tauri::command]
+async fn account_reorder(state: State<'_, AppState>, iids: Vec<String>) -> std::result::Result<(), String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || crate::app::accounts::repo::reorder(&db, &iids))
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+        .map_err(err_text)
+}
+
+#[tauri::command]
+async fn account_delete(state: State<'_, AppState>, iid: String) -> std::result::Result<bool, String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || crate::app::accounts::repo::delete(&db, &iid))
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+        .map_err(err_text)
+}
+
 #[tauri::command]
 fn task_cancel(state: State<'_, AppState>, task_id: u64) -> bool {
     state.tasks.cancel_task(task_id)
@@ -164,6 +196,9 @@ pub fn run() -> tauri::Result<()> {
             settings_set,
             task_list,
             task_cancel,
+            account_list,
+            account_reorder,
+            account_delete,
             log_tail,
             log_level
         ])

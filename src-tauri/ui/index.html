@@ -5,97 +5,181 @@
 <title>AI Manager</title>
 <style>
   :root {
-    --bg: #ffffff; --fg: #1c1f23; --muted: #6b7280; --line: #e5e7eb;
-    --card: #f8fafc; --accent: #2563eb;
+    --bg:#fff; --fg:#1c1f23; --muted:#6b7280; --line:#e5e7eb; --card:#f8fafc;
+    --accent:#2563eb; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --hover:#f1f5f9;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #16181d; --fg: #e6e8ec; --muted: #9aa3af; --line: #2a2e37;
-            --card: #1d2026; --accent: #5b8cff; }
+    :root { --bg:#16181d; --fg:#e6e8ec; --muted:#9aa3af; --line:#2a2e37; --card:#1d2026;
+            --accent:#5b8cff; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --hover:#23272f; }
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--fg);
-    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-    padding: 28px 32px;
-  }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin-bottom: 24px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .card {
-    background: var(--card); border: 1px solid var(--line);
-    border-radius: 10px; padding: 16px 18px;
-  }
-  .card h2 { font-size: 13px; margin: 0 0 12px; color: var(--muted); font-weight: 600;
-             letter-spacing: .04em; text-transform: uppercase; }
-  .row { display: flex; justify-content: space-between; padding: 5px 0;
-         border-bottom: 1px dashed var(--line); }
-  .row:last-child { border-bottom: 0; }
-  .row span:last-child { color: var(--accent); font-variant-numeric: tabular-nums; }
-  pre { margin: 0; max-height: 260px; overflow: auto; font-size: 12px;
-        font-family: "Cascadia Mono", Consolas, monospace; color: var(--muted); }
-  .empty { color: var(--muted); }
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px;
-           border: 1px solid var(--line); font-size: 12px; }
-  #tasks .task { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0;
-                 border-bottom: 1px dashed var(--line); }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.55 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:16px 24px;
+           border-bottom:1px solid var(--line); }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  .badge { padding:1px 8px; border-radius:999px; border:1px solid var(--line);
+           font-size:12px; color:var(--muted); }
+  .spacer { flex:1; }
+  button { background:transparent; color:var(--fg); border:1px solid var(--line);
+           border-radius:8px; padding:5px 12px; font:inherit; font-size:13px; cursor:pointer; }
+  button:hover { background:var(--hover); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  main { padding:18px 24px; }
+  table { width:100%; border-collapse:collapse; }
+  thead th { text-align:left; font-weight:600; font-size:12px; color:var(--muted);
+             letter-spacing:.03em; padding:8px 10px; border-bottom:1px solid var(--line);
+             position:sticky; top:0; background:var(--bg); }
+  tbody td { padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  tbody tr:hover { background:var(--hover); }
+  .tag { display:inline-block; padding:1px 8px; border-radius:6px; font-size:12px;
+         border:1px solid var(--line); color:var(--muted); }
+  .num { font-variant-numeric:tabular-nums; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .dash { color:var(--muted); }
+  .empty { padding:48px; text-align:center; color:var(--muted); }
+  .toast { position:fixed; right:20px; bottom:20px; background:var(--card);
+           border:1px solid var(--line); border-radius:10px; padding:10px 16px;
+           box-shadow:0 8px 24px rgba(0,0,0,.12); opacity:0; transition:opacity .2s; }
+  .toast.show { opacity:1; }
 </style>
 </head>
 <body>
-  <h1>AI Manager <span class="badge" id="version">…</span></h1>
-  <div class="sub">P1 骨架：窗口 / 托盘 / 单实例 / SQLite / 日志 / 任务系统已就位，业务能力自 P2 起接入</div>
+<header>
+  <h1>账号中心</h1>
+  <span class="badge" id="count">—</span>
+  <span class="spacer"></span>
+  <button id="refresh">刷新</button>
+</header>
 
-  <div class="grid">
-    <div class="card">
-      <h2>运行状态</h2>
-      <div class="row"><span>数据目录</span><span id="dataDir">—</span></div>
-      <div class="row"><span>设置项</span><span id="kvCount">—</span></div>
-      <div class="row"><span>进行中任务</span><span id="taskCount">—</span></div>
-    </div>
-    <div class="card">
-      <h2>任务</h2>
-      <div id="tasks"><div class="empty">暂无任务</div></div>
-    </div>
-    <div class="card" style="grid-column: 1 / -1;">
-      <h2>日志（最近 40 行）</h2>
-      <pre id="logs">—</pre>
-    </div>
-  </div>
+<main>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:96px">平台</th>
+        <th>昵称</th>
+        <th style="width:150px">登录态</th>
+        <th style="width:96px">状态</th>
+        <th style="width:96px">积分</th>
+        <th style="width:110px">配额</th>
+        <th style="width:96px">签到</th>
+        <th style="width:110px">到期</th>
+        <th style="width:72px">操作</th>
+      </tr>
+    </thead>
+    <tbody id="rows">
+      <tr><td colspan="9" class="empty">加载中…</td></tr>
+    </tbody>
+  </table>
+</main>
+
+<div class="toast" id="toast"></div>
 
 <script>
   const { invoke } = window.__TAURI__.core;
+  const $ = id => document.getElementById(id);
+  const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-  const set = (id, text) => { document.getElementById(id).textContent = text; };
+  const fmtDate = ms => {
+    if (!ms) return '—';
+    const d = new Date(ms), now = new Date();
+    const md = `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    return d.getFullYear() === now.getFullYear() ? md : `${d.getFullYear()}-${md}`;
+  };
 
-  async function refresh() {
+  let toastTimer;
+  function toast(text) {
+    const t = $('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  // 列渲染表：加一列 = 加一行。与 v1「加字段改十个方法」正相反。
+  const COLUMNS = [
+    { key:'platform', cell: v => `<span class="tag">${esc(v.platform_label)}</span>` },
+    { key:'name',     cell: v => esc(v.name) },
+    { key:'source',   cell: v => v.source ? `<span class="dash">${esc(v.source)}</span>` : '<span class="dash">—</span>' },
+    { key:'status',   cell: v => statusCell(v) },
+    { key:'balance',  cell: v => v.balance == null ? '<span class="dash">—</span>' : `<span class="num">${v.balance.toFixed(2)}</span>` },
+    { key:'quota',    cell: v => quotaCell(v) },
+    { key:'checkin',  cell: v => checkinCell(v) },
+    { key:'expires',  cell: v => expiresCell(v) },
+    { key:'action',   cell: v => `<button data-iid="${esc(v.iid)}" class="del">删除</button>` },
+  ];
+
+  function statusCell(v) {
+    if (v.error) return `<span class="bad" title="${esc(v.error)}">异常</span>`;
+    if (!v.has_secret) return '<span class="warn">待登录</span>';
+    return '<span class="ok">正常</span>';
+  }
+
+  function quotaCell(v) {
+    const keys = Object.keys(v.quota || {});
+    if (!keys.length) return '<span class="dash">—</span>';
+    // 多来源时不猜哪个是主额度，按最大值显示，详情面板再展开
+    const max = Math.max(...keys.map(k => v.quota[k]));
+    return `<span class="num">${Math.round(max)}%</span>`;
+  }
+
+  function checkinCell(v) {
+    if (!v.requires_checkin) return '<span class="dash">免签</span>';
+    if (v.checked_in === true) return `<span class="ok">已签 ${fmtDate(v.checked_at)}</span>`;
+    if (v.checked_in === false) return '<span class="warn">待签</span>';
+    return '<span class="dash">—</span>';
+  }
+
+  function expiresCell(v) {
+    if (!v.expires_at) return '<span class="dash">—</span>';
+    const expired = v.expires_at <= Date.now();
+    return `<span class="${expired ? 'bad' : ''}">${expired ? '已过期 ' : ''}${fmtDate(v.expires_at)}</span>`;
+  }
+
+  let rows = [];
+
+  function render() {
+    const body = $('rows');
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="9" class="empty">还没有账号。P1 导入或后续的扫描会把账号放进这里。</td></tr>';
+      $('count').textContent = '0 个账号';
+      return;
+    }
+    body.innerHTML = rows.map(v =>
+      `<tr>${COLUMNS.map(c => `<td>${c.cell(v)}</td>`).join('')}</tr>`).join('');
+    $('count').textContent = `${rows.length} 个账号`;
+
+    body.querySelectorAll('button.del').forEach(btn => {
+      btn.onclick = async () => {
+        const iid = btn.dataset.iid;
+        if (!confirm('从账号库移除这个账号？\n（客户端的登录态不会被改动）')) return;
+        await invoke('account_delete', { iid });
+        toast('已移除');
+        load();
+      };
+    });
+  }
+
+  async function load() {
     try {
-      const tasks = await invoke('task_list');
-      set('taskCount', tasks.filter(t => ['queued','running','cancelling'].includes(t.state)).length + ' 个');
-      const box = document.getElementById('tasks');
-      box.innerHTML = tasks.length
-        ? tasks.slice(0, 6).map(t =>
-            `<div class="task"><span>${t.name}</span><span>${t.state}${t.progress != null ? ' ' + Math.round(t.progress * 100) + '%' : ''}</span></div>`).join('')
-        : '<div class="empty">暂无任务</div>';
-      const lines = await invoke('log_tail', { limit: 40 });
-      set('logs', lines.length ? lines.join('\n') : '（暂无日志）');
+      rows = await invoke('account_list');
+      render();
     } catch (e) {
-      set('logs', '调用失败：' + e);
+      $('rows').innerHTML = `<tr><td colspan="9" class="empty">读取失败：${esc(e)}</td></tr>`;
     }
   }
 
-  async function boot() {
-    try {
-      const [version, dbPath] = (await invoke('ui_ready')).split('|');
-      set('version', version);
-      set('dataDir', dbPath.replace(/\\app\.db$/, ''));
-    } catch (e) {
-      set('version', 'IPC 未就绪');
-      set('logs', 'IPC 调用失败：' + e);
-    }
-    refresh();
-    setInterval(refresh, 2000);
-  }
+  $('refresh').onclick = load;
 
-  boot();
+  (async () => {
+    try {
+      const [version] = (await invoke('ui_ready')).split('|');
+      $('count').textContent = `v${version}`;
+    } catch (e) {
+      toast('IPC 未就绪：' + e);
+    }
+    load();
+  })();
 </script>
 </body>
 </html>
