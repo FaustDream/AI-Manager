@@ -300,6 +300,7 @@ fn default_profile(intl: bool) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     fn sample_cred() -> Credential {
         let mut cred = Credential {
@@ -354,6 +355,72 @@ mod tests {
         let sealed = QoderProvider::seal(&key, br#"{"token":"x"}"#).unwrap();
         assert_eq!(&sealed[..3], b"v10");
         assert_eq!(secret::chromium_open(&key, &sealed).unwrap(), br#"{"token":"x"}"#);
+    }
+
+    /// 造一个「客户端已经登录过 old」的 profile：Local State（DPAPI 包着 32 字节密钥）
+    /// + auth.v1.dat（v10 信封）。这样整条切换路径都能在临时目录里跑。
+    fn fake_profile(dir: &Path) -> Key<Aes256Gcm> {
+        let key_bytes = [7u8; 32];
+        let wrapped = secret::protect(&key_bytes).unwrap();
+        let mut encrypted_key = b"DPAPI".to_vec();
+        encrypted_key.extend(wrapped);
+        let state = json!({
+            "os_crypt": {
+                "encrypted_key": base64::engine::general_purpose::STANDARD.encode(&encrypted_key)
+            }
+        });
+        std::fs::write(dir.join("Local State"), serde_json::to_vec(&state).unwrap()).unwrap();
+        let key = *Key::<Aes256Gcm>::from_slice(&key_bytes);
+        let sealed = QoderProvider::seal(
+            &key,
+            &serde_json::to_vec(&json!({
+                "schemaVersion": 2,
+                "token": "old-token",
+                "user": {"id": "old", "name": "旧账号", "phone": "13800000000"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("auth.v1.dat"), sealed).unwrap();
+        key
+    }
+
+    #[test]
+    fn switch_rewrites_login_state_and_backs_up() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let key = fake_profile(dir.path());
+        let provider = QoderProvider::at(false, dir.path().to_path_buf());
+        let mut cred = Credential {
+            token: "new-token".into(),
+            refresh_token: "new-refresh".into(),
+            expires_at: "2026-12-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        cred.put("email", json!("new@b.c"));
+
+        let out = switch_to(&provider, "u2", "新账号", &cred, &dir.path().join("backups")).unwrap();
+
+        assert!(out.backup.is_some(), "写前必须备份");
+        let raw = std::fs::read(dir.path().join("auth.v1.dat")).unwrap();
+        assert_eq!(&raw[..3], b"v10");
+        let plain: Value = serde_json::from_slice(&secret::chromium_open(&key, &raw).unwrap()).unwrap();
+        assert_eq!(plain.pointer("/user/id").unwrap(), "u2");
+        assert_eq!(plain.pointer("/token").unwrap(), "new-token");
+        assert_eq!(plain.pointer("/refreshToken").unwrap(), "new-refresh");
+        // 模板字段沿用，但别人的手机号不能跟过来
+        assert_eq!(plain.pointer("/schemaVersion").unwrap(), 2);
+        assert!(plain.pointer("/user/phone").unwrap().is_null());
+        assert_eq!(provider.current_id().as_deref(), Some("u2"));
+    }
+
+    #[test]
+    fn switch_refuses_the_account_already_logged_in() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fake_profile(dir.path());
+        let provider = QoderProvider::at(false, dir.path().to_path_buf());
+        let cred = sample_cred();
+        let err = switch_to(&provider, "old", "旧账号", &cred, &dir.path().join("backups")).unwrap_err();
+        assert!(err.message.contains("不需要切换"));
     }
 
     #[test]

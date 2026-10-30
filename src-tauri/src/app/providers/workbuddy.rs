@@ -131,6 +131,8 @@ pub struct WorkBuddyProvider {
     data_root: Option<PathBuf>,
     /// 账号档案根，默认 `<data>/profiles`
     pack_root: PathBuf,
+    /// 需要检查是否在运行的进程名。测试可置空（否则本机开着客户端就跑不了切换用例）
+    processes: &'static [&'static str],
 }
 
 impl WorkBuddyProvider {
@@ -140,12 +142,27 @@ impl WorkBuddyProvider {
             auth_dir: default_auth_dir(),
             data_root: default_data_root(intl),
             pack_root: paths::data_dir().join("profiles"),
+            processes: if intl {
+                &["WorkBuddyAI.exe"]
+            } else {
+                &["WorkBuddy.exe", "CodeBuddy CN.exe", "CodeBuddy.exe"]
+            },
         }
     }
 
     /// 指定全部路径（测试与迁移期用）
     pub fn at(intl: bool, auth_dir: PathBuf, data_root: PathBuf, pack_root: PathBuf) -> Self {
-        Self { intl, auth_dir: Some(auth_dir), data_root: Some(data_root), pack_root }
+        let mut provider = Self::new(intl);
+        provider.auth_dir = Some(auth_dir);
+        provider.data_root = Some(data_root);
+        provider.pack_root = pack_root;
+        provider
+    }
+
+    /// 指定要检查的进程名（测试用空列表跳过「客户端是否在运行」这一步）
+    pub fn with_processes(mut self, names: &'static [&'static str]) -> Self {
+        self.processes = names;
+        self
     }
 
     pub fn platform_key(&self) -> &'static str {
@@ -169,11 +186,7 @@ impl WorkBuddyProvider {
     }
 
     pub fn process_names(&self) -> &'static [&'static str] {
-        if self.intl {
-            &["WorkBuddyAI.exe"]
-        } else {
-            &["WorkBuddy.exe", "CodeBuddy CN.exe", "CodeBuddy.exe"]
-        }
+        self.processes
     }
 
     pub fn live_ticket(&self) -> Option<PathBuf> {
@@ -649,6 +662,41 @@ mod tests {
             "契约 8a：票据必须按字节写回"
         );
         assert_eq!(std::fs::read(client.join("app/session/Local Storage/leveldb")).unwrap(), b"cookies");
+    }
+
+    /// 完整切换：当前登录 A，目标 B 已有档案 → 换过去、A 被自动存档。
+    #[test]
+    fn switch_swaps_packs_and_archives_current_account() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path()).with_processes(&[]); // 本机可能正开着客户端
+        let client = dir.path().join("client");
+        let auth = dir.path().join("auth");
+        std::fs::create_dir_all(client.join("app/session")).unwrap();
+        std::fs::create_dir_all(client.join("storage/skeleton")).unwrap();
+        std::fs::create_dir_all(&auth).unwrap();
+
+        // 当前登录 A
+        std::fs::write(client.join("app/session/cookies"), b"A-cookies").unwrap();
+        std::fs::write(client.join("storage/skeleton/account-snapshot.json"), b"{\"primary\":{\"uid\":\"u1\"}}").unwrap();
+        std::fs::write(auth.join("workbuddy-desktop.info"), ticket("u1", "tk-a", "A")).unwrap();
+
+        // B 的档案（登录态 + 票据）
+        let pack_b = p.pack_dir("u2");
+        std::fs::create_dir_all(pack_b.join("app/session")).unwrap();
+        std::fs::create_dir_all(pack_b.join("storage/skeleton")).unwrap();
+        std::fs::write(pack_b.join("app/session/cookies"), b"B-cookies").unwrap();
+        std::fs::write(pack_b.join("storage/skeleton/account-snapshot.json"), b"{\"primary\":{\"uid\":\"u2\"}}").unwrap();
+        let ticket_b = ticket("u2", "tk-b", "B");
+        std::fs::write(pack_b.join("auth.info"), &ticket_b).unwrap();
+
+        let out = switch_to(&p, "u2", "B", &dir.path().join("backups")).unwrap();
+
+        assert_eq!(p.current_uid().as_deref(), Some("u2"), "切换后客户端应登录 B");
+        assert_eq!(std::fs::read(auth.join("workbuddy-desktop.info")).unwrap(), ticket_b,
+                   "契约 8a：票据按字节写回");
+        assert_eq!(std::fs::read(client.join("app/session/cookies")).unwrap(), b"B-cookies");
+        assert!(p.pack_ready("u1"), "当前账号必须先被存档，否则切不回去");
+        assert!(out.message.contains("存档"));
     }
 
     #[test]
