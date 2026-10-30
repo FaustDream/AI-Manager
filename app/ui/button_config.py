@@ -54,23 +54,11 @@ BUTTONS: dict[str, dict] = {
         "requires": ["rows"], "enable_when": "has_pending",
         "note": "为所有参与签到的账号执行签到（跳过免签到与今日已签）",
     },
-    "checkin.query_status": {
+    "checkin.refresh_all": {
         "panel": "checkin", "position": "toolbar", "order": 30,
-        "text": "查询状态", "kind": "ghost", "icon": "refresh",
-        "requires": ["rows"], "enable_when": "has_rows",
-        "note": "查询签到状态 + 剩余积分（全量）",
-    },
-    "checkin.refresh_credits": {
-        "panel": "checkin", "position": "toolbar", "order": 40,
-        "text": "刷新积分", "kind": "ghost", "icon": "clock",
-        "requires": ["rows"], "enable_when": "has_rows",
-        "note": "只刷新剩余积分与到期，不查签到状态",
-    },
-    "checkin.refresh_login": {
-        "panel": "checkin", "position": "toolbar", "order": 50,
-        "text": "刷新登录", "kind": "ghost", "icon": None,
+        "text": "刷新", "kind": "ghost", "icon": "refresh",
         "requires": [], "enable_when": "always",
-        "note": "重新扫描各客户端的本地登录态",
+        "note": "重新扫描本地登录态，并刷新签到状态、积分与 ZCode 额度",
     },
     "checkin.toggle_skip": {
         "panel": "checkin", "position": "toolbar", "order": 70,

@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..core import paths, winproc
-from . import backup, trash, wbdb
+from . import backup, transfer, trash, wbdb
 from .editions import (Edition, all_columns, connect_ro, connect_rw,
                        remove_path, table_columns)
 
@@ -116,6 +116,8 @@ class RestoreReport:
     resurrected: int = 0
     missing: int = 0
     merged: int = 0
+    imported: int = 0
+    import_label: str = ""
     unverified: int = 0
     backup: str = ""
     projects: dict[str, ProjectStat] = field(default_factory=dict)
@@ -129,6 +131,8 @@ class RestoreReport:
             text += f"，已存在 {self.reused}"
         if self.merged:
             text += f"，补回 {self.merged}"
+        if self.imported:
+            text += f"，从{self.import_label}引入 {self.imported}"
         if self.missing:
             text += f"，缺正文 {self.missing}"
         if self.unverified:
@@ -141,6 +145,8 @@ class RestoreReport:
         lines = [self.summary()]
         if self.backup:
             lines.append(f"会话库备份：{self.backup}")
+        if self.imported:
+            lines.append(f"已把{self.import_label}的 {self.imported} 条会话引入本版本")
         ordered = sorted(self.projects.values(), key=lambda p: p.total, reverse=True)
         for stat in ordered[:limit]:
             name = stat.cwd or "（未知项目）"
@@ -331,11 +337,15 @@ def _merge_packs(ep: Edition, log) -> int:
 # ------------------------------------------------------------------ 恢复主流程
 def restore_for_account(ep: Edition, uid: str,
                         source_uids: set[str] | None = None,
-                        log=None) -> RestoreReport:
+                        log=None, with_other: bool = False) -> RestoreReport:
     """把本版本已有的项目会话关联到 uid。
 
     source_uids 为 None 表示“全部已有会话”（手动登录后的「恢复会话」）；
     传集合时只处理这些账号名下的会话（账号切换时只搬切换前账号那一份）。
+
+    with_other=True 时先把另一版本（国内 ↔ 国际）独有的会话搬进本版本：
+    两个版本同构，搬过来就是普通本地会话，之后照常按 uid 关联。
+    账号切换流程不开这个开关——切换只需要本版本的会话，不该顺手改动另一版本。
 
     调用方必须先关闭客户端；本函数会先备份会话库，再改 user_id / deleted_at，
     最后核对目标账号的可见清单。重复执行不会产生新行，也不会复制正文。
@@ -351,6 +361,7 @@ def restore_for_account(ep: Edition, uid: str,
     tag = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_path = _backup_live(ep, tag)
     merged = _merge_packs(ep, log)
+    brought = transfer.import_from_other(ep, uid, log) if with_other else {}
 
     blocked = trash.tombstone_ids()
     rows = wbdb.list_local_sessions(ep)
@@ -359,6 +370,8 @@ def restore_for_account(ep: Edition, uid: str,
         edition=ep.key, uid=uid,
         source=tuple(sorted(source_uids)) if source_uids else (),
         merged=merged, backup=backup_path,
+        imported=int(brought.get("added") or 0),
+        import_label=str(brought.get("edition") or ""),
     )
     expected: set[str] = set()
     notes: list[tuple[dict, str, list]] = []
@@ -441,6 +454,7 @@ def restore_for_account(ep: Edition, uid: str,
         "total": report.total, "changed": report.changed,
         "reused": report.reused, "missing": report.missing,
         "merged": report.merged, "unverified": report.unverified,
+        "imported": report.imported,
     })
     _prune_backups()
     level = "ok" if not report.missing and not report.unverified else "warn"

@@ -11,11 +11,16 @@ from typing import Callable
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QColor, QFont
 
+from .theme import resolve
+
 ALIGN = {
     "left": Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
     "center": Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
     "right": Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
 }
+
+# 勾选列的列名：DataTable(checkable=True) 自动插一列，行上用 _checked 记状态
+CHECK_KEY = "rowcheck"
 
 # 每个单元格都会问一次字体，现建 QFont 在几百行的表里就是白白的开销
 _FONTS: dict[tuple, QFont] = {}
@@ -76,10 +81,15 @@ class RowModel(QAbstractTableModel):
         return None
 
     def flags(self, index):  # noqa: N802 - Qt 接口
-        """行可拖可放：拖拽排序靠这两个标志才会真正开始拖动。"""
+        """行可拖可放；勾选列可点，分组标题行（_section）只亮不可选。"""
         base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
         if not index.isValid():
             return base | Qt.ItemFlag.ItemIsDropEnabled
+        row = self.rows[index.row()]
+        if row.get("_section"):
+            return Qt.ItemFlag.ItemIsEnabled
+        if self.columns[index.column()].key == CHECK_KEY:
+            return base | Qt.ItemFlag.ItemIsUserCheckable
         return base | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled
 
     def supportedDropActions(self):  # noqa: N802 - Qt 接口
@@ -104,11 +114,15 @@ class RowModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.ForegroundRole:
             cell_map = row.get("_fg_map") or {}
             if column.key in cell_map:
-                return QColor(cell_map[column.key])
+                return QColor(resolve(cell_map[column.key]))
             color = row.get("_fg")
-            return QColor(color) if color else None
+            return QColor(resolve(color)) if color else None
         if role == Qt.ItemDataRole.FontRole:
             return _cell_font(column.mono, bool(row.get("_bold")) and not column.mono)
+        if role == Qt.ItemDataRole.CheckStateRole:
+            if column.key != CHECK_KEY or row.get("_section"):
+                return None
+            return Qt.CheckState.Checked if row.get("_checked") else Qt.CheckState.Unchecked
         if role == Qt.ItemDataRole.ToolTipRole:
             tip = (row.get("_tip_map") or {}).get(column.key)
             if tip:
@@ -119,6 +133,18 @@ class RowModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.UserRole:
             return row
         return None
+
+    def setData(self, index, value, role=Qt.ItemDataRole.EditRole):  # noqa: N802
+        """勾选列的开关：状态记在行的 _checked 上，界面线程内完成。"""
+        if role != Qt.ItemDataRole.CheckStateRole or not index.isValid():
+            return False
+        column = self.columns[index.column()]
+        row = self.rows[index.row()]
+        if column.key != CHECK_KEY or row.get("_section"):
+            return False
+        row["_checked"] = value in (Qt.CheckState.Checked, Qt.CheckState.Checked.value)
+        self.dataChanged.emit(index, index, [Qt.ItemDataRole.CheckStateRole])
+        return True
 
     # --------------------------------------------------------------- 数据操作
     def set_rows(self, rows: list[dict]) -> None:

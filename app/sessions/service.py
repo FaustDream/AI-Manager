@@ -1,21 +1,22 @@
 # -*- coding: utf-8 -*-
-"""会话编排层：把两个版本、两个 CodeBuddy 平台的会话摊平成一份可管理的清单。
+"""会话编排层：把各软件的会话摊平成一份可管理的清单。
 
-只读本地会话库与正文目录，回答「本机有哪些会话、占多少空间、删哪些」。
-账号之间的会话恢复由 app/sessions/restore.py 负责，这一层不做任何跨版本搬运。
+清单走 data/catalog.db 的轻量索引——只存标题、时间、条数、体积这些索引信息，
+正文一律留在客户端原存储里，选中会话才读。源指纹（root_fp）没变的来源整体复用
+缓存，消息条数按「文件 mtime:size」缓存，所以刷新不用每次全量重扫。
+写入动作统一由 lifecycle 关客户端、写完自动重启，之后让对应来源的索引失效。
 """
 from __future__ import annotations
 
+import json
 import re
-from datetime import datetime
 from pathlib import Path
 
-from ..core import winproc
-from . import backup, codebuddy as cb, profiles, trash, wbdb
+from ..core import tasks
+from . import backup, codebuddy as cb, indexdb, lifecycle, others, profiles, trash, wbdb
 from .editions import Edition, path_size
 
 MSG_PAT = re.compile(rb'"type"\s*:\s*"message"')
-_count_cache: dict = {}
 
 SOURCE_LABELS = {
     "cn": "WorkBuddy 国内版",
@@ -27,7 +28,70 @@ SOURCE_LABELS = {
 STALE_DAYS = 180
 
 
-def count_messages(files) -> int:
+def source_labels() -> list[str]:
+    """软件筛选下拉的取值，与 unified 行的 source_label 一一对应。"""
+    return [SOURCE_LABELS["cn"], SOURCE_LABELS["intl"],
+            cb.PLATFORM_LABEL["CodeBuddyIDE"], cb.PLATFORM_LABEL["JetBrains"],
+            *others.labels()]
+
+
+# ------------------------------------------------------------------ 昵称
+def account_names(log=None) -> dict[str, str]:
+    """uid → 昵称：建索引时解析一次，界面只显示昵称，不摆 uid。
+
+    两个来源：账号库（当前保存的账号）+ 账号档案里的 account-snapshot
+    （已经不在账号库里、但会话还留着的旧账号，快照里存着昵称）。
+    """
+    log = log or (lambda m, level="info": None)
+    names: dict[str, str] = {}
+    try:
+        from ..checkin import store as account_store
+        for item in account_store.load():
+            if item.get("platform") != "workbuddy":
+                continue
+            meta = item.get("meta") or {}
+            uid = str(meta.get("uid") or item.get("account_id") or "")
+            name = str(item.get("name") or "").strip()
+            if uid and name:
+                names[uid] = name
+    except Exception as exc:                      # noqa: BLE001 - 昵称解析失败不挡列表
+        log(f"读取账号库失败：{exc}", "dim")
+
+    try:
+        from ..core import paths
+        for snap in paths.PROFILE_ROOT.glob("*/*/storage/skeleton/account-snapshot.json"):
+            uid = snap.parents[2].name
+            if uid in names:
+                continue
+            try:
+                primary = json.loads(snap.read_text(encoding="utf-8")).get("primary") or {}
+            except (OSError, ValueError):
+                continue
+            nickname = str(primary.get("nickname") or "").strip()
+            if nickname:
+                names[str(primary.get("uid") or uid)] = nickname
+    except OSError as exc:
+        log(f"读取账号档案失败：{exc}", "dim")
+    return names
+
+
+def _account_name(row: dict, names: dict[str, str], cn_uid: str, intl_uid: str) -> str:
+    """账号列的显示名：昵称优先，界面任何位置都不出现 uid。"""
+    if row["kind"] in ("qoder", "zcode", "trae"):
+        return "本机"                      # 这些库没有账号字段，换号共用一份
+    uid = row.get("account") or ""
+    if not uid or uid == "default":
+        return "未登录"
+    tag = "国内版" if uid == cn_uid else ("国际版" if uid == intl_uid else "")
+    name = names.get(uid)
+    if name:
+        return f"{name}（{tag}）" if tag else name
+    return tag or "未知账号"
+
+
+# ------------------------------------------------------------------ 消息计数
+def count_messages(files, index: indexdb.Index | None = None) -> int:
+    """jsonl 正文里的消息条数；按文件指纹缓存，没变的文件不重读内容。"""
     total = 0
     for path in files:
         path = Path(path)
@@ -37,10 +101,13 @@ def count_messages(files) -> int:
             stat = path.stat()
         except OSError:
             continue
-        key = (str(path), stat.st_mtime, stat.st_size)
-        if key in _count_cache:
-            total += _count_cache[key]
-            continue
+        cache_key = f"msg:{path}"
+        fp = f"{stat.st_mtime_ns}:{stat.st_size}"
+        if index is not None:
+            hit = index.count(cache_key, fp)
+            if hit is not None:
+                total += int(hit)
+                continue
         count = 0
         try:
             with open(path, "rb") as fh:
@@ -48,102 +115,30 @@ def count_messages(files) -> int:
                     count += len(MSG_PAT.findall(chunk))
         except OSError:
             count = 0
-        _count_cache[key] = count
+        if index is not None:
+            index.put_count(cache_key, fp, str(count))
         total += count
     return total
 
 
-def side_state(row, uid: str) -> str:
-    if row is None:
-        return "absent"
-    value = row.get("deleted_at")
-    if value is not None and value != -1:
-        return "deleted"
-    owner = row.get("user_id") or ""
-    if uid and owner and owner != uid:
-        return "other"
-    return "visible"
-
-
 class Catalog:
-    """一次扫描的结果：会话清单 + 空间账本 + 可选的云端列表。"""
+    """一次扫描的结果：会话清单 + 备份 / 回收站快照。"""
 
     def __init__(self) -> None:
         self.cn = Edition("cn")
         self.intl = Edition("intl")
         self.cn_uid = ""
         self.intl_uid = ""
-        self.rows: list[dict] = []          # 合并后的本地会话（两个版本按 id 去重）
+        self.rows: list[dict] = []          # WorkBuddy 会话（按 id 去重，清空用）
         self.unified: list[dict] = []       # 表格行：来源 × 账号 × 会话
-        # 每个版本的全量 sessions 行，只读一次库：build_inventory 与 build_unified
-        # 原来各读一遍，第二遍失败（客户端正在写库）就会让整个版本的会话凭空消失
-        self.raw: dict[str, list[dict]] = {"cn": [], "intl": []}
         self.cb_sessions: list[dict] = []
+        self.others: list[dict] = []
         self.backups: list[dict] = []
         self.trash: list[dict] = []
         self.tomb_count = 0
-        self.cloud_total = 0
         self.cn_total = 0
         self.intl_total = 0
-        self.cn_visible = 0
-        self.intl_visible = 0
-        self.scanned_at = datetime.now()
         self.errors: list[str] = []
-
-    @property
-    def available(self) -> bool:
-        return self.cn.exists or self.intl.exists
-
-    @property
-    def total_size(self) -> int:
-        return sum(row["size"] for row in self.rows)
-
-
-def build_inventory(cat: Catalog) -> None:
-    cn_all = wbdb.list_all_sessions(cat.cn, cat.errors)
-    intl_all = wbdb.list_all_sessions(cat.intl, cat.errors)
-    cat.raw = {"cn": cn_all, "intl": intl_all}
-    cn_rows = {row["id"]: row for row in cn_all if row.get("transport") == "local"}
-    intl_rows = {row["id"]: row for row in intl_all if row.get("transport") == "local"}
-    cn_files = wbdb.project_files(cat.cn)
-    intl_files = wbdb.project_files(cat.intl)
-
-    merged = []
-    for sid in set(cn_rows) | set(intl_rows):
-        cn_row, intl_row = cn_rows.get(sid), intl_rows.get(sid)
-        files_cn = cn_files.get(sid, [])
-        files_intl = intl_files.get(sid, [])
-        files = files_cn or files_intl
-        base = cn_row or intl_row or {}
-        size_cn = sum(path_size(f) for f in files_cn)
-        size_intl = sum(path_size(f) for f in files_intl)
-        merged.append({
-            "id": sid,
-            "title": base.get("custom_title") or base.get("title") or sid,
-            "cn": side_state(cn_row, cat.cn_uid),
-            "intl": side_state(intl_row, cat.intl_uid),
-            "cn_row": cn_row,
-            "intl_row": intl_row,
-            "last": max(int((cn_row or {}).get("last_activity_at") or 0),
-                        int((intl_row or {}).get("last_activity_at") or 0)),
-            "size": max(size_cn, size_intl),
-            "size_cn": size_cn,
-            "size_intl": size_intl,
-            "messages": count_messages(files),
-            "files_cn": [str(f) for f in files_cn],
-            "files_intl": [str(f) for f in files_intl],
-            "cwd": base.get("cwd") or "",
-            "slug": (files[0].parent.name if files else ""),
-            "status": base.get("status") or "",
-        })
-    merged.sort(key=lambda r: r["last"], reverse=True)
-    cat.rows = merged
-    cat.cn_total = len(cn_rows)
-    cat.intl_total = len(intl_rows)
-    cat.cn_visible = sum(1 for r in merged if r["cn"] == "visible")
-    cat.intl_visible = sum(1 for r in merged if r["intl"] == "visible")
-    cat.cloud_total = (sum(1 for r in cn_all if r.get("transport") == "cloud")
-                       + sum(1 for r in intl_all if r.get("transport") == "cloud"))
 
 
 def _row_state(row: dict, uid: str) -> str:
@@ -159,51 +154,48 @@ def _row_state(row: dict, uid: str) -> str:
     return "可见"
 
 
-def build_unified(cat: Catalog) -> None:
-    """把 WorkBuddy 两个版本、CodeBuddy 两个平台的会话摊平成一张列表。
+def _wb_rows(ep: Edition, key: str, uid: str, names: dict, cat: Catalog,
+             index: indexdb.Index, errors: list[str]) -> list[dict]:
+    """单个 WorkBuddy 版本摊平出的统一行。"""
+    out = []
+    files_by_id = wbdb.project_files(ep)
+    for row in wbdb.list_all_sessions(ep, errors):
+        sid = row.get("id") or ""
+        files = [str(item) for item in files_by_id.get(sid, [])]
+        state = _row_state(row, uid)
+        record = {
+            "kind": "workbuddy",
+            "source_key": key,
+            "source_label": SOURCE_LABELS[key],
+            "account": uid if state != "旧账号" else (row.get("user_id") or ""),
+            "id": sid,
+            "title": row.get("custom_title") or row.get("title") or "（未命名会话）",
+            "last": int(row.get("last_activity_at") or row.get("created_at") or 0),
+            "msgs": count_messages(files, index),
+            "size": sum(path_size(Path(item)) for item in files),
+            "state": state,
+            "has_body": bool(files),
+            "files": files,
+            "path": "",
+            "cwd": row.get("cwd") or "",
+            "client_status": row.get("status") or "",
+            "raw": None,
+        }
+        record["account_name"] = _account_name(record, names, cat.cn_uid, cat.intl_uid)
+        out.append(record)
+    return out
 
-    每条记录代表「某个来源、某个账号下的一条会话」，归属判定：
-      · WorkBuddy：sessions.user_id 与该版本 account-snapshot 的 uid 比对，
-        其他账号的行标「旧账号」，默认不进当前账号列表；
-      · CodeBuddy：目录结构 <uid>/<平台>/<uid>/history 天然按账号隔离，
-        目录名 uid 就是归属账号。
-    云端行（transport='cloud'）没有本地正文，标「云端」。
-    """
-    rows = []
-    info_by_id = {r["id"]: r for r in cat.rows}
-    for key, label in (("cn", SOURCE_LABELS["cn"]), ("intl", SOURCE_LABELS["intl"])):
-        uid = cat.cn_uid if key == "cn" else cat.intl_uid
-        for row in cat.raw.get(key, []):
-            state = _row_state(row, uid)
-            info = info_by_id.get(row["id"], {})
-            owner = row.get("user_id") or ""
-            rows.append({
-                "kind": "workbuddy",
-                "source_key": key,
-                "source_label": label,
-                "account": uid if state != "旧账号" else owner,
-                "id": row["id"],
-                "title": row.get("custom_title") or row.get("title") or row["id"],
-                "last": int(row.get("last_activity_at") or row.get("created_at") or 0),
-                "msgs": info.get("messages", 0),
-                "size": (info.get("size_cn") if key == "cn"
-                         else info.get("size_intl")) or 0,
-                "state": state,
-                "has_body": bool(info.get("files_cn") or info.get("files_intl")),
-                "files": info.get("files_cn") if key == "cn" else info.get("files_intl"),
-                "path": "",
-                "cwd": row.get("cwd") or "",
-                "client_status": row.get("status") or "",
-                "raw": None,
-            })
-    for session in cat.cb_sessions:
-        rows.append({
+
+def _cb_rows(sessions: list[dict], names: dict[str, str]) -> list[dict]:
+    out = []
+    for session in sessions:
+        record = {
             "kind": "codebuddy",
             "source_key": session["platform"],
             "source_label": cb.PLATFORM_LABEL.get(session["platform"], session["platform"]),
             "account": session["uid"],
             "id": session["id"],
-            "title": session["name"] or f"（未命名 {session['id'][:8]}）",
+            "title": session["name"] or "（未命名会话）",
             "last": session["last"],
             "msgs": session["msgs"],
             "size": session["size"],
@@ -214,49 +206,118 @@ def build_unified(cat: Catalog) -> None:
             "cwd": "",
             "client_status": "",
             "raw": session,
-        })
-    rows.sort(key=lambda r: r["last"], reverse=True)
+        }
+        record["account_name"] = _account_name(record, names, "", "")
+        out.append(record)
+    return out
+
+
+def _other_label(key: str) -> str:
+    from . import qoder, trae, zcode
+    if key in qoder.EDITIONS:
+        return qoder.label(key)
+    if key == "zcode":
+        return zcode.LABEL
+    for folder, label in trae.APPS:
+        if key == folder:
+            return label
+    return key
+
+
+def _fill_catalog(cat: Catalog, rows: list[dict]) -> None:
     cat.unified = rows
+    cat.cb_sessions = [r["raw"] for r in rows if r["kind"] == "codebuddy" and r.get("raw")]
+    cat.others = [r for r in rows if r["kind"] in ("qoder", "zcode")]
+    cat.rows = list({r["id"]: r for r in rows if r["kind"] == "workbuddy"}.values())
+    cat.cn_total = sum(1 for r in rows if r["source_key"] == "cn")
+    cat.intl_total = sum(1 for r in rows if r["source_key"] == "intl")
 
 
 def build_catalog(log=None) -> Catalog:
+    """增量扫描：源指纹没变的来源整源复用索引，变了才重扫并落回索引。"""
+    log = log or (lambda m, level="info": None)
+    index = indexdb.load()
+    names = account_names(log)
     cat = Catalog()
     cat.cn_uid = cat.cn.current_uid()[0]
     cat.intl_uid = cat.intl.current_uid()[0]
-    if cat.cn.exists or cat.intl.exists:
-        build_inventory(cat)
-    cat.cb_sessions = cb.scan()
-    build_unified(cat)
-    cat.backups = backup.list_backups()
-    cat.trash = trash.list_trash()
-    cat.tomb_count = len(trash.tombstone_ids())
-    if log is not None:
-        for message in cat.errors:
-            log(f"会话库：{message}", "warn")
+    rows: list[dict] = []
+
+    # WorkBuddy：指纹带 uid，换号后归属判定会变，必须重算
+    tasks.report(0.1, "扫描 WorkBuddy 会话")
+    for ep, key, uid in ((cat.cn, "cn", cat.cn_uid), (cat.intl, "intl", cat.intl_uid)):
+        fp = f"{wbdb.root_fp(ep)}|uid:{uid}"
+        if index.hit(key, fp):
+            rows.extend(index.source_rows(key))
+            continue
+        built = _wb_rows(ep, key, uid, names, cat, index, cat.errors)
+        index.store(key, SOURCE_LABELS[key], fp, built)
+        rows.extend(built)
+
+    # CodeBuddy 两个平台
+    tasks.report(0.5, "扫描 CodeBuddy 会话")
+    cb_fp = {platform: cb.root_fp(platform) for platform in cb.PLATFORMS}
+    if all(index.hit(platform, cb_fp[platform]) for platform in cb.PLATFORMS):
+        for platform in cb.PLATFORMS:
+            rows.extend(index.source_rows(platform))
+    else:
+        grouped: dict[str, list[dict]] = {}
+        for session in cb.scan():
+            grouped.setdefault(session["platform"], []).append(session)
+        for platform in cb.PLATFORMS:
+            built = _cb_rows(grouped.get(platform, []), names)
+            index.store(platform, cb.PLATFORM_LABEL[platform], cb_fp[platform], built)
+            rows.extend(built)
+
+    # 其余软件（Qoder / ZCode / Trae）
+    tasks.report(0.8, "扫描 Qoder / ZCode / Trae 会话")
+    other_fp = others.root_fps()
+    if all(index.hit(key, fp) for key, fp in other_fp.items()):
+        for key in other_fp:
+            rows.extend(index.source_rows(key))
+    else:
+        grouped = {}
+        for row in others.scan():
+            row["account_name"] = _account_name(row, names, cat.cn_uid, cat.intl_uid)
+            grouped.setdefault(row["source_key"], []).append(row)
+        for key, fp in other_fp.items():
+            built = grouped.get(key, [])
+            index.store(key, _other_label(key), fp, built)
+            rows.extend(built)
+
+    known = set(other_fp) | set(cb.PLATFORMS) | {"cn", "intl"}
+    for key in list(index.fps):
+        if key not in known:
+            index.drop_source(key)
+
+    rows.sort(key=lambda r: r["last"], reverse=True)
+    _fill_catalog(cat, rows)
+    index.flush()
+    return cat
+
+
+def cached_rows() -> list[dict]:
+    """索引快照：首屏先上屏用，不碰任何客户端存储。"""
+    index = indexdb.load()
+    rows = [row for group in index.rows.values() for row in group]
+    rows.sort(key=lambda r: r["last"], reverse=True)
+    return rows
+
+
+def catalog_from_rows(rows: list[dict]) -> Catalog:
+    cat = Catalog()
+    _fill_catalog(cat, list(rows))
     return cat
 
 
 # ------------------------------------------------------------------ 写入动作
-def close_clients(log) -> list[Edition]:
-    """写入前必须关客户端：内存缓存会覆盖改动，WAL 也可能不落盘。"""
-    closed = []
-    for ep in (Edition("cn"), Edition("intl")):
-        if not winproc.process_running(ep.proc):
-            continue
-        log(f"正在关闭 {ep.label}…")
-        if winproc.kill_process(ep.proc):
-            closed.append(ep)
-        else:
-            raise RuntimeError(f"{ep.label} 没能关闭，请手动退出后重试")
-    return closed
-
-
 def delete_ids(ids: list[str], log) -> dict:
     """删除 WorkBuddy 会话：数据库行 + 正文 + 任务/待办，文件先进回收站。"""
     if not ids:
         return {"deleted": 0, "files": 0, "bytes": 0, "trash": "", "ids": []}
-    close_clients(log)
-    stats = wbdb.delete_sessions(ids)
+    with lifecycle.client_guard(lifecycle.workbuddy_clients(), log):
+        stats = wbdb.delete_sessions(ids)
+    indexdb.drop_sources(["cn", "intl"])
     log(f"🗑 删除完成：数据库 {stats['deleted']} 行，文件 {stats['files']} 个，"
         f"释放 {stats['bytes'] / 1048576:.1f} MB")
     return stats
@@ -282,13 +343,42 @@ def delete_codebuddy(sessions: list[dict], log) -> dict:
     if items:
         trash.write_manifest(tag, items)
         stats["trash"] = str(trash.TRASH_ROOT / tag)
+        indexdb.drop_sources({str(s.get("platform") or "") for s in sessions})
         log(f"🗑 CodeBuddy 会话 {stats['sessions']} 条，"
             f"释放 {stats['bytes'] / 1048576:.1f} MB")
     return stats
 
 
+def delete_others(rows: list[dict], log) -> dict:
+    """删除 Qoder / ZCode 会话：会话行导出到回收站后再从库里移除。"""
+    stats = others.delete(rows, log)
+    indexdb.drop_sources({row["source_key"] for row in rows})
+    return stats
+
+
+def sync_rows(rows: list[dict], target: str, log) -> dict:
+    """同软件复制：Qoder 国内版 ↔ 国际版、CodeBuddy 账号之间。
+
+    跨软件的格式转换不做——两边的正文结构和索引规则没有稳定对应关系，
+    硬转出来的会话客户端未必认，反而把原库搅乱。
+    """
+    if not rows:
+        return {"copied": 0}
+    kind = rows[0]["kind"]
+    if kind == "qoder":
+        from . import qoder
+        stats = qoder.copy_to(target, rows, log)
+        indexdb.drop_sources(list(qoder.EDITIONS))
+        return stats
+    if kind == "codebuddy":
+        stats = cb.copy_to(target, [row["raw"] for row in rows], log)
+        indexdb.drop_sources({row["source_key"] for row in rows})
+        return stats
+    raise RuntimeError("这类会话没有可复制的本地数据")
+
+
 def backup_now(log) -> str:
-    """手动整库快照：同步去掉之后，回滚之前得先有东西可回。"""
+    """手动整库快照：回滚之前得先有东西可回。"""
     tag = trash.new_tag(backup.BACKUP_ROOT)
     log(f"正在备份会话库（{tag}）…")
     path = backup.make_snapshot(tag)
@@ -297,16 +387,25 @@ def backup_now(log) -> str:
 
 
 def cleanup_codebuddy(mode: str) -> dict:
-    return cb.cleanup_empty(mode)
+    stats = cb.cleanup_empty(mode)
+    indexdb.drop_sources(list(cb.PLATFORMS))
+    return stats
 
 
 def rollback(tag: str) -> None:
     backup.rollback(tag)
+    indexdb.clear()
 
 
 def restore_trash(tag: str, log) -> int:
-    close_clients(log)
-    return trash.restore_trash(tag)
+    from . import qoder, zcode
+    clients = (lifecycle.workbuddy_clients()
+               + [qoder.client(key) for key in qoder.EDITIONS]
+               + [zcode.client()])
+    with lifecycle.client_guard(clients, log):
+        restored = trash.restore_trash(tag)
+    indexdb.clear()
+    return restored
 
 
 def purge_trash(tag: str | None = None) -> int:

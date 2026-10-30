@@ -24,6 +24,7 @@ from ..sessions import profiles as wb_profiles
 from ..sessions.editions import Edition
 from . import qoder as qoder_provider
 from . import trae as trae_provider
+from . import zstore as zcode_store
 from .base import Account, parse_iso
 from .workbuddy import open_field, seal_field
 
@@ -34,12 +35,14 @@ WB_FILE_CN = (paths.user_local_dir() / "CodeBuddyExtension"
 WB_FILE_INTL = (paths.user_local_dir() / "CodeBuddyExtension"
                 / "Data" / "Public" / "auth" / "workbuddy-desktop-ai.info")
 
-SUPPORTED = {"qoder": True, "qoder_intl": True, "workbuddy": True, "trae": False}
+SUPPORTED = {"qoder": True, "qoder_intl": True, "workbuddy": True, "trae": False,
+             "zcode": True}
 PROCESS_NAMES = {
     "qoder": ("Qoder CN.exe", "Qoder.exe"),
     "qoder_intl": ("Qoder.exe", "Qoder CN.exe"),
     "workbuddy": ("CodeBuddy CN.exe", "WorkBuddy.exe", "WorkBuddyAI.exe", "CodeBuddy.exe"),
     "trae": ("Trae CN.exe", "Trae.exe"),
+    "zcode": ("ZCode.exe",),
 }
 
 
@@ -58,6 +61,8 @@ def client_names_for(account: Account) -> tuple[str, ...]:
         return ("Qoder.exe",)
     if account.platform == "qoder":
         return ("Qoder CN.exe",)
+    if account.platform == "zcode":
+        return ("ZCode.exe",)
     return tuple(PROCESS_NAMES.get(account.platform, ()))
 
 
@@ -125,6 +130,8 @@ def _iso_z(value: datetime | None) -> str:
 def is_current(account: Account) -> bool:
     """判断这个账号是否就是官方客户端当前登录的账号。"""
     try:
+        if account.platform == "zcode":
+            return zcode_store.is_current(account)
         if account.platform == "workbuddy":
             data = json.loads(_wb_file(account).read_text(encoding="utf-8"))
             uid = str((data.get("account") or {}).get("uid") or "")
@@ -397,6 +404,8 @@ def switch_workbuddy(account: Account, log) -> str:
 
 
 def switch(account: Account, log) -> str:
+    if account.platform == "zcode":
+        return zcode_store.switch(account, log)
     if is_current(account):
         raise SwitchError("这个账号就是客户端当前登录的账号，不需要切换。")
     if account.platform in ("qoder", "qoder_intl"):
@@ -416,4 +425,6 @@ def describe(platform: str) -> str:
         return "设备绑定加密，无法写回，需在客户端手动登录"
     if platform == "qoder_intl":
         return "可写回 Qoder 国际版登录态（自动备份）"
+    if platform == "zcode":
+        return "整份登录态写回（自动备份，设备身份跟账号走）"
     return "可写回客户端登录态（自动备份）"

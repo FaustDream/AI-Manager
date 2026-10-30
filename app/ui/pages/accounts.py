@@ -255,7 +255,7 @@ class AccountsPage(BasePage):
             bus.BUS.data_changed.emit("sessions")
             self.reload()
 
-        tasks.submit(worker, on_done=done, on_error=self._switch_failed)
+        tasks.submit(worker, on_done=done, on_error=self._switch_failed, serial=True )
 
     def _switch_failed(self, message: str) -> None:
         self._set_busy(False)

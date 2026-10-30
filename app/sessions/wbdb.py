@@ -21,6 +21,32 @@ SESSION_ID_RE = re.compile(r"^[0-9a-fA-F][0-9a-fA-F-]{15,}$")
 
 
 # --------------------------------------------------------------------- 读取
+def root_fp(ep: Edition) -> str:
+    """源指纹：库文件 + projects 下每个条目的 mtime:size，只碰元数据。
+
+    指纹没变说明这个版本的会话清单与正文都没动过，上层可以直接复用索引，
+    不用再读库正文、统计消息条数。变了才走全量扫描。
+    """
+    parts = []
+    try:
+        stat = ep.db.stat()
+        parts.append(f"db:{stat.st_mtime_ns}:{stat.st_size}")
+    except OSError:
+        parts.append("db:-")
+    if ep.projects.exists():
+        try:
+            entries = list(ep.projects.glob("*/*"))
+        except OSError:
+            entries = []
+        for path in entries:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            parts.append(f"{path.parent.name}/{path.name}:{stat.st_mtime_ns}:{stat.st_size}")
+    return "|".join(sorted(parts))
+
+
 def list_local_sessions(ep: Edition) -> list[dict]:
     conn = connect_ro(ep.db)
     if conn is None:

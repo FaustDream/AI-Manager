@@ -10,8 +10,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel
 
 from ... import APP_VERSION, brand
 from ...checkin import daily, service
-from ...core import autostart, paths, shortcut, tasks, winproc
-from ..theme import PALETTE
+from ...core import autostart, bus, logbook, paths, shortcut, tasks, winproc
 from ..widgets import Badge, Card, hline, label, make_button
 from .base import BasePage
 
@@ -87,7 +86,50 @@ class SettingsPage(BasePage):
             ("回收站", paths.TRASH_ROOT, "被删除会话的临时存放处"),
         ):
             dirs.body.addLayout(self._path_row(name, path, note))
+        dirs.body.addWidget(hline())
+
+        log_row = QHBoxLayout()
+        log_row.setSpacing(10)
+        log_row.addWidget(label("日志级别", "StatLabel"))
+        self.log_combo = QComboBox()
+        self.log_combo.addItem("调试 · 记录全部细节", "debug")
+        self.log_combo.addItem("信息 · 关键步骤与状态", "info")
+        self.log_combo.addItem("警告及以上", "warn")
+        self.log_combo.addItem("只记错误", "error")
+        self.log_combo.currentIndexChanged.connect(self._save_log_level)
+        log_row.addWidget(self.log_combo)
+        log_hint = label("控制写入日志文件的最低级别；任务事件与性能打点不受影响，"
+                         "查询与导出在「日志」页", "SectionHint")
+        log_hint.setWordWrap(True)
+        log_row.addWidget(log_hint, 1)
+        dirs.body.addLayout(log_row)
         column.addWidget(dirs)
+
+        # ---------------------------------------------------------- 会话索引
+        index_card = Card(padding=16, spacing=10)
+        index_card.add_title("会话索引与兼容", "列表只存索引信息，正文按需读取原存储")
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(label("本地索引", "StatLabel"))
+        hint = label("重建后下次打开会话页会全量重扫；期间列表刷新会慢一次。",
+                     "SectionHint")
+        hint.setWordWrap(True)
+        row.addWidget(hint, 1)
+        self.btn_reindex = make_button("重建索引", "ghost")
+        self.btn_reindex.clicked.connect(self.rebuild_index)
+        row.addWidget(self.btn_reindex)
+        index_card.body.addLayout(row)
+        index_card.body.addWidget(hline())
+
+        cross = QHBoxLayout()
+        cross.setSpacing(10)
+        self.cross_check = QCheckBox("允许跨软件导入（CodeBuddy → WorkBuddy）")
+        self.cross_check.stateChanged.connect(self._save_cross)
+        cross.addWidget(self.cross_check)
+        cross.addWidget(label("格式转换对会话数据的影响未验证，默认关闭", "SectionHint"))
+        cross.addStretch(1)
+        index_card.body.addLayout(cross)
+        column.addWidget(index_card)
 
         # ---------------------------------------------------------- 启动
         launch = Card(padding=16, spacing=8)
@@ -134,15 +176,15 @@ class SettingsPage(BasePage):
             f"</div>"
         )
         who.setWordWrap(True)
-        who.setStyleSheet(f"color: {PALETTE['text_2']}; font-size: 12px;")
+        who.setObjectName("BodyText")
         about.body.addWidget(who)
 
-        state = label("", "SectionHint")
+        state = label("", "BodyText")
         if brand.intact():
             state.setText(f"本副本：官方原版（署名校验通过 {brand.signature()}）")
         else:
             state.setText(f"本副本：署名已被修改，非 {brand.AUTHOR} 官方发布，请从上方来源获取原版")
-            state.setStyleSheet(f"color: {PALETTE['danger']}; font-size: 12px;")
+            state.setProperty("tone", "danger")
         about.body.addWidget(state)
         about.body.addWidget(hline())
 
@@ -152,15 +194,20 @@ class SettingsPage(BasePage):
             "本地登录态扫描、签到、剩余积分与到期统计、免签到、每日轮询签到、"
             "浏览器授权添加账号、写回客户端登录态。\n"
             "· 会话：WorkBuddy 国内/国际版、CodeBuddy IDE、IDEA 插件的本机会话清单与"
-            "正文预览，删除进回收站、黑名单、备份与回滚、CodeBuddy 空壳清理、账号档案切换。\n\n"
+            "正文预览，删除进回收站、黑名单、备份与回滚、CodeBuddy 空壳清理、账号档案切换。\n"
+            "· 技能与 MCP：技能放一次、MCP 登记一次，按平台复制到 Qoder CN / Qoder 国际版 / "
+            "Trae CN / WorkBuddy 国内版 / WorkBuddy 国际版 / CodeBuddy / ZCode 的用户级目录，"
+            "启动时自动同步变更。\n\n"
             "风险提示\n"
             "· 自动化签到与客户端登录态写回可能违反各平台服务条款，请自行评估。\n"
             "· 客户端升级可能改变密钥或存储格式，届时相关功能需要更新。\n"
             "· 会话的读取与删除基于本地 SQLite/JSON 文件，删除前请保持客户端关闭；"
-            "工具会把文件先移入回收站，但仍建议重要数据自行留档。"
+            "工具会把文件先移入回收站，但仍建议重要数据自行留档。\n"
+            "· 技能 / MCP 写入的是各平台配置文件，写前会备份到 data/backups/hub/；"
+            "客户端运行中写入可能不生效，必要时重启客户端。"
         )
         text.setWordWrap(True)
-        text.setStyleSheet(f"color: {PALETTE['text_2']}; font-size: 12px; line-height: 1.7;")
+        text.setObjectName("BodyText")
         about.body.addWidget(text)
         column.addWidget(about)
         column.addStretch(1)
@@ -204,6 +251,11 @@ class SettingsPage(BasePage):
         self.poll_combo.setCurrentIndex(index if index >= 0 else 2)
         self.poll_combo.blockSignals(False)
 
+        self.log_combo.blockSignals(True)
+        index = self.log_combo.findData(str(self.cfg.get("log_level") or "debug"))
+        self.log_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.log_combo.blockSignals(False)
+
         exists = shortcut.shortcut_exists()
         if not shortcut.SUPPORTED:
             self.shortcut_badge.set("不支持", "dim")
@@ -222,11 +274,22 @@ class SettingsPage(BasePage):
             self.boot_check.setToolTip("开机自启只在 Windows 上提供")
         self.boot_check.blockSignals(False)
 
+        self.cross_check.blockSignals(True)
+        self.cross_check.setChecked(bool(self.cfg.get("allow_cross_software")))
+        self.cross_check.blockSignals(False)
+
     def _save_poll(self, *_args) -> None:
         self.cfg["credit_interval"] = int(self.poll_combo.currentData() or 0)
         self.win.save_cfg()
         self.win.apply_credit_interval()
         self.log(f"积分轮询间隔：{self.poll_combo.currentText()}", "dim")
+
+    def _save_log_level(self, *_args) -> None:
+        level = str(self.log_combo.currentData() or "debug")
+        self.cfg["log_level"] = level
+        self.win.save_cfg()
+        logbook.set_level(level)
+        self.log(f"日志级别：{self.log_combo.currentText()}", "dim")
 
     def _save_autostart(self, *_args) -> None:
         enabled = self.boot_check.isChecked()
@@ -247,6 +310,40 @@ class SettingsPage(BasePage):
         else:
             self.log("已关闭开机自启", "dim")
 
+    def _save_cross(self, *_args) -> None:
+        enabled = self.cross_check.isChecked()
+        self.cfg["allow_cross_software"] = enabled
+        self.win.save_cfg()
+        self.log(f"跨软件导入：{'已开启' if enabled else '已关闭'}", "dim")
+        bus.BUS.data_changed.emit("sessions")
+
+    def rebuild_index(self) -> None:
+        """清空本地索引缓存：下次打开会话页全量重扫，不碰任何客户端数据。"""
+        if not self.confirm("重建会话索引",
+                            "清空本地索引缓存（data/catalog.db）？\n\n"
+                            "只影响刷新速度，不碰各客户端的会话数据；"
+                            "下次打开会话页会全量重扫一次。"):
+            return
+        self._set_busy(True, "正在重建会话索引…")
+
+        def worker(emit):
+            from ...sessions import indexdb
+            indexdb.clear()
+            return True
+
+        def done(_result):
+            self._set_busy(False)
+            self.log("会话索引已清空，下次刷新会全量重扫", "ok")
+            self.notify("索引已重建")
+            bus.BUS.data_changed.emit("sessions")
+
+        def failed(message: str):
+            self._set_busy(False)
+            self.log(message, "error")
+            self.error("重建失败", message.splitlines()[0])
+
+        tasks.submit(worker, on_done=done, on_error=failed, serial=True )
+
     # ------------------------------------------------------------------ 动作
     def create_shortcut(self) -> None:
         self._set_busy(True, "正在创建桌面快捷方式…")
@@ -265,7 +362,7 @@ class SettingsPage(BasePage):
             self.log(message, "error")
             self.error("创建失败", message.splitlines()[0])
 
-        tasks.submit(worker, on_done=done, on_error=failed)
+        tasks.submit(worker, on_done=done, on_error=failed, serial=True )
 
     def selftest(self) -> None:
         self._set_busy(True, "正在自检…")
@@ -286,4 +383,4 @@ class SettingsPage(BasePage):
             self.log(message, "error")
             self.error("自检失败", message.splitlines()[0])
 
-        tasks.submit(worker, on_done=done, on_error=failed)
+        tasks.submit(worker, on_done=done, on_error=failed, serial=True )

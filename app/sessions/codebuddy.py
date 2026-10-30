@@ -90,6 +90,38 @@ def sources() -> list[tuple]:
     return out
 
 
+def root_fp(platform: str) -> str:
+    """源指纹：工作区索引与消息文件的元数据，不含内容——变了才重扫。
+
+    消息数以 messages 目录下的文件数为准，所以文件数也要进指纹：客户端续写
+    消息时不一定改 index.json，只看索引时间会漏。
+    """
+    parts = []
+    for plat, uid, hist in sources():
+        if plat != platform:
+            continue
+        try:
+            workspaces = sorted(p for p in hist.iterdir() if p.is_dir())
+        except OSError:
+            continue
+        for ws_dir in workspaces:
+            try:
+                stat = (ws_dir / "index.json").stat()
+                parts.append(f"{uid}/{ws_dir.name}:{stat.st_mtime_ns}:{stat.st_size}")
+            except OSError:
+                parts.append(f"{uid}/{ws_dir.name}:-")
+            for conv_dir in ws_dir.iterdir():
+                if not conv_dir.is_dir():
+                    continue
+                msg_dir = conv_dir / "messages"
+                try:
+                    count = sum(1 for _ in msg_dir.iterdir()) if msg_dir.is_dir() else 0
+                except OSError:
+                    count = -1
+                parts.append(f"{uid}/{ws_dir.name}/{conv_dir.name}:{count}")
+    return "|".join(parts)
+
+
 def scan(force: bool = False) -> list[dict]:
     """扫描全部平台/账号/工作区，返回会话列表（结果缓存 60 秒）。"""
     global _CACHE
@@ -229,6 +261,57 @@ def restore_item(item: dict, tag_dir: Path) -> bool:
     invalidate()
     return True
 
+
+
+def copy_session(session: dict, target_uid: str) -> str:
+    """把一条会话复制到另一个账号下，并在目标工作区索引里登记。
+
+    返回 copied / exists / same。目标已有同 ID 会话时不覆盖：两个账号的正文
+    混在一起比少复制一条更难收拾。
+    """
+    src_uid = str(session.get("uid") or "")
+    cid = str(session.get("id") or "")
+    platform = str(session.get("platform") or "")
+    workspace = str(session.get("workspace") or "")
+    src = Path(str(session.get("path") or ""))
+    if not (cid and platform and workspace and src.is_dir()):
+        raise OSError("会话目录不存在")
+    if target_uid == src_uid:
+        return "same"
+    ws_dir = _target_ws(platform, target_uid, workspace)
+    dest = ws_dir / cid
+    if dest.exists():
+        return "exists"
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dest)
+
+    index_path = ws_dir / "index.json"
+    index = _read_json(index_path) or {"conversations": [], "current": None}
+    convs = index.setdefault("conversations", [])
+    conv = dict(session.get("meta") or {})
+    conv["id"] = cid
+    if not any(item.get("id") == cid for item in convs):
+        convs.append(conv)
+    _write_json(index_path, index)
+    invalidate()
+    return "copied"
+
+
+def copy_to(target_uid: str, sessions: list[dict], log) -> dict:
+    """批量复制到目标账号；单条失败只记日志，不拖垮整批。"""
+    stats = {"copied": 0, "exists": 0, "same": 0, "failed": 0}
+    for session in sessions:
+        try:
+            state = copy_session(session, target_uid)
+        except OSError as exc:
+            log(f"❌ {session.get('name') or session.get('id')}：{exc}", "error")
+            stats["failed"] += 1
+            continue
+        stats[state] = stats.get(state, 0) + 1
+    log(f"复制到目标账号：新增 {stats['copied']}，已存在 {stats['exists']}"
+        + (f"，失败 {stats['failed']}" if stats["failed"] else ""),
+        "ok" if stats["copied"] else "warn")
+    return stats
 
 
 def cleanup_empty(mode="junk") -> dict:

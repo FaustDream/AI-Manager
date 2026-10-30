@@ -28,15 +28,21 @@ HINTS = {
                  "登录完成后自动取回 token。",
     "workbuddy_intl": "会打开 WorkBuddy 国际版登录页（workbuddy.ai）。"
                       "登录完成后自动取回 token。国际版没有签到，只查积分。",
+    "zcode": "会打开 zcode.z.ai 授权页（BigModel 账号，手机号登录）。登录后应用自动取回"
+             "登录态与额度配置，不影响客户端当前的登录。",
+    "zcode_zai": "会打开 zcode.z.ai 授权页（z.ai 国际站账号，邮箱/第三方登录）。"
+                 "登录后应用自动取回登录态与额度配置。",
 }
 
-ORDER = ("trae", "qoder", "workbuddy", "workbuddy_intl")
+ORDER = ("trae", "qoder", "workbuddy", "workbuddy_intl", "zcode", "zcode_zai")
 
 COMBO_LABELS = {
     "trae": "Trae CN",
     "qoder": "Qoder CN",
     "workbuddy": "WorkBuddy 国内版",
     "workbuddy_intl": "WorkBuddy 国际版",
+    "zcode": "ZCode（BigModel）",
+    "zcode_zai": "ZCode（z.ai 国际站）",
 }
 
 
@@ -153,12 +159,14 @@ class AddAccountDialog(QDialog):
         self.copy_btn.setEnabled(False)
         self.open_btn.setEnabled(False)
         key = self._key()
+        platform, variant = {"zcode": ("zcode", "bigmodel"),
+                             "zcode_zai": ("zcode", "zai")}.get(key, (key, ""))
 
         tasks.submit(
-            lambda emit: logins.create_login(key),
+            lambda emit: logins.create_login(platform, variant),
             on_done=lambda flow: self._flow_ready(generation, flow),
             on_error=lambda err: self._failed(generation, err.splitlines()[0]),
-        )
+        serial=True )
 
     def _flow_ready(self, generation: int, flow) -> None:
         if generation != self._gen or not self.isVisible():
@@ -175,12 +183,19 @@ class AddAccountDialog(QDialog):
             lambda emit: flow.poll(stop),
             on_done=lambda account: self._success(generation, account),
             on_error=lambda err: self._failed(generation, err.splitlines()[0]),
-        )
+        serial=True )
 
     def _success(self, generation: int, account: Account) -> None:
         if generation != self._gen:
             return
-        store.upsert(store.to_item(account))
+        item = store.to_item(account)
+        # 重新登录同一个账号时不要把原来的名字覆盖成通用占位名
+        existing = store.find(account.platform, account.account_id)
+        placeholder = {"", "ZCode 账号", account.platform_label}
+        if existing and str(existing.get("name") or "").strip() \
+                and str(item.get("name") or "") in placeholder:
+            item["name"] = existing["name"]
+        store.upsert(item)
         self._flow = None
         self.progress.setVisible(False)
         self.start_btn.setEnabled(True)
@@ -243,8 +258,8 @@ class AddAccountDialog(QDialog):
                 "platform": plat_label,
                 "name": str(item.get("name") or account_id),
                 "expire": expires,
-                "switch": "支持" if platform in ("qoder", "workbuddy") else "不支持",
-                "_fg_map": {} if platform in ("qoder", "workbuddy")
+                "switch": "支持" if platform in ("qoder", "workbuddy", "zcode") else "不支持",
+                "_fg_map": {} if platform in ("qoder", "workbuddy", "zcode")
                 else {"switch": PALETTE["muted"]},
             })
         self.table.set_rows(rows)

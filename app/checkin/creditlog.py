@@ -93,12 +93,15 @@ def _latest(series: dict, day: str) -> float | None:
 
 
 def summary(trend_days: int = TREND_DAYS, today: date | None = None) -> dict:
-    """余额合计、相对上次记录的增减、近 N 天走势，一次读盘算完。"""
+    """余额合计、相对上次记录的增量、近 N 天走势，一次读盘算完。
+
+    只算「增加」：余额下降既可能是消耗也可能是到期扣减，平台不给流水就分不开。
+    """
     now = today or date.today()
     stamp = now.isoformat()
     data = _prune(_load(), now)
 
-    total = gained = spent = 0.0
+    total = gained = 0.0
     counted = 0
     baseline = ""
     for series in data.values():
@@ -116,8 +119,6 @@ def summary(trend_days: int = TREND_DAYS, today: date | None = None) -> dict:
         delta = series[stamp] - series[prev]
         if delta > 0:
             gained += delta
-        elif delta < 0:
-            spent -= delta
         baseline = max(baseline, prev) if baseline else prev
 
     # 没有记录的日子不画：从第一条记录开始，避免开头一串 0 把走势压平
@@ -139,7 +140,6 @@ def summary(trend_days: int = TREND_DAYS, today: date | None = None) -> dict:
         "total": total,
         "accounts": counted,
         "gained": gained,
-        "spent": spent,
         "baseline": baseline,
         "today": stamp,
         "has_history": bool(baseline),

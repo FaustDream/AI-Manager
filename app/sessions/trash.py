@@ -130,6 +130,11 @@ def restore_trash(tag) -> int:
             if codebuddy.restore_item(item, target_dir):
                 restored += 1
             continue
+        if item.get("kind") in ("qoder", "zcode"):
+            from . import others
+            if others.restore_item(item, target_dir):
+                restored += 1
+            continue
         edition = Edition(item["edition"])
         for rel in item.get("files", []):
             src = target_dir / item["edition"] / rel

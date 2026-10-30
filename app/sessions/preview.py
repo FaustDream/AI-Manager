@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""会话正文预览：把两种客户端的会话文件读成人能看的对话。
+"""会话正文预览：把各客户端的会话文件读成人能看的对话。
 
 列表只关心标题与时间，正文各有各的格式：WorkBuddy 是 jsonl 事件流
-（type=message + content 片段），CodeBuddy 是一条消息一个 json 文件。
-格式知识集中在这里，编排层与界面都不用关心。
+（type=message + content 片段），CodeBuddy 是一条消息一个 json 文件，
+Qoder / ZCode 是 SQLite 里的消息行。格式知识集中在这里，编排层与界面都不用关心。
 
 只读、只取头尾：一条会话可能有几十 MB，全量读进内存会把界面拖住。
 按「消息条数」而不是字节数截取——单条工具结果动辄几十 KB，按字节切
@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
+
+from .editions import connect_ro
 
 HEAD_MESSAGES = 8
 TAIL_MESSAGES = 16
@@ -192,8 +195,108 @@ def load_codebuddy(path: str) -> dict:
     return _result(messages, truncated)
 
 
+# ------------------------------------------------------------------ Qoder
+def _qoder_message(mid, raw) -> dict | None:
+    """payload 有两种写法：老库直接给 text + role，新库给 parts[type=text]。"""
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    role = data.get("role") or (
+        "assistant" if str(mid).startswith("assistant:") else "user")
+    if role not in ("user", "assistant"):
+        return None
+    body = data.get("text")
+    if not isinstance(body, str) or not body.strip():
+        parts = data.get("parts") or []
+        body = "\n".join(str(part.get("text") or "") for part in parts
+                         if isinstance(part, dict) and part.get("type") == "text")
+    text = _clean(body or "")
+    if not text:
+        return None
+    return {"role": role, "text": _clip(text), "id": str(mid), "time": 0}
+
+
+def load_qoder(db: str, sid: str) -> dict:
+    """读 Qoder 的 chat_session_messages：一条消息一行，正文在 payload_json。"""
+    conn = connect_ro(Path(db)) if db else None
+    if conn is None:
+        return _result([], False, "会话库无法读取（客户端可能正在写入）")
+    try:
+        rows = conn.execute(
+            "SELECT message_id, payload_json FROM chat_session_messages "
+            "WHERE session_id = ? ORDER BY sequence, created_at", (sid,)).fetchall()
+    except sqlite3.Error as exc:
+        return _result([], False, f"读取失败：{exc}")
+    finally:
+        conn.close()
+    messages = [m for m in (_qoder_message(mid, raw) for mid, raw in rows) if m]
+    return _result(messages, False)
+
+
+# ------------------------------------------------------------------ ZCode
+def load_zcode(db: str, sid: str) -> dict:
+    """读 ZCode 的 message + part：role 在 message.data，正文在 part.data.text。"""
+    conn = connect_ro(Path(db)) if db else None
+    if conn is None:
+        return _result([], False, "会话库无法读取（客户端可能正在写入）")
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM message WHERE session_id = ?", (sid,)).fetchone()[0]
+        order = "ORDER BY sequence, time_created"
+        if total > HEAD_MESSAGES + TAIL_MESSAGES:
+            rows = conn.execute(
+                f"SELECT id, data FROM message WHERE session_id = ? {order} LIMIT ?",
+                (sid, HEAD_MESSAGES)).fetchall()
+            rows += conn.execute(
+                "SELECT id, data FROM message WHERE session_id = ? "
+                "ORDER BY sequence DESC LIMIT ?",
+                (sid, TAIL_MESSAGES)).fetchall()[::-1]
+        else:
+            rows = conn.execute(
+                f"SELECT id, data FROM message WHERE session_id = ? {order}",
+                (sid,)).fetchall()
+        texts: dict[str, list[str]] = {}
+        ids = [row[0] for row in rows]
+        if ids:
+            marks = ",".join("?" * len(ids))
+            for mid, raw in conn.execute(
+                    f"SELECT message_id, data FROM part WHERE message_id IN ({marks}) "
+                    "ORDER BY sequence", ids):
+                try:
+                    part = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                if part.get("type") == "text" and part.get("text"):
+                    texts.setdefault(mid, []).append(str(part["text"]))
+    except sqlite3.Error as exc:
+        return _result([], False, f"读取失败：{exc}")
+    finally:
+        conn.close()
+
+    messages = []
+    for mid, raw in rows:
+        try:
+            meta = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        role = meta.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = _clean("\n".join(texts.get(mid, [])))
+        if not text:
+            continue
+        messages.append({"role": role, "text": _clip(text), "id": str(mid), "time": 0})
+    return _result(messages, total > len(messages))
+
+
 def load(row: dict) -> dict:
     """按行类型分派：界面只拿 row，不关心底下是哪种格式。"""
-    if row.get("kind") == "codebuddy":
+    kind = row.get("kind")
+    if kind == "codebuddy":
         return load_codebuddy(row.get("path") or "")
+    if kind == "qoder":
+        return load_qoder(row.get("path") or "", row.get("id") or "")
+    if kind == "zcode":
+        return load_zcode(row.get("path") or "", row.get("id") or "")
     return load_workbuddy(row.get("files") or [])

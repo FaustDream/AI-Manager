@@ -37,17 +37,21 @@ CONFIG_FILE = DATA_DIR / "config.json"
 ACCOUNTS_FILE = DATA_DIR / "accounts.dat"      # DPAPI / Fernet 加密
 ACCOUNTS_KEY_FILE = DATA_DIR / ".accounts.key"  # 非 Windows 的本地加密密钥
 CHECKED_FILE = DATA_DIR / "checked.json"       # 今日已签到记录
+CHECKIN_STATUS_FILE = DATA_DIR / "checkin_status.json"  # 当天签到状态（一天只查一次）
 DAILY_FILE = DATA_DIR / "daily.json"           # 每日轮询状态（日期 + 当日已签账号）
 LEDGER_FILE = DATA_DIR / "credits.json"        # 签到积分台账
 CREDIT_HISTORY_FILE = DATA_DIR / "credit_history.json"  # 积分余额按天快照（算增减用）
 SESSION_INDEX_FILE = DATA_DIR / "session_index.json"  # 会话归属索引（原始账号 / 引用方）
 PROFILE_ROOT = DATA_DIR / "profiles"           # 账号档案（含登录态）
+HUB_FILE = DATA_DIR / "hub.json"               # 技能 / MCP 的统一登记与平台归属
+SKILL_LIBRARY = DATA_DIR / "skills"            # 技能库：一个技能一个目录，内含 SKILL.md
 LOG_FILE = LOG_DIR / "app.log"
 
 ICON_FILE = ASSETS_DIR / "app.ico"
 
 # 会话管家数据：备份、回收站、删除黑名单，全部收进 data 目录，随程序一起拷走
 BACKUP_ROOT = DATA_DIR / "backups"
+HUB_BACKUP_ROOT = BACKUP_ROOT / "hub"          # 写平台 MCP 配置前的原件备份
 TRASH_ROOT = DATA_DIR / "trash"
 TOMB_FILE = DATA_DIR / "tombstones.json"
 
@@ -59,7 +63,8 @@ LEGACY_SYNC_HOME = Path.home() / ".workbuddy-session-sync"
 
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, LOG_DIR, PROFILE_ROOT, BACKUP_ROOT, TRASH_ROOT):
+    for path in (DATA_DIR, LOG_DIR, PROFILE_ROOT, BACKUP_ROOT, TRASH_ROOT,
+                 SKILL_LIBRARY):
         path.mkdir(parents=True, exist_ok=True)
 
 
