@@ -54,6 +54,30 @@ impl AppError {
     }
 }
 
+// 有了这几个转换，业务代码里可以直接 `?`，不必到处写 map_err
+impl From<rusqlite::Error> for AppError {
+    fn from(e: rusqlite::Error) -> Self {
+        AppError::new("sqlite", e.to_string())
+    }
+}
+
+impl From<std::io::Error> for AppError {
+    fn from(e: std::io::Error) -> Self {
+        AppError::new("io", e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for AppError {
+    fn from(e: serde_json::Error) -> Self {
+        AppError::new("invalid", e.to_string())
+    }
+}
+impl From<chrono::ParseError> for AppError {
+    fn from(e: chrono::ParseError) -> Self {
+        AppError::new("invalid", e.to_string())
+    }
+}
+
 impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)

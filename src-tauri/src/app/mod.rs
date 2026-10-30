@@ -5,9 +5,13 @@
 //! 产生 0 增减」这类边界根本无法构造。
 
 pub mod clock;
+pub mod db;
 pub mod error;
+pub mod log;
 pub mod net;
 pub mod paths;
+pub mod runtime;
+pub mod secret;
 
 use crate::types::{ActionResult, Account, PlatformKey, StatusResult};
 use clock::Clock;

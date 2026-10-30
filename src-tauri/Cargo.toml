@@ -16,10 +16,18 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+# 只开用得到的特性：windows crate 的元数据很大，全开会显著拖慢编译
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",      # DPAPI：CryptProtectData / CryptUnprotectData
+    "Win32_System_Diagnostics_ToolHelp",# 进程快照：检测客户端是否运行
+    "Win32_System_Threading",           # CreateProcessW：静默启动，不弹控制台
+    "Win32_System_Registry",            # 开机自启写 HKCU Run
+] }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # 见 ARCHITECTURE-v2.md D7：单进程架构下 abort 会杀掉整个进程，绝不能配。
 [profile.release]
