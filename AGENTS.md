@@ -187,7 +187,7 @@ packaging/              打包：ai_manager.spec（PyInstaller + Qt 裁剪）、
 - **会话恢复只改归属引用**：同一版本里一条会话只有一份正文（`projects/<slug>/<sid>.jsonl`），恢复 = 把 `sessions.user_id` 指向当前账号、清掉 `deleted_at`，**不复制正文、不替换 workbuddy.db**。`data/session_index.json` 记 `origin`（原始账号）与 `refs`（引用过的账号）。账号切换登录自动恢复切换前账号的会话；手动登录不自动恢复，由「恢复会话」触发。`profiles.py` 只切登录态与 storage，**绝不能**再用档案里的 DB 覆盖会话库
 - **会话管理不做同步**：跨版本搬运（国内版 ↔ 国际版、CodeBuddy 平台互拷）已于 1.2.7 移除，`wbdb.build_plan / apply_item`、`codebuddy.sync_session`、`backup.make_backup` 都不要加回来。这一页只负责浏览、正文预览与删除；账号间的会话归属由 `restore.py` 负责。1.2.8 起连云端列表拉取、空间账本也一并去掉，页面只有「筛选 + 表格 + 详情」，不要往筛选栏外面加统计文字或徽标。`config.json` 的 `session_opts` 只存视图状态（only_body / sort / sort_desc）
 - **单实例**：`Local\` 命名空间互斥体，句柄持有到进程退出，不要手工 `CloseHandle`
-- **技能 / MCP 的平台路径**：国内版目录带 `-cn` 后缀（`~/.qoder-cn`、`~/.trae-cn`），WorkBuddy 是例外（国内 `~/.workbuddy`、国际 `~/.workbuddy-ai`）；CodeBuddy 的 IDE 与插件共用 `~/.codebuddy`。MCP 只有 ZCode 是 `mcp.servers`（条目带 `type/enabled/timeoutMs`），其余都是标准 `mcpServers`。写平台配置前必须备份到 `data/backups/hub-<时间戳>/`，平台里同名但不是本工具写入的条目不静默覆盖
+- **技能 / MCP 的平台路径**：国内版目录带 `-cn` 后缀（`~/.qoder-cn`、`~/.trae-cn`），WorkBuddy 是例外（国内 `~/.workbuddy`、国际 `~/.workbuddy-ai`）；CodeBuddy 的 IDE 与插件共用 `~/.codebuddy`。MCP 只有 ZCode 是 `mcp.servers`（条目带 `type/enabled/timeoutMs`），其余都是标准 `mcpServers`。写平台配置前必须备份到 `data/backups/hub/`，平台里同名但不是本工具写入的条目不静默覆盖
 
 ## 7. Git 与版本管理
 

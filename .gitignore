@@ -21,6 +21,10 @@ __pycache__/
 # 界面截图：图中会带出账号昵称、邮箱、本地路径（C:\Users\<用户名>），绝不入库
 shots/
 
+# 项目文档（README / CHANGELOG / AGENTS 等）：只做本地留存，不入库
+docs/
+AGENTS.md
+
 # 本地临时文件
 *.log
 *.tmp
