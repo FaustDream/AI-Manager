@@ -28,14 +28,25 @@
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   button.small { padding:2px 8px; font-size:12px; border-radius:6px; }
   main { padding:16px 22px 40px; }
-  table { width:100%; border-collapse:collapse; }
+  table { width:100%; border-collapse:collapse; table-layout:fixed; }
   thead th { text-align:left; font-weight:600; font-size:12px; color:var(--muted);
              letter-spacing:.03em; padding:8px 10px; border-bottom:1px solid var(--line);
-             position:sticky; top:0; background:var(--bg); }
-  tbody td { padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+             position:sticky; top:0; background:var(--bg); user-select:none;
+             overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  /* 列宽手柄：贴在表头右边界，宽 7px 才好点中 */
+  thead th .rz { position:absolute; right:0; top:0; bottom:0; width:7px; cursor:col-resize; }
+  thead th .rz:hover, body.resizing .rz { background:var(--accent); opacity:.35; }
+  body.resizing { cursor:col-resize; }
+  body.resizing * { user-select:none; }
+  tbody td { padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:middle;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   tbody tr.row { cursor:pointer; }
   tbody tr.row:hover { background:var(--hover); }
   tbody tr.row.selected { background:var(--hover); }
+  tbody tr.row td:first-child { cursor:grab; }
+  tbody tr.row.dragging { opacity:.4; }
+  tbody tr.row.drop-before td { box-shadow:inset 0 2px 0 var(--accent); }
+  tbody tr.row.drop-after  td { box-shadow:inset 0 -2px 0 var(--accent); }
   .tag { display:inline-block; padding:1px 8px; border-radius:6px; font-size:12px;
          border:1px solid var(--line); color:var(--muted); }
   .tag.current { border-color:var(--ok); color:var(--ok); }
@@ -77,17 +88,7 @@
 <main>
   <table>
     <thead>
-      <tr>
-        <th style="width:110px">平台</th>
-        <th>昵称</th>
-        <th style="width:140px">登录态</th>
-        <th style="width:110px">状态</th>
-        <th style="width:90px">积分</th>
-        <th style="width:100px">配额</th>
-        <th style="width:100px">签到</th>
-        <th style="width:105px">到期</th>
-        <th style="width:130px">操作</th>
-      </tr>
+      <tr id="head"></tr>
     </thead>
     <tbody id="rows">
       <tr><td colspan="9" class="empty">加载中…</td></tr>
@@ -156,18 +157,71 @@
   $('dlg-cancel').onclick = () => closeDlg(null);
   $('dlg-ok').onclick = () => closeDlg(true);
 
-  // ---- 列定义：加一列 = 加一行；刷新逻辑一行都不用改 ----
+  // ---- 列定义：加一列 = 加一行（表头、单元格、空态 colspan 都从这里来）----
+  // w = 默认列宽，min = 拖动时允许的最窄宽度
   const COLUMNS = [
-    { key:'platform', cell: v => `<span class="tag${v.is_current ? ' current' : ''}">${esc(v.platform_label)}</span>` },
-    { key:'name',     cell: v => esc(v.name) + (v.is_current ? ' <span class="ok" title="客户端当前登录">●</span>' : '') },
-    { key:'source',   cell: v => v.source ? `<span class="dash">${esc(v.source)}</span>` : '<span class="dash">—</span>' },
-    { key:'status',   cell: v => statusCell(v) },
-    { key:'balance',  cell: v => v.balance == null ? '<span class="dash">—</span>' : `<span class="num">${v.balance.toFixed(2)}</span>` },
-    { key:'quota',    cell: v => quotaCell(v) },
-    { key:'checkin',  cell: v => checkinCell(v) },
-    { key:'expires',  cell: v => expiresCell(v) },
-    { key:'action',   cell: v => actionCell(v) },
+    { key:'platform', label:'平台',   w:110, min:90,
+      cell: v => `<span class="tag${v.is_current ? ' current' : ''}">${esc(v.platform_label)}</span>` },
+    { key:'name',     label:'昵称',   min:90,
+      cell: v => esc(v.name) + (v.is_current ? ' <span class="ok" title="客户端当前登录">●</span>' : '') },
+    { key:'source',   label:'登录态', w:140, min:90,
+      cell: v => v.source ? `<span class="dash">${esc(v.source)}</span>` : '<span class="dash">—</span>' },
+    { key:'status',   label:'状态',   w:110, min:70, cell: v => statusCell(v) },
+    { key:'balance',  label:'积分',   w:90,  min:70,
+      cell: v => v.balance == null ? '<span class="dash">—</span>' : `<span class="num">${v.balance.toFixed(2)}</span>` },
+    { key:'quota',    label:'配额',   w:100, min:70, cell: v => quotaCell(v) },
+    { key:'checkin',  label:'签到',   w:100, min:80, cell: v => checkinCell(v) },
+    { key:'expires',  label:'到期',   w:105, min:80, cell: v => expiresCell(v) },
+    { key:'action',   label:'操作',   w:130, min:110, cell: v => actionCell(v) },
   ];
+
+  // ---- 列宽：拖表头右边界调整，存进 kv（key: ui.columns），重启后还在 ----
+  let widths = {};
+  let resizing = null;
+
+  function renderHead() {
+    $('head').innerHTML = COLUMNS.map(c => {
+      const w = widths[c.key] || c.w;
+      return `<th data-key="${c.key}"${w ? ` style="width:${w}px"` : ''}>${esc(c.label)}<i class="rz"></i></th>`;
+    }).join('');
+  }
+
+  $('head').addEventListener('mousedown', e => {
+    const handle = e.target.closest('.rz');
+    if (!handle) return;
+    e.preventDefault();
+    const th = handle.parentElement;
+    const col = COLUMNS.find(c => c.key === th.dataset.key) || {};
+    resizing = { key: th.dataset.key, th, x: e.clientX, w: th.offsetWidth, min: col.min || 64 };
+    document.body.classList.add('resizing');
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!resizing) return;
+    const w = Math.max(resizing.min, Math.round(resizing.w + e.clientX - resizing.x));
+    resizing.th.style.width = w + 'px';
+    widths[resizing.key] = w;
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!resizing) return;
+    resizing = null;
+    document.body.classList.remove('resizing');
+    // 拖完才落盘：拖动过程中每帧写库没有意义
+    invoke('settings_set', { key: 'ui.columns', value: widths }).catch(() => {});
+  });
+
+  async function loadWidths() {
+    try {
+      const saved = await invoke('settings_get', { key: 'ui.columns' });
+      if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+        widths = saved;
+        renderHead();
+      }
+    } catch (_) { /* 读不到就按默认列宽显示，不影响主流程 */ }
+  }
+
+  renderHead();
 
   function statusCell(v) {
     if (v.error) return `<span class="bad" title="${esc(v.error)}">异常</span>`;
@@ -204,11 +258,26 @@
 
   let rows = [];
   let selected = null;
+  let dragIid = null;
+
+  // 把拖起来的行插到目标行的前面或后面
+  function moveRow(from, to, after) {
+    const i = rows.findIndex(r => r.iid === from);
+    if (i < 0) return;
+    const [moved] = rows.splice(i, 1);
+    const j = rows.findIndex(r => r.iid === to);
+    rows.splice(j < 0 ? rows.length : after ? j + 1 : j, 0, moved);
+  }
+
+  function dropMarks() {
+    document.querySelectorAll('tr.drop-before, tr.drop-after')
+      .forEach(el => el.classList.remove('drop-before', 'drop-after'));
+  }
 
   function render() {
     const body = $('rows');
     if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="9" class="empty">还没有账号。点「扫描客户端」读本地登录态。</td></tr>';
+      body.innerHTML = `<tr><td colspan="${COLUMNS.length}" class="empty">还没有账号。点「扫描客户端」读本地登录态。</td></tr>`;
       $('count').textContent = '0 个账号';
       $('detail').innerHTML = '';
       return;
@@ -225,6 +294,43 @@
         selected = selected === tr.dataset.iid ? null : tr.dataset.iid;
         render();
       };
+
+      // ---- 拖动排序：只认第一格，避免选文字时误拖 ----
+      tr.addEventListener('mousedown', e => {
+        tr.draggable = !!e.target.closest('td:first-child');
+      });
+      tr.addEventListener('dragstart', e => {
+        dragIid = tr.dataset.iid;
+        tr.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      tr.addEventListener('dragend', () => {
+        tr.classList.remove('dragging');
+        dropMarks();
+        dragIid = null;
+      });
+      tr.addEventListener('dragover', e => {
+        if (!dragIid || dragIid === tr.dataset.iid) return;
+        e.preventDefault();
+        const box = tr.getBoundingClientRect();
+        dropMarks();
+        tr.classList.add(e.clientY > box.top + box.height / 2 ? 'drop-after' : 'drop-before');
+      });
+      tr.addEventListener('drop', async e => {
+        e.preventDefault();
+        const after = tr.classList.contains('drop-after');
+        dropMarks();
+        if (!dragIid || dragIid === tr.dataset.iid) return;
+        moveRow(dragIid, tr.dataset.iid, after);
+        dragIid = null;
+        render();
+        try {
+          await invoke('account_reorder', { iids: rows.map(r => r.iid) });
+        } catch (err) {
+          toast('顺序没保存：' + err);
+          load();
+        }
+      });
     });
     body.querySelectorAll('button.del').forEach(btn => {
       btn.onclick = async () => {
@@ -297,7 +403,7 @@
       rows.forEach(v => { v.is_current = set.has(v.iid); });
       render();
     } catch (e) {
-      $('rows').innerHTML = `<tr><td colspan="9" class="empty">读取失败：${esc(e)}</td></tr>`;
+      $('rows').innerHTML = `<tr><td colspan="${COLUMNS.length}" class="empty">读取失败：${esc(e)}</td></tr>`;
     }
   }
 
@@ -359,6 +465,7 @@
     } catch (e) {
       toast('IPC 未就绪：' + e);
     }
+    loadWidths();
     load();
   })();
 </script>
