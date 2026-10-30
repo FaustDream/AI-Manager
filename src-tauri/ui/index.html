@@ -15,7 +15,7 @@
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.55 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
-  header { display:flex; align-items:center; gap:12px; padding:16px 24px;
+  header { display:flex; align-items:center; gap:10px; padding:14px 22px;
            border-bottom:1px solid var(--line); }
   h1 { font-size:16px; margin:0; font-weight:600; }
   .badge { padding:1px 8px; border-radius:999px; border:1px solid var(--line);
@@ -24,24 +24,44 @@
   button { background:transparent; color:var(--fg); border:1px solid var(--line);
            border-radius:8px; padding:5px 12px; font:inherit; font-size:13px; cursor:pointer; }
   button:hover { background:var(--hover); }
+  button:disabled { opacity:.45; cursor:default; background:transparent; }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  main { padding:18px 24px; }
+  button.small { padding:2px 8px; font-size:12px; border-radius:6px; }
+  main { padding:16px 22px 40px; }
   table { width:100%; border-collapse:collapse; }
   thead th { text-align:left; font-weight:600; font-size:12px; color:var(--muted);
              letter-spacing:.03em; padding:8px 10px; border-bottom:1px solid var(--line);
              position:sticky; top:0; background:var(--bg); }
-  tbody td { padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
-  tbody tr:hover { background:var(--hover); }
+  tbody td { padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  tbody tr.row { cursor:pointer; }
+  tbody tr.row:hover { background:var(--hover); }
+  tbody tr.row.selected { background:var(--hover); }
   .tag { display:inline-block; padding:1px 8px; border-radius:6px; font-size:12px;
          border:1px solid var(--line); color:var(--muted); }
+  .tag.current { border-color:var(--ok); color:var(--ok); }
   .num { font-variant-numeric:tabular-nums; }
   .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
   .dash { color:var(--muted); }
-  .empty { padding:48px; text-align:center; color:var(--muted); }
+  .empty { padding:44px; text-align:center; color:var(--muted); }
+  .detail { margin-top:14px; border:1px solid var(--line); border-radius:10px;
+            padding:12px 16px; background:var(--card); }
+  .detail h2 { font-size:13px; margin:0 0 8px; font-weight:600; }
+  .detail dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 18px; margin:0; }
+  .detail dt { color:var(--muted); font-size:12px; }
+  .detail dd { margin:0; }
   .toast { position:fixed; right:20px; bottom:20px; background:var(--card);
            border:1px solid var(--line); border-radius:10px; padding:10px 16px;
-           box-shadow:0 8px 24px rgba(0,0,0,.12); opacity:0; transition:opacity .2s; }
+           box-shadow:0 8px 24px rgba(0,0,0,.12); opacity:0; transition:opacity .2s;
+           max-width:520px; white-space:pre-wrap; }
   .toast.show { opacity:1; }
+  dialog { border:1px solid var(--line); border-radius:12px; background:var(--bg); color:var(--fg);
+           padding:18px 20px; min-width:360px; box-shadow:0 18px 48px rgba(0,0,0,.24); }
+  dialog::backdrop { background:rgba(0,0,0,.35); }
+  dialog h3 { margin:0 0 8px; font-size:14px; }
+  dialog p { margin:0 0 14px; color:var(--muted); font-size:13px; white-space:pre-wrap; }
+  dialog .actions { display:flex; gap:8px; justify-content:flex-end; }
+  dialog .grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+  dialog .grid button { text-align:left; padding:8px 10px; }
 </style>
 </head>
 <body>
@@ -50,6 +70,7 @@
   <span class="badge" id="count">—</span>
   <span class="spacer"></span>
   <button id="scan">扫描客户端</button>
+  <button id="add">添加账号</button>
   <button id="refresh">刷新</button>
 </header>
 
@@ -57,29 +78,41 @@
   <table>
     <thead>
       <tr>
-        <th style="width:96px">平台</th>
+        <th style="width:110px">平台</th>
         <th>昵称</th>
-        <th style="width:150px">登录态</th>
-        <th style="width:96px">状态</th>
-        <th style="width:96px">积分</th>
-        <th style="width:110px">配额</th>
-        <th style="width:96px">签到</th>
-        <th style="width:110px">到期</th>
-        <th style="width:72px">操作</th>
+        <th style="width:140px">登录态</th>
+        <th style="width:110px">状态</th>
+        <th style="width:90px">积分</th>
+        <th style="width:100px">配额</th>
+        <th style="width:100px">签到</th>
+        <th style="width:105px">到期</th>
+        <th style="width:130px">操作</th>
       </tr>
     </thead>
     <tbody id="rows">
       <tr><td colspan="9" class="empty">加载中…</td></tr>
     </tbody>
   </table>
+  <div id="detail"></div>
 </main>
 
 <div class="toast" id="toast"></div>
+
+<dialog id="dlg">
+  <h3 id="dlg-title">标题</h3>
+  <p id="dlg-text"></p>
+  <div class="grid" id="dlg-grid"></div>
+  <div class="actions">
+    <button id="dlg-cancel">取消</button>
+    <button class="primary" id="dlg-ok">确定</button>
+  </div>
+</dialog>
 
 <script>
   const { invoke } = window.__TAURI__.core;
   const $ = id => document.getElementById(id);
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const RESTART_HINT = '（重新打开客户端即可生效）';
 
   const fmtDate = ms => {
     if (!ms) return '—';
@@ -87,6 +120,7 @@
     const md = `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     return d.getFullYear() === now.getFullYear() ? md : `${d.getFullYear()}-${md}`;
   };
+  const fmtFull = ms => ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false }) : '—';
 
   let toastTimer;
   function toast(text) {
@@ -94,32 +128,57 @@
     t.textContent = text;
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 4200);
   }
 
-  // 列渲染表：加一列 = 加一行。与 v1「加字段改十个方法」正相反。
+  // ---- 通用对话框：不用原生 confirm（Tauri 里 alert/confirm 行为不稳定）----
+  let dlgResolve = null;
+  function ask({ title, text, okText = '确定', cancelText = '取消', options = null }) {
+    $('dlg-title').textContent = title;
+    $('dlg-text').textContent = text || '';
+    const grid = $('dlg-grid');
+    grid.innerHTML = options
+      ? options.map(o => `<button data-value="${esc(o.key)}">${esc(o.label)}</button>`).join('')
+      : '';
+    grid.style.display = options ? 'grid' : 'none';
+    $('dlg-ok').textContent = okText;
+    $('dlg-cancel').textContent = cancelText;
+    // 有选项时「确定」没有意义：用户必须选一个平台
+    $('dlg-ok').style.display = options ? 'none' : '';
+    $('dlg').showModal();
+    return new Promise(resolve => { dlgResolve = resolve; });
+  }
+  function closeDlg(value) {
+    $('dlg').close();
+    const r = dlgResolve; dlgResolve = null;
+    if (r) r(value);
+  }
+  $('dlg-cancel').onclick = () => closeDlg(null);
+  $('dlg-ok').onclick = () => closeDlg(true);
+
+  // ---- 列定义：加一列 = 加一行；刷新逻辑一行都不用改 ----
   const COLUMNS = [
-    { key:'platform', cell: v => `<span class="tag">${esc(v.platform_label)}</span>` },
-    { key:'name',     cell: v => esc(v.name) },
+    { key:'platform', cell: v => `<span class="tag${v.is_current ? ' current' : ''}">${esc(v.platform_label)}</span>` },
+    { key:'name',     cell: v => esc(v.name) + (v.is_current ? ' <span class="ok" title="客户端当前登录">●</span>' : '') },
     { key:'source',   cell: v => v.source ? `<span class="dash">${esc(v.source)}</span>` : '<span class="dash">—</span>' },
     { key:'status',   cell: v => statusCell(v) },
     { key:'balance',  cell: v => v.balance == null ? '<span class="dash">—</span>' : `<span class="num">${v.balance.toFixed(2)}</span>` },
     { key:'quota',    cell: v => quotaCell(v) },
     { key:'checkin',  cell: v => checkinCell(v) },
     { key:'expires',  cell: v => expiresCell(v) },
-    { key:'action',   cell: v => `<button data-iid="${esc(v.iid)}" class="del">删除</button>` },
+    { key:'action',   cell: v => actionCell(v) },
   ];
 
   function statusCell(v) {
     if (v.error) return `<span class="bad" title="${esc(v.error)}">异常</span>`;
     if (!v.has_secret) return '<span class="warn">待登录</span>';
+    if (v.is_current) return '<span class="ok">当前</span>';
     return '<span class="ok">正常</span>';
   }
 
   function quotaCell(v) {
     const keys = Object.keys(v.quota || {});
     if (!keys.length) return '<span class="dash">—</span>';
-    // 多来源时不猜哪个是主额度，按最大值显示，详情面板再展开
     const max = Math.max(...keys.map(k => v.quota[k]));
     return `<span class="num">${Math.round(max)}%</span>`;
   }
@@ -137,33 +196,105 @@
     return `<span class="${expired ? 'bad' : ''}">${expired ? '已过期 ' : ''}${fmtDate(v.expires_at)}</span>`;
   }
 
+  function actionCell(v) {
+    const canSwitch = v.has_secret && !v.is_current;
+    return `<button class="small sw" data-iid="${esc(v.iid)}" ${canSwitch ? '' : 'disabled'}>切换</button>
+            <button class="small del" data-iid="${esc(v.iid)}">删除</button>`;
+  }
+
   let rows = [];
+  let selected = null;
 
   function render() {
     const body = $('rows');
     if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="9" class="empty">还没有账号。P1 导入或后续的扫描会把账号放进这里。</td></tr>';
+      body.innerHTML = '<tr><td colspan="9" class="empty">还没有账号。点「扫描客户端」读本地登录态。</td></tr>';
       $('count').textContent = '0 个账号';
+      $('detail').innerHTML = '';
       return;
     }
     body.innerHTML = rows.map(v =>
-      `<tr>${COLUMNS.map(c => `<td>${c.cell(v)}</td>`).join('')}</tr>`).join('');
+      `<tr class="row${selected === v.iid ? ' selected' : ''}" data-iid="${esc(v.iid)}">
+         ${COLUMNS.map(c => `<td>${c.cell(v)}</td>`).join('')}
+       </tr>`).join('');
     $('count').textContent = `${rows.length} 个账号`;
 
+    body.querySelectorAll('tr.row').forEach(tr => {
+      tr.onclick = e => {
+        if (e.target.closest('button')) return;
+        selected = selected === tr.dataset.iid ? null : tr.dataset.iid;
+        render();
+      };
+    });
     body.querySelectorAll('button.del').forEach(btn => {
       btn.onclick = async () => {
-        const iid = btn.dataset.iid;
-        if (!confirm('从账号库移除这个账号？\n（客户端的登录态不会被改动）')) return;
-        await invoke('account_delete', { iid });
+        const ok = await ask({
+          title: '从账号库移除？',
+          text: '只删本工具的记录，客户端的登录态不会被改动。',
+          okText: '移除',
+        });
+        if (!ok) return;
+        await invoke('account_delete', { iid: btn.dataset.iid });
         toast('已移除');
         load();
       };
     });
+    body.querySelectorAll('button.sw').forEach(btn => {
+      btn.onclick = () => doSwitch(btn.dataset.iid);
+    });
+    renderDetail();
+  }
+
+  // 详情面板：选中行下方展开，不占列
+  function renderDetail() {
+    const v = rows.find(r => r.iid === selected);
+    if (!v) { $('detail').innerHTML = ''; return; }
+    const quotaKeys = Object.keys(v.quota || {});
+    const quotaText = quotaKeys.length
+      ? quotaKeys.map(k => `${esc(k)} ${Math.round(v.quota[k])}%`).join(' · ')
+      : '—';
+    $('detail').innerHTML = `
+      <div class="detail">
+        <h2>${esc(v.platform_label)} · ${esc(v.name)}</h2>
+        <dl>
+          <dt>登录态来源</dt><dd>${v.source ? esc(v.source) : '<span class="dash">来自账号库（未读到客户端文件）</span>'}</dd>
+          <dt>凭据</dt><dd>${v.has_secret ? '已加密保存' : '<span class="warn">缺失，需要重新登录</span>'}</dd>
+          <dt>到期</dt><dd>${fmtFull(v.expires_at)}</dd>
+          <dt>签到</dt><dd>${v.requires_checkin ? (v.checked_in === true ? '今日已签' : v.checked_in === false ? '今日待签' : '未知') : '该平台免签到'}</dd>
+          <dt>配额</dt><dd>${quotaText}</dd>
+          <dt>最近错误</dt><dd>${v.error ? `<span class="bad">${esc(v.error)}</span>` : '无'}</dd>
+        </dl>
+      </div>`;
+  }
+
+  async function doSwitch(iid) {
+    const ok = await ask({
+      title: '切换到该账号？',
+      text: '会改写客户端登录态（写前自动备份）。客户端必须处于关闭状态。\n切换成功后重新打开客户端即可使用该账号。',
+      okText: '切换',
+    });
+    if (!ok) return;
+    try {
+      const r = await invoke('account_switch', { iid });
+      toast(r.message + RESTART_HINT);
+    } catch (e) {
+      // Rust 侧返回的是 {kind, message} 的 JSON 字符串
+      let msg = String(e);
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed && parsed.message) msg = parsed.message;
+      } catch (_) {}
+      toast(msg);
+    }
+    load();
   }
 
   async function load() {
     try {
       rows = await invoke('account_list');
+      const current = await invoke('account_current').catch(() => []);
+      const set = new Set(current);
+      rows.forEach(v => { v.is_current = set.has(v.iid); });
       render();
     } catch (e) {
       $('rows').innerHTML = `<tr><td colspan="9" class="empty">读取失败：${esc(e)}</td></tr>`;
@@ -189,6 +320,37 @@
       btn.textContent = '扫描客户端';
     }
   };
+
+  const PLATFORMS = [
+    ['qoder', 'Qoder CN'],
+    ['qoder_intl', 'Qoder 国际版'],
+    ['workbuddy', 'WorkBuddy 国内版'],
+    ['workbuddy_intl', 'WorkBuddy 国际版'],
+    ['zcode', 'ZCode'],
+  ];
+
+  $('add').onclick = async () => {
+    const picked = await ask({
+      title: '给哪家客户端添加账号？',
+      text: '会先退出该客户端当前的登录状态（原登录态备份在 data/backups/logout/），然后启动客户端停在登录页。\n登录完成后回到这里点「扫描客户端」即可入库。',
+      options: PLATFORMS.map(([key, label]) => ({ key, label })),
+    });
+    if (!picked) return;
+    try {
+      const msg = await invoke('account_add_prepare', { platform: picked });
+      toast(msg);
+    } catch (e) {
+      let msg = String(e);
+      try { const p = JSON.parse(msg); if (p && p.message) msg = p.message; } catch (_) {}
+      toast(msg);
+    }
+  };
+
+  // 平台选择按钮：点一下直接返回平台键
+  $('dlg-grid').addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (btn) closeDlg(btn.dataset.value);
+  });
 
   (async () => {
     try {

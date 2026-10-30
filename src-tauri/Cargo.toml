@@ -20,6 +20,12 @@ serde_json = "1"
 base64 = "0.22"
 # 解各家客户端的登录态（Chromium 式 v10 信封：DPAPI 取密钥 + AES-256-GCM）
 aes-gcm = "0.10"
+# WorkBuddy 固定密钥 / ZCode 密钥推导 / Trae iCube 种子（纯 Rust，几十 KB）
+sha2 = "0.10"
+# Trae iCube 是 AES-128-CBC（另一家是 GCM，不能共用）
+cbc = "0.1"
+# 重新封 Chromium 信封时的 nonce（系统 CSPRNG）
+getrandom = "0.2"
 # 只开用得到的特性：tray-icon 托盘、wry 默认 webview；不开 devtools 之外的花哨能力
 tauri = { version = "2", features = ["tray-icon"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
@@ -33,6 +39,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Diagnostics_ToolHelp",# 进程快照：检测客户端是否运行
     "Win32_System_Threading",           # CreateProcessW：静默启动，不弹控制台
     "Win32_System_Registry",            # 开机自启写 HKCU Run
+    "Win32_Storage_FileSystem",         # MoveFileExW：替换登录票据不留中间态
 ] }
 
 [dev-dependencies]

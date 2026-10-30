@@ -164,6 +164,36 @@ async fn account_scan(state: State<'_, AppState>) -> std::result::Result<crate::
     Ok(report)
 }
 
+/// 切换登录。会写客户端登录态文件：失败一律带结构化 kind，界面按 kind 给话术。
+#[tauri::command]
+async fn account_switch(state: State<'_, AppState>, iid: String) -> std::result::Result<crate::app::accounts::SwitchResult, String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || crate::app::accounts::switch(&db, &iid))
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+        .map_err(err_text)
+}
+
+/// 各客户端当前登录的账号（界面给行标「当前」）。
+#[tauri::command]
+async fn account_current() -> std::result::Result<Vec<String>, String> {
+    let current = tokio::task::spawn_blocking(crate::app::accounts::current_iids)
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?;
+    log::log(Level::Info, "accounts", format!("客户端当前登录：{} 个", current.len()));
+    Ok(current)
+}
+
+/// 添加账号第一步：退出该平台登录态并启动客户端。
+/// 第二步是用户自己在客户端里登录，然后点「扫描客户端」——见 `accounts::add` 的说明。
+#[tauri::command]
+async fn account_add_prepare(platform: String) -> std::result::Result<String, String> {
+    tokio::task::spawn_blocking(move || crate::app::accounts::add::prepare(&platform))
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+        .map_err(err_text)
+}
+
 #[tauri::command]
 fn task_cancel(state: State<'_, AppState>, task_id: u64) -> bool {
     state.tasks.cancel_task(task_id)
@@ -221,6 +251,9 @@ pub fn run() -> tauri::Result<()> {
             account_reorder,
             account_delete,
             account_scan,
+            account_switch,
+            account_current,
+            account_add_prepare,
             log_tail,
             log_level
         ])
