@@ -33,8 +33,9 @@ uv.lock                 锁定 13 个包的精确版本；不要手改，用 `uv
 一键安装.vbs            面向用户的唯一入口：装 uv + 同步依赖 + 建快捷方式 + 启动
 setup.vbs / setup.bat   仅同步依赖：vbs 静默，bat 显示详细输出（排错用）
 .venv/                  实际运行环境，uv 生成，不要手工往里装东西
-CHANGELOG.md            版本更新记录，发布说明的唯一来源
-.gitignore              入库范围：data/ legacy/ .venv/ 及工具私有目录
+docs/                   项目文档（README / CHANGELOG / AGENTS），只做本地留存，已 gitignore
+docs/CHANGELOG.md       版本更新记录，发布说明的唯一来源
+.gitignore              入库范围：data/ legacy/ .venv/ docs/ 及工具私有目录
 
 run.pyw                 正式启动入口（pythonw，无控制台），异常落日志
 dev.py                  开发入口：改 app/ 下 .py 自动重建窗口
@@ -79,13 +80,22 @@ app/sessions/           会话域
   restore.py            账号维度的会话恢复：只改 user_id 引用，不复制正文
   profiles.py / backup.py / trash.py / codebuddy.py
 
+app/hub/                技能与 MCP 分发域
+  targets.py            七个平台的技能目录 / MCP 配置文件注册表（唯一路径来源）
+  store.py              data/skills 技能库、hub.json 归属、内容摘要、回收站
+  skills.py             技能部署 / 移除 / 平台导入，冲突不静默覆盖
+  mcp.py                标准 mcpServers 与 ZCode mcp.servers 的读写、备份
+  service.py            编排：snapshot、启动自动同步、逐条 / 全量同步
+
 data/                   运行期数据：config.json、accounts.dat、checked.json、
                         daily.json、credits.json、credit_history.json、
-                        session_index.json、backups/、logs/、profiles/、trash/
+                        session_index.json、hub.json、skills/、backups/、logs/、
+                        profiles/、trash/
 legacy/                 历史版本 zip 归档，只读
 tools/                  一次性脚本（图标生成、截图）
-packaging/              打包：ai_manager.spec（PyInstaller）、build.py、requirements-build.txt
-.github/workflows/      release.yml：打 v* 标签自动构建三平台并建 Release
+packaging/              打包：ai_manager.spec（PyInstaller + Qt 裁剪）、build.py（出 zip / setup.exe）、
+                        installer.iss（Inno Setup）、requirements-build.txt
+.github/workflows/      release.yml：打 v* 标签自动构建并建 Release
 ```
 
 改动定位原则：
@@ -93,7 +103,9 @@ packaging/              打包：ai_manager.spec（PyInstaller）、build.py、r
 - 改界面 → `app/ui/pages/<页面>.py`，必要时同步 `theme.py`
 - 加页面 → 继承 `BasePage`，注册到 `mainwindow.py` 的 `PAGES`；要出现在左侧导航再加 `NAV_ITEMS`
 - 加平台 → `app/checkin/` 下新增适配器，并在 `registry.py` 注册
+- 技能 / MCP 加平台 → `app/hub/targets.py` 的 `TARGETS` 加一条，页面会自动出现
 - 改数据读写 → 先从 `app/core/paths.py` 确认路径来源
+- 改打包 / 发版 → `packaging/ai_manager.spec` 与 `build.py`，产物形态见 7.5，不要新增第三种分发形式
 - **不要在 `app/ui/` 里直接读写 SQLite 或文件**
 
 ## 3. 编码规范
@@ -106,6 +118,7 @@ packaging/              打包：ai_manager.spec（PyInstaller）、build.py、r
 - 耗时操作（网络、文件、SQLite）必须 `from ..core import tasks` 后 `tasks.submit(...)`，**不得在 UI 线程执行**
 - 后台线程不触碰任何 QWidget，结果一律通过回调回主线程
 - 异常处理：禁止裸 `except: pass`；写盘失败必须上报或落日志
+- **禁止代码膨胀**：几十行能解决的功能不要铺成几百行。不为「以后可能扩展」预建抽象层 / 基类 / 配置项；同一段逻辑第二次先照写，第三次再提取；单函数超过 60 行、单文件超过 400 行时，先在回复里说明为什么压不下去
 - 新增 UI 控件类名需在 `theme.py` 的 `qss()` 中补样式，否则外观会掉出设计体系
 - 时间一律转本地时区再显示，紧凑格式用 `%m-%d %H:%M`
 - 表格列已接近饱和（账号表 9 列）；单个账号的明细优先做成表格下方的面板，不要继续加列
@@ -155,6 +168,7 @@ packaging/              打包：ai_manager.spec（PyInstaller）、build.py、r
 | 涉及官方客户端 SQLite | 先确认客户端进程已退出，再操作，并在副本上先试 |
 | 涉及网络接口 | 说明是哪个域名与路径，失败时的降级行为是什么 |
 | 涉及子进程 / 外部命令 / 脚本 | 用 `.venv\Scripts\pythonw.exe` 实跑一遍，确认**整个过程没有闪出控制台窗口** |
+| 涉及打包 / 发版 | 用 `.venv-build` 跑通 `packaging/build.py`；解压 zip 能启动；安装包真装一次再卸载，确认体积没反弹 |
 
 **完成 = 能启动 + 相关页面可用 + 无新增静默异常。** 仅「代码写完了」不算完成。
 
@@ -173,6 +187,7 @@ packaging/              打包：ai_manager.spec（PyInstaller）、build.py、r
 - **会话恢复只改归属引用**：同一版本里一条会话只有一份正文（`projects/<slug>/<sid>.jsonl`），恢复 = 把 `sessions.user_id` 指向当前账号、清掉 `deleted_at`，**不复制正文、不替换 workbuddy.db**。`data/session_index.json` 记 `origin`（原始账号）与 `refs`（引用过的账号）。账号切换登录自动恢复切换前账号的会话；手动登录不自动恢复，由「恢复会话」触发。`profiles.py` 只切登录态与 storage，**绝不能**再用档案里的 DB 覆盖会话库
 - **会话管理不做同步**：跨版本搬运（国内版 ↔ 国际版、CodeBuddy 平台互拷）已于 1.2.7 移除，`wbdb.build_plan / apply_item`、`codebuddy.sync_session`、`backup.make_backup` 都不要加回来。这一页只负责浏览、正文预览与删除；账号间的会话归属由 `restore.py` 负责。1.2.8 起连云端列表拉取、空间账本也一并去掉，页面只有「筛选 + 表格 + 详情」，不要往筛选栏外面加统计文字或徽标。`config.json` 的 `session_opts` 只存视图状态（only_body / sort / sort_desc）
 - **单实例**：`Local\` 命名空间互斥体，句柄持有到进程退出，不要手工 `CloseHandle`
+- **技能 / MCP 的平台路径**：国内版目录带 `-cn` 后缀（`~/.qoder-cn`、`~/.trae-cn`），WorkBuddy 是例外（国内 `~/.workbuddy`、国际 `~/.workbuddy-ai`）；CodeBuddy 的 IDE 与插件共用 `~/.codebuddy`。MCP 只有 ZCode 是 `mcp.servers`（条目带 `type/enabled/timeoutMs`），其余都是标准 `mcpServers`。写平台配置前必须备份到 `data/backups/hub-<时间戳>/`，平台里同名但不是本工具写入的条目不静默覆盖
 
 ## 7. Git 与版本管理
 
@@ -195,7 +210,7 @@ packaging/              打包：ai_manager.spec（PyInstaller）、build.py、r
 | 段 | 含义 | 当前 |
 | --- | --- | --- |
 | `主` | 产品代次，只有结构性重写或用户明确要求才变 | `1` |
-| `次` | 功能批次段，一轮新功能打包发布时递增（由用户确认） | `3` |
+| `次` | 功能批次段，一轮新功能打包发布时递增（由用户确认） | `4` |
 | `修订` | 日常改动段，修复与小改动的日常递增位 | `0` |
 
 - 三段均为非负整数，不用前导零（`1.0.01` 会被读成 `1.0.1`）
@@ -212,7 +227,7 @@ packaging/              打包：ai_manager.spec（PyInstaller）、build.py、r
 | --- | --- | --- |
 | 1 | `app/__init__.py` 的 `APP_VERSION` | 运行时唯一来源，窗口标题与日志都读它 |
 | 2 | `pyproject.toml` 的 `version` | 必须与上者完全一致 |
-| 3 | `CHANGELOG.md` | 顶部新增该版本分组，写日期，条目只写最终行为 |
+| 3 | `docs/CHANGELOG.md` | 顶部新增该版本分组，写日期，条目只写最终行为 |
 
 三处不一致即视为发布事故。
 
@@ -220,24 +235,32 @@ packaging/              打包：ai_manager.spec（PyInstaller）、build.py、r
 
 1. 按第 5 节完成验证
 2. 同步三处版本号
-3. `git commit -m "发布: 1.3.0"`
-4. `git tag -a v1.3.0 -m "AI Manager 1.3.0"`
+3. `git commit -m "发布: 1.4.0"`
+4. `git tag -a v1.4.0 -m "AI Manager 1.4.0"`
 5. `git push && git push --tags`
-6. CI（`.github/workflows/release.yml`）自动构建三平台产物并建 Release，无需手工上传
+6. CI（`.github/workflows/release.yml`）自动构建产物并建 Release，无需手工上传
 
-Tag 与 Release 标题统一用完整版本号前缀 `v`（`v1.3.0` / `AI Manager 1.3.0`）。
+Tag 与 Release 标题统一用完整版本号前缀 `v`（`v1.4.0` / `AI Manager 1.4.0`）。
 
-### 7.5 打包与三平台产物
+### 7.5 打包与产物
+
+打包形态已定，后续发版都按这套：Windows 固定「安装版 + 免安装版」两个包，Linux / macOS 各一个免安装包，不再新增第三种分发形式。
 
 | 平台 | 产物 | 支持程度 |
 | --- | --- | --- |
-| Windows x64 | `AI-Manager-<版本>-windows-x64.zip` | 正式支持（唯一的完整功能平台） |
+| Windows x64 | `AI-Manager-<版本>-windows-x64-setup.exe`（安装版）<br>`AI-Manager-<版本>-windows-x64.zip`（免安装） | 正式支持（唯一的完整功能平台） |
 | Linux x64 | `AI-Manager-<版本>-linux-x64.tar.gz` | 实验性：能启动，客户端相关功能不可用 |
 | macOS arm64 | `AI-Manager-<版本>-macos-arm64.tar.gz` | 同上 |
 
+- Windows 只出两个形态，装的是同一份 `dist/AIManager`：安装包用 Inno Setup（`packaging/installer.iss`）复制到 `%LOCALAPPDATA%\Programs\AI Manager`，免管理员；免安装包是 zip，解压双击 `AIManager.exe`
+- 数据仍写在程序目录的 `data/` 里，卸载不删这份数据；换机器整个目录拷走即可
 - 打包用 PyInstaller onedir（`packaging/ai_manager.spec`），入口是 `run.pyw`，`console=False`
+- spec 按需裁剪 Qt：不放 QtNetwork、QML/Quick/WebEngine、多余平台与图片插件、非中文语言包；`opengl32sw.dll` 默认剔除（需要软件 OpenGL 兜底时用 `AI_MANAGER_KEEP_SOFTGL=1` 重打），`optimize=2`。成品目录约 81MB、zip 约 32MB，不要图省事删掉过滤
 - 构建依赖只在 `packaging/requirements-build.txt`，装进独立的 `.venv-build`，**不进 `pyproject.toml` / `uv.lock` / 用户环境**
+- 安装包需要 Inno Setup 6.3+（`ISCC.exe`）。本机没装时 `build.py` 只出免安装包并提示，CI 会显式校验 `setup.exe` 是否生成
+- `installer.iss` 必须是 **UTF-8 with BOM**：无 BOM 时 ISCC 按 ANSI 解析，中文会乱码
 - 版本号只从 `app/__init__.py` 读；Windows exe 的版本资源由 `packaging/build.py` 生成，不要手写死
+- Release 说明保持极简：一两句下载指引 + 校验和文件名，不写长段落与功能清单
 - CI 会校验 `tag` 与 `APP_VERSION` 一致，不一致直接失败
 - 跨平台边界：`app/core/winproc.py`（进程/打开目录）、`app/core/autostart.py`、`app/core/shortcut.py`、`app/checkin/store.py`（加密）、`app/checkin/qoder.py`（DPAPI）。**新增 Windows API 调用必须同时给出非 Windows 分支**，否则 Linux/mac 构建一启动就崩
 - 非 Windows 账号库用 Fernet + `data/.accounts.key`，与 Windows 的 `accounts.dat` 不互通；不要把密钥写进日志或提交
