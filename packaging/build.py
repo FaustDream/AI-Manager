@@ -1,14 +1,20 @@
 # -*- coding: utf-8 -*-
-"""把当前代码打成免安装包，并生成带版本号的压缩包。
+"""把当前代码打成免安装包与 Windows 安装包。
 
 用法（在项目根执行，需已装 PyInstaller，见 packaging/requirements-build.txt）：
 
     .venv-build\\Scripts\\python.exe packaging\\build.py      # Windows
     .venv-build/bin/python packaging/build.py                # Linux / macOS
+    .venv-build\\Scripts\\python.exe packaging\\build.py --no-installer
 
 产物：
-    dist/AIManager/                                  免安装目录（可直接运行）
-    dist/AI-Manager-<版本>-<平台>-<架构>.zip|.tar.gz  发布用压缩包
+    dist/AIManager/                                      免安装目录（可直接运行）
+    dist/AI-Manager-<版本>-<平台>-<架构>.zip|.tar.gz      解压即用
+    dist/AI-Manager-<版本>-windows-x64-setup.exe          Windows 安装包
+
+免安装与安装两个形态装的是同一份 dist/AIManager：安装包只是把它复制到
+%LOCALAPPDATA%\\Programs\\AI Manager 再建快捷方式，数据仍然写在程序目录的
+data/ 里，卸载不会删掉这份数据。
 
 版本号只从 app/__init__.py 读，不在这里重复写一份——避免打包脚本和程序里
 显示的版本对不上（历史上 tag 与 APP_VERSION 就走过一次岔）。
@@ -21,14 +27,18 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_INIT = ROOT / "app" / "__init__.py"
 SPEC = ROOT / "packaging" / "ai_manager.spec"
+ISS = ROOT / "packaging" / "installer.iss"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 APP_NAME = "AIManager"
+INSTALL_DIR_NAME = "AI Manager"
 
 PLATFORM_TAG = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
 ARCH_TAG = {
@@ -112,12 +122,75 @@ def run_pyinstaller(version: str) -> None:
     subprocess.run(cmd, cwd=str(ROOT), env=env, check=True)
 
 
-def make_archive(version: str) -> Path:
-    """压缩包内顶层就是 AIManager/，解压即得可运行目录。"""
+def make_portable(version: str) -> Path:
+    """压缩包内顶层就是 AIManager/，解压即得可运行目录。
+
+    zipfile 用最高压缩级别：Qt 的 DLL 重复度高，级别 9 比默认能再小 15% 左右，
+    而解压速度几乎无感。Windows 资源管理器原生认 zip，不需要额外装工具。
+    """
     stem = f"AI-Manager-{version}-{PLATFORM_TAG}-{ARCH_TAG}"
-    fmt = "zip" if sys.platform == "win32" else "gztar"
-    target = shutil.make_archive(str(DIST / stem), fmt, root_dir=str(DIST), base_dir=APP_NAME)
-    return Path(target)
+    app_dir = DIST / APP_NAME
+    if sys.platform == "win32":
+        target = DIST / f"{stem}.zip"
+        with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+            for path in sorted(app_dir.rglob("*")):
+                if path.is_file():
+                    arcname = f"{APP_NAME}/{path.relative_to(app_dir).as_posix()}"
+                    zf.write(path, arcname)
+        return target
+
+    target = DIST / f"{stem}.tar.gz"
+    with tarfile.open(target, "w:gz", compresslevel=9) as tf:
+        tf.add(app_dir, arcname=APP_NAME)
+    return target
+
+
+def find_iscc() -> Path | None:
+    """定位 Inno Setup 编译器；找不到就跳过安装包（Linux / macOS / 本机没装）。"""
+    custom = os.environ.get("AI_MANAGER_ISCC")
+    if custom and Path(custom).is_file():
+        return Path(custom)
+    bases = [
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("LOCALAPPDATA"),
+    ]
+    for base in bases:
+        if not base:
+            continue
+        for candidate in (
+            Path(base) / "Inno Setup 6" / "ISCC.exe",
+            Path(base) / "Programs" / "Inno Setup 6" / "ISCC.exe",
+        ):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def build_installer(version: str) -> Path | None:
+    """产出单文件安装包；装到用户目录，不需要管理员权限。"""
+    if sys.platform != "win32":
+        return None
+    iscc = find_iscc()
+    if iscc is None:
+        print("[build] 未找到 Inno Setup（ISCC.exe），跳过安装包；"
+              "装好后或用 AI_MANAGER_ISCC 指定路径可再生成")
+        return None
+
+    base_name = f"AI-Manager-{version}-{PLATFORM_TAG}-{ARCH_TAG}-setup"
+    target = DIST / f"{base_name}.exe"
+    cmd = [
+        str(iscc),
+        f"/DMyAppVersion={version}",
+        f"/DMySourceDir={DIST / APP_NAME}",
+        f"/DMyOutputDir={DIST}",
+        f"/DMyOutputBaseFilename={base_name}",
+        str(ISS),
+    ]
+    subprocess.run(cmd, cwd=str(ROOT), check=True)
+    if not target.is_file():
+        raise SystemExit(f"安装包没有生成：{target}")
+    return target
 
 
 def _force_utf8_stdout() -> None:
@@ -141,8 +214,11 @@ def clean_outputs() -> None:
             raise SystemExit(f"清理 {path} 失败：{exc}\n请手动删除该目录后重试")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     _force_utf8_stdout()
+    argv = list(argv or sys.argv[1:])
+    skip_installer = "--no-installer" in argv
+
     version = read_version()
     check_pyinstaller()
     clean_outputs()
@@ -153,10 +229,14 @@ def main() -> int:
     if not (app_dir / APP_NAME).exists() and not (app_dir / f"{APP_NAME}.exe").exists():
         raise SystemExit(f"打包结果不完整：{app_dir} 里没有可执行文件")
 
-    archive = make_archive(version)
-    size_mb = archive.stat().st_size / 1024 / 1024
-    print(f"[build] 目录：{app_dir}")
-    print(f"[build] 压缩包：{archive}（{size_mb:.1f} MB）")
+    directory_mb = sum(p.stat().st_size for p in app_dir.rglob("*") if p.is_file()) / 1024 / 1024
+    archive = make_portable(version)
+    print(f"[build] 免安装目录：{app_dir}（{directory_mb:.1f} MB）")
+    print(f"[build] 免安装包：{archive}（{archive.stat().st_size / 1024 / 1024:.1f} MB）")
+
+    installer = None if skip_installer else build_installer(version)
+    if installer is not None:
+        print(f"[build] 安装包：{installer}（{installer.stat().st_size / 1024 / 1024:.1f} MB）")
     return 0
 
 
