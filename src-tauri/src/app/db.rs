@@ -47,6 +47,77 @@ impl Db {
                      version       INTEGER NOT NULL,
                      migrated_from TEXT,
                      migrated_at   INTEGER
+                 );
+                 -- 业务表在 P1 一次建齐：v1 导入器必须有落点。
+                 -- 后续阶段只准「加列/加表」并升级 SCHEMA_VERSION，不准重建。
+                 CREATE TABLE IF NOT EXISTS accounts (
+                     iid              TEXT PRIMARY KEY,
+                     platform         TEXT NOT NULL,
+                     platform_label   TEXT NOT NULL,
+                     account_id       TEXT NOT NULL,
+                     name             TEXT NOT NULL,
+                     expires_at       INTEGER,
+                     source           TEXT NOT NULL DEFAULT '',
+                     requires_checkin INTEGER NOT NULL DEFAULT 1,
+                     meta_keys        TEXT NOT NULL DEFAULT '[]',
+                     secret_blob      BLOB,
+                     sort_order       INTEGER NOT NULL DEFAULT 0,
+                     created_at       INTEGER NOT NULL,
+                     updated_at       INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS checkin_log (
+                     iid        TEXT NOT NULL,
+                     checked_at INTEGER NOT NULL,
+                     UNIQUE(iid, checked_at)
+                 );
+                 CREATE TABLE IF NOT EXISTS daily_marks (
+                     iid  TEXT NOT NULL,
+                     date TEXT NOT NULL,
+                     PRIMARY KEY (iid, date)
+                 );
+                 CREATE TABLE IF NOT EXISTS credit_lots (
+                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                     iid        TEXT NOT NULL,
+                     amount     REAL NOT NULL,
+                     expires_at INTEGER,
+                     granted_at INTEGER,
+                     lot_key    TEXT NOT NULL UNIQUE
+                 );
+                 CREATE TABLE IF NOT EXISTS credit_snapshots (
+                     iid     TEXT NOT NULL,
+                     date    TEXT NOT NULL,
+                     balance REAL NOT NULL,
+                     PRIMARY KEY (iid, date)
+                 );
+                 CREATE TABLE IF NOT EXISTS session_index (
+                     kind         TEXT NOT NULL,
+                     source_key   TEXT NOT NULL,
+                     source_label TEXT NOT NULL,
+                     account      TEXT NOT NULL,
+                     session_id   TEXT NOT NULL,
+                     title        TEXT NOT NULL DEFAULT '',
+                     slug         TEXT NOT NULL DEFAULT '',
+                     cwd          TEXT NOT NULL DEFAULT '',
+                     origin       TEXT NOT NULL DEFAULT '',
+                     refs         TEXT NOT NULL DEFAULT '[]',
+                     last_at      INTEGER,
+                     seen_at      TEXT,
+                     msgs         INTEGER,
+                     size         INTEGER,
+                     state        TEXT,
+                     has_body     INTEGER,
+                     PRIMARY KEY (kind, source_key, account, session_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_sessions_cursor
+                     ON session_index(last_at DESC, session_id);
+                 CREATE TABLE IF NOT EXISTS hub_items (
+                     kind       TEXT NOT NULL,
+                     name       TEXT NOT NULL,
+                     targets    TEXT NOT NULL DEFAULT '[]',
+                     deployed   TEXT NOT NULL DEFAULT '{}',
+                     digest     TEXT NOT NULL DEFAULT '',
+                     updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (kind, name)
                  );",
             )?;
             // execute_batch 不支持 ?1 占位符，首行只能单独插

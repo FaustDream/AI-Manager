@@ -78,6 +78,12 @@ impl From<chrono::ParseError> for AppError {
     }
 }
 
+impl From<windows::core::Error> for AppError {
+    fn from(e: windows::core::Error) -> Self {
+        AppError::new("io", format!("Windows API 调用失败：{e}"))
+    }
+}
+
 impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)

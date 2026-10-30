@@ -10,7 +10,7 @@ use chrono::{DateTime, Local};
 use std::path::{Path, PathBuf};
 
 /// 目标平台（技能与 MCP 的落点）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TargetKey {
     QoderCn,
     Qoder,

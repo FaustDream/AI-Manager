@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod contracts;
+pub mod desktop;
 pub mod types;
 
 pub use app::clock::{Clock, FakeClock, SystemClock};

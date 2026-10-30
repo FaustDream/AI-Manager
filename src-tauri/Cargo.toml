@@ -10,9 +10,16 @@ description = "AI Manager：签到 / 会话 / 技能分发一体化桌面工作�
 name = "ai_manager"
 path = "src/lib.rs"
 
+[[bin]]
+name = "ai-manager"
+path = "src/main.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
+# 只开用得到的特性：tray-icon 托盘、wry 默认 webview；不开 devtools 之外的花哨能力
+tauri = { version = "2", features = ["tray-icon"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 async-trait = "0.1"
@@ -28,6 +35,9 @@ windows = { version = "0.58", features = [
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
 
 # 见 ARCHITECTURE-v2.md D7：单进程架构下 abort 会杀掉整个进程，绝不能配。
 [profile.release]
