@@ -10,7 +10,7 @@ use ai_manager::app::paths;
 use ai_manager::contracts::*;
 use ai_manager::types::*;
 use chrono::{DateTime, Local};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// 独立临时目录，Drop 即删。
 pub struct TestPaths {
@@ -22,10 +22,6 @@ impl TestPaths {
         let dir = tempfile::TempDir::new().expect("创建临时目录失败");
         paths::set_data_dir_for_test(dir.path());
         Self { dir }
-    }
-
-    pub fn root(&self) -> &Path {
-        self.dir.path()
     }
 
     pub fn join(&self, name: &str) -> PathBuf {

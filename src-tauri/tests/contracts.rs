@@ -93,9 +93,9 @@ fn contract_05b_lot_granted_at_is_local_not_from_api() {
 fn contract_06_snapshot_keeps_last_per_day() {
     let store = TodoCheckin;
     let clock = clock_at("2026-10-30T09:00:00+08:00");
-    store.note_balance("qoder:1", 100.0, &clock);
+    store.note_balance("qoder:1", 100.0, &clock).expect("首次记余额");
     clock.set("2026-10-30T18:00:00+08:00");
-    store.note_balance("qoder:1", 120.0, &clock);
+    store.note_balance("qoder:1", 120.0, &clock).expect("同日再记余额");
     assert_eq!(store.balance_on("qoder:1", "2026-10-30"), Some(120.0),
         "同一天多次刷新只保留最后一次，否则今日增减会被刷成 0");
 }
@@ -303,10 +303,6 @@ fn contract_22_next_at_survives_restart() {
 }
 
 // ---------------------------------------------------------------- 辅助
-fn grep_source(patterns: &[&str]) -> Vec<String> {
-    grep_source_except(patterns, &[])
-}
-
 fn grep_source_except(patterns: &[&str], skip_files: &[&str]) -> Vec<String> {
     let mut hits = Vec::new();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
