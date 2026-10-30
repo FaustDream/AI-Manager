@@ -298,8 +298,11 @@ fn grep_source_except(patterns: &[&str], skip_files: &[&str]) -> Vec<String> {
                     continue;
                 }
                 if let Ok(text) = std::fs::read_to_string(&path) {
+                    // 只查生产代码：`#[cfg(test)]` 之后是测试模块，
+                    // 那里的 println! 是 `--nocapture` 的正常输出方式，不属于契约范围
+                    let production = text.split("#[cfg(test)]").next().unwrap_or(&text);
                     for pattern in patterns {
-                        if text.contains(pattern) {
+                        if production.contains(pattern) {
                             hits.push(format!("{}:{}", path.display(), pattern));
                         }
                     }
