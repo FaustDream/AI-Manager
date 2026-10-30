@@ -1,6 +1,7 @@
 name: Release
 
-# 推送 v* 标签即发布：三平台各打一个免安装包，自动建 Release 并上传。
+# 推送 v* 标签即发布：Windows 出「安装版 + 免安装版」两个包，Linux / macOS 各出一个
+# 免安装包，自动建 Release 并上传。
 # 手动触发（workflow_dispatch）只构建、传 artifact，不建 Release，用于验证打包链路。
 
 on:
@@ -56,6 +57,14 @@ jobs:
             "pyside6-essentials>=6.8,<7" "requests>=2.31,<3" "cryptography>=42,<51" \
             -r packaging/requirements-build.txt
 
+      - name: 装 Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
       - name: 校验 tag 与 APP_VERSION 一致
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -77,12 +86,23 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
 
+      # 安装包靠本机 Inno Setup 生成，缺了不会让 build.py 失败；这里显式卡住，
+      # 避免发出去的 Release 少一个产物。
+      - name: 校验产物
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ls -lh dist
+          test -f dist/*-setup.exe
+          test -f dist/*-windows-x64.zip
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}
           path: |
             dist/*.zip
+            dist/*.exe
             dist/*.tar.gz
           if-no-files-found: error
           retention-days: 14
@@ -112,31 +132,9 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: false
           body: |
-            AI Manager ${{ github.ref_name }}
-
-            ## 下载
-
-            | 平台 | 文件 | 说明 |
-            | --- | --- | --- |
-            | **Windows 10 / 11（64 位）** | `AI-Manager-*-windows-x64.zip` | **正式支持**。解压后双击 `AIManager/AIManager.exe` |
-            | Linux（x64） | `AI-Manager-*-linux-x64.tar.gz` | 实验性，见下方说明 |
-            | macOS（Apple Silicon） | `AI-Manager-*-macos-arm64.tar.gz` | 实验性，见下方说明 |
-
-            免安装：解压即用，数据写在程序目录的 `data/` 里，整个目录拷走就能带走配置。
-
-            ## 关于 Linux / macOS 版（实验性）
-
-            本工具管理的 Trae / Qoder / WorkBuddy 客户端**只有 Windows 版**，且账号库在
-            Windows 上用的是系统 DPAPI 加密。因此 Linux / macOS 包只保证「能启动、界面能开」：
-
-            - 账号库改用本地密钥（`data/.accounts.key`）加密，与 Windows 的 `accounts.dat` 不互通
-            - 读取客户端登录态、切换账号、写回登录态、桌面快捷方式、开机自启等功能不可用
-            - 会话库读取依赖 `~/.workbuddy*` 目录，若你在这些平台上没有对应数据，页面会是空的
-
-            ## 校验
-
-            每个包都可核对压缩包内的 `LICENSE` 与 `CHANGELOG.md`；版本号与 `app/__init__.py`
-            的 `APP_VERSION` 一致，CI 会在打标签时强制校验。
+            **Windows**：`*-setup.exe` 安装版（装到用户目录，无需管理员）；`*-windows-x64.zip` 免安装，解压双击 `AIManager.exe`。
+            **Linux / macOS**：解压即用，实验性构建，客户端相关功能仅 Windows 可用。
+            数据写在程序目录的 `data/` 里，换机器整个目录拷走即可。校验和见 `SHA256SUMS.txt`。
 
       - name: 生成校验和
         run: |
