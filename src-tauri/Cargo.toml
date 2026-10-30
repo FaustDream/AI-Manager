@@ -1,0 +1,29 @@
+[package]
+name = "ai-manager"
+version = "1.5.0"
+edition = "2021"
+description = "AI Manager：签到 / 会话 / 技能分发一体化桌面工作台"
+
+# P0 阶段刻意不引入 tauri：本阶段只做契约测试与注入点，
+# tauri / reqwest / aes-gcm / windows 在 P1~P2 按需加入，避免一开始就背上编译负担。
+[lib]
+name = "ai_manager"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+# 见 ARCHITECTURE-v2.md D7：单进程架构下 abort 会杀掉整个进程，绝不能配。
+[profile.release]
+panic = "unwind"
+opt-level = "s"
+lto = true
+strip = true

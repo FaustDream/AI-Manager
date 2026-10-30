@@ -18,6 +18,9 @@ __pycache__/
 *.py[cod]
 *.pyo
 
+# Rust：构建产物可达数 GB，绝不入库（Cargo.lock 属 binary crate，应入库）
+src-tauri/target/
+
 # 界面截图：图中会带出账号昵称、邮箱、本地路径（C:\Users\<用户名>），绝不入库
 shots/
 
