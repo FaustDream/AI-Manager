@@ -4,6 +4,7 @@
 //! 直接拼 `Path.home()` 散落在业务代码中，导致「明天能不能签」「同一天刷两次会不会
 //! 产生 0 增减」这类边界根本无法构造。
 
+pub mod accounts;
 pub mod clock;
 pub mod db;
 pub mod error;
