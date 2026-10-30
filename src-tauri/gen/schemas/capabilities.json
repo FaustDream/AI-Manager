@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"P1 最小权限：只放开窗口与事件的基础能力，业务能力一律走自定义命令","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging"]}}
