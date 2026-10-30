@@ -136,6 +136,23 @@ pub fn log(level: Level, module: &str, message: impl Into<String>) {
     });
 }
 
+/// 读最近 `limit` 行**人读**日志（`app.log`）。
+///
+/// 不做内存环形缓冲：日志页是低频操作，直接读文件尾更简单，也不占常驻内存。
+pub fn tail(limit: usize) -> Vec<String> {
+    let dir = slot()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|s| s.dir.clone()))
+        .unwrap_or_else(paths::logs_dir);
+    let Ok(text) = std::fs::read_to_string(dir.join("app.log")) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(limit);
+    lines[start..].iter().map(|s| s.to_string()).collect()
+}
+
 #[macro_export]
 macro_rules! log_at {
     ($level:expr, $module:expr, $($arg:tt)*) => {

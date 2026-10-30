@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>AI Manager</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1f23; --muted: #6b7280; --line: #e5e7eb;
+    --card: #f8fafc; --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181d; --fg: #e6e8ec; --muted: #9aa3af; --line: #2a2e37;
+            --card: #1d2026; --accent: #5b8cff; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    padding: 28px 32px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 24px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px 18px;
+  }
+  .card h2 { font-size: 13px; margin: 0 0 12px; color: var(--muted); font-weight: 600;
+             letter-spacing: .04em; text-transform: uppercase; }
+  .row { display: flex; justify-content: space-between; padding: 5px 0;
+         border-bottom: 1px dashed var(--line); }
+  .row:last-child { border-bottom: 0; }
+  .row span:last-child { color: var(--accent); font-variant-numeric: tabular-nums; }
+  pre { margin: 0; max-height: 260px; overflow: auto; font-size: 12px;
+        font-family: "Cascadia Mono", Consolas, monospace; color: var(--muted); }
+  .empty { color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px;
+           border: 1px solid var(--line); font-size: 12px; }
+  #tasks .task { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0;
+                 border-bottom: 1px dashed var(--line); }
+</style>
+</head>
+<body>
+  <h1>AI Manager <span class="badge" id="version">…</span></h1>
+  <div class="sub">P1 骨架：窗口 / 托盘 / 单实例 / SQLite / 日志 / 任务系统已就位，业务能力自 P2 起接入</div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>运行状态</h2>
+      <div class="row"><span>数据目录</span><span id="dataDir">—</span></div>
+      <div class="row"><span>设置项</span><span id="kvCount">—</span></div>
+      <div class="row"><span>进行中任务</span><span id="taskCount">—</span></div>
+    </div>
+    <div class="card">
+      <h2>任务</h2>
+      <div id="tasks"><div class="empty">暂无任务</div></div>
+    </div>
+    <div class="card" style="grid-column: 1 / -1;">
+      <h2>日志（最近 40 行）</h2>
+      <pre id="logs">—</pre>
+    </div>
+  </div>
+
+<script>
+  const { invoke } = window.__TAURI__.core;
+
+  const set = (id, text) => { document.getElementById(id).textContent = text; };
+
+  async function refresh() {
+    try {
+      const tasks = await invoke('task_list');
+      set('taskCount', tasks.filter(t => ['queued','running','cancelling'].includes(t.state)).length + ' 个');
+      const box = document.getElementById('tasks');
+      box.innerHTML = tasks.length
+        ? tasks.slice(0, 6).map(t =>
+            `<div class="task"><span>${t.name}</span><span>${t.state}${t.progress != null ? ' ' + Math.round(t.progress * 100) + '%' : ''}</span></div>`).join('')
+        : '<div class="empty">暂无任务</div>';
+      const lines = await invoke('log_tail', { limit: 40 });
+      set('logs', lines.length ? lines.join('\n') : '（暂无日志）');
+    } catch (e) {
+      set('logs', '调用失败：' + e);
+    }
+  }
+
+  async function boot() {
+    try {
+      const [version, dbPath] = (await invoke('ui_ready')).split('|');
+      set('version', version);
+      set('dataDir', dbPath.replace(/\\app\.db$/, ''));
+    } catch (e) {
+      set('version', 'IPC 未就绪');
+      set('logs', 'IPC 调用失败：' + e);
+    }
+    refresh();
+    setInterval(refresh, 2000);
+  }
+
+  boot();
+</script>
+</body>
+</html>

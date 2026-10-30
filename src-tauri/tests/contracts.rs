@@ -244,8 +244,11 @@ fn contract_18_time_rendered_in_local_zone() {
 // ---------------------------------------------------------------- 契约 19
 #[test]
 fn contract_19_no_stdout_writes() {
-    let hits = grep_source(&["println!", "print!", "dbg!"]);
-    assert!(hits.is_empty(), "源码中不得出现 stdout 写入：{hits:?}");
+    // 例外只有一处：`src/main.rs` 是命令行入口（`--import-v1`），stdout 是它唯一的输出渠道。
+    // 业务与界面代码（`app/`、`desktop/`）一律不得写 stdout——release 版是 windows 子系统，
+    // 没有控制台，写了等于把日志丢掉。所以检查排除 bin 入口，其余全部要查。
+    let hits = grep_source_except(&["println!", "print!", "dbg!"], &["main.rs"]);
+    assert!(hits.is_empty(), "源码中不得出现 stdout 写入（main.rs 除外）：{hits:?}");
 }
 
 // ---------------------------------------------------------------- 契约 20
@@ -277,6 +280,10 @@ fn contract_22_next_at_survives_restart() {
 
 // ---------------------------------------------------------------- 辅助
 fn grep_source(patterns: &[&str]) -> Vec<String> {
+    grep_source_except(patterns, &[])
+}
+
+fn grep_source_except(patterns: &[&str], skip_files: &[&str]) -> Vec<String> {
     let mut hits = Vec::new();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![root];
@@ -286,6 +293,10 @@ fn grep_source(patterns: &[&str]) -> Vec<String> {
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if skip_files.contains(&name) {
+                    continue;
+                }
                 if let Ok(text) = std::fs::read_to_string(&path) {
                     for pattern in patterns {
                         if text.contains(pattern) {
