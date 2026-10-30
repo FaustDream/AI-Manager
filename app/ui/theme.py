@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""统一视觉主题：浅色、留白、卡片化。
+"""统一视觉主题：浅色、留白、卡片化；深色为同构换色版。
 
-所有颜色集中在 PALETTE，QSS 里只引用变量展开后的值，
-改主题只需要动这一处。
+所有颜色集中在 LIGHT / DARK 两张表，QSS 里只引用变量展开后的值。
+运行期只有 PALETTE 一个符号，切主题时**原地更新**——各处
+`from .theme import PALETTE` 拿到的是同一个 dict，不必重新导入。
 """
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QFont, QGuiApplication
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication, QWidget
 
-PALETTE = {
+LIGHT = {
     "bg": "#F4F6F9",
     "sidebar": "#FFFFFF",
     "card": "#FFFFFF",
@@ -29,7 +30,72 @@ PALETTE = {
     "danger_soft": "#FDECEC",
     "hover": "#F3F5F9",
     "sel": "#E8EFFF",
+    # —— 以下为控件细节色，深色下需要单独取值，不能靠半透明叠加
+    "raised": "#FAFBFD",          # 表头、表角
+    "line_soft": "#F1F3F7",       # 表格行分隔线、浅色标签底
+    "pressed": "#E9ECF2",         # 按钮按下
+    "disabled": "#F7F8FA",        # 禁用态底色
+    "on_accent": "#FFFFFF",       # 铺在主色上的文字
+    "accent_disabled": "#A8BEF5",
+    "on_accent_dim": "#F5F8FF",
+    "danger_dark": "#B91C1C",     # 危险按钮 hover
+    "scroll": "#CDD3DC",
+    "scroll_hover": "#B6BEC9",
+    "code": "#FBFCFE",            # 日志 / JSON 编辑区
+    "track": "#EDF0F5",           # 进度条槽
+    "tip_bg": "#1F2430",          # 气泡提示
+    "tip_text": "#FFFFFF",
 }
+
+DARK = {
+    "bg": "#13151B",
+    "sidebar": "#171A21",
+    "card": "#1B1F27",
+    "border": "#262C36",
+    "border_strong": "#343C4A",
+    "text": "#E8ECF3",
+    "text_2": "#B6BECB",
+    "muted": "#7E8797",
+    "accent": "#4C82EA",
+    "accent_dark": "#7CA5F7",     # 深色下 hover 反而要更亮，语义沿用键名
+    "accent_soft": "#1E2A45",
+    "ok": "#35C08A",
+    "ok_soft": "#16332A",
+    "warn": "#E3A44F",
+    "warn_soft": "#33281A",
+    "danger": "#F0776F",
+    "danger_soft": "#3A2020",
+    "hover": "#212733",
+    "sel": "#22304E",
+    "raised": "#1E232C",
+    "line_soft": "#242832",
+    "pressed": "#262C38",
+    "disabled": "#191C23",
+    "on_accent": "#FFFFFF",
+    "accent_disabled": "#33436B",
+    "on_accent_dim": "#C9D6F2",
+    "danger_dark": "#FF8A8A",
+    "scroll": "#3A4150",
+    "scroll_hover": "#4A5364",
+    "code": "#14171E",
+    "track": "#242A34",
+    "tip_bg": "#2B3140",
+    "tip_text": "#EDF1F7",
+}
+
+# 全局唯一取色入口：切主题时原地更新，已持有该 dict 引用的模块自动跟着变
+PALETTE = dict(LIGHT)
+
+_MODE = "light"
+
+# 表格行会把 PALETTE[...] 的色号字符串缓存下来（_fg_map / _fg）。切主题时这些
+# 字符串还是旧配色，靠这张「色号 → 调色板键」的别名表在取色时映射回当前主题。
+# 只收录文字色，避免 #FFFFFF 这类多义色号被误判。
+_TEXT_KEYS = ("text", "text_2", "muted", "accent", "ok", "warn", "danger")
+_ALIAS: dict[str, str] = {}
+for _key in _TEXT_KEYS:
+    _ALIAS[LIGHT[_key].lower()] = _key
+    _ALIAS[DARK[_key].lower()] = _key
 
 # 后面几个是 Linux / macOS 上的常见中文字体：Windows 首选微软雅黑，
 # 换平台时 Qt 会顺着列表往下找，找不到才退到系统默认
@@ -80,8 +146,8 @@ QMainWindow, QWidget#Root {{
     background: {p['bg']};
 }}
 QToolTip {{
-    background: #1F2430;
-    color: #FFFFFF;
+    background: {p['tip_bg']};
+    color: {p['tip_text']};
     border: none;
     padding: 6px 8px;
     border-radius: 6px;
@@ -218,6 +284,11 @@ QLabel#ValueLabel {{
     font-size: 12px;
     color: {p['text']};
 }}
+/* 概览数字卡左上角的图标底块 */
+QLabel#StatChip {{
+    background: {p['accent_soft']};
+    border-radius: 8px;
+}}
 QFrame#Divider {{
     background: {p['border']};
     max-height: 1px;
@@ -239,7 +310,7 @@ QPushButton:hover {{
     border-color: {p['border_strong']};
 }}
 QPushButton:pressed {{
-    background: #E9ECF2;
+    background: {p['pressed']};
 }}
 /* 一行要塞很多按钮时用：去掉图标，左右内边距收紧 */
 QPushButton[compact="true"] {{
@@ -247,13 +318,13 @@ QPushButton[compact="true"] {{
 }}
 QPushButton:disabled {{
     color: {p['muted']};
-    background: #F7F8FA;
+    background: {p['disabled']};
     border-color: {p['border']};
 }}
 QPushButton#Primary {{
     background: {p['accent']};
     border: 1px solid {p['accent']};
-    color: #FFFFFF;
+    color: {p['on_accent']};
     font-weight: 600;
 }}
 QPushButton#Primary:hover {{
@@ -261,9 +332,9 @@ QPushButton#Primary:hover {{
     border-color: {p['accent_dark']};
 }}
 QPushButton#Primary:disabled {{
-    background: #A8BEF5;
-    border-color: #A8BEF5;
-    color: #F5F8FF;
+    background: {p['accent_disabled']};
+    border-color: {p['accent_disabled']};
+    color: {p['on_accent_dim']};
 }}
 QPushButton#Ghost {{
     background: transparent;
@@ -277,12 +348,12 @@ QPushButton#Ghost:hover {{
 QPushButton#Danger {{
     background: {p['danger']};
     border: 1px solid {p['danger']};
-    color: #FFFFFF;
+    color: {p['on_accent']};
     font-weight: 600;
 }}
 QPushButton#Danger:hover {{
-    background: #B91C1C;
-    border-color: #B91C1C;
+    background: {p['danger_dark']};
+    border-color: {p['danger_dark']};
 }}
 QPushButton#DangerGhost {{
     background: transparent;
@@ -318,6 +389,35 @@ QPushButton#RowAction:disabled {{
     color: {p['muted']};
     text-decoration: none;
 }}
+/* 技能 / MCP 页签：两个并排的分段按钮，选中项像一颗贴住底色的药丸 */
+QPushButton#Segment {{
+    background: transparent;
+    border: 1px solid transparent;
+    color: {p['muted']};
+    padding: 6px 14px;
+    font-weight: 500;
+}}
+QPushButton#Segment:hover {{
+    background: {p['hover']};
+    color: {p['text_2']};
+}}
+QPushButton#Segment:checked {{
+    background: {p['card']};
+    border-color: {p['border']};
+    color: {p['accent']};
+    font-weight: 600;
+}}
+
+/* 只有图标的方形按钮：侧栏主题切换用，悬停才露底色 */
+QPushButton#IconButton {{
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 0;
+}}
+QPushButton#IconButton:hover {{
+    background: {p['hover']};
+}}
 
 /* ------------------------------------------------------------ 输入
    注意：QTimeEdit / QSpinBox 这类 QAbstractSpinBox 千万不要在 QSS 里写
@@ -329,13 +429,13 @@ QLineEdit, QComboBox, QSpinBox {{
     padding: 6px 10px;
     min-height: 20px;
     selection-background-color: {p['accent']};
-    selection-color: #FFFFFF;
+    selection-color: {p['on_accent']};
 }}
 QLineEdit:focus, QComboBox:focus {{
     border-color: {p['accent']};
 }}
 QLineEdit:disabled, QComboBox:disabled {{
-    background: #F7F8FA;
+    background: {p['disabled']};
     color: {p['muted']};
 }}
 QComboBox::drop-down {{
@@ -384,14 +484,14 @@ QTableView#DataTable {{
 }}
 QTableView#DataTable::item {{
     padding: 0 8px;
-    border-bottom: 1px solid #F1F3F7;
+    border-bottom: 1px solid {p['line_soft']};
 }}
 QTableView#DataTable::item:selected {{
     background: {p['sel']};
     color: {p['text']};
 }}
 QHeaderView::section {{
-    background: #FAFBFD;
+    background: {p['raised']};
     color: {p['muted']};
     border: none;
     border-bottom: 1px solid {p['border']};
@@ -403,7 +503,7 @@ QHeaderView::section {{
     font-weight: 600;
 }}
 QTableCornerButton::section {{
-    background: #FAFBFD;
+    background: {p['raised']};
     border: none;
 }}
 
@@ -414,12 +514,12 @@ QScrollBar:vertical {{
     margin: 2px;
 }}
 QScrollBar::handle:vertical {{
-    background: #CDD3DC;
+    background: {p['scroll']};
     border-radius: 4px;
     min-height: 28px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: #B6BEC9;
+    background: {p['scroll_hover']};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
@@ -432,7 +532,7 @@ QScrollBar:horizontal {{
     margin: 2px;
 }}
 QScrollBar::handle:horizontal {{
-    background: #CDD3DC;
+    background: {p['scroll']};
     border-radius: 4px;
     min-width: 28px;
 }}
@@ -444,7 +544,7 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
 
 /* ------------------------------------------------------------ 日志 */
 QPlainTextEdit#Log {{
-    background: #FBFCFE;
+    background: {p['code']};
     border: 1px solid {p['border']};
     border-radius: 10px;
     padding: 8px 10px;
@@ -452,6 +552,38 @@ QPlainTextEdit#Log {{
     font-size: 11px;
     color: {p['text_2']};
     selection-background-color: {p['accent_soft']};
+}}
+/* MCP 编辑器与配置预览：等宽字体，方便对齐 JSON */
+QPlainTextEdit#JsonEditor {{
+    background: {p['code']};
+    border: 1px solid {p['border']};
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-family: {MONO_FAMILY};
+    font-size: 12px;
+    color: {p['text_2']};
+    selection-background-color: {p['accent_soft']};
+}}
+QListWidget#PickList {{
+    background: {p['card']};
+    border: 1px solid {p['border']};
+    border-radius: 10px;
+    padding: 6px;
+    outline: none;
+}}
+QListWidget#PickList::item {{
+    padding: 8px 10px;
+    border-radius: 6px;
+    color: {p['text_2']};
+}}
+QListWidget#PickList::item:selected {{
+    background: {p['accent_soft']};
+    color: {p['accent']};
+}}
+QLabel#PathHint {{
+    font-family: {MONO_FAMILY};
+    font-size: 11px;
+    color: {p['muted']};
 }}
 QFrame#LogBar {{
     background: {p['card']};
@@ -467,7 +599,7 @@ QLabel#LogTitle {{
 /* ------------------------------------------------------------ 进度 */
 QProgressBar {{
     border: none;
-    background: #EDF0F5;
+    background: {p['track']};
     border-radius: 3px;
     height: 6px;
     text-align: center;
@@ -505,7 +637,7 @@ QLabel#Badge[tone="accent"] {{
     color: {p['accent']};
 }}
 QLabel#Badge[tone="muted"] {{
-    background: #F1F3F7;
+    background: {p['line_soft']};
     color: {p['muted']};
 }}
 
@@ -515,14 +647,34 @@ QLabel#StatusText {{
     color: {p['muted']};
 }}
 QLabel#Toast {{
-    background: #1F2430;
-    color: #FFFFFF;
+    background: {p['tip_bg']};
+    color: {p['tip_text']};
     border-radius: 8px;
     padding: 8px 14px;
     font-size: 12px;
 }}
 
 /* ------------------------------------------------------------ 对话框 */
+/* 说明性长文本：设置页的作者信息、功能范围与风险提示 */
+QLabel#BodyText {{
+    font-size: 12px;
+    color: {p['text_2']};
+}}
+QLabel#BodyText[tone="danger"] {{
+    color: {p['danger']};
+}}
+QLabel#ErrorText {{
+    font-size: 12px;
+    color: {p['danger']};
+}}
+/* 会话正文预览：段落颜色由富文本内联给出，底色跟着卡片走 */
+QTextBrowser#SessionDetail {{
+    background: transparent;
+    border: none;
+    color: {p['text']};
+    selection-background-color: {p['accent_soft']};
+    selection-color: {p['text']};
+}}
 QDialog {{
     background: {p['bg']};
 }}
@@ -568,6 +720,84 @@ QScrollArea > QWidget > QWidget {{
 """
 
 
+def mode() -> str:
+    return _MODE
+
+
+def set_mode(name: str) -> str:
+    """切浅色 / 深色。只改内存色板，重刷界面由 apply() 负责。"""
+    global _MODE
+    _MODE = "dark" if str(name).lower() == "dark" else "light"
+    PALETTE.clear()
+    PALETTE.update(DARK if _MODE == "dark" else LIGHT)
+    return _MODE
+
+
+def resolve(value: str) -> str:
+    """把页面上缓存的旧主题色号换回当前主题的同色。
+
+    表格行在构建时就把十六进制存进了 _fg_map，切主题不会重建这些行；
+    取色时过一道映射，深色下才不会残留浅色字。
+    """
+    key = _ALIAS.get(str(value).lower())
+    return PALETTE[key] if key else value
+
+
+def _app_palette() -> QPalette:
+    """QSS 管不到的部件（原生对话框、spinbox 箭头等）靠调色板兜底。"""
+    p = PALETTE
+    palette = QPalette()
+    roles = {
+        QPalette.ColorRole.Window: "bg",
+        QPalette.ColorRole.WindowText: "text",
+        QPalette.ColorRole.Base: "card",
+        QPalette.ColorRole.AlternateBase: "hover",
+        QPalette.ColorRole.Text: "text",
+        QPalette.ColorRole.Button: "card",
+        QPalette.ColorRole.ButtonText: "text",
+        QPalette.ColorRole.ToolTipBase: "tip_bg",
+        QPalette.ColorRole.ToolTipText: "tip_text",
+        QPalette.ColorRole.Highlight: "accent",
+        QPalette.ColorRole.HighlightedText: "on_accent",
+        QPalette.ColorRole.PlaceholderText: "muted",
+        QPalette.ColorRole.Link: "accent",
+    }
+    for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+        for role, key in roles.items():
+            palette.setColor(group, role, QColor(p[key]))
+    disabled = QPalette.ColorGroup.Disabled
+    palette.setColor(disabled, QPalette.ColorRole.Window, QColor(p["bg"]))
+    palette.setColor(disabled, QPalette.ColorRole.Base, QColor(p["disabled"]))
+    palette.setColor(disabled, QPalette.ColorRole.Button, QColor(p["card"]))
+    palette.setColor(disabled, QPalette.ColorRole.Highlight, QColor(p["border"]))
+    palette.setColor(disabled, QPalette.ColorRole.HighlightedText, QColor(p["muted"]))
+    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text,
+                 QPalette.ColorRole.ButtonText):
+        palette.setColor(disabled, role, QColor(p["muted"]))
+    return palette
+
+
+def _refresh_widgets(app: QApplication) -> None:
+    """重刷按色号缓存过的东西：图标位图、画刷颜色、内联富文本。
+
+    约定两条，界面上不必各自订阅主题事件：
+    - setProperty("themeIcon", (图标名, 调色板键, 尺寸)) 的控件会重渲染图标；
+    - 定义了 refresh_theme() 的控件会被调用一次。
+    """
+    from . import icons
+
+    for widget in app.allWidgets():
+        spec = widget.property("themeIcon")
+        setter = getattr(widget, "setIcon", None)
+        if spec and setter is not None:
+            name, tone, size = spec
+            setter(icons.icon(name, PALETTE.get(tone, PALETTE["text_2"]), size))
+        hook = getattr(widget, "refresh_theme", None)
+        if callable(hook):
+            hook()
+        widget.update()
+
+
 def apply(app: QApplication) -> None:
     app.setStyle("Fusion")
     font = QFont()
@@ -577,7 +807,10 @@ def apply(app: QApplication) -> None:
     font.setPointSize(10)
     font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)
     app.setFont(font)
+    # setStyle 会把调色板重置成 Fusion 的浅色默认值，顺序不能反
+    app.setPalette(_app_palette())
     app.setStyleSheet(qss())
+    _refresh_widgets(app)
 
 
 def repolish(widget: QWidget) -> None:

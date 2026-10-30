@@ -235,7 +235,7 @@ class ProfilesPage(BasePage):
             if restart:
                 winproc.start_exe(ep.exe)
 
-        tasks.submit(worker, on_done=done, on_error=failed)
+        tasks.submit(worker, on_done=done, on_error=failed, serial=True )
 
     def save_current(self) -> None:
         self._run(lambda ep: f"已保存到 {profiles.save_current(ep)}",

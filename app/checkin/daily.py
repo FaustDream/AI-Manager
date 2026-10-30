@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..core import paths
-from . import service
+from . import service, statuslog
 from .base import Account, StatusResult
 
 # 界面层按这个间隔触发轮询；改这里就同时改了「每 6 小时一次」的口径
@@ -216,6 +216,13 @@ def run_round(cfg: dict, log, emit=None, now: datetime | None = None) -> RoundRe
             emit(("checkin", (account, outcome)))
         log(f"[{account.platform_label}] {account.name}：{outcome.message}",
             "ok" if outcome.ok else "error")
+
+    # 这一轮查到的确定状态写进当天档案：之后页面切回来就不用再问接口
+    answers = {iid: {"checked": status.checked_in, "next_at": status.next_at}
+               for iid, status in statuses.items()}
+    for iid in done:
+        answers.setdefault(iid, {})["checked"] = True
+    statuslog.note_many(answers)
 
     _save_state({
         "date": today,

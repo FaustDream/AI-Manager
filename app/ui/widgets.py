@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QHeaderVi
                                QTableView, QVBoxLayout, QWidget)
 
 from . import icons
-from .models import Column, RowModel
+from .models import CHECK_KEY, Column, RowModel
 from .theme import PALETTE, repolish
 
 
@@ -38,8 +38,10 @@ def make_button(text: str, kind: str = "ghost", icon_name: str | None = None,
                           "link": "Link"}.get(kind, "Ghost"))
     button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
     if icon_name:
-        color = "#FFFFFF" if kind in ("primary", "danger") else PALETTE["text_2"]
-        button.setIcon(icons.icon(icon_name, color, 16))
+        # 记下取色语义，换肤时由 theme 统一重渲染，按钮自己不用订阅主题
+        tone = "on_accent" if kind in ("primary", "danger") else "text_2"
+        button.setProperty("themeIcon", (icon_name, tone, 16))
+        button.setIcon(icons.icon(icon_name, PALETTE[tone], 16))
     return button
 
 
@@ -52,6 +54,7 @@ class Spinner(QWidget):
     def __init__(self, parent=None, size: int = 18, color: str | None = None):
         super().__init__(parent)
         self._angle = 0
+        self._tone = color              # None 表示跟随主色，换肤时要一起变
         self._color = QColor(color or PALETTE["accent"])
         self._timer = QTimer(self)
         self._timer.setInterval(16)
@@ -65,6 +68,9 @@ class Spinner(QWidget):
     def _tick(self) -> None:
         self._angle = (self._angle + 6) % 360
         self.update()
+
+    def refresh_theme(self) -> None:
+        self._color = QColor(self._tone or PALETTE["accent"])
 
     def start(self) -> None:
         if not self._timer.isActive():
@@ -208,11 +214,11 @@ class StatCard(QFrame):
         top = QHBoxLayout()
         top.setSpacing(8)
         chip = QLabel()
+        chip.setObjectName("StatChip")
         chip.setFixedSize(28, 28)
         chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chip.setStyleSheet(
-            f"background: {PALETTE['accent_soft']}; border-radius: 8px;")
         chip.setPixmap(icons.pixmap(icon_name, PALETTE.get(tone, PALETTE["accent"]), 16))
+        self._chip, self._icon_name, self._tone = chip, icon_name, tone
         top.addWidget(chip)
         top.addWidget(label(label_text, "StatLabel"))
         top.addStretch(1)
@@ -226,12 +232,18 @@ class StatCard(QFrame):
         # 空说明整行收起：不传文案的卡片只留图标 + 标题 + 数字
         self.hint.setVisible(bool(hint))
         outer.addWidget(self.hint)
+        # 多余高度交给末尾留白：有说明和没说明的卡片，数字才落在同一水平线上
+        outer.addStretch(1)
 
     def set_value(self, value: str, hint: str | None = None) -> None:
         self.value.setText(value)
         if hint is not None:
             self.hint.setText(hint)
             self.hint.setVisible(bool(hint))
+
+    def refresh_theme(self) -> None:
+        self._chip.setPixmap(icons.pixmap(self._icon_name,
+                                          PALETTE.get(self._tone, PALETTE["accent"]), 16))
 
 
 class TrendBars(QWidget):
@@ -327,6 +339,7 @@ class EmptyState(QWidget):
         icon = QLabel()
         icon.setPixmap(icons.pixmap("archive", PALETTE["muted"], 28))
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon = icon
         layout.addWidget(icon)
         title = label(text, "SectionHint")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -336,6 +349,9 @@ class EmptyState(QWidget):
             hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(hint)
 
+    def refresh_theme(self) -> None:
+        self._icon.setPixmap(icons.pixmap("archive", PALETTE["muted"], 28))
+
 
 # --------------------------------------------------------------------- 表格
 class DataTable(QTableView):
@@ -343,9 +359,14 @@ class DataTable(QTableView):
     row_moved = Signal(int, int)
 
     def __init__(self, columns: list[Column], key: str = "id", multi: bool = True,
-                 row_height: int = 36, reorder: bool = False, parent=None):
+                 row_height: int = 36, reorder: bool = False, checkable: bool = False,
+                 parent=None):
         super().__init__(parent)
         self.setObjectName("DataTable")
+        self.checkable = bool(checkable)
+        if self.checkable:
+            # 批量操作用的勾选列固定放最前，宽度锁死，不参与列宽记忆
+            columns = [Column(CHECK_KEY, "", 34, "center", fixed=True), *columns]
         self.model = RowModel(columns, key=key)
         self.setModel(self.model)
         self.columns = columns
@@ -457,6 +478,23 @@ class DataTable(QTableView):
         rows = self.selected_rows()
         return rows[0] if rows else None
 
+    # ------------------------------------------------------------------ 勾选
+    def checked_rows(self) -> list[dict]:
+        """勾选列选中的行；分组标题行不参与勾选。"""
+        return [row for row in self.model.rows
+                if row.get("_checked") and not row.get("_section")]
+
+    def set_checked_all(self, checked: bool) -> None:
+        for row in self.model.rows:
+            if not row.get("_section"):
+                row["_checked"] = checked
+        model = self.model
+        if model.rowCount():
+            model.dataChanged.emit(
+                model.index(0, 0),
+                model.index(model.rowCount() - 1, model.columnCount() - 1),
+                [Qt.ItemDataRole.CheckStateRole])
+
     def select_key(self, key) -> None:
         position = self.model.index_of(key)
         if position >= 0:
@@ -469,15 +507,10 @@ class DataTable(QTableView):
 
 # --------------------------------------------------------------------- 日志
 class LogView(QPlainTextEdit):
-    """运行日志：按级别着色，最多保留 2000 行。"""
+    """运行日志：按级别着色，最多保留 2000 行。
 
-    COLORS = {
-        "info": PALETTE["text_2"],
-        "ok": PALETTE["ok"],
-        "error": PALETTE["danger"],
-        "dim": PALETTE["muted"],
-        "warn": PALETTE["warn"],
-    }
+    颜色在 append 时才取：切主题前写入的行保留旧色，那是历史记录的一部分。
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -486,8 +519,19 @@ class LogView(QPlainTextEdit):
         self.setMaximumBlockCount(2000)
         self.setPlaceholderText("运行日志会显示在这里…")
 
+    @staticmethod
+    def _colors() -> dict[str, str]:
+        return {
+            "info": PALETTE["text_2"],
+            "ok": PALETTE["ok"],
+            "error": PALETTE["danger"],
+            "dim": PALETTE["muted"],
+            "warn": PALETTE["warn"],
+        }
+
     def append(self, message: str, level: str = "info") -> None:
-        color = self.COLORS.get(level, self.COLORS["info"])
+        colors = self._colors()
+        color = colors.get(level, colors["info"])
         text = html.escape(str(message)).replace("  ", "&nbsp;&nbsp;")
         self.appendHtml(f'<span style="color:{color}">{text}</span>')
         bar = self.verticalScrollBar()

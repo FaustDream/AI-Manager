@@ -80,6 +80,7 @@ def create_window(cfg: dict):
 
     app = QApplication.instance()
     if app is not None:
+        theme.set_mode(cfg.get("theme") or "light")
         theme.apply(app)
     return MainWindow(cfg)
 

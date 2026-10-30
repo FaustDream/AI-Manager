@@ -19,7 +19,9 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from ..core import paths
 from .base import Account, parse_iso
-from .registry import LABELS
+
+# LABELS 在这里延迟导入：registry 需要先建 provider 实例，而 provider 又依赖本模块，
+# 顶层互相 import 会拿到半初始化的 registry
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -84,6 +86,7 @@ else:
 
 
 def load() -> list[dict]:
+    from .registry import LABELS
     try:
         blob = base64.b64decode(paths.ACCOUNTS_FILE.read_text(encoding="ascii"))
         items = json.loads(_unprotect(blob).decode("utf-8"))
@@ -134,6 +137,7 @@ def to_item(account: Account) -> dict:
 
 
 def as_accounts() -> list[Account]:
+    from .registry import LABELS
     accounts: list[Account] = []
     for item in load():
         platform = item["platform"]
@@ -149,7 +153,7 @@ def as_accounts() -> list[Account]:
             name=str(item.get("name") or "未命名账号"),
             token=str(item.get("token") or ""),
             expires_at=parse_iso(item.get("expires_at")),
-            source="浏览器登录",
+            source=str(meta.get("source") or "浏览器登录"),
             meta=meta,
             requires_checkin=bool(item.get("requires_checkin", True)),
         )

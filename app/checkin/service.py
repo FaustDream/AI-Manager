@@ -9,7 +9,7 @@ import json
 from datetime import datetime, time, timedelta
 
 from ..core import paths, tasks
-from . import creditlog, ledger, logins, store
+from . import creditlog, ledger, logins, statuslog, store
 from .base import Account, ActionResult, CreditSnapshot, StatusResult
 from .registry import PROVIDERS, PROVIDER_MAP
 
@@ -71,6 +71,8 @@ def mark_checked(iid: str) -> None:
                                       encoding="utf-8")
     except OSError:
         pass
+    # 签到成功就是今天的确定状态，顺手记进当天档案，页面不必再问一次接口
+    statuslog.note_many({iid: {"checked": True}})
 
 
 def checked_ids(accounts: list[Account] | None = None) -> set[str]:
@@ -171,7 +173,7 @@ def collect(cfg: dict, log) -> list[Account]:
     if added:
         log(f"浏览器登录账号：{added} 个", "dim")
 
-    order = {"trae": 0, "qoder": 1, "qoder_intl": 2, "workbuddy": 3}
+    order = {"trae": 0, "qoder": 1, "qoder_intl": 2, "workbuddy": 3, "zcode": 4}
     accounts.sort(key=lambda a: (order.get(a.platform, 9), a.name.lower()))
     return accounts
 
@@ -214,7 +216,7 @@ def query_credit(account: Account, log) -> CreditSnapshot:
     try:
         snapshot = provider.credits(account, lambda m: log(m))
     except Exception as exc:
-        return CreditSnapshot(f"积分读取失败：{exc}")
+        return CreditSnapshot(f"读取失败：{exc}")
     creditlog.note(account.iid, snapshot.balance)
     return snapshot
 

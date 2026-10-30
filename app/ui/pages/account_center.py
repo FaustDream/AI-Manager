@@ -13,17 +13,19 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QMenu,
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QInputDialog, QMenu,
                                QVBoxLayout, QWidget)
 
-from ...checkin import daily, ledger, service, store, switcher
+from ...checkin import daily, ledger, service, statuslog, store, switcher
+from ...checkin import zclaim, zquota, zstore
 from ...checkin.base import (Account, ActionResult, CreditSnapshot, StatusResult,
                              summarize_lots)
 from ...checkin.registry import LABELS
 from ...core import bus, tasks, winproc
 from ...sessions import profiles
 from ...sessions import restore as session_restore
-from ...sessions.editions import Edition
+from ...sessions import transfer
+from ...sessions.editions import Edition, other_edition
 from .. import button_config
 from ..dialogs import AddAccountDialog
 from ..models import Column
@@ -39,7 +41,7 @@ COLUMNS = [
     Column("login", "登录态", 84, "left"),
     Column("current", "当前", 46, "left"),
     Column("today", "今日签到", 72, "left"),
-    Column("balance", "剩余积分", 78, "left"),
+    Column("balance", "额度 / 积分", 88, "left"),
     Column("expire", "最近到期", 108, "left"),
     Column("pack", "档案", 52, "left"),
     Column("action", "操作", 158, "left"),
@@ -48,7 +50,7 @@ COLUMNS = [
 # 明细列表最多展示几条：再多就要滚动，反而挡住下面的表格
 DETAIL_ROWS = 5
 
-SWITCHABLE = ("qoder", "qoder_intl", "workbuddy")
+SWITCHABLE = ("qoder", "qoder_intl", "workbuddy", "zcode")
 ACTION_COL = len(COLUMNS) - 1
 
 # 一次整包拷贝动辄上百 MB，切页面太频繁时没必要每次都重存
@@ -88,6 +90,19 @@ def _round_text(result) -> str:
     return "每日签到检查完成：今天都已签到，无需重复"
 
 
+def _fmt_amount(value) -> str:
+    """额度数字按万/亿缩写：Token 池动辄上亿，原样打印会把单元格撑爆。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if number >= 1e8:
+        return f"{number / 1e8:.1f}".rstrip("0").rstrip(".") + "亿"
+    if number >= 1e4:
+        return f"{number / 1e4:.1f}".rstrip("0").rstrip(".") + "万"
+    return f"{number:g}"
+
+
 def _short_time(value, prefix: str = "") -> str:
     """ISO 时间串转本地「月-日 时:分」；解析不了返回空串。"""
     if not value:
@@ -115,6 +130,12 @@ class AccountCenterPage(BasePage):
         self._ledger: dict[str, tuple[str, float, int]] = {}
         self._balances: dict[str, float | None] = {}
         self._balance_error: dict[str, str] = {}
+        # ZCode 是「额度」不是「积分」：单独存归一化后的额度，界面按百分比画
+        self._quota: dict[str, dict] = {}
+        self._quota_error: dict[str, str] = {}
+        # 上游明确回了 401 的账号：本地没有 expires_at 也要在登录态列标红
+        self._stale: set[str] = set()
+        self._detail_is_quota = False
         self._expiry: dict[str, str] = {}
         self._needs: dict[str, bool] = {}
         # (按钮, 动作类型, 账号 iid)：能否点每次按当前签到状态现算，不能存死
@@ -123,6 +144,8 @@ class AccountCenterPage(BasePage):
         self._current_map: dict[str, bool] = {}
         # 接口最近一次返回的签到状态：True 已签 / False 可签 / None 接口没给
         self._status_checked: dict[str, bool | None] = {}
+        # 当天已确认过的状态（data/checkin_status.json）：刷新时直接拿来用，不再问接口
+        self._cached: dict[str, dict] = {}
         # 只记「哪个版本下有哪些 uid」，用来判断该账号能否免登录恢复
         self._packs: dict[str, set[str]] = {"cn": set(), "intl": set()}
         self._packs_loaded = False
@@ -174,12 +197,19 @@ class AccountCenterPage(BasePage):
         row.setSpacing(6)
         checkin_buttons = self.btn_bar.build(row, "checkin", "toolbar", {
             "checkin.checkin_all": lambda: self.checkin(all_accounts=True),
-            "checkin.query_status": lambda: self.query(selected_only=False),
-            "checkin.refresh_credits": self.refresh_credits,
-            "checkin.refresh_login": self.refresh,
+            "checkin.refresh_all": self.refresh,
             "checkin.toggle_skip": self.toggle_skip,
         }, ctx=self._btn_ctx, compact=True)
         self.btn_all = checkin_buttons.get("checkin.checkin_all")
+        # ZCode 的活动领取是独立概念（不是每日签到），单独一个可勾选按钮，
+        # 勾上后按 15 分钟节奏自动探测可领活动
+        self.btn_auto_claim = make_button("自动领取", "ghost", "bolt")
+        self.btn_auto_claim.setCheckable(True)
+        self.btn_auto_claim.setChecked(bool(self.cfg.get("zcode_auto_claim")))
+        self.btn_auto_claim.setToolTip("ZCode 活动：开启后每 15 分钟探测一次可领套餐，"
+                                       "命中会打开浏览器完成验证码后自动领取")
+        self.btn_auto_claim.clicked.connect(self._toggle_auto_claim)
+        row.addWidget(self.btn_auto_claim)
         row.addSpacing(10)          # 签到动作与账号操作之间的分组留白
         account_buttons = self.btn_bar.build(row, "accounts", "header", {
             "accounts.add": self.add_account,
@@ -327,6 +357,12 @@ class AccountCenterPage(BasePage):
         iid = account.iid
         self.detail_name.setText(f"{account.platform_label} · {account.name}")
 
+        if account.platform == "zcode":
+            self._detail_is_quota = True
+            self._paint_quota_detail(account)
+            return
+        self._detail_is_quota = False
+
         requires = self._needs.get(iid, account.requires_checkin)
         at = service.checked_at(iid) if requires else None
         checked = self._status_checked.get(iid)
@@ -365,7 +401,7 @@ class AccountCenterPage(BasePage):
         文案要区分三种状态：接口给了下一轮时刻、接口说现在可签、接口什么都没给。
         后者不能写成可签，否则活动还没下发时用户会以为能点。
         """
-        if not self._detail_iid:
+        if not self._detail_iid or self._detail_is_quota:
             return
         checked = self._status_checked.get(self._detail_iid)
         target = self._detail_target
@@ -433,6 +469,63 @@ class AccountCenterPage(BasePage):
             self.detail_rows.addWidget(
                 label("暂无领取记录：签到成功后，这里会列出每笔的来源与到期", "SectionHint"))
 
+    def _paint_quota_detail(self, account: Account) -> None:
+        """额度型账号的明细：按窗口列出已用/剩余与重置时间，不出现积分概念。"""
+        iid = account.iid
+        quota = self._quota.get(iid) or {}
+        items = quota.get("items") or []
+        tier = quota.get("plan_tier") or ""
+        if iid in self._stale:
+            self.detail_badge.set("登录已过期", "danger")
+        else:
+            self.detail_badge.set(tier or ("无额度" if quota.get("is_empty") else "—"),
+                                  "ok" if items else "muted")
+        self.detail_checkin.setText(f"登录态 {self._login_text(iid)}")
+        fetched = quota.get("fetched_at")
+        self.detail_next.setText(f"额度刷新 {fetched:%m-%d %H:%M}" if fetched else "额度 尚未刷新")
+        expire = str(quota.get("plan_expire") or "")
+        self.detail_total.setText(f"套餐到期 {expire[:10]}" if expire else "套餐到期 平台未提供")
+
+        while self.detail_rows.count():
+            item = self.detail_rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        for entry in items[:DETAIL_ROWS]:
+            percent = entry.get("percent_used")
+            window = entry.get("window") or entry.get("name") or "额度"
+            holder = QWidget()
+            line = QHBoxLayout(holder)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(12)
+            line.addWidget(label(window, "StatLabel"))
+            if percent is None:
+                line.addWidget(label("平台未提供用量", "SectionHint"))
+            else:
+                remain = max(0.0, 100.0 - float(percent))
+                line.addWidget(label(f"剩 {remain:.0f}%", "StatLabel"))
+                total = entry.get("total")
+                used = entry.get("used")
+                if total and used is not None:
+                    unit = entry.get("unit") or ""
+                    line.addWidget(label(f"已用 {_fmt_amount(used)}/{_fmt_amount(total)} {unit}".strip(),
+                                         "SectionHint"))
+            line.addStretch(1)
+            if entry.get("reset"):
+                line.addWidget(label(f"重置 {entry['reset']}", "SectionHint"))
+            self.detail_rows.addWidget(holder)
+
+        if not items:
+            hint = ("这个账号没有额度明细：Free 套餐或接口未下发；可点「刷新资格」重新查询")
+            if quota.get("stale"):
+                hint = ("这个账号没有额度明细，且登录态可能已过期；"
+                        "请在 ZCode 客户端登录一次，工具会自动补存新凭据")
+            self.detail_rows.addWidget(label(hint, "SectionHint"))
+        elif len(items) > DETAIL_ROWS:
+            self.detail_rows.addWidget(label(f"…还有 {len(items) - DETAIL_ROWS} 个窗口", "SectionHint"))
+
     # ------------------------------------------------------------------ 数据
     def on_show(self) -> None:
         if not self.accounts:
@@ -482,27 +575,44 @@ class AccountCenterPage(BasePage):
 
     # ------------------------------------------------------------------ 扫描
     def refresh(self) -> None:
+        """唯一的刷新入口：重扫登录态 + 刷新签到状态 / 积分 / 额度。"""
         if self.busy:
             self.notify("当前任务还没结束，请稍候", "warn")
             return
-        self._set_busy(True, "正在扫描登录态…")
+        self._set_busy(True, "正在刷新登录态与额度…")
         self.log("开始扫描各客户端登录态", "dim")
         self._reload_profiles()          # 档案列表不依赖签到状态，先并行加载
         tasks.submit(self._scan_worker, on_done=self._scan_done,
                      on_error=self._fail, on_partial=self._apply)
 
     def _scan_worker(self, emit):
+        cached = statuslog.today()      # 当天已确认过的签到状态，读盘放后台
+        emit(("status_cache", cached))
+        tasks.report(0.05, "正在扫描各客户端登录态")
         accounts = service.collect(self.cfg, self.log)
         emit(("accounts", accounts))
         self.log(f"共发现 {len(accounts)} 个账号", "ok" if accounts else "error")
 
         skip = set(self.skip)
+        answers: dict[str, dict] = {}
+        total = max(1, len(accounts))
+        done = [0]
 
         def query(account: Account) -> None:
-            kind, iid, result = service.query_one(account, account.iid in skip, self.log)
-            emit((kind, (iid, result)))
+            iid = account.iid
+            if iid in cached:
+                # 今天的状态已经确认过：只刷积分，不再打签到接口
+                emit(("credit", (iid, service.query_credit(account, self.log))))
+            else:
+                kind, key, result = service.query_one(account, iid in skip, self.log)
+                if kind == "status":
+                    answers[key] = {"checked": result.checked_in, "next_at": result.next_at}
+                emit((kind, (key, result)))
+            done[0] += 1
+            tasks.report(0.2 + 0.8 * done[0] / total, f"{account.name} 已查询")
 
         tasks.parallel_map(accounts, query)
+        statuslog.note_many(answers)
         return len(accounts)
 
     def _scan_done(self, count: int) -> None:
@@ -557,7 +667,7 @@ class AccountCenterPage(BasePage):
         else:
             self.log("每日轮询：开始检测日期与账号状态", "dim")
         tasks.submit(self._daily_worker, on_done=self._daily_done,
-                     on_error=self._daily_failed, on_partial=self._apply)
+                     on_error=self._daily_failed, on_partial=self._apply, serial=True )
         return True
 
     def _daily_worker(self, emit):
@@ -651,7 +761,12 @@ class AccountCenterPage(BasePage):
         当前登录的账号不靠档案运行——客户端里的登录态就是它本身，所以显示
         「当前」而不是「—」，避免「明明登录了却说没存档」的误判。
         """
-        if account is None or account.platform != "workbuddy":
+        if account is None:
+            return "—"
+        if account.platform == "zcode":
+            # ZCode 的档案就是整份登录态，能出现在表里说明已经存好了
+            return "当前" if switcher.is_current(account) else "已存"
+        if account.platform != "workbuddy":
             return "—"
         if not self._packs_loaded:
             return "…"
@@ -660,7 +775,13 @@ class AccountCenterPage(BasePage):
         return "有" if self._has_pack(account) else "—"
 
     def _pack_tip(self, account: Account | None) -> str:
-        if account is None or account.platform != "workbuddy":
+        if account is None:
+            return ""
+        if account.platform == "zcode":
+            if switcher.is_current(account):
+                return "客户端当前登录的就是这个账号；关闭客户端时会自动补存一份"
+            return "整份登录态已存在本机账号库，切换时直接写回客户端（自动备份）"
+        if account.platform != "workbuddy":
             return ""
         if not self._packs_loaded:
             return "正在读取账号档案…"
@@ -692,6 +813,8 @@ class AccountCenterPage(BasePage):
             self._render_credit(*payload)
         elif kind == "checkin":
             self._render_checkin(*payload)
+        elif kind == "status_cache":
+            self._cached = dict(payload or {})
 
     def _refresh_caches(self) -> None:
         # 传账号进去：只认接口的平台（Qoder）不能用本地记录当“今天已签”的基线
@@ -716,28 +839,48 @@ class AccountCenterPage(BasePage):
         self.live_lots = {k: v for k, v in self.live_lots.items() if k in alive}
         self._balances = {k: v for k, v in self._balances.items() if k in alive}
         self._balance_error = {k: v for k, v in self._balance_error.items() if k in alive}
+        self._quota = {k: v for k, v in self._quota.items() if k in alive}
+        self._quota_error = {k: v for k, v in self._quota_error.items() if k in alive}
         self._expiry = {k: v for k, v in self._expiry.items() if k in alive}
         self._status_checked = {k: v for k, v in self._status_checked.items() if k in alive}
+        self._stale = {k for k in self._stale if k in alive}
         self._current_map = {k: v for k, v in self._current_map.items() if k in alive}
         self._needs = {account.iid: account.requires_checkin for account in accounts}
         self._refresh_caches()
+        # 当天已确认过的状态先落进内存：跳过状态查询的账号靠它显示「今日签到」，
+        # 「签到」链接的可用状态也读 _status_checked，不能等接口回来才亮
+        for iid, item in self._cached.items():
+            if iid not in alive:
+                continue
+            if item["checked"] is not None:
+                self._status_checked.setdefault(iid, item["checked"])
+                if item["checked"]:
+                    self._checked.add(iid)
+            if item["next_at"] is not None:
+                # 活动制平台的下次可签时刻只由接口下发，重启后要能从档案里还原
+                service.note_next_at(iid, item["next_at"])
 
         rows = []
         for account in accounts:
             iid = account.iid
             current = switcher.is_current(account)
             self._current_map[iid] = current
-            if not account.requires_checkin:
+            state = self._status_checked.get(iid)
+            if account.platform == "zcode":
+                today = "—"
+            elif not account.requires_checkin:
                 today = "免签到"
-            elif iid in self._checked:
+            elif self._is_checked(iid):
                 today = "已签到"
+            elif state is False:
+                today = "待签到"
             else:
                 today = "—"
             rows.append({
                 "id": iid,
                 "platform": account.platform_label,
                 "name": account.name,
-                "login": account.expires_short(),
+                "login": self._login_text(iid),
                 "current": "当前" if current else "",
                 "today": today,
                 "balance": self._balance_text(iid),
@@ -763,13 +906,34 @@ class AccountCenterPage(BasePage):
         else:
             self._show_detail("")
 
+    def _is_checked(self, iid: str) -> bool:
+        """今天是否已签到：接口给的当天状态优先，其次才是本工具的签到记录。"""
+        state = self._status_checked.get(iid)
+        if state is not None:
+            return state
+        return iid in self._checked
+
+    def _login_text(self, iid: str) -> str:
+        """登录态列：过期要说清楚，别让人以为还能用。"""
+        account = self.accounts.get(iid)
+        if account is None:
+            return "—"
+        if account.expired or iid in self._stale:
+            return "已过期"
+        return account.expires_short()
+
     def _colors(self, iid: str, account: Account) -> dict:
         colors = {}
-        if account.expired:
+        if account.expired or iid in self._stale:
             colors["login"] = PALETTE["danger"]
-        if iid in self._checked:
+        if self._is_checked(iid):
             colors["today"] = PALETTE["ok"]
-        if not account.requires_checkin:
+        elif self._status_checked.get(iid) is False:
+            colors["today"] = PALETTE["warn"]
+        # 免签到 / 额度型平台覆盖上面的判定：它们的「今日签到」本来就没有意义
+        if account.platform == "zcode":
+            colors["today"] = PALETTE["muted"]
+        elif not account.requires_checkin:
             colors["today"] = PALETTE["muted"]
         if switcher.is_current(account):
             colors["current"] = PALETTE["ok"]
@@ -830,6 +994,21 @@ class AccountCenterPage(BasePage):
     def _render_credit(self, iid: str, snapshot: CreditSnapshot) -> None:
         if iid not in self.accounts:
             return
+        if snapshot.quota is not None:
+            # 额度型平台：没有积分批次，余额列与明细都换成额度口径
+            self._quota[iid] = snapshot.quota
+            self._quota_error.pop(iid, None)
+            if snapshot.quota.get("stale"):
+                self._stale.add(iid)        # 上游 401：登录态列直接标红
+            else:
+                self._stale.discard(iid)
+        elif snapshot.balance is None:
+            self._quota.pop(iid, None)      # 旧的额度不能留着，否则过期了还显示上次的百分比
+            text = str(snapshot.summary or "")
+            if "过期" in text or "失效" in text:
+                self._quota_error[iid] = "已过期"
+            elif "失败" in text:
+                self._quota_error[iid] = "读取失败"
         if snapshot.lots is None:
             self.live_lots.pop(iid, None)
         else:
@@ -838,12 +1017,21 @@ class AccountCenterPage(BasePage):
         self._balance_error[iid] = _error_text(snapshot.balance, snapshot.summary)
         changes = {
             "balance": self._balance_text(iid),
+            "login": self._login_text(iid),
             "_tip_map": self._merge_tips(iid, balance=snapshot.summary or ""),
         }
+        position = self.table.model.index_of(iid)
+        colors = dict(self.table.model.rows[position].get("_fg_map") or {}) if position >= 0 else {}
+        if iid in self._stale:
+            colors["login"] = PALETTE["danger"]
+        else:
+            colors.pop("login", None)
+        changes["_fg_map"] = colors
         if not self._needs.get(iid, True):
             changes["today"] = "免签到"
         self.table.model.update(iid, **changes)
         self._update_credit_cells(iid)
+        self._refresh_row_actions()     # 过期判定一回来，行内按钮就要换成「重新登录」
         self._update_summary()
         account = self.accounts.get(iid)
         if iid == self._detail_iid and account is not None:
@@ -882,13 +1070,82 @@ class AccountCenterPage(BasePage):
                  "ok" if result.ok else "error")
 
     def _balance_text(self, iid: str) -> str:
+        account = self.accounts.get(iid)
+        if account is not None and account.platform == "zcode":
+            return self._quota_text(iid)
         value = self._balances.get(iid)
         if value is None:
             return self._balance_error.get(iid) or "—"
         return f"{value:g}"
 
+    def _quota_text(self, iid: str) -> str:
+        """额度型账号的单元格：只说「还剩百分之多少」，明细看悬停与下方面板。"""
+        quota = self._quota.get(iid)
+        if quota is None:
+            return self._quota_error.get(iid) or "—"
+        if quota.get("is_empty"):
+            return quota.get("plan_tier") or "无额度"
+        percent = quota.get("percent_used")
+        if percent is None:
+            return "额度未知"
+        return f"剩 {max(0.0, 100.0 - float(percent)):.0f}%"
+
+    def _quota_tip(self, quota: dict) -> str:
+        parts = []
+        for item in quota.get("items") or []:
+            percent = item.get("percent_used")
+            window = item.get("window") or item.get("name") or "额度"
+            unit = item.get("unit") or ""
+            total = item.get("total")
+            used = item.get("used")
+            if total and used is not None:
+                parts.append(f"{window} 已用 {_fmt_amount(used)}/{_fmt_amount(total)} {unit}".strip())
+            elif percent is not None:
+                parts.append(f"{window} 已用 {float(percent):.0f}%")
+        if quota.get("plan_expire"):
+            parts.append(f"套餐到期 {quota['plan_expire']}")
+        if quota.get("plan_tier"):
+            parts.insert(0, f"套餐 {quota['plan_tier']}")
+        if quota.get("stale"):
+            parts.append("登录态可能已过期，建议在 ZCode 客户端重新登录一次")
+        if not parts:
+            return ("该账号没有额度明细（Free 套餐或接口未下发）"
+                    if quota.get("is_empty") else "平台未返回额度明细")
+        return "；".join(parts)
+
+    def _update_quota_cells(self, iid: str, account: Account) -> None:
+        quota = self._quota.get(iid) or {}
+        reset = quota.get("reset") or ""
+        expire = quota.get("plan_expire") or ""
+        if reset:
+            expire_text = f"{reset} 重置"
+        elif expire:
+            expire_text = f"{str(expire)[:10]} 到期"
+        else:
+            expire_text = "—"
+        position = self.table.model.index_of(iid)
+        colors = {}
+        if position >= 0:
+            colors = dict(self.table.model.rows[position].get("_fg_map") or {})
+        percent = quota.get("percent_used")
+        if percent is not None and float(percent) >= 90:
+            colors["balance"] = PALETTE["warn"]
+        self.table.model.update(
+            iid,
+            balance=self._quota_text(iid),
+            expire=expire_text,
+            _fg_map=colors,
+            _tip_map=self._merge_tips(iid, balance=self._quota_tip(quota) if quota else "",
+                                      expire="额度窗口的重置时间由服务端下发"))
+        if iid == self._detail_iid:
+            self._paint_detail(account)
+
     def _update_credit_cells(self, iid: str) -> None:
         if iid not in self.accounts:
+            return
+        account = self.accounts.get(iid)
+        if account is not None and account.platform == "zcode":
+            self._update_quota_cells(iid, account)
             return
         if iid in self.live_lots:
             merged = list(self.live_lots[iid])
@@ -945,11 +1202,15 @@ class AccountCenterPage(BasePage):
             return
         active = sum(1 for iid, account in self.accounts.items()
                      if account.requires_checkin and iid not in self.skip)
-        checked = sum(1 for iid in self.accounts if iid in self._checked)
+        checked = sum(1 for iid in self.accounts if self._is_checked(iid))
         balance = sum(value for value in self._balances.values() if value is not None)
         dated = [value for value in self._expiry.values() if value]
         nearest = min(dated) if dated else ""
         text = f"{total} 个账号 · 参与 {active} · 今日已签到 {checked}"
+        expired = sum(1 for iid, account in self.accounts.items()
+                      if account.expired or iid in self._stale)
+        if expired:
+            text += f" · {expired} 个登录态过期"
         if self._balances:
             text += f" · 剩余 {balance:g} 积分"
         if nearest:
@@ -979,16 +1240,25 @@ class AccountCenterPage(BasePage):
 
         # 只登记「哪个按钮代表哪个动作」，能不能点交给 _refresh_row_actions：
         # 签到状态是扫描过程中陆续回来的，构建时定死就永远停在第一次的值
-        specs = (
-            ("签到", "checkin", lambda: self.checkin_one(account.iid)),
-            ("切换", "switch", lambda: self.switch_login(account.iid)),
-            ("恢复会话", "restore", lambda: self.restore_sessions(account.iid)),
-        )
+        if account.platform == "zcode":
+            specs = (
+                ("领取", "claim", lambda: self.claim_one(account.iid)),
+                ("重新登录", "relogin", lambda: self.relogin(account.iid)),
+                ("切换", "switch", lambda: self.switch_login(account.iid)),
+            )
+        else:
+            specs = (
+                ("签到", "checkin", lambda: self.checkin_one(account.iid)),
+                ("重新登录", "relogin", lambda: self.relogin(account.iid)),
+                ("切换", "switch", lambda: self.switch_login(account.iid)),
+                ("恢复会话", "restore", lambda: self.restore_sessions(account.iid)),
+            )
         for text, kind, slot in specs:
             button = make_button(text, "link")
             button.setObjectName("RowAction")
             button.setFixedHeight(24)
             button.clicked.connect(slot)
+            button.setVisible(False)      # 由 _refresh_row_actions 决定显示
             self._action_buttons.append((button, kind, account.iid))
             layout.addWidget(button)
         return host
@@ -1013,17 +1283,30 @@ class AccountCenterPage(BasePage):
             account = self.accounts.get(iid)
             if account is None:
                 button.setEnabled(False)
+                button.setVisible(False)
                 continue
             current = self._current_map.get(iid, False)
-            if kind == "checkin":
-                enabled = self._can_checkin(iid)
-                blocked = self._daily_running
-            elif kind == "switch":
-                enabled = account.platform in SWITCHABLE and not current
+            expired = account.expired or iid in self._stale
+            # 登录态过期时整行只留「重新登录」：签到/领取/切换都注定失败，
+            # 摆在那里只会让人以为还能点
+            if kind == "relogin":
+                button.setVisible(expired)
+                enabled = expired
                 blocked = self._daily_running
             else:
-                enabled = account.platform == "workbuddy" and current
-                blocked = False
+                button.setVisible(not expired)
+                if kind == "checkin":
+                    enabled = self._can_checkin(iid)
+                    blocked = self._daily_running
+                elif kind == "claim":
+                    enabled = bool(zstore.credentials_of(account))
+                    blocked = self._daily_running
+                elif kind == "switch":
+                    enabled = account.platform in SWITCHABLE and not current
+                    blocked = self._daily_running
+                else:
+                    enabled = account.platform == "workbuddy" and current
+                    blocked = False
             button.setEnabled(enabled and not self.busy and not blocked)
 
     def _account_of(self, iid: str | None) -> Account | None:
@@ -1107,34 +1390,6 @@ class AccountCenterPage(BasePage):
         self.win.set_busy(busy, text, self.key)
         self._sync_buttons()
 
-    def query(self, selected_only: bool = False) -> None:
-        if self.busy:
-            return
-        targets = list(self.accounts.values())
-        if selected_only:
-            row = self.table.current_row()
-            if not row:
-                self.info("查询状态", "请先在列表中选择一个账号。")
-                return
-            targets = [self.accounts[row["id"]]] if row["id"] in self.accounts else []
-        if not targets:
-            self.info("暂无账号", "没有可查询的账号，请先登录对应客户端。")
-            return
-
-        self._set_busy(True, "正在查询状态…")
-        skip = set(self.skip)
-
-        def worker(emit):
-            def query(account: Account) -> None:
-                kind, iid, result = service.query_one(account, account.iid in skip, self.log)
-                emit((kind, (iid, result)))
-
-            tasks.parallel_map(targets, query)
-            return len(targets)
-
-        tasks.submit(worker, on_done=lambda _n: self._set_busy(False),
-                     on_error=self._fail, on_partial=self._apply)
-
     def query_one(self, iid: str) -> None:
         account = self.accounts.get(iid)
         if account is None or self.busy:
@@ -1151,7 +1406,7 @@ class AccountCenterPage(BasePage):
                      on_error=self._fail, on_partial=self._apply)
 
     def refresh_credits(self) -> None:
-        """只刷新剩余积分与到期，不查签到状态——适合高频刷新。"""
+        """只刷新剩余积分 / ZCode 额度与到期，不查签到状态——适合高频刷新。"""
         if self.busy:
             self.notify("当前任务还没结束，请稍候", "warn")
             return
@@ -1159,7 +1414,7 @@ class AccountCenterPage(BasePage):
         if not targets:
             self.info("暂无账号", "没有可查询的账号，请先登录对应客户端。")
             return
-        self._set_busy(True, "正在刷新积分…")
+        self._set_busy(True, "正在刷新资格…")
 
         def worker(emit):
             results = service.query_credits(targets, lambda m: self.log(m, "dim"))
@@ -1211,7 +1466,7 @@ class AccountCenterPage(BasePage):
         self._set_busy(True, "正在签到…")
         tasks.submit(lambda emit: self._checkin_worker(emit, targets),
                      on_done=self._checkin_done, on_error=self._fail,
-                     on_partial=self._apply)
+                     on_partial=self._apply, serial=True )
 
     def checkin_one(self, iid: str) -> None:
         if self._blocked_by_daily("签到"):
@@ -1225,13 +1480,14 @@ class AccountCenterPage(BasePage):
         self._set_busy(True, f"正在为 {account.name} 签到…")
         tasks.submit(lambda emit: self._checkin_worker(emit, [account]),
                      on_done=self._checkin_done, on_error=self._fail,
-                     on_partial=self._apply)
+                     on_partial=self._apply, serial=True )
 
     def _checkin_worker(self, emit, targets: list[Account]):
         success = 0
         already = 0
-        for account in targets:
+        for index, account in enumerate(targets, 1):
             self.log(f"[{account.platform_label}] 正在为 {account.name} 签到…", "dim")
+            tasks.report(index / len(targets) * 0.9, f"{account.name} 签到中")
             result = service.checkin_one(account, self.log)
             if result.ok:
                 # 「本轮早已领过」没有新发放，不能把这次调用写成本次签到时刻
@@ -1269,6 +1525,73 @@ class AccountCenterPage(BasePage):
         self._set_busy(False)
         self.log(message, "error")
         self.notify("操作失败，详情见运行日志", "error")
+
+    # ---------------------------------------------------------- ZCode 领取
+    def _toggle_auto_claim(self) -> None:
+        enabled = self.btn_auto_claim.isChecked()
+        self.cfg["zcode_auto_claim"] = enabled
+        self.win.save_cfg()
+        self.log(f"[ZCode] 自动领取已{'开启' if enabled else '关闭'}", "dim")
+        if enabled:
+            # 定时器在主窗口上，跟页面在不在前台无关
+            self.win.zcode_auto_claim(force=True)
+
+    def claim_one(self, iid: str, plan_id: str | None = None) -> None:
+        """领取一个活动套餐：没有指定就先把可领列表拉出来让用户选。"""
+        account = self.accounts.get(iid)
+        if account is None or account.platform != "zcode" or self.busy:
+            return
+        creds = zstore.credentials_of(account)
+        if not creds:
+            self.warn("领取活动", "这条档案里没有登录凭据，请先保存登录态。")
+            return
+        if plan_id is None:
+            self._set_busy(True, "正在查询可领活动…")
+
+            def lookup(_emit):
+                return zclaim.claimable(creds, zstore.config_of(account),
+                                        zstore.device_of(account))
+
+            def picked(plans) -> None:
+                self._set_busy(False)
+                if not plans:
+                    self.info("领取活动", f"{account.name} 当前没有可领取的活动。")
+                    return
+                if len(plans) == 1:
+                    self.claim_one(iid, plans[0]["plan_id"])
+                    return
+                labels = [f"{item.get('name') or item['plan_id']}"
+                          f"（{'；'.join(item.get('grants') or []) or '无明细'}）"
+                          for item in plans]
+                choice, ok = QInputDialog.getItem(
+                    self, "领取活动", f"{account.name} 有 {len(plans)} 个可领活动：",
+                    labels, 0, False)
+                if ok and choice:
+                    self.claim_one(iid, plans[labels.index(choice)]["plan_id"])
+
+            tasks.submit(lookup, on_done=picked, on_error=self._fail)
+            return
+
+        self._set_busy(True, f"正在领取 {account.name} 的活动…")
+
+        def worker(emit):
+            # 验证码页在浏览器里打开，这里等它回传参数；log 走总线信号，跨线程安全
+            return zclaim.claim(creds, zstore.config_of(account), plan_id,
+                                zstore.device_of(account), self.log)
+
+        def done(result) -> None:
+            self._set_busy(False)
+            name = result.get("name") or plan_id
+            self.log(f"[ZCode] {account.name} 领取成功：{name}", "ok")
+            self.notify(f"已领取：{name}", "ok")
+            self.refresh_credits()
+
+        tasks.submit(worker, on_done=done, on_error=self._claim_failed)
+
+    def _claim_failed(self, message: str) -> None:
+        self._set_busy(False)
+        self.log(f"[ZCode] 领取失败：{message}", "error")
+        self.notify(f"领取失败：{message.splitlines()[0]}", "error")
 
     def toggle_skip(self) -> None:
         account = self._account_of(None)
@@ -1314,6 +1637,27 @@ class AccountCenterPage(BasePage):
             return
         AddAccountDialog(self.win, platform).exec()
 
+    def relogin(self, iid: str) -> None:
+        """为过期账号重新走一遍官方登录，成功后覆盖同一账号的档案。"""
+        account = self.accounts.get(iid)
+        if account is None or self.busy:
+            return
+        platform = account.platform
+        if platform == "zcode":
+            # 沿用该账号原来的站点，别把 z.ai 的号登录到 BigModel 入口
+            provider = str(account.meta.get("provider") or "bigmodel")
+            platform = "zcode_zai" if provider == "zai" else "zcode"
+        elif platform == "workbuddy" and account.meta.get("edition") == "intl":
+            platform = "workbuddy_intl"
+        elif platform == "qoder_intl":
+            self.info("重新登录",
+                      "Qoder 国际版通过扫描本机客户端登录态接入：\n"
+                      "请在客户端重新登录该账号，回来点「刷新」。")
+            return
+        self.log(f"[{account.platform_label}] {account.name} 登录态已过期，开始重新登录", "dim")
+        AddAccountDialog(self.win, platform).exec()
+        self.refresh()
+
     def open_client(self) -> None:
         account = self._account_of(None)
         platform = account.platform if account else "workbuddy"
@@ -1344,7 +1688,13 @@ class AccountCenterPage(BasePage):
         if account.platform not in SWITCHABLE:
             self.warn("切换账号", f"暂不支持写回 {account.platform_label}。")
             return
-        if not account.meta.get("refresh_token"):
+        if account.platform == "zcode":
+            if not zstore.credentials_of(account):
+                self.warn("切换账号",
+                          "这条 ZCode 档案里没有登录凭据。\n"
+                          "请在客户端登录该账号后点「刷新登录态」，会自动保存成档案。")
+                return
+        elif not account.meta.get("refresh_token"):
             self.warn("切换账号",
                       "这个账号没有 refresh token，无法写回客户端。\n"
                       "请先用「添加账号」通过浏览器登录一次。")
@@ -1387,7 +1737,7 @@ class AccountCenterPage(BasePage):
             self.refresh()
             self._verify_switch(account)
 
-        tasks.submit(worker, on_done=done, on_error=self._fail)
+        tasks.submit(worker, on_done=done, on_error=self._fail, serial=True )
 
     def _verify_switch(self, account: Account) -> None:
         """切换后等客户端起来确认一眼：票据没被接受就直接说，别让用户自己撞登录页。"""
@@ -1419,7 +1769,7 @@ class AccountCenterPage(BasePage):
 
         tasks.submit(check, on_done=done,
                      on_error=lambda m: self.log(
-                         f"切换校验失败：{m.splitlines()[0]}", "dim"))
+                         f"切换校验失败：{m.splitlines()[0]}", "dim"), serial=True )
 
     def remove_account(self) -> None:
         if self._blocked_by_daily("移除账号"):
@@ -1517,10 +1867,11 @@ class AccountCenterPage(BasePage):
             self.log(f"退出前保存账号档案失败：{exc}", "error")
 
     def restore_sessions(self, iid: str | None = None) -> None:
-        """把本版本已有的项目会话按归属引用关联到当前账号。
+        """把已有的项目会话按归属引用关联到当前账号。
 
-        只改 sessions.user_id / deleted_at，正文原地复用；重复执行时已关联的
-        会话算作「已存在」，不会新增行，也不会复制文件。
+        本版本内只改 sessions.user_id / deleted_at，正文原地复用；同时把另一
+        版本（国内 ↔ 国际）独有的会话搬进本版本，之后一并归属到这个账号。
+        重复执行时已关联的算「已存在」，搬过的不会再搬，不会产生副本。
         """
         account = self._account_of(iid)
         if account is None:
@@ -1543,32 +1894,47 @@ class AccountCenterPage(BasePage):
             return
         try:
             preview = session_restore.preview(ep, uid)
+            other_label, other_count = transfer.count(ep)
         except Exception as exc:
             self.warn("恢复会话", f"读取会话库失败：{exc}")
             return
-        if not preview["total"]:
-            text = "这个版本里还没有可恢复的会话。"
+        if not preview["total"] and not other_count:
+            text = "两个版本里都还没有可恢复的会话。"
             if preview["missing"]:
                 text += f"\n有 {preview['missing']} 条会话缺少正文文件，无法恢复。"
             self.info("恢复会话", text)
             return
-        detail = (f"将把 {ep.label} 里已有的项目会话关联到：\n{account.name}\n\n"
-                  f"项目 {preview['projects']} 个 · 会话 {preview['total']} 条"
-                  f"（其中 {preview['pending']} 条需要重新关联）")
+
+        lines = [f"将把已有的项目会话关联到：\n{account.name}\n"]
+        if preview["total"]:
+            lines.append(f"{ep.label}：项目 {preview['projects']} 个 · "
+                         f"会话 {preview['total']} 条"
+                         f"（其中 {preview['pending']} 条需要重新关联）")
+        if other_count:
+            lines.append(f"{other_label}：{other_count} 条独有会话会一并引入 {ep.short}")
         if preview["missing"]:
-            detail += f"\n缺正文 {preview['missing']} 条，会跳过"
-        detail += "\n\n只改会话归属，不复制正文；可重复执行，不会产生副本。继续吗？"
-        if not self.confirm("恢复会话", detail):
+            lines.append(f"缺正文 {preview['missing']} 条，会跳过")
+        lines.append("\n本版本内只改归属、不复制正文；跨版本引入会复制正文文件。"
+                     "可重复执行，不会产生重复会话。继续吗？")
+        if not self.confirm("恢复会话", "\n".join(lines)):
             return
         if not switcher.close_client_for(account, self.log):
             self.error("关闭失败", f"{account.platform_label} 没能关闭，请手动退出后重试。")
             return
+        if other_count:
+            other = other_edition(ep)
+            if winproc.process_running(other.proc):
+                self.log(f"正在关闭 {other.label}（要读它的会话库）…")
+                if not winproc.kill_process(other.proc):
+                    self.error("关闭失败", f"{other.label} 没能关闭，请手动退出后重试。")
+                    return
 
         self._set_busy(True, "正在恢复会话…")
 
         def worker(_emit):
             try:
-                return session_restore.restore_for_account(ep, uid, log=self.log)
+                return session_restore.restore_for_account(
+                    ep, uid, log=self.log, with_other=bool(other_count))
             finally:
                 # 只要客户端被关过就重新打开，避免留下“软件打不开”的状态
                 winproc.start_exe(ep.exe)
@@ -1582,7 +1948,7 @@ class AccountCenterPage(BasePage):
             bus.BUS.data_changed.emit("sessions")
             self.refresh()
 
-        tasks.submit(worker, on_done=done, on_error=self._fail)
+        tasks.submit(worker, on_done=done, on_error=self._fail, serial=True )
 
     def logout(self) -> None:
         if self._blocked_by_daily("退出登录"):
@@ -1636,7 +2002,7 @@ class AccountCenterPage(BasePage):
             if restart:
                 winproc.start_exe(ep.exe)
 
-        tasks.submit(worker, on_done=done, on_error=failed)
+        tasks.submit(worker, on_done=done, on_error=failed, serial=True )
 
     # ------------------------------------------------------------------ 说明
     def show_help(self) -> None:
@@ -1697,7 +2063,7 @@ class AccountCenterPage(BasePage):
             self._ticket_syncing = False
             self.log(f"同步登录票据失败：{message.splitlines()[0]}", "dim")
 
-        tasks.submit(worker, on_done=done, on_error=failed)
+        tasks.submit(worker, on_done=done, on_error=failed, serial=True )
 
     def _watch_client_closed(self) -> None:
         """客户端从「运行中」变成「已关闭」的那一刻补存一次档案。

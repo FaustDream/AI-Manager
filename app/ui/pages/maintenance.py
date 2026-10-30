@@ -11,9 +11,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QW
 from ...core import paths, tasks, winproc
 from ...core.format import fmt_size
 from ...sessions import backup, codebuddy as cb, service, trash
-from ...sessions.editions import Edition
 from ..models import Column
-from ..theme import PALETTE
 from ..widgets import Badge, Card, DataTable, hline, label, make_button
 from .base import BasePage
 
@@ -252,7 +250,7 @@ class MaintenancePage(BasePage):
             self.notify("会话库已备份")
             self.refresh()
 
-        tasks.submit(worker, on_done=done, on_error=self._failed)
+        tasks.submit(worker, on_done=done, on_error=self._failed, serial=True )
 
     def rollback(self) -> None:
         row = self.backup_table.current_row()
@@ -268,10 +266,10 @@ class MaintenancePage(BasePage):
         self._set_busy(True, "正在回滚…")
 
         def worker(emit):
-            closed = service.close_clients(lambda m, lv="info": self.log(m, lv))
-            service.rollback(tag)
-            for ep in closed:
-                winproc.start_exe(ep.exe)
+            from ...sessions import lifecycle
+            log = lambda m, lv="info": self.log(m, lv)  # noqa: E731 - 回调只需要一个闭包
+            with lifecycle.client_guard(lifecycle.workbuddy_clients(), log):
+                service.rollback(tag)
             return tag
 
         def done(tag_value):
@@ -280,7 +278,7 @@ class MaintenancePage(BasePage):
             self.notify(f"已回滚到 {tag_value}")
             self.refresh()
 
-        tasks.submit(worker, on_done=done, on_error=self._failed)
+        tasks.submit(worker, on_done=done, on_error=self._failed, serial=True )
 
     def restore_selected(self) -> None:
         row = self.trash_table.current_row()
@@ -302,7 +300,7 @@ class MaintenancePage(BasePage):
             self.notify(f"已恢复 {count} 条会话")
             self.refresh()
 
-        tasks.submit(worker, on_done=done, on_error=self._failed)
+        tasks.submit(worker, on_done=done, on_error=self._failed, serial=True )
 
     def purge_selected(self) -> None:
         row = self.trash_table.current_row()
@@ -359,7 +357,7 @@ class MaintenancePage(BasePage):
             self.notify(f"{label_text}完成：{stats['sessions']} 条")
             self.refresh()
 
-        tasks.submit(worker, on_done=done, on_error=self._failed)
+        tasks.submit(worker, on_done=done, on_error=self._failed, serial=True )
 
     def _failed(self, message: str) -> None:
         self._set_busy(False)

@@ -470,7 +470,7 @@ class TraeLogin(LoginFlow):
             pass
 
 
-def create_login(platform: str) -> LoginFlow:
+def create_login(platform: str, variant: str = "") -> LoginFlow:
     if platform == "workbuddy":
         return WorkBuddyLogin("cn")
     if platform == "workbuddy_intl":
@@ -479,6 +479,10 @@ def create_login(platform: str) -> LoginFlow:
         return QoderLogin()
     if platform == "trae":
         return TraeLogin()
+    if platform == "zcode":
+        # 延迟导入：zlogin 依赖 logins.LoginError，顶层导入会成环
+        from . import zlogin
+        return zlogin.ZCodeLogin(variant or "bigmodel")
     raise LoginError(f"不支持的平台：{platform}")
 
 

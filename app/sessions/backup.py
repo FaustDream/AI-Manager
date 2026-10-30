@@ -17,11 +17,12 @@ from .editions import Edition, connect_ro, path_size, remove_path
 BACKUP_ROOT = paths.BACKUP_ROOT
 
 
-def backup_db(ep: Edition, dest: Path) -> None:
+def backup_file(src: Path, dest: Path) -> None:
+    """任意 SQLite 文件的只读快照，供 Qoder / ZCode 这类外部库使用。"""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    src_conn = connect_ro(ep.db)
+    src_conn = connect_ro(src)
     if src_conn is None:
-        raise RuntimeError(f"无法读取 {ep.db}")
+        raise RuntimeError(f"无法读取 {src}")
     try:
         dst_conn = sqlite3.connect(str(dest))
         try:
@@ -30,6 +31,18 @@ def backup_db(ep: Edition, dest: Path) -> None:
             dst_conn.close()
     finally:
         src_conn.close()
+
+
+def backup_db(ep: Edition, dest: Path) -> None:
+    backup_file(ep.db, dest)
+
+
+def prune(base: Path, keep: int = 10) -> None:
+    """只留最近若干份快照：单份几 MB，但没必要无限增长。"""
+    if not base.exists():
+        return
+    for old in sorted((p for p in base.iterdir() if p.is_dir()), reverse=True)[keep:]:
+        remove_path(old)
 
 
 def make_snapshot(tag: str) -> Path:

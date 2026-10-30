@@ -18,12 +18,18 @@ def defaults() -> dict:
         # 账号表：拖出来的顺序与用户调过的列宽
         "account_order": [],
         "account_columns": [],
-        # 会话页的视图状态：只看有正文 / 排序
+        # ZCode 活动自动领取：默认关（会拉起浏览器过验证码，不适合默认打扰）
+        "zcode_auto_claim": False,
+        # 会话页的视图状态：状态筛选 / 排序
         "session_opts": {
-            "only_body": False,
+            "state": "全部",
             "sort": "last",
             "sort_desc": True,
         },
+        # 跨软件会话导入（CodeBuddy → WorkBuddy）：默认关，验证过转换无害才开
+        "allow_cross_software": False,
+        # 外观：light / dark，跟着侧栏右上角的开关走
+        "theme": "light",
     }
 
 
@@ -64,6 +70,11 @@ def _coerce(raw: Any) -> dict:
                 # 原样合并会让它们一直留在 config.json 里
                 cfg[key] = {name: value.get(name, default)
                             for name, default in cfg[key].items()}
+
+    cfg["zcode_auto_claim"] = bool(raw.get("zcode_auto_claim", False))
+    # 开关必须原样读回，否则开了也会在重启后悄悄退回默认的关闭
+    cfg["allow_cross_software"] = bool(raw.get("allow_cross_software", False))
+    cfg["theme"] = "dark" if str(raw.get("theme") or "").lower() == "dark" else "light"
     return cfg
 
 

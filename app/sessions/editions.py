@@ -191,6 +191,15 @@ def copy_any(src: Path, dst: Path) -> None:
     ensure_writable(dst)
 
 
+def other_edition(ep: Edition) -> Edition:
+    """同软件的另一个版本：国内 ↔ 国际。
+
+    两个版本是同一产品的两套包装，sessions 表结构与 projects 正文布局一致，
+    所以会话可以原地搬，不需要格式转换。
+    """
+    return Edition("intl" if ep.key == "cn" else "cn")
+
+
 def cwd_to_slug(cwd: str) -> str:
     """工作目录 → projects 子目录名（与客户端规则一致，仅作兜底）。"""
     if not cwd:

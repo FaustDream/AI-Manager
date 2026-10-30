@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout
 
-from ...checkin import creditlog
+from ...checkin import creditlog, statuslog
 from ...checkin import service as checkin_service
 from ...checkin.base import CreditSnapshot, StatusResult, summarize_lots
 from ...core import tasks
+from ...hub import service as hub_service
 from ..models import Column
 from ..theme import PALETTE
-from ..widgets import DataTable, StatCard, make_button
+from ..widgets import DataTable, StatCard
 from .base import BasePage
 
 # 表格独占整行，宽列让账号名吸收多余空间，其余列保持紧凑
@@ -47,21 +48,21 @@ class OverviewPage(BasePage):
         self._expiry: dict[str, str] = {}
         self._done: set[str] = set()
         self._stats: dict = {}
+        self._cached: dict[str, dict] = {}
         self._build()
 
     # ------------------------------------------------------------------ 界面
     def _build(self) -> None:
-        self.btn_credit = make_button("刷新积分", "ghost", "clock")
-        self.btn_credit.clicked.connect(self.refresh_credits)
-        self.header.add_action(self.btn_credit)
+        # 页头整块去掉：左侧导航已经标出当前页，也不用手动刷新（见 on_show）
+        self.header.hide()
 
         stats = QHBoxLayout()
         stats.setSpacing(12)
-        self.card_checkin = StatCard("checkin", "签到账号")
         self.card_credit = StatCard("bolt", "积分总额")
         self.card_gain = StatCard("plus", "今日增加", tone="ok")
-        self.card_spend = StatCard("clock", "今日消耗", tone="warn")
-        for card in (self.card_checkin, self.card_credit, self.card_gain, self.card_spend):
+        self.card_skill = StatCard("hub", "技能")
+        self.card_mcp = StatCard("plug", "MCP")
+        for card in (self.card_credit, self.card_gain, self.card_skill, self.card_mcp):
             stats.addWidget(card, 1)
         self.body.addLayout(stats)
 
@@ -78,7 +79,7 @@ class OverviewPage(BasePage):
 
     # ------------------------------------------------------------------ 数据
     def on_show(self) -> None:
-        # 手动「刷新全部」已移除：每次切回总览都重扫一遍，否则签到状态会一直停在首次加载
+        # 没有手动刷新入口：每次切回总览都重扫一遍积分；签到状态当天只问一次接口
         self.refresh()
 
     def refresh(self) -> None:
@@ -87,46 +88,37 @@ class OverviewPage(BasePage):
         self._set_busy(True)
 
         def worker(emit):
+            cached = statuslog.today()      # 当天已确认过的签到状态，读盘放后台
+            emit(("status_cache", cached))
+            # 技能 / MCP 只数条目，先发出去，不用等账号查询跑完
+            emit(("hub", hub_service.counts()))
             accounts = checkin_service.collect(self.cfg, lambda m, lv="info": self.log(m, lv))
             emit(("accounts", accounts))
             skip = set(self.cfg.get("skip") or [])
+            answers: dict[str, bool] = {}
 
             def query(account) -> None:
-                kind, iid, result = checkin_service.query_one(
-                    account, account.iid in skip, lambda m: self.log(m, "dim"))
-                emit((kind, (iid, result)))
+                iid = account.iid
+                if iid in cached:
+                    # 今天的状态已经确认过：只刷积分，不再打签到接口
+                    snapshot = checkin_service.query_credit(
+                        account, lambda m: self.log(m, "dim"))
+                    emit(("credit", (iid, snapshot)))
+                    return
+                kind, key, result = checkin_service.query_one(
+                    account, iid in skip, lambda m: self.log(m, "dim"))
+                if kind == "status":
+                    answers[key] = {"checked": result.checked_in,
+                                    "next_at": result.next_at}
+                emit((kind, (key, result)))
 
             tasks.parallel_map(accounts, query)
+            statuslog.note_many(answers)
             # 余额快照在上面每个账号查完时就已落盘，这里统一算一次合计
             emit(("stats", creditlog.summary()))
             return True
 
         tasks.submit(worker, on_done=lambda _r: self._set_busy(False),
-                     on_error=self._failed, on_partial=self._apply)
-
-    def refresh_credits(self) -> None:
-        """只刷新剩余积分与到期，不查签到状态。"""
-        if self.busy:
-            return
-        targets = list(self._by_iid.values())
-        if not targets:
-            self.refresh()
-            return
-        self._set_busy(True)
-
-        def worker(emit):
-            results = checkin_service.query_credits(
-                targets, lambda m: self.log(m, "dim"))
-            for iid, snapshot in results.items():
-                emit(("credit", (iid, snapshot)))
-            emit(("stats", creditlog.summary()))
-            return len(results)
-
-        def done(count: int):
-            self._set_busy(False)
-            self.log(f"积分已刷新（{count} 个账号）", "ok")
-
-        tasks.submit(worker, on_done=done,
                      on_error=self._failed, on_partial=self._apply)
 
     def on_credits(self, snapshots: dict) -> None:
@@ -165,18 +157,23 @@ class OverviewPage(BasePage):
             self._render_credit(*payload)
         elif kind == "stats":
             self._apply_stats(payload)
+        elif kind == "hub":
+            self._apply_hub(payload)
+        elif kind == "status_cache":
+            self._cached = dict(payload or {})
 
     def _render_accounts(self) -> None:
         checked_ids = checkin_service.checked_ids(self.accounts)
-        skip = set(self.cfg.get("skip") or [])
         self._by_iid = {account.iid: account for account in self.accounts}
         self._balances = {}
         self._balance_error = {}
         self._expiry = {}
-        self._done = set(checked_ids)
+        # 当天已经查过的状态先用上，免得切回页面时整表闪一下「待签到」
+        self._done = set(checked_ids) | {iid for iid, item in self._cached.items()
+                                        if item["checked"]}
         rows = []
         for account in self.accounts:
-            done = account.iid in checked_ids
+            done = account.iid in self._done
             rows.append({
                 "id": account.iid,
                 "platform": account.platform_label,
@@ -192,7 +189,7 @@ class OverviewPage(BasePage):
                 },
             })
         self.checkin_table.set_rows(rows)
-        self._update_cards()
+        self._sync_summary()
 
     def _render_status(self, iid: str, result: StatusResult) -> None:
         account = self._by_iid.get(iid)
@@ -223,7 +220,7 @@ class OverviewPage(BasePage):
                      (PALETTE["ok"] if checked else
                       (PALETTE["warn"] if checked is False else PALETTE["muted"])),
                      "balance": PALETTE["muted"]})
-        self._update_cards()
+        self._sync_summary()
 
     def _render_credit(self, iid: str, snapshot: CreditSnapshot) -> None:
         account = self._by_iid.get(iid)
@@ -238,7 +235,7 @@ class OverviewPage(BasePage):
             changes["today"] = ""
             changes["_fg_map"]["today"] = PALETTE["muted"]
         self.checkin_table.model.update(iid, **changes)
-        self._update_cards()
+        self._sync_summary()
 
     def _set_row(self, iid: str, lots) -> None:
         nearest_amount = 0.0
@@ -273,15 +270,20 @@ class OverviewPage(BasePage):
         self._stats = stats or {}
         total = float(self._stats.get("total") or 0)
         gained = float(self._stats.get("gained") or 0)
-        spent = float(self._stats.get("spent") or 0)
+        baseline = str(self._stats.get("baseline") or "")
         self.card_credit.set_value(f"{total:g}")
-        self.card_gain.set_value(f"+{gained:g}" if gained else "0")
-        self.card_spend.set_value(f"-{spent:g}" if spent else "0")
-        self._update_cards()
+        # 平台不给流水，增减只能靠余额快照比出来：把基准日写进说明，0 才不会看着像没生效
+        self.card_gain.set_value(
+            f"+{gained:g}" if gained else "0",
+            f"较 {baseline[5:]} 的余额" if baseline else "还没有可对比的记录")
 
-    def _update_cards(self) -> None:
+    def _apply_hub(self, counts: dict | None) -> None:
+        counts = counts or {}
+        self.card_skill.set_value(str(counts.get("skills") or 0))
+        self.card_mcp.set_value(str(counts.get("mcp") or 0))
+
+    def _sync_summary(self) -> None:
         done = sum(1 for iid in self._done if iid in self._by_iid)
-        self.card_checkin.set_value(str(len(self.accounts)))
         total = sum(v for v in self._balances.values() if v is not None)
         self.win.set_summary(
             "overview",

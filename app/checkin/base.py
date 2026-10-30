@@ -92,6 +92,9 @@ class CreditSnapshot:
     summary: str
     balance: float | None = None
     lots: list[CreditLot] | None = None
+    # 额度型平台（ZCode）没有「积分」，返回的是各窗口的已用百分比；
+    # 界面据此画额度条而不是积分明细
+    quota: dict | None = None
 
 
 @dataclass
