@@ -25,8 +25,7 @@ pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>> {
     dpapi(blob, false)
 }
 
-fn dpapi(input: &[u8], encrypt: bool) -> Result<Vec<u8>> {
-    let in_blob = CRYPT_INTEGER_BLOB {
+fn dpapi(input: &[u8], encrypt: bool) -> Result<Vec<u8>> {    let in_blob = CRYPT_INTEGER_BLOB {
         cbData: input.len() as u32,
         pbData: input.as_ptr() as *mut u8,
     };
@@ -85,6 +84,51 @@ impl Drop for BlobGuard {
     }
 }
 
+// ---------------------------------------------------------------- Chromium 信封
+
+/// 从客户端的 `Local State` 取出 Chromium 主密钥。
+///
+/// 结构：`{"os_crypt": {"encrypted_key": base64("DPAPI" + DPAPI(32 字节密钥))}}`。
+/// 前缀那 5 个字节是明文标记，必须先剥掉再 DPAPI 解密——直接解会失败，
+/// 而失败信息只会说「参数错误」，看不出是前缀问题。
+pub fn chromium_key(local_state: &std::path::Path) -> Result<aes_gcm::Key<aes_gcm::Aes256Gcm>> {
+    let raw = std::fs::read(local_state)
+        .map_err(|e| AppError::new("io", format!("读取 Local State 失败：{e}")))?;
+    let json: serde_json::Value = serde_json::from_slice(&raw)
+        .map_err(|e| AppError::new("invalid", format!("Local State 不是 JSON：{e}")))?;
+    let encoded = json
+        .pointer("/os_crypt/encrypted_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::new("invalid", "Local State 里没有 os_crypt.encrypted_key"))?;
+    use base64::Engine;
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim().as_bytes())
+        .map_err(|e| AppError::new("invalid", format!("encrypted_key 不是合法 base64：{e}")))?;
+    if blob.len() < 5 || &blob[..5] != b"DPAPI" {
+        return Err(AppError::new("crypto", "encrypted_key 前缀不是 DPAPI"));
+    }
+    let key = unprotect(&blob[5..])?;
+    if key.len() != 32 {
+        return Err(AppError::new("crypto", format!("Chromium 主密钥长度异常：{} 字节", key.len())));
+    }
+    Ok(*aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&key))
+}
+
+/// 解开 Chromium 的 `v10` 信封：`"v10"` + 12 字节 nonce + 密文。
+pub fn chromium_open(key: &aes_gcm::Key<aes_gcm::Aes256Gcm>, blob: &[u8]) -> Result<Vec<u8>> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    if blob.len() < 15 || &blob[..3] != b"v10" {
+        return Err(AppError::new("crypto", "不是 v10 信封"));
+    }
+    let cipher = aes_gcm::Aes256Gcm::new(key);
+    let nonce = aes_gcm::Nonce::from_slice(&blob[3..15]);
+    cipher
+        .decrypt(nonce, &blob[15..])
+        .map_err(|_| AppError::new("crypto", "AES-GCM 解密失败（密钥不匹配或密文被改）"))
+}
+
+// ---------------------------------------------------------------- 测试
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +150,31 @@ mod tests {
     fn empty_input_is_rejected() {
         assert!(protect(b"").is_err());
         assert!(unprotect(b"").is_err());
+    }
+
+    #[test]
+    fn chromium_envelope_roundtrip() {
+        use aes_gcm::aead::{Aead, KeyInit};
+        // 造一个 Chromium 主密钥（真实环境里它是 DPAPI 保护的，这里只测信封格式）
+        let key = aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&[7u8; 32]).to_owned();
+        let cipher = aes_gcm::Aes256Gcm::new(&key);
+        let nonce_bytes = [3u8; 12];
+        let ciphertext = cipher
+            .encrypt(aes_gcm::Nonce::from_slice(&nonce_bytes), br#"{"token":"tk"}"#.as_ref())
+            .unwrap();
+
+        let mut blob = b"v10".to_vec();
+        blob.extend_from_slice(&nonce_bytes);
+        blob.extend_from_slice(&ciphertext);
+
+        let plain = chromium_open(&key, &blob).unwrap();
+        assert_eq!(plain, br#"{"token":"tk"}"#);
+    }
+
+    #[test]
+    fn chromium_wrong_envelope_prefix_is_rejected() {
+        let key = aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&[0u8; 32]).to_owned();
+        assert!(chromium_open(&key, b"v11-whatever").is_err());
+        assert!(chromium_open(&key, b"v10short").is_err());
     }
 }

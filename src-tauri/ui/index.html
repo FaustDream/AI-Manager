@@ -49,6 +49,7 @@
   <h1>账号中心</h1>
   <span class="badge" id="count">—</span>
   <span class="spacer"></span>
+  <button id="scan">扫描客户端</button>
   <button id="refresh">刷新</button>
 </header>
 
@@ -170,6 +171,24 @@
   }
 
   $('refresh').onclick = load;
+
+  $('scan').onclick = async () => {
+    const btn = $('scan');
+    btn.disabled = true;
+    btn.textContent = '扫描中…';
+    try {
+      const r = await invoke('account_scan');
+      const parts = Object.entries(r.by_platform).map(([k, v]) => `${k} ${v}`).join(' · ');
+      toast(`扫到 ${r.scanned} 个（新增 ${r.added}）${parts ? '｜' + parts : ''}`);
+      if (r.errors && r.errors.length) toast('部分平台失败：' + r.errors.join('；'));
+      await load();
+    } catch (e) {
+      toast('扫描失败：' + e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '扫描客户端';
+    }
+  };
 
   (async () => {
     try {

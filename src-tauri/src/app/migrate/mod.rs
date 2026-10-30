@@ -475,30 +475,10 @@ fn platform_label(platform: &str) -> &'static str {
     }
 }
 
-/// ISO8601（带或不带时区）→ unix ms。v1 的 `checked.json` 是不带时区的本地时间。
 fn parse_ts(value: &Value) -> Option<i64> {
-    if let Some(n) = value.as_i64() {
-        // 已是毫秒；秒级时间戳顺带兼容
-        return Some(if n < 10_000_000_000 { n * 1000 } else { n });
-    }
-    let text = value.as_str()?;
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(text) {
-        return Some(dt.timestamp_millis());
-    }
-    for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
-        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(text, fmt) {
-            use chrono::TimeZone;
-            if let Some(dt) = chrono::Local.from_local_datetime(&naive).single() {
-                return Some(dt.timestamp_millis());
-            }
-        }
-    }
-    None
+    crate::app::timeutil::parse_ts(value)
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    crate::app::timeutil::now_ms()
 }

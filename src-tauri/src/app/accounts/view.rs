@@ -31,6 +31,7 @@ pub struct AccountView {
     pub iid: String,
     pub platform: String,
     pub platform_label: String,
+    /// 原始昵称。**不要直接显示**——用 `display_name()`，有些平台的昵称就是手机号。
     pub name: String,
     pub source: String,
     pub requires_checkin: bool,
@@ -49,6 +50,13 @@ pub struct AccountView {
 }
 
 impl AccountView {
+    /// 展示用昵称。**某些平台的昵称本身就是完整手机号**（实测 ZCode 有账号如此），
+    /// 而 AGENTS §6 只写了「界面显示昵称、不显示 uid」——没人想到昵称可能就是 uid。
+    /// 这里只改展示，不动库里的原值：脱敏是显示规则，不是数据规则。
+    pub fn display_name(&self) -> String {
+        mask_phone(&self.name)
+    }
+
     pub fn new(identity: AccountIdentity, sort_order: i64) -> Self {
         Self {
             iid: identity.iid,
@@ -132,6 +140,19 @@ impl AccountTable {
     }
 }
 
+/// 纯 11 位手机号中间四位打码。其它形态（含邮箱、昵称）原样返回。
+pub fn mask_phone(text: &str) -> String {
+    let trimmed = text.trim();
+    let is_mobile = trimmed.len() == 11
+        && trimmed.starts_with('1')
+        && trimmed.chars().all(|c| c.is_ascii_digit());
+    if is_mobile {
+        format!("{}****{}", &trimmed[..3], &trimmed[7..])
+    } else {
+        text.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,8 +201,17 @@ mod tests {
     }
 
     #[test]
-    fn pending_requires_flag_and_no_cooldown() {
-        let mut row = AccountView::new(identity("trae:1", "x"), 0);
+    fn phone_number_nickname_is_masked() {
+        // 实测：ZCode 有个账号的昵称直接就是完整手机号
+        assert_eq!(mask_phone("17679130626"), "176****0626");
+        assert_eq!(mask_phone("1767913062"), "1767913062", "10 位不是手机号，原样返回");
+        assert_eq!(mask_phone("Faust Dream"), "Faust Dream");
+        assert_eq!(mask_phone("935411629@qq.com"), "935411629@qq.com");
+        assert_eq!(mask_phone("159****0626"), "159****0626", "已脱敏的不要二次处理");
+    }
+
+    #[test]
+    fn pending_requires_flag_and_no_cooldown() {        let mut row = AccountView::new(identity("trae:1", "x"), 0);
         row.checked_in = Some(false);
         assert!(row.pending(1_000), "未签且无冷却 → 待签");
         row.next_at = Some(2_000);
