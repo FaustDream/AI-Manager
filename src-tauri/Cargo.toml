@@ -18,6 +18,8 @@ path = "src/main.rs"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+# 解各家客户端的登录态（Chromium 式 v10 信封：DPAPI 取密钥 + AES-256-GCM）
+aes-gcm = "0.10"
 # 只开用得到的特性：tray-icon 托盘、wry 默认 webview；不开 devtools 之外的花哨能力
 tauri = { version = "2", features = ["tray-icon"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }

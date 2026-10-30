@@ -12,6 +12,11 @@ fn main() {
         std::process::exit(import_from_cli(&args));
     }
 
+    // 无头扫描：排查「界面上扫不出账号」时用，不依赖窗口
+    if args.iter().any(|a| a == "--scan") {
+        std::process::exit(scan_from_cli(&args));
+    }
+
     if let Err(e) = ai_manager::desktop::run() {
         eprintln!("启动失败：{e}");
         std::process::exit(1);
@@ -25,8 +30,7 @@ fn arg_value(args: &[String], flag: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn import_from_cli(args: &[String]) -> i32 {
-    let _ = log::init(Level::Info);
+fn import_from_cli(args: &[String]) -> i32 {    let _ = log::init(Level::Info);
     let source = arg_value(args, "--from").unwrap_or_else(|| PathBuf::from("data"));
     let target = arg_value(args, "--db").unwrap_or_else(paths::app_db);
 
@@ -54,6 +58,34 @@ fn import_from_cli(args: &[String]) -> i32 {
         }
         Err(e) => {
             eprintln!("导入失败：{}", e.message);
+            1
+        }
+    }
+}
+
+fn scan_from_cli(args: &[String]) -> i32 {
+    let _ = log::init(Level::Info);
+    let target = arg_value(args, "--db").unwrap_or_else(paths::app_db);
+    let db = match Db::open_at(&target) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("打开数据库失败：{}", e.message);
+            return 1;
+        }
+    };
+    match ai_manager::app::accounts::scan_all(&db) {
+        Ok(report) => {
+            println!("扫描：{} 个（新增 {}）", report.scanned, report.added);
+            for (label, count) in &report.by_platform {
+                println!("  {label}: {count}");
+            }
+            for e in &report.errors {
+                println!("  错误：{e}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("扫描失败：{}", e.message);
             1
         }
     }

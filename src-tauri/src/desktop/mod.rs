@@ -117,10 +117,14 @@ fn task_list(state: State<'_, AppState>) -> Vec<TaskView> {
 async fn account_list(state: State<'_, AppState>) -> std::result::Result<Vec<crate::app::accounts::AccountView>, String> {
     let db = state.db.clone();
     // 数据库调用必须在阻塞线程里跑，否则界面在等结果期间没有响应
-    let rows = tokio::task::spawn_blocking(move || crate::app::accounts::repo::list(&db))
+    let mut rows = tokio::task::spawn_blocking(move || crate::app::accounts::repo::list(&db))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)?;
+    // 脱敏在出口做一次：前端不必各自实现，也就不会有人漏掉
+    for row in &mut rows {
+        row.name = row.display_name();
+    }
     log::log(Level::Info, "accounts", format!("列表返回 {} 个账号", rows.len()));
     Ok(rows)
 }
@@ -141,6 +145,23 @@ async fn account_delete(state: State<'_, AppState>, iid: String) -> std::result:
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)
+}
+
+/// 扫描各客户端登录态并入库。
+/// 走 `spawn_blocking`：读客户端库 + DPAPI/AES 解密是纯阻塞活，放主线程会让窗口变灰。
+#[tauri::command]
+async fn account_scan(state: State<'_, AppState>) -> std::result::Result<crate::app::accounts::ScanReport, String> {
+    let db = state.db.clone();
+    let report = tokio::task::spawn_blocking(move || crate::app::accounts::scan_all(&db))
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+        .map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "accounts",
+        format!("扫描完成：{} 个账号（新增 {}）", report.scanned, report.added),
+    );
+    Ok(report)
 }
 
 #[tauri::command]
@@ -199,6 +220,7 @@ pub fn run() -> tauri::Result<()> {
             account_list,
             account_reorder,
             account_delete,
+            account_scan,
             log_tail,
             log_level
         ])
