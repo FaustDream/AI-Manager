@@ -1,12 +1,12 @@
-//! 扫描编排：把各家 Provider 的产物写进账号库。
+//! 扫描编排：遍历各平台 Provider，把产物**扫到一个就落库一个**。
 //!
-//! 顺序原则：**扫到一个就落库一个**。先把凭据加密写进去，再处理下一个，
-//! 这样内存里同时存在的明文 token 始终只有一个（v1 是整包解密，所有 token 同时在内存）。
+//! 顺序原则的原因：先把凭据加密写进去，再处理下一个，这样内存里同时存在的
+//! 明文 token 始终只有一个（v1 是整包解密，所有 token 同时在内存）。
 
 use crate::app::accounts::{repo, AccountIdentity};
 use crate::app::db::Db;
 use crate::app::error::Result;
-use crate::app::providers::QoderProvider;
+use crate::app::providers::{self, ScannedAccount};
 use crate::app::timeutil::now_ms;
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
@@ -22,15 +22,28 @@ pub struct ScanReport {
 
 pub fn scan_all(db: &Db) -> Result<ScanReport> {
     let mut report = ScanReport::default();
-    let existing = repo::list(db)?;
-    let known: std::collections::HashSet<String> = existing.iter().map(|v| v.iid.clone()).collect();
+    let known: std::collections::HashSet<String> =
+        repo::list(db)?.into_iter().map(|v| v.iid).collect();
 
-    for provider in [QoderProvider::new(false), QoderProvider::new(true)] {
+    for provider in providers::all() {
         let label = provider.label();
-        match provider.scan(|scanned| persist(db, scanned, &mut report, &known)) {
+        let platform = provider.platform();
+        let mut added = 0usize;
+        let count = provider.scan(&mut |scanned| {
+            let is_new = !known.contains(&scanned.identity.iid);
+            persist(db, scanned, platform)?;
+            if is_new {
+                added += 1;
+            }
+            Ok(())
+        });
+        match count {
             Ok(count) => {
                 *report.by_platform.entry(label.to_string()).or_insert(0) += count;
+                report.scanned += count;
+                report.added += added;
             }
+            // 单个平台失败不拖垮整次扫描：其他平台照常入库，错误汇总给界面
             Err(e) => report.errors.push(format!("{label}：{}", e.message)),
         }
     }
@@ -38,20 +51,11 @@ pub fn scan_all(db: &Db) -> Result<ScanReport> {
     Ok(report)
 }
 
-fn persist(
-    db: &Db,
-    scanned: crate::app::providers::ScannedAccount,
-    report: &mut ScanReport,
-    known: &std::collections::HashSet<String>,
-) -> Result<()> {
-    let AccountIdentity { iid, .. } = scanned.identity.clone();
+fn persist(db: &Db, scanned: ScannedAccount, user_platform: &str) -> Result<()> {
+    let AccountIdentity { ref iid, ref platform, .. } = scanned.identity;
+    debug_assert_eq!(platform, user_platform, "Provider 的 platform 必须与身份一致");
     repo::upsert_identity(db, &scanned.identity, now_ms())?;
-    repo::set_secret(db, &iid, &scanned.secret, scanned.identity.expires_at)?;
-
-    report.scanned += 1;
-    if !known.contains(&iid) {
-        report.added += 1;
-    }
+    repo::set_secret(db, iid, &scanned.secret, scanned.identity.expires_at)?;
     // scanned 在这里释放：凭据明文不跨账号留存
     Ok(())
 }
@@ -59,12 +63,13 @@ fn persist(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::providers::ScannedAccount;
+    use crate::app::accounts::credential::Credential;
 
-    fn fake(iid: &str, secret: &[u8]) -> ScannedAccount {
+    fn fake(iid: &str, secret: &str) -> ScannedAccount {
         let (platform, account_id) = iid.split_once(':').unwrap();
-        ScannedAccount {
-            identity: AccountIdentity {
+        let cred = Credential { token: secret.into(), ..Default::default() };
+        ScannedAccount::new(
+            AccountIdentity {
                 iid: iid.into(),
                 platform: platform.into(),
                 platform_label: "Test".into(),
@@ -74,46 +79,37 @@ mod tests {
                 has_secret: true,
                 ..Default::default()
             },
-            secret: secret.to_vec(),
-        }
+            &cred,
+        )
+        .unwrap()
     }
 
     #[test]
     fn persist_writes_identity_and_encrypted_secret() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
-        let mut report = ScanReport::default();
-        let known = std::collections::HashSet::new();
-
-        persist(&db, fake("qoder:a", b"tok-a"), &mut report, &known).unwrap();
-        persist(&db, fake("qoder:b", b"tok-b"), &mut report, &known).unwrap();
-
-        assert_eq!(report.scanned, 2);
-        assert_eq!(report.added, 2);
+        persist(&db, fake("qoder:a", "tok-a"), "qoder").unwrap();
+        persist(&db, fake("qoder:b", "tok-b"), "qoder").unwrap();
 
         let rows = repo::list(&db).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.has_secret));
         // 凭据必须能解回原文，且不是明文存储
-        assert_eq!(repo::secret_of(&db, "qoder:a").unwrap().as_deref(), Some(&b"tok-a"[..]));
+        let back = repo::secret_of(&db, "qoder:a").unwrap().unwrap();
+        assert_eq!(Credential::parse(&back).unwrap().token, "tok-a");
     }
 
     #[test]
-    fn second_scan_does_not_count_as_added() {
+    fn second_scan_refreshes_secret_without_duplicating() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
-        let known = std::collections::HashSet::new();
-        persist(&db, fake("qoder:a", b"1"), &mut ScanReport::default(), &known).unwrap();
+        persist(&db, fake("qoder:a", "1"), "qoder").unwrap();
 
-        // 模拟第二次扫描：库里已经有 qoder:a
-        let known: std::collections::HashSet<String> =
-            repo::list(&db).unwrap().into_iter().map(|r| r.iid).collect();
-        let mut report = ScanReport::default();
-        persist(&db, fake("qoder:a", b"2"), &mut report, &known).unwrap();
+        persist(&db, fake("qoder:a", "2"), "qoder").unwrap();
 
-        assert_eq!(report.scanned, 1);
-        assert_eq!(report.added, 0, "已存在的账号不算新增");
-        assert_eq!(repo::secret_of(&db, "qoder:a").unwrap().as_deref(), Some(&b"2"[..]), "凭据应被刷新");
+        assert_eq!(repo::list(&db).unwrap().len(), 1, "同一账号不能变成两行");
+        let back = repo::secret_of(&db, "qoder:a").unwrap().unwrap();
+        assert_eq!(Credential::parse(&back).unwrap().token, "2", "凭据应被刷新");
     }
 
     /// 真实机验证：`cargo test --lib scan_all_real -- --ignored --nocapture`

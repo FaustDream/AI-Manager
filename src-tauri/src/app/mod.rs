@@ -8,6 +8,7 @@ pub mod accounts;
 pub mod clock;
 pub mod db;
 pub mod error;
+pub mod fsx;
 pub mod log;
 pub mod migrate;
 pub mod net;
@@ -19,25 +20,7 @@ pub mod secret;
 pub mod task;
 pub mod timeutil;
 
-use crate::types::{ActionResult, Account, PlatformKey, StatusResult};
-use clock::Clock;
-use error::AppError;
-
-/// 各平台（Trae / Qoder / WorkBuddy / ZCode）的统一抽象。
-/// P2 逐个实现，P0 只有签名——签名定错会在 P2 放大，所以这里人工审过。
-pub trait Provider: Send + Sync {
-    fn key(&self) -> PlatformKey;
-    fn label(&self) -> &'static str;
-    fn live_credit(&self) -> bool {
-        false
-    }
-    fn cooldown_hours(&self) -> u32 {
-        0
-    }
-    fn scan(&self, ctx: &TaskCtx) -> Result<Vec<Account>, AppError>;
-    fn status(&self, account: &Account, ctx: &TaskCtx) -> Result<StatusResult, AppError>;
-    fn checkin(&self, account: &Account, ctx: &TaskCtx) -> Result<ActionResult, AppError>;
-}
+use crate::app::clock::Clock;
 
 /// 传给每个业务函数的上下文：时钟、网络、数据目录、取消信号都从这里取。
 /// 业务代码不得绕过它直接访问系统资源。

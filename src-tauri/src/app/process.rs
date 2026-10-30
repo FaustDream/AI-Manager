@@ -56,16 +56,28 @@ pub fn process_running(names: &[&str]) -> bool {
 }
 
 /// 静默启动一个可执行文件（不带参数，启动客户端够用）。
-/// 返回 false 表示互斥体已存在——即已有实例在跑。
+/// 用于外部命令/脚本：带 `CREATE_NO_WINDOW`，不弹控制台。
 pub fn start_hidden(exe: &Path) -> Result<()> {
+    spawn(exe, true)
+}
+
+/// 正常启动一个 GUI 程序（客户端）。**不能复用 start_hidden**：
+/// SW_HIDE 会让客户端窗口出来就是隐藏的，用户以为没启动。
+pub fn start_detached(exe: &Path) -> Result<()> {
+    spawn(exe, false)
+}
+
+fn spawn(exe: &Path, hidden: bool) -> Result<()> {
     if !exe.exists() {
         return Err(AppError::new("io", format!("可执行文件不存在：{}", exe.display())));
     }
     let path = HSTRING::from(exe.to_string_lossy().as_ref());
     let mut startup = STARTUPINFOW::default();
     startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    startup.dwFlags = STARTF_USESHOWWINDOW;
-    startup.wShowWindow = 0; // SW_HIDE，与 CREATE_NO_WINDOW 互为双保险
+    if hidden {
+        startup.dwFlags = STARTF_USESHOWWINDOW;
+        startup.wShowWindow = 0; // SW_HIDE，与 CREATE_NO_WINDOW 互为双保险
+    }
 
     let mut info = PROCESS_INFORMATION::default();
     unsafe {
@@ -75,7 +87,7 @@ pub fn start_hidden(exe: &Path) -> Result<()> {
             None,
             None,
             false,
-            CREATE_NO_WINDOW,
+            if hidden { CREATE_NO_WINDOW } else { Default::default() },
             None,
             None,
             &startup,

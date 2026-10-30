@@ -93,11 +93,6 @@ todo_impl!(Ledger for TodoLedger {
     fn count(iid: &str) -> usize;
 });
 
-todo_impl!(ProfileStore for TodoProfile {
-    fn save(src: &Path) -> Result<Vec<u8>>;
-    fn restore(blob: &[u8], dst: &Path) -> Result<()>;
-});
-
 todo_impl!(SessionStore for TodoSessions {
     fn page(cursor: Option<&str>, limit: usize, state: Option<&str>) -> Result<Page<SessionRow>>;
     fn restore_account(edition: &str, uid: &str) -> Result<RestoreReport>;
@@ -115,11 +110,6 @@ todo_impl!(PlatformApi for TodoPlatform {
     fn acquire_single_instance(name: &str) -> Result<bool>;
     fn spawn_hidden(exe: &str, args: &[&str]) -> Result<()>;
     fn client_running(key: PlatformKey) -> bool;
-});
-
-todo_impl!(AccountViews for TodoViews {
-    fn merge_scan(scanned: Vec<Account>) -> Result<usize>;
-    fn balance_of(iid: &str) -> Option<f64>;
 });
 
 /// 契约 18 的辅助断言：UTC 输入必须按本地时区渲染。

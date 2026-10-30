@@ -16,6 +16,19 @@ pub enum ErrorKind {
     ClientRunning,
     /// 用户主动取消——不能被记成失败
     Cancelled,
+    // —— 以下四种是「切换登录」专用的失败态（P2 §5.1）——
+    // 切换写的是客户端自己的登录态文件，写坏的代价是「客户端跳登录页」，
+    // 所以失败必须能区分「没动过」和「动了但回滚了」，界面才能给出可操作的话术。
+    /// 写前备份失败：此时**一个字节都没写**，取消即可
+    BackupFailed,
+    /// 档案与目标账号对不上：拿 A 的票据恢复 B 的登录态比不恢复更糟
+    ProfileMismatch,
+    /// 写回失败，已按备份回滚
+    WriteFailed,
+    /// 票据里缺 `sessionState` 之类的服务端签发字段，写回去会停在登录页
+    SessionStateMissing,
+    /// 该平台的登录态无法写回（Trae 是设备绑定加密）
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,6 +50,11 @@ impl AppError {
                 "conflict" => ErrorKind::Conflict,
                 "client_running" => ErrorKind::ClientRunning,
                 "cancelled" => ErrorKind::Cancelled,
+                "backup_failed" => ErrorKind::BackupFailed,
+                "profile_mismatch" => ErrorKind::ProfileMismatch,
+                "write_failed" => ErrorKind::WriteFailed,
+                "session_state_missing" => ErrorKind::SessionStateMissing,
+                "unsupported" => ErrorKind::Unsupported,
                 _ => ErrorKind::Provider,
             },
             message: message.into(),

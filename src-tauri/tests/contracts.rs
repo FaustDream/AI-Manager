@@ -7,6 +7,8 @@
 
 mod support;
 
+use ai_manager::app::accounts::profile::FileProfile;
+use ai_manager::app::accounts::{AccountIdentity, AccountTable};
 use ai_manager::contracts::*;
 use ai_manager::types::*;
 use support::*;
@@ -114,7 +116,7 @@ fn contract_08a_profile_roundtrip_bytes() {
     let original = b"{\"sessionState\":\"server-issued\",\"uid\":\"u1\"}";
     let file = paths.write("workbuddy-desktop.info", original);
 
-    let profile = TodoProfile;
+    let profile = FileProfile;
     let blob = profile.save(&file).unwrap();
     std::fs::write(&file, b"corrupted").unwrap();
     profile.restore(&blob, &file).unwrap();
@@ -262,10 +264,32 @@ fn contract_20_external_command_sets_no_window_flag() {
 // ---------------------------------------------------------------- 契约 21
 #[test]
 fn contract_21_rescan_preserves_cached_fields() {
-    let views = TodoViews;
-    views.merge_scan(vec![sample_account("qoder:abc", true)]).unwrap();
+    let mut table = AccountTable::default();
+    table.merge_scan(vec![identity_of("workbuddy:abc", "旧名")]);
+    // 模拟「余额已经查回来了」
+    table.find_mut("workbuddy:abc").unwrap().balance = Some(62.0);
+
+    // 第二次扫描：昵称变了
+    table.merge_scan(vec![identity_of("workbuddy:abc", "新名")]);
+    let row = &table.rows()[0];
+
+    assert_eq!(row.name, "新名", "身份字段必须更新");
     // 国际版等免签到账号不参与状态查询，缓存一清就永远停在「—」
-    assert!(views.balance_of("qoder:abc").is_some(), "重扫不得清空已获取的余额");
+    assert_eq!(row.balance, Some(62.0), "重扫不得清空已获取的余额");
+}
+
+fn identity_of(iid: &str, name: &str) -> AccountIdentity {
+    let (platform, account_id) = iid.split_once(':').unwrap();
+    AccountIdentity {
+        iid: iid.into(),
+        platform: platform.into(),
+        platform_label: "WorkBuddy 国际版".into(),
+        account_id: account_id.into(),
+        name: name.into(),
+        requires_checkin: false,
+        has_secret: true,
+        ..Default::default()
+    }
 }
 
 // ---------------------------------------------------------------- 契约 22
