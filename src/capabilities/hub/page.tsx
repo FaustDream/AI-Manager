@@ -230,11 +230,15 @@ export default function HubPage() {
                 )}
                 {snap.skills.map((skill) => (
                   <tr key={skill.name} className="group hover:bg-hover">
-                    <td className="border-b border-line px-2 py-1.5 text-sm">
+                    <td className="border-b border-line px-2 py-1.5 text-sm whitespace-nowrap">
                       {skill.name}
                       {!skill.valid && <Tag tone="bad">{skill.reason}</Tag>}
                     </td>
-                    <td className="border-b border-line px-2 py-1.5 text-xs text-muted">
+                    {/* 单行截断：长说明悬停看全文，行高保持一致 */}
+                    <td
+                      className="max-w-[380px] truncate border-b border-line px-2 py-1.5 text-xs text-muted"
+                      title={skill.description}
+                    >
                       {skill.description}
                     </td>
                     <td className="border-b border-line px-2 py-1.5 text-xs tabular-nums text-muted">
