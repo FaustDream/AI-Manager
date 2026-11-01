@@ -1091,10 +1091,27 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     let _ = w.set_focus();
                 }
             }
-            // 界面层挂掉（白屏/卡死）时的自救通道：不动 Rust 侧状态，只重载前端
+            // 界面层挂掉（白屏/卡死）时的自救通道：不动 Rust 侧状态，只重载前端。
+            // 先在旧页面盖一层「正在重载」遮罩再刷新——动作发生在眼前，
+            // 用户才知道点对了；重载后的确认画面由前端 sessionStorage 标记接力
             "reload" => {
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.eval("location.reload()");
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                    let _ = w.eval(
+                        r#"document.getElementById('aim-reload-veil')?.remove();
+                        const veil = document.createElement('div');
+                        veil.id = 'aim-reload-veil';
+                        veil.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(128,128,128,.25)';
+                        veil.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:12px 20px;border-radius:10px;background:var(--color-card,#fff);border:1px solid var(--color-line,#ddd);font:500 13px var(--font-sans,system-ui);color:var(--color-fg,#333)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="animation:spin 1s linear infinite"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity=".25" stroke-width="4"/><path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg><span>正在重载界面…</span></div>';
+                        const style = document.createElement('style');
+                        style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+                        document.head.appendChild(style);
+                        document.body.appendChild(veil);
+                        sessionStorage.setItem('aim.reloading', '1');
+                        setTimeout(() => location.reload(), 350);
+                        "#,
+                    );
                 }
             }
             "quit" => app.exit(0),
