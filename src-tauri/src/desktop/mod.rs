@@ -1076,8 +1076,9 @@ fn spawn_hub_auto_sync(db: Arc<Db>, hub: Arc<crate::app::hub::Hub>) {
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let reload = MenuItem::with_id(app, "reload", "重载界面", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &reload, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id("main-tray")
         .tooltip("AI Manager")
@@ -1088,6 +1089,12 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
+                }
+            }
+            // 界面层挂掉（白屏/卡死）时的自救通道：不动 Rust 侧状态，只重载前端
+            "reload" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.eval("location.reload()");
                 }
             }
             "quit" => app.exit(0),
