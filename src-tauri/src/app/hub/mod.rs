@@ -441,6 +441,44 @@ pub fn mcp_add(hub: &Hub, entry: &McpEntry, keys: &[TargetKey]) -> DeployReport 
     report
 }
 
+/// 把一条**已存在**的 MCP 条目写到更多平台（界面上每行的「部署」）。
+/// 源条目从它所在的平台读回——优先本工具写入的（带标记、格式归一过），
+/// 否则退回任意平台上的同名条目；写入走与粘贴导入相同的冲突检查。
+pub fn mcp_deploy(hub: &Hub, name: &str, keys: &[TargetKey]) -> DeployReport {
+    match mcp_source_entry(hub, name) {
+        Some(entry) => mcp_add(hub, &entry, keys),
+        None => {
+            let mut report = DeployReport::default();
+            report.push(
+                false,
+                name,
+                "所有平台里都找不到这条 MCP，可能已被删除",
+                &std::path::PathBuf::new(),
+                false,
+            );
+            report
+        }
+    }
+}
+
+fn mcp_source_entry(hub: &Hub, name: &str) -> Option<McpEntry> {
+    let mut fallback = None;
+    for target in targets::TARGETS {
+        let root = mcp::read_config(&hub.mcp_path(target.key));
+        let entries = mcp::entries_of(&root, target.key);
+        if let Some(body) = entries.get(name) {
+            let entry = mcp::from_body(name, body, target.key);
+            if hub.owns_mcp(name, body) {
+                return Some(entry);
+            }
+            if fallback.is_none() {
+                fallback = Some(entry);
+            }
+        }
+    }
+    fallback
+}
+
 /// 从多个平台删掉同一条（只删本工具写的）。
 pub fn mcp_remove(hub: &Hub, name: &str, keys: &[TargetKey]) -> DeployReport {
     let mut report = DeployReport::default();

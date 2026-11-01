@@ -368,6 +368,20 @@ async fn hub_mcp_remove(
         .map_err(err_text)
 }
 
+/// 把一条已存在的 MCP 条目写到更多平台（MCP 表每行的「部署」）。
+#[tauri::command]
+async fn hub_mcp_deploy(
+    state: State<'_, AppState>,
+    name: String,
+    targets: Vec<String>,
+) -> std::result::Result<crate::app::hub::DeployReport, String> {
+    let hub = state.hub.clone();
+    let keys = target_keys(&targets);
+    crate::app::runtime::blocking(move || crate::app::hub::mcp_deploy(&hub, &name, &keys))
+        .await
+        .map_err(err_text)
+}
+
 // ------------------------------------------------------------ 会话
 
 /// 增量扫描会话索引：任务化，扫完 emit `session:scan`。
@@ -858,6 +872,7 @@ pub fn run() -> tauri::Result<()> {
             hub_skill_import,
             hub_mcp_import,
             hub_mcp_remove,
+            hub_mcp_deploy,
             session_scan,
             session_page,
             session_facets,
