@@ -391,13 +391,21 @@ impl Provider for TraeProvider {
 
 const API_BASE: &str = "https://api.trae.cn/trae/api/v2/ug/checkin_credits";
 const USAGE_URL: &str = "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage";
-const REQ_SOURCE: &str = r#"{"req_source":1}"#;
+// 带空格是刻意的：与 v1（requests 的 json.dumps 产物）逐字节一致，见 post() 注释
+const REQ_SOURCE: &str = r#"{"req_source": 1}"#;
 
 impl TraeProvider {
+    /// 请求形态与 v1 逐字节对齐（2026-11-01 实测）：
+    /// 同一 token、同一分钟，v2 的 `AI-Manager` UA + 紧凑 body 被 claim 拒
+    /// （"The submitted order parameters are incorrect"），python-requests 的
+    /// `python-requests/2.34.2` + `{"req_source": 1}` 成功。重登后签发的新 token
+    /// 走更严的下单校验，UA/请求形态不在这个白名单里就拒单。别改这三处。
     fn post(&self, cred: &Credential, url: &str, body: &str) -> HttpRequest {
         let mut req = HttpRequest::post(url)
             .header("Authorization", format!("Cloud-IDE-JWT {}", cred.token))
-            .header("Content-Type", "application/json");
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "python-requests/2.34.2")
+            .header("Accept", "*/*");
         if let Some(device) = cred.meta_str("device_id").filter(|s| !s.is_empty()) {
             req = req.header("x-device-id", device);
         }
