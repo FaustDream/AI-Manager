@@ -920,6 +920,28 @@ fn init_state(
         format!("数据目录 {}", crate::app::paths::data_dir().display()),
     );
 
+    // 启动体检：账号数、会话索引、上一轮轮询结果，排查问题先看这一行
+    {
+        let accounts = crate::app::accounts::repo::list(&db)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let sessions = crate::app::sessions::store::SqliteSessions::new(&db)
+            .count()
+            .unwrap_or(0);
+        let last_round = db
+            .kv_get("daily:last")
+            .ok()
+            .flatten()
+            .and_then(|text| serde_json::from_str::<crate::app::checkin::RoundResult>(&text).ok())
+            .map(|r| r.message)
+            .unwrap_or_else(|| "从未运行".into());
+        log::log(
+            Level::Info,
+            "app",
+            format!("启动体检：账号 {accounts} · 会话索引 {sessions} · 上一轮[{last_round}]"),
+        );
+    }
+
     // 跨天清理放在后台：签到记录留 3 天、余额快照留 60 天，不阻塞启动
     let cleanup_db = db.clone();
     tauri::async_runtime::spawn(async move {
