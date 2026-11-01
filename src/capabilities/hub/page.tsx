@@ -55,6 +55,8 @@ export default function HubPage() {
 
   const [deployName, setDeployName] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // 视图标签：'all' = 总体（技能库 + 全部 MCP），其余为平台 key
+  const [tab, setTab] = useState<string>('all');
   // 对话框动作（部署/移除/写 MCP）的加载态
   const [busy, setBusy] = useState<string | null>(null);
   const runBusy = (key: string, work: () => Promise<void>) => {
@@ -125,11 +127,23 @@ export default function HubPage() {
       }
     });
 
-  const removeMcp = (name: string) =>
+  const removeMcp = (name: string, keys: string[]) =>
     runBusy(`mcp-remove:${name}`, async () => {
       try {
-        const report = await call<DeployReport>('hub_mcp_remove', { name, targets: [...picked] });
+        const report = await call<DeployReport>('hub_mcp_remove', { name, targets: keys });
         toast(reportText(report.steps) || '先在右侧勾选平台');
+        refresh();
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
+
+  // 平台视图里的单平台移除：不进部署对话框，确认即删
+  const removeSkillFrom = (name: string, key: string) =>
+    runBusy(`remove:${name}:${key}`, async () => {
+      try {
+        const report = await call<DeployReport>('hub_skill_remove', { name, targets: [key] });
+        toast(reportText(report.steps));
         refresh();
       } catch (e) {
         toast(errText(e));
@@ -143,150 +157,302 @@ export default function HubPage() {
 
   const snap = hub.data!;
   const conflicts = snap.skills.filter((s) => s.states.some(([, state]) => state === 'stale'));
+  const activeTarget = snap.targets.find((t) => t.key === tab);
+  const STATE_LABEL: Record<string, string> = { synced: '最新', stale: '待更新', missing: '未部署' };
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap gap-2">
+    <div className="flex flex-col gap-3">
+      {/* 总体 = 技能库 + 全部 MCP；单个平台 = 该平台的技能副本与它自己的 MCP 配置 */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
+        <button
+          className={`rounded-md px-3 py-1 text-sm ${
+            tab === 'all' ? 'bg-hover font-semibold text-fg' : 'text-muted hover:bg-hover hover:text-fg'
+          }`}
+          onClick={() => setTab('all')}
+        >
+          总体（技能库 {snap.skills.length} · MCP {snap.mcp.length}）
+        </button>
         {snap.targets.map((t) => (
-          <div key={t.key} className="min-w-[180px] rounded-lg border border-line bg-card p-3">
-            <div className="text-sm font-semibold">{t.label}</div>
-            <div className="mt-1 text-xs text-muted">技能 {t.skills} · MCP {t.mcp}</div>
-            <div className="mt-1 truncate text-[11px] text-muted" title={t.skill_dir}>
-              {t.skill_dir}
-            </div>
-          </div>
+          <button
+            key={t.key}
+            className={`rounded-md px-3 py-1 text-sm ${
+              tab === t.key ? 'bg-hover font-semibold text-fg' : 'text-muted hover:bg-hover hover:text-fg'
+            }`}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}（{t.skills}）
+          </button>
         ))}
       </div>
 
-      {conflicts.length > 0 && (
-        <Notice tone="warn">
-          {conflicts.length} 个技能的平台副本与库不一致（启动自动同步会在下次启动时刷新已部署的平台）。
-        </Notice>
+      {tab === 'all' && (
+        <>
+          {conflicts.length > 0 && (
+            <Notice tone="warn">
+              {conflicts.length} 个技能的平台副本与库不一致（启动自动同步会在下次启动时刷新已部署的平台）。
+            </Notice>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Button variant="primary" onClick={() => setMcpOpen(true)}>
+              粘贴导入 MCP
+            </Button>
+            <span className="text-xs text-muted">勾选平台后可对 MCP 条目做移除。</span>
+          </div>
+
+          <div className="rounded-lg border border-line bg-card p-3">
+            <h2 className="mb-2 text-sm font-semibold">技能库（{snap.skills.length}）</h2>
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">技能</th>
+                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">说明</th>
+                  <th className="w-24 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">大小</th>
+                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">平台副本状态</th>
+                  <th className="w-40 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snap.skills.length === 0 && (
+                  <tr>
+                    <td colSpan={5}>
+                      <StateBlock kind="empty" title="技能库是空的" detail="把技能目录放进 data/skills/，或从平台导入。" />
+                    </td>
+                  </tr>
+                )}
+                {snap.skills.map((skill) => (
+                  <tr key={skill.name} className="hover:bg-hover">
+                    <td className="border-b border-line px-2 py-1.5 text-sm">
+                      {skill.name}
+                      {!skill.valid && <Tag tone="bad">{skill.reason}</Tag>}
+                    </td>
+                    <td className="border-b border-line px-2 py-1.5 text-xs text-muted">
+                      {skill.description}
+                    </td>
+                    <td className="border-b border-line px-2 py-1.5 text-xs tabular-nums text-muted">
+                      {fmtSize(skill.size)}
+                    </td>
+                    <td className="border-b border-line px-2 py-1.5" style={{ whiteSpace: 'normal', lineHeight: 2 }}>
+                      {skill.states.map(([key, state]) => (
+                        <button
+                          key={key}
+                          className={`chip mr-1 rounded-full border px-2 py-px text-xs ${
+                            state === 'synced' ? 'border-ok text-ok' : state === 'stale' ? 'border-warn text-warn' : 'border-line text-muted'
+                          }`}
+                          title={state === 'stale' ? '副本与库不一致，点「部署」刷新' : state}
+                          onClick={() => {
+                            setTab(key);
+                          }}
+                        >
+                          {key}·{STATE_LABEL[state] ?? state}
+                        </button>
+                      ))}
+                    </td>
+                    <td className="border-b border-line px-2 py-1.5">
+                      <span className="flex gap-1">
+                        <Button size="sm" onClick={() => { setDeployName(skill.name); setPicked(new Set()); }}>
+                          部署
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setImportPick(true)}>
+                          从平台导入
+                        </Button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="rounded-lg border border-line bg-card p-3">
+            <h2 className="mb-2 text-sm font-semibold">MCP（{snap.mcp.length}）</h2>
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">名称</th>
+                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">命令</th>
+                  <th className="w-24 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">状态</th>
+                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">已写入平台</th>
+                  <th className="w-24 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snap.mcp.length === 0 && (
+                  <tr>
+                    <td colSpan={5}>
+                      <StateBlock kind="empty" title="还没有 MCP 条目" detail="点「粘贴导入 MCP」把配置写进选中的平台。" />
+                    </td>
+                  </tr>
+                )}
+                {snap.mcp.map((row) => (
+                  <tr key={row.name} className="hover:bg-hover">
+                    <td className="border-b border-line px-2 py-1.5 text-sm">
+                      {row.name}
+                      {row.foreign && <Tag tone="muted">非本工具写入</Tag>}
+                    </td>
+                    <td className="border-b border-line px-2 py-1.5 font-mono text-xs text-muted">{row.command}</td>
+                    <td className="border-b border-line px-2 py-1.5">
+                      <Tag tone={row.disabled ? 'warn' : 'ok'}>{row.disabled ? '停用' : '启用'}</Tag>
+                    </td>
+                    <td className="border-b border-line px-2 py-1.5 text-xs text-muted">
+                      {row.targets.join('、') || '—'}
+                    </td>
+                    <td className="border-b border-line px-2 py-1.5">
+                      {!row.foreign && (
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          onClick={() => removeMcp(row.name, [...picked])}
+                          loading={busy === `mcp-remove:${row.name}`}
+                          disabled={!!busy || picked.size === 0}
+                        >
+                          移除
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Button variant="primary" onClick={() => setMcpOpen(true)}>
-          粘贴导入 MCP
-        </Button>
-        <span className="text-xs text-muted">勾选平台后可对 MCP 条目做移除。</span>
-      </div>
+      {activeTarget && (
+        <>
+          <div className="rounded-lg border border-line bg-card p-3 text-sm">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span className="font-semibold">{activeTarget.label}</span>
+              <span className="text-xs text-muted">技能目录 {activeTarget.skills} 个 · MCP {activeTarget.mcp} 条</span>
+            </div>
+            <div className="mt-1 truncate text-xs text-muted" title={activeTarget.skill_dir}>
+              技能目录：{activeTarget.skill_dir}
+            </div>
+            <div className="truncate text-xs text-muted" title={activeTarget.mcp_file}>
+              MCP 配置：{activeTarget.mcp_file}
+            </div>
+          </div>
 
-      <div className="rounded-lg border border-line bg-card p-3">
-        <h2 className="mb-2 text-sm font-semibold">技能库（{snap.skills.length}）</h2>
-        <table className="w-full border-collapse">
-          <thead>
-            <tr>
-              <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">技能</th>
-              <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">说明</th>
-              <th className="w-24 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">大小</th>
-              <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">平台副本状态</th>
-              <th className="w-40 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {snap.skills.length === 0 && (
-              <tr>
-                <td colSpan={5}>
-                  <StateBlock kind="empty" title="技能库是空的" detail="把技能目录放进 data/skills/，或从平台导入。" />
-                </td>
-              </tr>
-            )}
-            {snap.skills.map((skill) => (
-              <tr key={skill.name} className="hover:bg-hover">
-                <td className="border-b border-line px-2 py-1.5 text-sm">
-                  {skill.name}
-                  {!skill.valid && <Tag tone="bad">{skill.reason}</Tag>}
-                </td>
-                <td className="border-b border-line px-2 py-1.5 text-xs text-muted">
-                  {skill.description}
-                </td>
-                <td className="border-b border-line px-2 py-1.5 text-xs tabular-nums text-muted">
-                  {fmtSize(skill.size)}
-                </td>
-                <td className="border-b border-line px-2 py-1.5" style={{ whiteSpace: 'normal', lineHeight: 2 }}>
-                  {skill.states.map(([key, state]) => (
-                    <button
-                      key={key}
-                      className={`chip mr-1 rounded-full border px-2 py-px text-xs ${
-                        state === 'synced' ? 'border-ok text-ok' : state === 'stale' ? 'border-warn text-warn' : 'border-line text-muted'
-                      }`}
-                      title={state === 'stale' ? '副本与库不一致，点「部署」刷新' : state}
-                      onClick={() => {
-                        setDeployName(skill.name);
-                        setPicked(new Set([key]));
-                      }}
-                    >
-                      {key}·{state}
-                    </button>
+          <div className="rounded-lg border border-line bg-card p-3">
+            <h2 className="mb-2 text-sm font-semibold">这个平台的技能（{snap.skills.length}）</h2>
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">技能</th>
+                  <th className="w-24 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">副本状态</th>
+                  <th className="w-48 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snap.skills.length === 0 && (
+                  <tr>
+                    <td colSpan={3}>
+                      <StateBlock kind="empty" title="技能库是空的" detail="回「总体」页把技能放进 data/skills/ 或从其他平台导入。" />
+                    </td>
+                  </tr>
+                )}
+                {snap.skills.map((skill) => {
+                  const state = skill.states.find(([k]) => k === tab)?.[1] ?? 'missing';
+                  return (
+                    <tr key={skill.name} className="hover:bg-hover">
+                      <td className="border-b border-line px-2 py-1.5 text-sm">
+                        {skill.name}
+                        {!skill.valid && <Tag tone="bad">{skill.reason}</Tag>}
+                        <span className="block text-xs text-muted">{skill.description}</span>
+                      </td>
+                      <td className="border-b border-line px-2 py-1.5">
+                        <Tag tone={state === 'synced' ? 'ok' : state === 'stale' ? 'warn' : 'muted'}>
+                          {STATE_LABEL[state] ?? state}
+                        </Tag>
+                      </td>
+                      <td className="border-b border-line px-2 py-1.5">
+                        <span className="flex gap-1">
+                          {(state === 'missing' || state === 'stale') && (
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                setDeployName(skill.name);
+                                setPicked(new Set([tab]));
+                              }}
+                            >
+                              {state === 'stale' ? '更新此副本' : '部署到此平台'}
+                            </Button>
+                          )}
+                          {state !== 'missing' && (
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              loading={busy === `remove:${skill.name}:${tab}`}
+                              disabled={!!busy}
+                              onClick={() => {
+                                if (!window.confirm(`从${activeTarget.label}移除「${skill.name}」？副本会先进回收站。`)) return;
+                                void removeSkillFrom(skill.name, tab);
+                              }}
+                            >
+                              移除
+                            </Button>
+                          )}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="rounded-lg border border-line bg-card p-3">
+            <h2 className="mb-2 text-sm font-semibold">这个平台的 MCP（{snap.mcp.filter((m) => m.present.includes(tab)).length}）</h2>
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">名称</th>
+                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">命令</th>
+                  <th className="w-20 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">状态</th>
+                  <th className="w-32 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">来源</th>
+                  <th className="w-20 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snap.mcp.filter((m) => m.present.includes(tab)).length === 0 && (
+                  <tr>
+                    <td colSpan={5}>
+                      <StateBlock kind="empty" title="这个平台还没有 MCP 条目" detail="回「总体」页点「粘贴导入 MCP」。" />
+                    </td>
+                  </tr>
+                )}
+                {snap.mcp
+                  .filter((m) => m.present.includes(tab))
+                  .map((row) => (
+                    <tr key={row.name} className="hover:bg-hover">
+                      <td className="border-b border-line px-2 py-1.5 text-sm">{row.name}</td>
+                      <td className="border-b border-line px-2 py-1.5 font-mono text-xs text-muted">{row.command}</td>
+                      <td className="border-b border-line px-2 py-1.5">
+                        <Tag tone={row.disabled ? 'warn' : 'ok'}>{row.disabled ? '停用' : '启用'}</Tag>
+                      </td>
+                      <td className="border-b border-line px-2 py-1.5 text-xs text-muted">
+                        {row.targets.includes(tab) ? '本工具部署' : '非本工具写入'}
+                      </td>
+                      <td className="border-b border-line px-2 py-1.5">
+                        {!row.foreign && (
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() => removeMcp(row.name, [tab])}
+                            loading={busy === `mcp-remove:${row.name}`}
+                            disabled={!!busy}
+                          >
+                            移除
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
                   ))}
-                </td>
-                <td className="border-b border-line px-2 py-1.5">
-                  <span className="flex gap-1">
-                    <Button size="sm" onClick={() => { setDeployName(skill.name); setPicked(new Set()); }}>
-                      部署
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setImportPick(true)}>
-                      从平台导入
-                    </Button>
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="rounded-lg border border-line bg-card p-3">
-        <h2 className="mb-2 text-sm font-semibold">MCP（{snap.mcp.length}）</h2>
-        <table className="w-full border-collapse">
-          <thead>
-            <tr>
-              <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">名称</th>
-              <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">命令</th>
-              <th className="w-24 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">状态</th>
-              <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">已写入平台</th>
-              <th className="w-24 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {snap.mcp.length === 0 && (
-              <tr>
-                <td colSpan={5}>
-                  <StateBlock kind="empty" title="还没有 MCP 条目" detail="点「粘贴导入 MCP」把配置写进选中的平台。" />
-                </td>
-              </tr>
-            )}
-            {snap.mcp.map((row) => (
-              <tr key={row.name} className="hover:bg-hover">
-                <td className="border-b border-line px-2 py-1.5 text-sm">
-                  {row.name}
-                  {row.foreign && <Tag tone="muted">非本工具写入</Tag>}
-                </td>
-                <td className="border-b border-line px-2 py-1.5 font-mono text-xs text-muted">{row.command}</td>
-                <td className="border-b border-line px-2 py-1.5">
-                  <Tag tone={row.disabled ? 'warn' : 'ok'}>{row.disabled ? '停用' : '启用'}</Tag>
-                </td>
-                <td className="border-b border-line px-2 py-1.5 text-xs text-muted">
-                  {row.targets.join('、') || '—'}
-                </td>
-                <td className="border-b border-line px-2 py-1.5">
-                  {!row.foreign && (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      onClick={() => removeMcp(row.name)}
-                      loading={busy === `mcp-remove:${row.name}`}
-                      disabled={!!busy}
-                    >
-                      移除
-                    </Button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       {/* 部署对话框：选平台 → 无冲突直接写；冲突时给「覆盖」确认（契约 16） */}
       <Dialog

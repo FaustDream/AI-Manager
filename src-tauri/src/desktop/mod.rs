@@ -826,6 +826,7 @@ pub fn run() -> tauri::Result<()> {
             build_tray(app)?;
             hook_window(app);
             spawn_daily_round(service.clone(), app.handle().clone());
+            spawn_credits_round(service.clone(), app.handle().clone());
             spawn_hub_auto_sync(sync_db, hub);
             spawn_zcode_auto_claim(claim_db, service, app.handle().clone());
             spawn_event_bridges(app.handle().clone(), state_tasks);
@@ -967,6 +968,30 @@ fn spawn_daily_round(service: Arc<crate::app::checkin::Service>, app: tauri::App
             // 界面收到就更新底部那一行；收不到也不影响结算
             let _ = app.emit("checkin:round", &round);
             tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+        }
+    });
+}
+
+/// 积分定时刷新：每小时一轮。签到轮询一天只有 4 次带余额，
+/// 界面上的余额要更跟手；失败逐条进错误快照，不打断整轮。
+fn spawn_credits_round(
+    service: Arc<crate::app::checkin::Service>,
+    app: tauri::AppHandle,
+) {
+    use tauri::Emitter;
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            let (total, failed) = service.credits_round().await;
+            if total > 0 {
+                log::log(
+                    if failed > 0 { Level::Warn } else { Level::Info },
+                    "checkin",
+                    format!("积分刷新：{total} 个账号，失败 {failed}"),
+                );
+                let _ = app.emit("credits:round", total);
+            }
         }
     });
 }

@@ -6,6 +6,10 @@ export type McpRow = { name: string, command: string, disabled: boolean,
  */
 targets: Array<string>, 
 /**
+ * 该条目实际出现在哪些平台（含非本工具写入的），平台视图按这个过滤
+ */
+present: Array<string>, 
+/**
  * 有同名条目但不是本工具写的：界面要标出来，避免用户以为可以随便删
  */
 foreign: boolean, };

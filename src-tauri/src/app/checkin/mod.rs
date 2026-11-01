@@ -190,6 +190,25 @@ impl Service {
         out
     }
 
+    /// 定时积分刷新：全部有凭据的账号刷一遍余额。返回 (总数, 失败数)。
+    pub async fn credits_round(&self) -> (usize, usize) {
+        let iids: Vec<String> = match self.accounts().await {
+            Ok(list) => list.into_iter().filter(|a| a.has_secret).map(|a| a.iid).collect(),
+            Err(_) => return (0, 0),
+        };
+        let total = iids.len();
+        if total == 0 {
+            return (0, 0);
+        }
+        let out = self.credits_batch(&iids).await;
+        // 失败的账号余额与配额都拿不到（错误文案在 summary 里）
+        let failed = out
+            .iter()
+            .filter(|(_, s)| s.balance.is_none() && s.quota.is_none())
+            .count();
+        (total, failed)
+    }
+
     /// 详情面板：只读本地库（余额、今日增减、批次、下次可签），一次都不打接口。
     pub async fn detail(&self, iid: &str) -> AccountDetail {
         let checked_in = self.marked_today(iid).await;
@@ -247,6 +266,13 @@ impl Service {
             if let Some(granted) = result.granted.filter(|g| *g > 0.0) {
                 self.record_grant(iid, granted, result.validity_days, provider.live_credit())
                     .await;
+            }
+        }
+        // 签到改变了余额：立刻查一次并落库，界面刷新账号列表就能看到，
+        // 不用等下一轮轮询
+        if result.ok {
+            if let Ok(state) = self.status(iid).await {
+                self.persist(iid, &state).await;
             }
         }
         Ok(result)
