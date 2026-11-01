@@ -24,18 +24,26 @@ function TargetPicker({
 }) {
   const all = targets.length > 0 && picked.size === targets.length;
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div>
       {/* 全选属于对话框里的平台选择，不是技能表的行选择 */}
-      <label className="flex items-center gap-1 text-sm">
+      <label className="flex items-center gap-1.5 text-xs text-muted">
         <Checkbox checked={all} onChange={() => onAll(!all)} />
-        全选
+        全选（{picked.size}/{targets.length}）
       </label>
-      {targets.map((t) => (
-        <label key={t.key} className="flex items-center gap-1 text-sm">
-          <Checkbox checked={picked.has(t.key)} onChange={() => onToggle(t.key)} />
-          {t.label}
-        </label>
-      ))}
+      {/* 双列选项卡：点击面大、选中态描边，比一排小 checkbox 好点也好扫 */}
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        {targets.map((t) => (
+          <label
+            key={t.key}
+            className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
+              picked.has(t.key) ? 'border-accent bg-hover font-medium' : 'border-line hover:bg-hover'
+            }`}
+          >
+            <Checkbox checked={picked.has(t.key)} onChange={() => onToggle(t.key)} />
+            {t.label}
+          </label>
+        ))}
+      </div>
     </div>
   );
 }
@@ -501,28 +509,34 @@ export default function HubPage() {
             setPicked(all ? new Set(snap.targets.map((t) => t.key)) : new Set())
           }
         />
-        <p className="mt-2 text-xs text-muted">
-          目标已有同名但内容不同的副本时会报冲突，需要你在结果里确认覆盖。
+        <p className="mt-3 text-xs text-muted">
+          部署会把库里的技能目录复制到各平台的技能目录；目标已有同名但内容不同的副本时报冲突，需在结果里确认覆盖。
         </p>
-        <div className="mt-2 flex gap-2">
-          <Button
-            size="sm"
-            variant="danger"
-            onClick={() => deploy(true)}
-            disabled={picked.size === 0 || !!busy}
-            loading={busy === 'deploy'}
-          >
-            强制覆盖部署
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={picked.size === 0 || !!busy}
-            loading={busy === 'remove'}
-            onClick={removeSkill}
-          >
-            从选中平台移除
-          </Button>
+
+        {/* 次级动作与主路径分层：覆盖/移除是例外操作，收进分隔线下的次级区 */}
+        <div className="mt-4 border-t border-line pt-3">
+          <p className="mb-2 text-xs font-medium text-muted">选中平台的其他操作</p>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => deploy(true)}
+              disabled={picked.size === 0 || !!busy}
+              loading={busy === 'deploy'}
+            >
+              强制覆盖部署
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={picked.size === 0 || !!busy}
+              loading={busy === 'remove'}
+              onClick={removeSkill}
+            >
+              从选中平台移除
+            </Button>
+          </div>
+          <p className="mt-1.5 text-xs text-muted">移除的副本先进回收站，可在会话页的回收站找回。</p>
         </div>
       </Dialog>
 
