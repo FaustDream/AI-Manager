@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 fn main() {
+    install_panic_hook();
     attach_parent_console();
     let args: Vec<String> = std::env::args().collect();
 
@@ -47,6 +48,40 @@ fn attach_parent_console() {
     unsafe {
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);
     }
+}
+
+/// panic 落盘：release 是 GUI 子系统，stderr 不可见，任何 panic 不落盘就
+/// 永远查不到（v1 的 crash.log 就是这么来的）。追加写 data/logs/crash.log，
+/// 带时间戳、线程与位置；这是「出了问题第一时间能查」的底座，先于一切执行。
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let thread = std::thread::current().name().unwrap_or("<unnamed>").to_string();
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_default();
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "非字符串 panic".to_string()
+        };
+        let line = format!("[{stamp}] thread {thread} @ {location}: {payload}");
+        err_out(&line);
+        let dir = paths::logs_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("crash.log"))
+        {
+            let _ = writeln!(f, "{line}");
+        }
+        default(info);
+    }));
 }
 
 fn arg_value(args: &[String], flag: &str) -> Option<PathBuf> {
