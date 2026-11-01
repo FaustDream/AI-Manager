@@ -42,6 +42,10 @@ function EventBridges() {
         qc.invalidateQueries({ queryKey: ['sessions'] });
         qc.invalidateQueries({ queryKey: ['facets'] });
       }),
+      // 每小时积分轮询完成：账号列表的余额/配额可能变了
+      listen<unknown>('credits:round', () => {
+        qc.invalidateQueries({ queryKey: ['accounts'] });
+      }),
       listen<string>('zcode:claim', (e) => {
         toast(`ZCode 自动领取：${e.payload}`);
       }),

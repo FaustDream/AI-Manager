@@ -108,6 +108,37 @@ export default function SessionsPage() {
       }
     });
 
+  // 真实删除：删完立刻清掉回收站批次——客户端里的正文与库行在 delete 阶段
+  // 就已经真删了，purge 保证连回收站副本也不留，重扫不会再出现
+  const deleteForever = () =>
+    runBusy('delete-forever', async () => {
+      const keys = [...checked];
+      if (keys.length === 0) return;
+      if (
+        !window.confirm(
+          `彻底删除选中的 ${keys.length} 条会话？\n会同时从对应客户端删除其数据，不可恢复。`,
+        )
+      )
+        return;
+      try {
+        const report = await call<DeleteReport>('session_delete', { keys });
+        const freed = report.tag
+          ? await call<number>('session_trash_purge', { tag: report.tag })
+          : 0;
+        toast(
+          `已彻底删除 ${report.sessions} 条（释放 ${fmtSize(freed)}）` +
+            (report.errors.length ? `；失败 ${report.errors.length}` : ''),
+        );
+        setChecked(new Set());
+        setSelected(null);
+        qc.invalidateQueries({ queryKey: ['facets'] });
+        qc.invalidateQueries({ queryKey: ['sessions'] });
+        qc.invalidateQueries({ queryKey: ['trash'] });
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
+
   const scan = () =>
     runBusy('scan', async () => {
       try {
@@ -134,21 +165,29 @@ export default function SessionsPage() {
   const total = facets.data?.total ?? 0;
   return (
     <div className="flex h-[calc(100vh-118px)] flex-col gap-2.5">
-      <div className="flex flex-wrap items-center gap-3 text-sm">
-        <label className="flex items-center gap-1 text-muted">
-          来源
-          <Select
-            value={filter.source ?? ''}
-            onChange={(e) => setFilter((f) => ({ ...f, source: e.target.value || null }))}
+      {/* 来源标签栏：按软件分栏；删掉的会话不会再出现在对应软件里 */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
+        <button
+          className={`rounded-md px-3 py-1 text-sm ${
+            filter.source === null ? 'bg-hover font-semibold text-fg' : 'text-muted hover:bg-hover hover:text-fg'
+          }`}
+          onClick={() => setFilter((f) => ({ ...f, source: null }))}
+        >
+          全部（{facets.data?.total ?? 0}）
+        </button>
+        {(facets.data?.sources ?? []).map((s) => (
+          <button
+            key={s.value}
+            className={`rounded-md px-3 py-1 text-sm ${
+              filter.source === s.value ? 'bg-hover font-semibold text-fg' : 'text-muted hover:bg-hover hover:text-fg'
+            }`}
+            onClick={() => setFilter((f) => ({ ...f, source: s.value }))}
           >
-            <option value="">全部</option>
-            {(facets.data?.sources ?? []).map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}（{s.count}）
-              </option>
-            ))}
-          </Select>
-        </label>
+            {s.label}（{s.count}）
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-sm">
         <label className="flex items-center gap-1 text-muted">
           账号
           <Select
@@ -205,6 +244,16 @@ export default function SessionsPage() {
           onClick={deleteChecked}
         >
           删除选中（{checked.size}）
+        </Button>
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={checked.size === 0 || !!busy}
+          loading={busy === 'delete-forever'}
+          onClick={deleteForever}
+          title="同时从对应客户端删除其数据，不留回收站副本"
+        >
+          彻底删除
         </Button>
       </div>
 
@@ -419,41 +468,57 @@ function TrashDrawer({ open, onClose }: { open: boolean; onClose: () => void }) 
     <Dialog open={open} title="会话回收站" onClose={onClose} wide>
       {batches.isLoading && <SkeletonRows rows={3} cols={2} />}
       {(batches.data ?? []).length === 0 && !batches.isLoading && (
-        <p className="text-sm text-muted">回收站是空的。</p>
+        <p className="py-6 text-center text-sm text-muted">回收站是空的。</p>
       )}
-      <div className="flex flex-col gap-2">
-        {(batches.data ?? []).map((batch) => (
-          <div key={batch.tag} className="rounded-md border border-line p-2 text-sm">
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs">{batch.tag}</span>
-              <span className="text-xs text-muted">{fmtTime(batch.at)} · {batch.items.length} 个文件</span>
-              <span className="flex-1" />
-              <Button
-                size="sm"
-                onClick={() => restore(batch.tag)}
-                loading={busyTag === batch.tag}
-                disabled={!!busyTag}
-              >
-                恢复
-              </Button>
-              <Button
-                size="sm"
-                variant="danger"
-                onClick={() => purge(batch.tag)}
-                loading={busyTag === batch.tag}
-                disabled={!!busyTag}
-              >
-                彻底删除
-              </Button>
-            </div>
-            {batch.platforms.length > 0 && (
-              <div className="mt-1 text-xs text-muted">涉及客户端：{batch.platforms.join('、')}</div>
-            )}
-          </div>
-        ))}
-      </div>
       {(batches.data ?? []).length > 0 && (
-        <div className="mt-3 flex justify-end">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-line-strong text-left text-xs font-semibold text-muted">
+              <th className="px-2 py-1.5">删除时间</th>
+              <th className="px-2 py-1.5">涉及客户端</th>
+              <th className="w-20 px-2 py-1.5 text-right">文件数</th>
+              <th className="w-24 px-2 py-1.5 text-right">大小</th>
+              <th className="w-44 px-2 py-1.5 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(batches.data ?? []).map((batch) => (
+              <tr key={batch.tag} className="border-b border-line hover:bg-hover">
+                <td className="px-2 py-2 tabular-nums">{fmtTime(batch.at)}</td>
+                <td className="px-2 py-2 text-muted">{batch.platforms.join('、') || '—'}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{batch.items.length}</td>
+                <td className="px-2 py-2 text-right tabular-nums">
+                  {fmtSize(batch.items.reduce((sum, it) => sum + (it.size ?? 0), 0))}
+                </td>
+                <td className="px-2 py-2 text-right">
+                  <span className="flex justify-end gap-1.5">
+                    <Button
+                      size="sm"
+                      onClick={() => restore(batch.tag)}
+                      loading={busyTag === batch.tag}
+                      disabled={!!busyTag}
+                    >
+                      恢复
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onClick={() => purge(batch.tag)}
+                      loading={busyTag === batch.tag}
+                      disabled={!!busyTag}
+                    >
+                      彻底删除
+                    </Button>
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {(batches.data ?? []).length > 0 && (
+        <div className="mt-3 flex items-center justify-between">
+          <p className="text-xs text-muted">恢复会把文件与记录放回原处；彻底删除不可恢复。</p>
           <Button
             variant="danger"
             onClick={() => purge(null)}
@@ -476,23 +541,36 @@ function BackupsDrawer({ open, onClose }: { open: boolean; onClose: () => void }
   });
   return (
     <Dialog open={open} title="整库备份（保留最近 10 份）" onClose={onClose} wide>
-      {(backups.data ?? []).length === 0 && <p className="text-sm text-muted">还没有备份。</p>}
-      <div className="flex flex-col gap-2">
-        {(backups.data ?? []).map((snap) => (
-          <div key={snap.tag} className="rounded-md border border-line p-2 text-sm">
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs">{snap.tag}</span>
-              <span className="text-xs text-muted">{fmtTime(snap.at)}</span>
-              <span className="flex-1" />
-              <span className="text-xs tabular-nums">{fmtSize(snap.bytes)}</span>
-            </div>
-            <div className="mt-1 text-xs text-muted">
-              来源：{snap.sources.join('、')}
-              {snap.skipped.length > 0 && `；跳过（太大）：${snap.skipped.join('、')}`}
-            </div>
-          </div>
-        ))}
-      </div>
+      {(backups.data ?? []).length === 0 && (
+        <p className="py-6 text-center text-sm text-muted">还没有备份。点「整库备份」创建第一份。</p>
+      )}
+      {(backups.data ?? []).length > 0 && (
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-line-strong text-left text-xs font-semibold text-muted">
+              <th className="px-2 py-1.5">备份时间</th>
+              <th className="px-2 py-1.5">包含来源</th>
+              <th className="w-24 px-2 py-1.5 text-right">大小</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(backups.data ?? []).map((snap) => (
+              <tr key={snap.tag} className="border-b border-line hover:bg-hover">
+                <td className="px-2 py-2 tabular-nums">{fmtTime(snap.at)}</td>
+                <td className="px-2 py-2 text-muted">
+                  {snap.sources.join('、')}
+                  {snap.skipped.length > 0 && (
+                    <span className="block text-xs text-muted">
+                      跳过（太大）：{snap.skipped.join('、')}
+                    </span>
+                  )}
+                </td>
+                <td className="px-2 py-2 text-right tabular-nums">{fmtSize(snap.bytes)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </Dialog>
   );
 }

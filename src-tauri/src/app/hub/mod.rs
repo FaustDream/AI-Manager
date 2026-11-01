@@ -324,6 +324,8 @@ pub struct McpRow {
     pub disabled: bool,
     /// 出现在哪些平台的配置里（只有本工具写的才算「部署到」）
     pub targets: Vec<String>,
+    /// 该条目实际出现在哪些平台（含非本工具写入的），平台视图按这个过滤
+    pub present: Vec<String>,
     /// 有同名条目但不是本工具写的：界面要标出来，避免用户以为可以随便删
     pub foreign: bool,
 }
@@ -378,9 +380,14 @@ pub fn snapshot(hub: &Hub) -> HubSnapshot {
                     command: parsed.command.unwrap_or_default(),
                     disabled: parsed.disabled,
                     targets: Vec::new(),
+                    present: Vec::new(),
                     foreign: false,
                 }
             });
+            // 不管是谁写的，这条都出现在该平台里
+            if !entry.present.iter().any(|t| t == key) {
+                entry.present.push(key.to_string());
+            }
             if ours {
                 own += 1;
                 if !entry.targets.iter().any(|t| t == key) {
