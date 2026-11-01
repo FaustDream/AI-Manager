@@ -50,7 +50,7 @@ export function Shell() {
               <button
                 key={cap.manifest.id}
                 className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-sm ${
-                  active === cap.manifest.id ? 'bg-hover font-semibold text-fg' : 'text-muted hover:bg-hover hover:text-fg'
+                  active === cap.manifest.id ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
                 }`}
                 onClick={() => setActive(cap.manifest.id)}
               >

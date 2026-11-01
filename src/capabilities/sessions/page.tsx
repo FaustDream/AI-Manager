@@ -169,7 +169,7 @@ export default function SessionsPage() {
       <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
         <button
           className={`rounded-md px-3 py-1 text-sm ${
-            filter.source === null ? 'bg-hover font-semibold text-fg' : 'text-muted hover:bg-hover hover:text-fg'
+            filter.source === null ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
           }`}
           onClick={() => setFilter((f) => ({ ...f, source: null }))}
         >
@@ -179,7 +179,7 @@ export default function SessionsPage() {
           <button
             key={s.value}
             className={`rounded-md px-3 py-1 text-sm ${
-              filter.source === s.value ? 'bg-hover font-semibold text-fg' : 'text-muted hover:bg-hover hover:text-fg'
+              filter.source === s.value ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
             }`}
             onClick={() => setFilter((f) => ({ ...f, source: s.value }))}
           >
