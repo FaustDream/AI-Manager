@@ -43,8 +43,7 @@ export function Shell() {
     <MotionConfig reducedMotion="user">
       <div className="flex h-screen flex-col">
       <header className="flex items-center gap-2 border-b border-line px-5 py-2.5">
-        <h1 className="text-lg font-semibold">AI Manager</h1>
-        <nav className="ml-1 flex gap-1">
+        <nav className="flex gap-1">
           {caps.map((cap) => {
             const Icon = ICONS[cap.manifest.id] ?? Users;
             return (
