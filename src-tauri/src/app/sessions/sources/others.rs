@@ -230,7 +230,8 @@ fn scan_zcode(path: &Path, errors: &mut Vec<String>) -> Vec<RawRow> {
         row.cwd = directory.unwrap_or_default();
         row.last_at = normalize_ms(updated.unwrap_or(0));
         row.msgs = msgs;
-        // 库有几百 MB，逐条会话统计体积要把 blob 全读一遍，界面上显示「—」
+        // 库有几百 MB，逐条会话统计体积要把 blob 全读一遍：体积记 0，
+        // 展示层把 0 归一为「—」（见 store::page 的映射）
         row.size = 0;
         row.state = state_of(deleted, archived);
         row.has_body = msgs > 0;
