@@ -54,6 +54,24 @@
   color-scheme: dark;
 }
 
+/* 经典浅色：暖纸底 + 棕强调，键位与其余主题完全一致（换肤只换值，不换结构） */
+[data-theme="classic-light"] {
+  --color-bg: #f6f2ea; --color-fg: #3b352c; --color-fg2: #6b6252; --color-muted: #8f8574;
+  --color-line: #e3dccd; --color-line-strong: #cfc5ae; --color-card: #fffdf8; --color-hover: #efe9dc;
+  --color-accent: #a05a2c; --color-accent-strong: #864a23; --color-on-accent: #ffffff;
+  --color-ok: #48804a; --color-warn: #b7791f; --color-bad: #c0453e;
+  color-scheme: light;
+}
+
+/* 经典深色：暖黑底 + 琥珀强调 */
+[data-theme="classic-dark"] {
+  --color-bg: #1e1b16; --color-fg: #e8e2d5; --color-fg2: #c2b9a6; --color-muted: #a49a87;
+  --color-line: #3a352b; --color-line-strong: #4d4637; --color-card: #26221b; --color-hover: #2e2a21;
+  --color-accent: #d19a4a; --color-accent-strong: #e0b06a; --color-on-accent: #1e1b16;
+  --color-ok: #7fb069; --color-warn: #d9a441; --color-bad: #e07a6a;
+  color-scheme: dark;
+}
+
 body {
   margin: 0;
   background: var(--color-bg);

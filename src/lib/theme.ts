@@ -1,7 +1,8 @@
-// 主题：跟随系统 / 浅 / 深。选择持久化在 kv（键 ui.theme，与 v1 一致）。
+// 主题：跟随系统 / 浅 / 深 / 经典浅 / 经典深。选择持久化在 kv（键 ui.theme，与 v1 一致）。
+// 全部颜色走 index.css 的令牌表，每种主题定义同一套键——换肤只换值不换结构。
 import { call } from './ipc';
 
-export type ThemeChoice = '' | 'light' | 'dark';
+export type ThemeChoice = '' | 'light' | 'dark' | 'classic-light' | 'classic-dark';
 
 export function applyTheme(choice: ThemeChoice): void {
   const root = document.documentElement;
