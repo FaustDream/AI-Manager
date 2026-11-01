@@ -399,15 +399,32 @@ fn captcha_blocking() -> Result<(String, String)> {
     let url = format!("http://127.0.0.1:{port}/");
 
     let (tx, rx) = std::sync::mpsc::channel::<String>();
+    // 超时后线程必须能自己退（模块头承诺不留常驻端口）：监听转非阻塞轮询
+    // 停止位，主流程超时置位即可，不用发假连接去解阻塞
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_server = stop.clone();
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| AppError::new("io", format!("回调服务设非阻塞失败：{e}")))?;
     let server = std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let param = handle_connection(stream, &page);
-            let done = param.is_some();
-            if let Some(param) = param {
-                let _ = tx.send(param);
-            }
-            if done {
-                break;
+        while !stop_server.load(std::sync::atomic::Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false).ok();
+                    let param = handle_connection(stream, &page);
+                    let done = param.is_some();
+                    if let Some(param) = param {
+                        let _ = tx.send(param);
+                    }
+                    if done {
+                        break;
+                    }
+                }
+                // 非阻塞 accept 的「暂时没连接」：睡一小会儿再试
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(_) => break,
             }
         }
     });
@@ -419,6 +436,7 @@ fn captcha_blocking() -> Result<(String, String)> {
         &[url.as_str()],
         true,
     ) {
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
         return Err(AppError::new(
             "provider",
             format!("浏览器打开失败（{}），请手动访问 {url}", e.message),
@@ -426,9 +444,11 @@ fn captcha_blocking() -> Result<(String, String)> {
     }
 
     let param = rx
-        .recv_timeout(std::time::Duration::from_secs(CAPTCHA_TIMEOUT_SECS))
-        .map_err(|_| AppError::new("provider", "等待验证码超时，请重新发起领取"))?;
-    // 服务线程在收到参数后自己退出；detach 兜底，不阻塞主流程
+        .recv_timeout(std::time::Duration::from_secs(CAPTCHA_TIMEOUT_SECS));
+    // 无论拿到参数还是超时，都让服务线程停轮询退出，端口随之释放
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let param = param.map_err(|_| AppError::new("provider", "等待验证码超时，请重新发起领取"))?;
+    // detach：线程已在收尾，不等它
     let _ = server;
     if param.is_empty() {
         return Err(AppError::new("provider", "验证码参数为空，请重新发起领取"));

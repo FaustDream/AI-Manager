@@ -58,11 +58,13 @@ pub trait CheckinStore {
 /// 积分台账（P3 实现）。契约 5。
 pub trait Ledger {
     /// live_credit=true 的平台从不写台账。
+    /// `validity_days` 只在 Qoder 这类 live_credit=false 的平台有值。
     fn add_if_needed(
         &self,
         live_credit: bool,
         iid: &str,
         granted: f64,
+        validity_days: Option<i64>,
         clock: &dyn Clock,
     ) -> Result<bool>;
     fn count(&self, iid: &str) -> usize;

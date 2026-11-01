@@ -93,7 +93,7 @@ fn contract_05a_live_credit_never_writes_ledger() {
     let clock = clock_at("2026-10-30T10:00:00+08:00");
     // WorkBuddy / Trae 的 live_credit 为 true
     let wrote = ledger
-        .add_if_needed(true, "workbuddy:1", 50.0, &clock)
+        .add_if_needed(true, "workbuddy:1", 50.0, None, &clock)
         .unwrap();
     assert!(!wrote, "live_credit 平台不该写台账");
     assert_eq!(ledger.count("workbuddy:1"), 0);

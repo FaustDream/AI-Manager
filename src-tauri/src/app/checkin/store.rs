@@ -302,12 +302,13 @@ impl Ledger for SqliteLedger<'_> {
         live_credit: bool,
         iid: &str,
         granted: f64,
+        validity_days: Option<i64>,
         clock: &dyn Clock,
     ) -> Result<bool> {
         if live_credit {
             return Ok(false);
         }
-        self.record(iid, granted, None, None, clock)
+        self.record(iid, granted, None, validity_days, clock)
     }
 
     fn count(&self, iid: &str) -> usize {
