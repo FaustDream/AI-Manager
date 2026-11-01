@@ -71,8 +71,14 @@ function GeneralPane() {
           <option value="">跟随系统</option>
           <option value="light">浅色</option>
           <option value="dark">深色</option>
+          <option value="classic-light">经典浅色（暖纸）</option>
+          <option value="classic-dark">经典深色（暖黑）</option>
         </Select>
       </label>
+      <p className="-mt-2 text-xs text-muted">
+        「经典」两套是暖色调：米纸底配棕强调（浅）、暖黑底配琥珀强调（深）；
+        默认两套是冷灰蓝。切换即时生效并持久化。
+      </p>
       <label className="flex items-center gap-4 text-sm">
         <span className="w-24 text-muted">开机自启</span>
         <Checkbox
@@ -111,81 +117,124 @@ function LogsPane() {
     staleTime: Infinity,
   });
   const tailRef = useRef<HTMLDivElement | null>(null);
-  const rows = [...(query.data ?? []), ...(live.data ?? [])];
+  // 贴底才自动跟随：用户向上翻历史时，新日志不许把视口拽走
+  const nearBottom = useRef(true);
+
+  const liveRows = (live.data ?? []).filter((line) => matchFilter(line, filter));
+  const rows = [...(query.data ?? []), ...liveRows];
 
   useEffect(() => {
-    tailRef.current?.scrollIntoView();
+    if (nearBottom.current) {
+      tailRef.current?.scrollIntoView({ block: 'end' });
+    }
   }, [rows.length]);
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Select
-          value={filter.level ?? ''}
-          onChange={(e) => setFilter((f) => ({ ...f, level: e.target.value || null }))}
-        >
-          <option value="">全部级别</option>
-          <option value="info">info</option>
-          <option value="warn">warn</option>
-          <option value="error">error</option>
-        </Select>
-        <Input
-          placeholder="模块"
-          value={filter.module ?? ''}
-          onChange={(e) => setFilter((f) => ({ ...f, module: e.target.value || null }))}
-        />
-        <Input
-          placeholder="关键词"
-          value={filter.keyword ?? ''}
-          onChange={(e) => setFilter((f) => ({ ...f, keyword: e.target.value || null }))}
-        />
-        <Select
-          value={filter.limit ? String(filter.limit) : '300'}
-          onChange={(e) => setFilter((f) => ({ ...f, limit: Number(e.target.value) || null }))}
-        >
-          <option value="100">最近 100 行</option>
-          <option value="300">最近 300 行</option>
-          <option value="1000">最近 1000 行</option>
-        </Select>
-        <span className="flex-1" />
-        <LogLevelPicker />
-        <Button
-          size="sm"
-          loading={exporting}
-          onClick={async () => {
-            setExporting(true);
-            try {
-              toast(await call<string>('log_export', { path: null, filter }));
-            } catch (e) {
-              toast(errText(e));
-            } finally {
-              setExporting(false);
-            }
+      {/* 筛选吸顶在滚动容器内部：翻日志时筛选条不跟着滚走 */}
+      <div className="h-[65vh] overflow-auto rounded-lg border border-line bg-card">
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-line bg-bg px-2 py-1.5">
+          <Select
+            value={filter.level ?? ''}
+            onChange={(e) => setFilter((f) => ({ ...f, level: e.target.value || null }))}
+          >
+            <option value="">全部级别</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="error">error</option>
+          </Select>
+          <Input
+            placeholder="模块"
+            className="w-28"
+            value={filter.module ?? ''}
+            onChange={(e) => setFilter((f) => ({ ...f, module: e.target.value || null }))}
+          />
+          <Input
+            placeholder="关键词"
+            className="w-32"
+            value={filter.keyword ?? ''}
+            onChange={(e) => setFilter((f) => ({ ...f, keyword: e.target.value || null }))}
+          />
+          <Select
+            value={filter.limit ? String(filter.limit) : '300'}
+            onChange={(e) => setFilter((f) => ({ ...f, limit: Number(e.target.value) || null }))}
+          >
+            <option value="100">最近 100 行</option>
+            <option value="300">最近 300 行</option>
+            <option value="1000">最近 1000 行</option>
+          </Select>
+          <span className="flex-1" />
+          <LogLevelPicker />
+          <Button
+            size="sm"
+            loading={exporting}
+            onClick={async () => {
+              setExporting(true);
+              try {
+                toast(await call<string>('log_export', { path: null, filter }));
+              } catch (e) {
+                toast(errText(e));
+              } finally {
+                setExporting(false);
+              }
+            }}
+          >
+            导出
+          </Button>
+        </div>
+        <div className="p-2">
+          {query.isLoading && <SkeletonRows rows={8} cols={1} />}
+          {query.isError && (
+            <StateBlock kind="error" title="读日志失败" detail={errText(query.error)} onRetry={() => query.refetch()} />
+          )}
+          {!query.isLoading && rows.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted">没有符合条件的日志。</p>
+          )}
+          {rows.map((line, i) => (
+            <div
+              key={i}
+              className={`whitespace-pre-wrap break-words border-b border-line px-2 py-0.5 font-mono text-xs ${
+                line.level === 'error' ? 'text-bad' : line.level === 'warn' ? 'text-warn' : ''
+              }`}
+            >
+              <span className="text-muted">{shortTs(line.ts)}</span>{' '}
+              <span className="font-semibold">[{line.level}]</span> {line.module} · {line.message}
+              {line.task ? ` · ${line.task}` : ''}
+            </div>
+          ))}
+          <div ref={tailRef} />
+        </div>
+      </div>
+      <div className="flex items-center justify-between text-xs text-muted">
+        <span>显示 {rows.length} 行{liveRows.length > 0 ? `（实时 ${liveRows.length}）` : ''}</span>
+        <button
+          className="cursor-pointer hover:text-fg"
+          onClick={() => {
+            nearBottom.current = true;
+            tailRef.current?.scrollIntoView({ block: 'end' });
           }}
         >
-          导出
-        </Button>
-      </div>
-      <div className="h-[60vh] overflow-auto rounded-lg border border-line bg-card p-2">
-        {query.isLoading && <SkeletonRows rows={8} cols={1} />}
-        {query.isError && (
-          <StateBlock kind="error" title="读日志失败" detail={errText(query.error)} onRetry={() => query.refetch()} />
-        )}
-        {rows.map((line, i) => (
-          <div
-            key={i}
-            className={`whitespace-pre-wrap break-words border-b border-line px-2 py-0.5 font-mono text-xs ${
-              line.level === 'error' ? 'text-bad' : line.level === 'warn' ? 'text-warn' : ''
-            }`}
-          >
-            {line.ts} [{line.level}] {line.module} · {line.message}
-            {line.task ? ` · ${line.task}` : ''}
-          </div>
-        ))}
-        <div ref={tailRef} />
+          回到底部
+        </button>
       </div>
     </div>
   );
+}
+
+/** RFC3339 转 MM-DD HH:mm:ss：日志行的时间要短，一眼对得上。 */
+function shortTs(ts: string): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+/** 实时行走与后端查询同一套过滤语义（级别精确、模块/关键词包含）。 */
+function matchFilter(line: LogLine, filter: LogFilter): boolean {
+  if (filter.level && line.level !== filter.level) return false;
+  if (filter.module && !line.module.includes(filter.module)) return false;
+  if (filter.keyword && !line.message.includes(filter.keyword)) return false;
+  return true;
 }
 
 function LogLevelPicker() {
@@ -232,9 +281,24 @@ function TasksPane() {
   const STATE_STYLE: Record<string, string> = {
     queued: 'muted', running: 'warn', cancelling: 'warn', done: 'ok', partial: 'warn', failed: 'bad', cancelled: 'muted',
   };
+  const STATE_LABEL: Record<string, string> = {
+    queued: '排队中', running: '运行中', cancelling: '取消中', done: '已完成',
+    partial: '部分完成', failed: '失败', cancelled: '已取消',
+  };
+  const CAP_LABEL: Record<string, string> = {
+    account_center: '账号中心', sessions: '会话', hub: '技能 MCP',
+    maintenance: '维护', settings: '设置',
+  };
+  const rows = tasks.data ?? [];
+  const runningCount = rows.filter((t) => ['running', 'queued', 'cancelling'].includes(t.state)).length;
+
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-muted">
+          {runningCount > 0 ? `${runningCount} 个任务进行中` : '当前没有进行中的任务'}
+        </span>
+        <span className="flex-1" />
         <Button
           size="sm"
           loading={cleaning}
@@ -255,34 +319,48 @@ function TasksPane() {
         </Button>
       </div>
       <div className="rounded-lg border border-line bg-card p-2">
-        {(tasks.data ?? []).length === 0 && <StateBlock kind="empty" title="没有后台任务" />}
-        {(tasks.data ?? []).map((task) => (
-          <div key={task.id} className="flex items-center gap-2 border-b border-line px-1 py-1.5 text-sm last:border-b-0">
-            <Tag tone={(STATE_STYLE[task.state] as 'ok' | 'warn' | 'bad' | 'muted') ?? 'muted'}>
-              {task.state}
-            </Tag>
-            <span className="min-w-0 flex-1 truncate" title={task.message}>
-              {task.name}
-              {task.message && <span className="text-muted"> · {task.message}</span>}
-            </span>
-            {task.progress !== null && (
-              <span className="inline-block h-1.5 w-24 overflow-hidden rounded-full bg-hover">
-                <span className="block h-full bg-accent" style={{ width: `${Math.round(task.progress * 100)}%` }} />
+        {rows.length === 0 && (
+          <StateBlock
+            kind="empty"
+            title="还没有任务记录"
+            detail="批量签到、会话扫描、每日轮询、积分刷新都会在这里出现，可随时取消进行中的任务。"
+          />
+        )}
+        {rows.map((task) => {
+          const alive = ['queued', 'running', 'cancelling'].includes(task.state);
+          return (
+            <div key={task.id} className="flex items-center gap-2 border-b border-line px-1 py-1.5 text-sm last:border-b-0">
+              <span className="w-16 shrink-0 text-xs text-muted">{CAP_LABEL[task.capability] ?? task.capability}</span>
+              <Tag tone={(STATE_STYLE[task.state] as 'ok' | 'warn' | 'bad' | 'muted') ?? 'muted'}>
+                {STATE_LABEL[task.state] ?? task.state}
+              </Tag>
+              <span className="min-w-0 flex-1 truncate" title={task.message}>
+                {task.name}
+                {task.message && <span className="text-muted"> · {task.message}</span>}
               </span>
-            )}
-            {(task.state === 'queued' || task.state === 'running' || task.state === 'cancelling') && (
-              <Button
-                size="sm"
-                onClick={async () => {
-                  await call('task_cancel', { taskId: task.id }).catch(() => {});
-                  qc.invalidateQueries({ queryKey: ['tasks'] });
-                }}
-              >
-                取消
-              </Button>
-            )}
-          </div>
-        ))}
+              {task.queue_ms !== null && task.queue_ms > 0 && (
+                <span className="shrink-0 text-xs text-muted" title="排队耗时">排队 {task.queue_ms}ms</span>
+              )}
+              {task.progress !== null && (
+                <span className="inline-block h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-hover">
+                  <span className="block h-full bg-accent transition-all" style={{ width: `${Math.round(task.progress * 100)}%` }} />
+                </span>
+              )}
+              {alive && (
+                <Button
+                  size="sm"
+                  variant="danger"
+                  onClick={async () => {
+                    await call('task_cancel', { taskId: task.id }).catch(() => {});
+                    qc.invalidateQueries({ queryKey: ['tasks'] });
+                  }}
+                >
+                  取消
+                </Button>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -336,17 +414,44 @@ function MaintenancePane() {
       </div>
 
       <div className="rounded-lg border border-line bg-card p-4">
-        <h2 className="mb-2 text-sm font-semibold">回收站（会话删除与平台技能移除）</h2>
+        <div className="mb-2 flex items-center gap-2">
+          <h2 className="text-sm font-semibold">回收站（会话删除与平台技能移除）</h2>
+          <span className="flex-1" />
+          <Button size="sm" variant="ghost" onClick={() => qc.invalidateQueries({ queryKey: ['maint-trash'] })}>
+            刷新
+          </Button>
+        </div>
         {(trash.data ?? []).length === 0 && <p className="text-sm text-muted">空的。</p>}
         {(trash.data ?? []).map((batch) => (
-          <div key={batch.path} className="flex items-center gap-2 border-b border-line px-1 py-1 text-sm last:border-b-0">
+          <div key={batch.path} className="flex items-center gap-2 border-b border-line px-1 py-1.5 text-sm last:border-b-0">
             <span className="flex-1 truncate font-mono text-xs" title={batch.path}>{batch.name}</span>
             <span className="tabular-nums text-muted">{fmtSize(batch.size)}</span>
+            <Button
+              size="sm"
+              variant="danger"
+              loading={busy === `purge:${batch.name}`}
+              disabled={!!busy}
+              onClick={() =>
+                runBusy(`purge:${batch.name}`, async () => {
+                  if (!window.confirm(`彻底删除批次 ${batch.name}？不可恢复。`)) return;
+                  try {
+                    const bytes = await call<number>('maintenance_purge_trash', { tag: batch.name });
+                    toast(`已释放 ${fmtSize(bytes)}`);
+                    qc.invalidateQueries({ queryKey: ['maint-trash'] });
+                    qc.invalidateQueries({ queryKey: ['space'] });
+                  } catch (e) {
+                    toast(errText(e));
+                  }
+                })
+              }
+            >
+              删除
+            </Button>
           </div>
         ))}
         {(trash.data ?? []).length > 0 && (
-          <div className="mt-2 flex justify-end gap-2">
-            <Button size="sm" onClick={() => qc.invalidateQueries({ queryKey: ['maint-trash'] })}>刷新</Button>
+          <div className="mt-2 flex items-center justify-between">
+            <span className="text-xs text-muted">共 {(trash.data ?? []).length} 个批次；删除会话时选「彻底删除」就不会进回收站。</span>
             <Button
               size="sm"
               variant="danger"

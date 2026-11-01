@@ -839,8 +839,8 @@ pub fn run() -> tauri::Result<()> {
 
             build_tray(app)?;
             hook_window(app);
-            spawn_daily_round(service.clone(), app.handle().clone());
-            spawn_credits_round(service.clone(), app.handle().clone());
+            spawn_daily_round(service.clone(), state_tasks.clone(), app.handle().clone());
+            spawn_credits_round(service.clone(), state_tasks.clone(), app.handle().clone());
             spawn_hub_auto_sync(sync_db, hub);
             spawn_zcode_auto_claim(claim_db, service, app.handle().clone());
             spawn_event_bridges(app.handle().clone(), state_tasks);
@@ -961,27 +961,43 @@ fn init_state(
 ///
 /// **定时器必须在 Rust 侧**：前端 `setInterval` 在窗口隐藏/被挂起时就停了，
 /// 而后台常驻正是这个工具的主场景。
-fn spawn_daily_round(service: Arc<crate::app::checkin::Service>, app: tauri::AppHandle) {
+fn spawn_daily_round(
+    service: Arc<crate::app::checkin::Service>,
+    tasks: Arc<crate::app::task::TaskStore>,
+    app: tauri::AppHandle,
+) {
+    use crate::app::task::CapabilityId;
     use tauri::Emitter;
 
     tauri::async_runtime::spawn(async move {
         // 等首屏稳定再跑，别和账号列表抢 SQLite 的读连接
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         loop {
-            // 定时轮询没有取消方：令牌永远不被触发，只为对齐 run_round 的签名
-            let cancel = Arc::new(crate::app::task::CancelToken::new());
-            let round = service.run_round(&cancel).await;
-            log::log(
-                if round.failed > 0 {
-                    Level::Warn
-                } else {
-                    Level::Info
-                },
-                "checkin",
-                format!("每日轮询：{}", round.message),
-            );
-            // 界面收到就更新底部那一行；收不到也不影响结算
-            let _ = app.emit("checkin:round", &round);
+            // 定时轮询也走任务表：设置页的任务列表能看到它跑过、跑了什么
+            tasks.spawn_managed(CapabilityId::AccountCenter, "每日轮询（定时）", {
+                let service = service.clone();
+                let app = app.clone();
+                move |handle| async move {
+                    let round = service.run_round(&handle.cancel).await;
+                    log::log(
+                        if round.failed > 0 {
+                            Level::Warn
+                        } else {
+                            Level::Info
+                        },
+                        "checkin",
+                        format!("每日轮询：{}", round.message),
+                    );
+                    // 界面收到就更新底部那一行；收不到也不影响结算
+                    let _ = app.emit("checkin:round", &round);
+                    handle.message(round.message.clone());
+                    if handle.cancel.is_cancelled() {
+                        Err(crate::app::error::AppError::new("cancelled", round.message))
+                    } else {
+                        Ok(())
+                    }
+                }
+            });
             tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
         }
     });
@@ -991,22 +1007,39 @@ fn spawn_daily_round(service: Arc<crate::app::checkin::Service>, app: tauri::App
 /// 界面上的余额要更跟手；失败逐条进错误快照，不打断整轮。
 fn spawn_credits_round(
     service: Arc<crate::app::checkin::Service>,
+    tasks: Arc<crate::app::task::TaskStore>,
     app: tauri::AppHandle,
 ) {
+    use crate::app::task::CapabilityId;
     use tauri::Emitter;
 
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            let (total, failed) = service.credits_round().await;
-            if total > 0 {
-                log::log(
-                    if failed > 0 { Level::Warn } else { Level::Info },
-                    "checkin",
-                    format!("积分刷新：{total} 个账号，失败 {failed}"),
-                );
-                let _ = app.emit("credits:round", total);
-            }
+            tasks.spawn_managed(CapabilityId::AccountCenter, "积分定时刷新", {
+                let service = service.clone();
+                let app = app.clone();
+                move |handle| async move {
+                    let (total, failed) = service.credits_round().await;
+                    if total > 0 {
+                        log::log(
+                            if failed > 0 { Level::Warn } else { Level::Info },
+                            "checkin",
+                            format!("积分刷新：{total} 个账号，失败 {failed}"),
+                        );
+                        let _ = app.emit("credits:round", total);
+                    }
+                    handle.message(format!("{total} 个账号，失败 {failed}"));
+                    if failed > 0 && failed == total {
+                        Err(crate::app::error::AppError::new(
+                            "io",
+                            format!("全部 {total} 个账号都刷新失败"),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                }
+            });
         }
     });
 }
