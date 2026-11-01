@@ -29,6 +29,10 @@ pub enum ErrorKind {
     SessionStateMissing,
     /// 该平台的登录态无法写回（Trae 是设备绑定加密）
     Unsupported,
+    /// 迁移计数与 v1 对不上：此时什么都不写（P7 迁移收尾）
+    MigrationMismatch,
+    /// 已经归档过 v1 数据：重复归档只会无限堆目录（P7）
+    AlreadyArchived,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,7 +59,17 @@ impl AppError {
                 "write_failed" => ErrorKind::WriteFailed,
                 "session_state_missing" => ErrorKind::SessionStateMissing,
                 "unsupported" => ErrorKind::Unsupported,
-                _ => ErrorKind::Provider,
+                "migration_mismatch" => ErrorKind::MigrationMismatch,
+                "already_archived" => ErrorKind::AlreadyArchived,
+                "provider" => ErrorKind::Provider,
+                _ => {
+                    // 拼错的类别会静默落 Provider，前端话术跟着错——debug 构建直接炸出来
+                    debug_assert!(
+                        false,
+                        "未知的错误类别：{kind}（应使用 ErrorKind 登记过的名字）"
+                    );
+                    ErrorKind::Provider
+                }
             },
             message: message.into(),
             detail: None,

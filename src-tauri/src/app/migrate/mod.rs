@@ -22,6 +22,9 @@ use base64::Engine;
 use serde_json::Value;
 use std::path::Path;
 
+/// 迁移收尾（P7）：计数校验与归档。与导入器分开，因为归档要「先校验后写」。
+pub mod verify;
+
 #[derive(Debug, Default, Clone)]
 pub struct ImportReport {
     pub accounts: usize,
@@ -56,10 +59,16 @@ impl ImportReport {
 
 pub fn import_v1(db: &Db, data_dir: &Path) -> Result<ImportReport> {
     if let Some(from) = db.migrated_from()? {
-        return Err(AppError::new("conflict", format!("已导入过（来自 {from}），拒绝重复导入")));
+        return Err(AppError::new(
+            "conflict",
+            format!("已导入过（来自 {from}），拒绝重复导入"),
+        ));
     }
     if !data_dir.exists() {
-        return Err(AppError::new("invalid", format!("v1 数据目录不存在：{}", data_dir.display())));
+        return Err(AppError::new(
+            "invalid",
+            format!("v1 数据目录不存在：{}", data_dir.display()),
+        ));
     }
 
     let report = db.write(|conn| {
@@ -103,7 +112,8 @@ fn import_accounts(
 ) -> Result<Vec<String>> {
     let path = dir.join("accounts.dat");
     if !path.exists() {
-        rep.warnings.push("accounts.dat 不存在，跳过账号导入".into());
+        rep.warnings
+            .push("accounts.dat 不存在，跳过账号导入".into());
         return Ok(Vec::new());
     }
 
@@ -116,8 +126,9 @@ fn import_accounts(
         Ok(plain) => plain,
         Err(_) => {
             // DPAPI 与当前用户绑定：换用户/换机解不开。跳过账号但继续其余表。
-            rep.warnings
-                .push("accounts.dat 无法解密（DPAPI 与当前 Windows 用户绑定），已跳过账号导入".into());
+            rep.warnings.push(
+                "accounts.dat 无法解密（DPAPI 与当前 Windows 用户绑定），已跳过账号导入".into(),
+            );
             return Ok(Vec::new());
         }
     };
@@ -128,17 +139,27 @@ fn import_accounts(
     let mut iids = Vec::with_capacity(list.len());
 
     for (idx, item) in list.iter().enumerate() {
-        let platform = item.get("platform").and_then(Value::as_str).unwrap_or_default();
-        let account_id = item.get("account_id").and_then(Value::as_str).unwrap_or_default();
+        let platform = item
+            .get("platform")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let account_id = item
+            .get("account_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if platform.is_empty() || account_id.is_empty() {
-            rep.warnings.push(format!("第 {idx} 条账号缺 platform/account_id，已跳过"));
+            rep.warnings
+                .push(format!("第 {idx} 条账号缺 platform/account_id，已跳过"));
             continue;
         }
         // iid 原样拼接：@intl 属于 account_id 本身，不能剥离
         let iid = format!("{platform}:{account_id}");
         let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
         let expires_at = item.get("expires_at").and_then(parse_ts);
-        let requires = item.get("requires_checkin").and_then(Value::as_bool).unwrap_or(true);
+        let requires = item
+            .get("requires_checkin")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
 
         // meta 是自由 dict，实测躺着 refresh_token / 手机号 —— 只保留键名
         let meta_keys: Vec<String> = item
@@ -152,7 +173,8 @@ fn import_accounts(
         let secret_blob = match secret::protect(&serde_json::to_vec(item)?) {
             Ok(blob) => Some(blob),
             Err(e) => {
-                rep.warnings.push(format!("{iid} 凭据加密失败（{e}），该账号将无登录态"));
+                rep.warnings
+                    .push(format!("{iid} 凭据加密失败（{e}），该账号将无登录态"));
                 None
             }
         };
@@ -195,7 +217,9 @@ fn import_checkins(
     known: &[String],
     rep: &mut ImportReport,
 ) -> Result<()> {
-    let Some(value) = read_json(dir, "checked.json", rep) else { return Ok(()) };
+    let Some(value) = read_json(dir, "checked.json", rep) else {
+        return Ok(());
+    };
     let Some(map) = value.as_object() else {
         rep.warnings.push("checked.json 不是对象，已跳过".into());
         return Ok(());
@@ -220,8 +244,13 @@ fn import_daily(
     known: &[String],
     rep: &mut ImportReport,
 ) -> Result<()> {
-    let Some(value) = read_json(dir, "daily.json", rep) else { return Ok(()) };
-    let date = value.get("date").and_then(Value::as_str).unwrap_or_default();
+    let Some(value) = read_json(dir, "daily.json", rep) else {
+        return Ok(());
+    };
+    let date = value
+        .get("date")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if date.is_empty() {
         rep.warnings.push("daily.json 缺 date，已跳过".into());
         return Ok(());
@@ -254,14 +283,18 @@ fn import_credit_lots(
     known: &[String],
     rep: &mut ImportReport,
 ) -> Result<()> {
-    let Some(value) = read_json(dir, "credits.json", rep) else { return Ok(()) };
+    let Some(value) = read_json(dir, "credits.json", rep) else {
+        return Ok(());
+    };
     let Some(map) = value.as_object() else {
         rep.warnings.push("credits.json 不是对象，已跳过".into());
         return Ok(());
     };
     let known = known_set(known);
     for (iid, lots) in map {
-        let Some(lots) = lots.as_array() else { continue };
+        let Some(lots) = lots.as_array() else {
+            continue;
+        };
         count_orphan(iid, &known, rep);
         for lot in lots {
             let amount = lot.get("amount").and_then(Value::as_f64).unwrap_or(0.0);
@@ -290,17 +323,24 @@ fn import_credit_history(
     known: &[String],
     rep: &mut ImportReport,
 ) -> Result<()> {
-    let Some(value) = read_json(dir, "credit_history.json", rep) else { return Ok(()) };
+    let Some(value) = read_json(dir, "credit_history.json", rep) else {
+        return Ok(());
+    };
     let Some(map) = value.as_object() else {
-        rep.warnings.push("credit_history.json 不是对象，已跳过".into());
+        rep.warnings
+            .push("credit_history.json 不是对象，已跳过".into());
         return Ok(());
     };
     let known = known_set(known);
     for (iid, series) in map {
-        let Some(series) = series.as_object() else { continue };
+        let Some(series) = series.as_object() else {
+            continue;
+        };
         count_orphan(iid, &known, rep);
         for (date, balance) in series {
-            let Some(balance) = balance.as_f64() else { continue };
+            let Some(balance) = balance.as_f64() else {
+                continue;
+            };
             tx.execute(
                 "INSERT INTO credit_snapshots(iid, date, balance) VALUES (?1, ?2, ?3)
                  ON CONFLICT(iid, date) DO UPDATE SET balance = excluded.balance",
@@ -317,22 +357,35 @@ fn import_sessions(
     dir: &Path,
     rep: &mut ImportReport,
 ) -> Result<()> {
-    let Some(value) = read_json(dir, "session_index.json", rep) else { return Ok(()) };
+    let Some(value) = read_json(dir, "session_index.json", rep) else {
+        return Ok(());
+    };
     let Some(editions) = value.get("editions").and_then(Value::as_object) else {
-        rep.warnings.push("session_index.json 缺 editions，已跳过".into());
+        rep.warnings
+            .push("session_index.json 缺 editions，已跳过".into());
         return Ok(());
     };
     for (edition, inner) in editions {
-        let Some(sessions) = inner.get("sessions").and_then(Value::as_object) else { continue };
+        let Some(sessions) = inner.get("sessions").and_then(Value::as_object) else {
+            continue;
+        };
         let label = match edition.as_str() {
             "cn" => "国内版",
             "intl" => "国际版",
             other => other,
         };
         for (sid, row) in sessions {
-            let get = |k: &str| row.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+            let get = |k: &str| {
+                row.get(k)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
             let last_at = row.get("last").and_then(parse_ts);
-            let refs = row.get("refs").cloned().unwrap_or_else(|| Value::Array(vec![]));
+            let refs = row
+                .get("refs")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(vec![]));
             tx.execute(
                 "INSERT INTO session_index
                     (kind, source_key, source_label, account, session_id,
@@ -364,14 +417,24 @@ fn import_hub(
     now: i64,
     rep: &mut ImportReport,
 ) -> Result<()> {
-    let Some(value) = read_json(dir, "hub.json", rep) else { return Ok(()) };
+    let Some(value) = read_json(dir, "hub.json", rep) else {
+        return Ok(());
+    };
 
     for (kind, counter) in [("skill", 0u8), ("mcp", 1u8)] {
         let field = if counter == 0 { "skills" } else { "mcp" };
-        let Some(items) = value.get(field).and_then(Value::as_object) else { continue };
+        let Some(items) = value.get(field).and_then(Value::as_object) else {
+            continue;
+        };
         for (name, item) in items {
-            let targets = item.get("targets").cloned().unwrap_or_else(|| Value::Array(vec![]));
-            let deployed = item.get("deployed").cloned().unwrap_or_else(|| Value::Object(Default::default()));
+            let targets = item
+                .get("targets")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(vec![]));
+            let deployed = item
+                .get("deployed")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(Default::default()));
             tx.execute(
                 "INSERT INTO hub_items(kind, name, targets, deployed, digest, updated_at)
                  VALUES (?1, ?2, ?3, ?4, '', ?5)
@@ -407,7 +470,9 @@ fn import_config(
     _now: i64,
     rep: &mut ImportReport,
 ) -> Result<()> {
-    let Some(value) = read_json(dir, "config.json", rep) else { return Ok(()) };
+    let Some(value) = read_json(dir, "config.json", rep) else {
+        return Ok(());
+    };
     let Some(map) = value.as_object() else {
         rep.warnings.push("config.json 不是对象，已跳过".into());
         return Ok(());
@@ -427,7 +492,10 @@ fn read_json(dir: &Path, name: &str, rep: &mut ImportReport) -> Option<Value> {
         rep.warnings.push(format!("{name} 不存在，已跳过"));
         return None;
     }
-    match std::fs::read(&path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()) {
+    match std::fs::read(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+    {
         Some(value) => Some(value),
         None => {
             rep.warnings.push(format!("{name} 解析失败，已跳过"));
@@ -441,7 +509,12 @@ fn read_account_order(dir: &Path) -> Vec<String> {
         .ok()
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
         .and_then(|v| v.get("account_order").and_then(Value::as_array).cloned())
-        .map(|items| items.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default()
 }
 

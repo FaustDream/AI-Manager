@@ -1,0 +1,59 @@
+# v2（Rust + Tauri 2）的持续集成：架构文档 §10 承诺的三件套。
+# v1 的发布流水线在 release.yml，两者互不干扰。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（警告即失败）
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: 测试（含 ts-rs 类型生成）
+        run: cargo test --lib --tests --features ts
+
+      - name: 类型生成物与提交物一致（D8）
+        run: |
+          $status = git status --porcelain -- ../src/lib/types
+          if ($status) {
+            Write-Host $status
+            Write-Host "::error::src/lib/types/ 有未提交的类型生成物——先在本地跑 cargo test --features ts 并提交"
+            exit 1
+          }
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查与构建
+        run: npm run build

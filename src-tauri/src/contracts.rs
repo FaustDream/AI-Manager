@@ -102,6 +102,9 @@ pub trait HubStore {
     fn target_dir(&self, key: TargetKey) -> PathBuf;
     /// 契约 14：统一格式 ↔ 平台格式。
     fn to_platform(&self, entry: &McpEntry, key: TargetKey) -> serde_json::Value;
+    // wrong_self_convention：from_* 指的是「从平台格式转回来」，Hub 持有路径
+    // 上下文所以带 &self，不是 FromStr 那一族
+    #[allow(clippy::wrong_self_convention)]
     fn from_platform(&self, raw: &serde_json::Value, key: TargetKey) -> Result<McpEntry>;
     /// 契约 15：写前备份。
     fn backup_before_write(&self, key: TargetKey) -> Result<PathBuf>;

@@ -10,6 +10,9 @@ use super::{Provider, ScannedAccount, Sink};
 use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::AccountIdentity;
 use crate::app::error::{AppError, Result};
+use crate::app::net::{Http, HttpRequest};
+use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult};
+use async_trait::async_trait;
 use base64::Engine;
 use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use cbc::Decryptor;
@@ -71,7 +74,9 @@ pub fn jwt_expiry_ms(token: &str) -> Option<i64> {
         .decode(part.trim_end_matches('='))
         .ok()?;
     let data: Value = serde_json::from_slice(&raw).ok()?;
-    data.get("exp").and_then(|v| v.as_i64()).map(|sec| sec * 1000)
+    data.get("exp")
+        .and_then(|v| v.as_i64())
+        .map(|sec| sec * 1000)
 }
 
 /// `device_id`：先看 ahanet 配置，再看日志里的 `[ICDRS] ... did: 123`。
@@ -129,18 +134,29 @@ pub struct TraeProvider {
 
 impl TraeProvider {
     pub fn new() -> Self {
-        Self { appdata: std::env::var("APPDATA").ok().map(PathBuf::from) }
+        Self {
+            appdata: std::env::var("APPDATA").ok().map(PathBuf::from),
+        }
     }
 
     pub fn at(appdata: PathBuf) -> Self {
-        Self { appdata: Some(appdata) }
+        Self {
+            appdata: Some(appdata),
+        }
     }
 
     fn storage_files(&self) -> Vec<PathBuf> {
-        let Some(base) = self.appdata.as_ref() else { return Vec::new() };
+        let Some(base) = self.appdata.as_ref() else {
+            return Vec::new();
+        };
         CLIENT_DIRS
             .iter()
-            .map(|dir| base.join(dir).join("User").join("globalStorage").join("storage.json"))
+            .map(|dir| {
+                base.join(dir)
+                    .join("User")
+                    .join("globalStorage")
+                    .join("storage.json")
+            })
             .filter(|p| p.exists())
             .collect()
     }
@@ -152,6 +168,7 @@ impl Default for TraeProvider {
     }
 }
 
+#[async_trait]
 impl Provider for TraeProvider {
     fn platform(&self) -> &'static str {
         "trae"
@@ -165,11 +182,21 @@ impl Provider for TraeProvider {
         let mut count = 0;
         let mut seen = std::collections::HashSet::new();
         for path in self.storage_files() {
-            let Ok(raw) = std::fs::read(&path) else { continue };
-            let Ok(storage) = serde_json::from_slice::<Value>(&raw) else { continue };
-            let Some(encrypted) = storage.get(AUTH_KEY).and_then(|v| v.as_str()) else { continue };
-            let Ok(auth) = decrypt_auth(encrypted) else { continue };
-            let Some(token) = auth.get("token").and_then(|v| v.as_str()) else { continue };
+            let Ok(raw) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(storage) = serde_json::from_slice::<Value>(&raw) else {
+                continue;
+            };
+            let Some(encrypted) = storage.get(AUTH_KEY).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Ok(auth) = decrypt_auth(encrypted) else {
+                continue;
+            };
+            let Some(token) = auth.get("token").and_then(|v| v.as_str()) else {
+                continue;
+            };
             if !seen.insert(token.to_string()) {
                 continue;
             }
@@ -180,7 +207,16 @@ impl Provider for TraeProvider {
                     Value::String(s) => s.clone(),
                     other => other.to_string(),
                 })
-                .unwrap_or_else(|| token.chars().rev().take(16).collect::<String>().chars().rev().collect());
+                .unwrap_or_else(|| {
+                    token
+                        .chars()
+                        .rev()
+                        .take(16)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect()
+                });
             let name = account
                 .get("username")
                 .and_then(|v| v.as_str())
@@ -233,11 +269,18 @@ impl Provider for TraeProvider {
             let Some(encrypted) = std::fs::read(&path)
                 .ok()
                 .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-                .and_then(|storage| storage.get(AUTH_KEY).and_then(|v| v.as_str()).map(str::to_string))
+                .and_then(|storage| {
+                    storage
+                        .get(AUTH_KEY)
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
             else {
                 continue;
             };
-            let Some(auth) = decrypt_auth(&encrypted).ok() else { continue };
+            let Some(auth) = decrypt_auth(&encrypted).ok() else {
+                continue;
+            };
             if let Some(id) = auth.get("userId") {
                 return Some(match id {
                     Value::String(s) => s.clone(),
@@ -247,6 +290,252 @@ impl Provider for TraeProvider {
         }
         None
     }
+
+    // ------------------------------------------------------------ P3：签到与积分
+
+    /// Trae 自带积分批次（谁在什么时候到账、什么时候到期），所以不写台账（契约 5）
+    fn live_credit(&self) -> bool {
+        true
+    }
+
+    async fn status(&self, cred: &Credential, http: &dyn Http) -> Result<StatusResult> {
+        let data = unwrap(self.call(cred, http, "status").await?);
+        if data.get("enable").and_then(|v| v.as_bool()) == Some(false) {
+            return Ok(StatusResult {
+                checked_in: None,
+                summary: "签到未开放".into(),
+                balance: None,
+                lots: None,
+                next_at: None,
+            });
+        }
+        let checked = data.get("checked_in").and_then(|v| v.as_bool());
+        // 用量接口失败不影响「今天签没签」，退回到签到接口自己带的积分数
+        let (summary, balance, lots) = match self.usage(cred, http).await {
+            Ok(triple) => triple,
+            Err(_) => {
+                let balance = data.get("credits").and_then(|v| v.as_f64());
+                let summary = balance
+                    .map(|b| format!("剩余 {} 积分", trim(b)))
+                    .unwrap_or_default();
+                (summary, balance, None)
+            }
+        };
+        Ok(StatusResult {
+            checked_in: checked,
+            summary,
+            balance,
+            lots,
+            next_at: None,
+        })
+    }
+
+    async fn credits(&self, cred: &Credential, http: &dyn Http) -> Result<CreditSnapshot> {
+        // 只读套餐用量，不请求 checkin/status，因此不会查询签到状态
+        let (summary, balance, lots) = self.usage(cred, http).await?;
+        Ok(CreditSnapshot {
+            summary,
+            balance,
+            lots,
+            quota: None,
+        })
+    }
+
+    async fn checkin(&self, cred: &Credential, http: &dyn Http) -> Result<ActionResult> {
+        let state = self.status(cred, http).await?;
+        if state.checked_in == Some(true) {
+            return Ok(ActionResult {
+                ok: true,
+                message: format!("今日已签到（{}）", state.summary),
+                granted: None,
+                validity_days: None,
+                already: true,
+            });
+        }
+        let resp = self.call(cred, http, "claim").await?;
+        if resp.get("code").and_then(|v| v.as_i64()) == Some(0) {
+            // 领完之后再查一次，用余额差算出发放额（接口不直接给金额）
+            let after = self.status(cred, http).await.ok();
+            let granted = match (&state.balance, after.as_ref().and_then(|a| a.balance)) {
+                (Some(before), Some(after)) => Some((after - before).max(0.0)).filter(|v| *v > 0.0),
+                _ => None,
+            };
+            let summary = after.map(|a| a.summary).unwrap_or_default();
+            return Ok(ActionResult {
+                ok: true,
+                message: if summary.is_empty() {
+                    "签到成功".into()
+                } else {
+                    format!("签到成功，当前 {summary}")
+                },
+                granted,
+                // 签到积分有效期 31 个自然日
+                validity_days: Some(31),
+                already: false,
+            });
+        }
+        let message = resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("签到失败：{}", truncate(&resp.to_string(), 160)));
+        Ok(ActionResult {
+            ok: false,
+            message,
+            granted: None,
+            validity_days: None,
+            already: false,
+        })
+    }
+}
+
+const API_BASE: &str = "https://api.trae.cn/trae/api/v2/ug/checkin_credits";
+const USAGE_URL: &str = "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage";
+const REQ_SOURCE: &str = r#"{"req_source":1}"#;
+
+impl TraeProvider {
+    fn post(&self, cred: &Credential, url: &str, body: &str) -> HttpRequest {
+        let mut req = HttpRequest::post(url)
+            .header("Authorization", format!("Cloud-IDE-JWT {}", cred.token))
+            .header("Content-Type", "application/json");
+        if let Some(device) = cred.meta_str("device_id").filter(|s| !s.is_empty()) {
+            req = req.header("x-device-id", device);
+        }
+        if let Some(region) = cred.meta_str("region").filter(|s| !s.is_empty()) {
+            req = req.header("X-User-Region", region);
+        }
+        req.body = Some(body.to_string());
+        req
+    }
+
+    async fn call(&self, cred: &Credential, http: &dyn Http, path: &str) -> Result<Value> {
+        let url = format!("{API_BASE}/{path}");
+        let resp = http.send(self.post(cred, &url, REQ_SOURCE)).await?;
+        if resp.status >= 400 {
+            return Err(AppError::new(
+                "provider",
+                format!("HTTP {}（登录态可能过期）", resp.status),
+            ));
+        }
+        resp.json()
+    }
+
+    /// 套餐/积分包用量。按「先到期先消耗」还原每个批次还剩多少。
+    async fn usage(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+    ) -> Result<(String, Option<f64>, Option<Vec<CreditLot>>)> {
+        let data = http
+            .send(self.post(cred, USAGE_URL, REQ_SOURCE))
+            .await?
+            .json()?;
+        if let Some(code) = data.get("code").and_then(|v| v.as_i64()) {
+            if code != 0 && data.get("usage_summary").is_none() {
+                return Err(AppError::new(
+                    "provider",
+                    data.get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("用量接口返回失败"),
+                ));
+            }
+        }
+        let summary_data = data.get("usage_summary");
+        let total = summary_data
+            .and_then(|v| v.get("total_amount"))
+            .and_then(|v| v.as_f64());
+        let consumed = summary_data
+            .and_then(|v| v.get("consumed_amount"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let balance = total.map(|t| (t - consumed).max(0.0));
+
+        let mut packs: Vec<(f64, Option<chrono::DateTime<chrono::Local>>, String)> = data
+            .get("user_entitlement_pack_list")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|pack| {
+                let base = pack.get("entitlement_base_info")?;
+                let limit = base
+                    .pointer("/quota/credits_limit")
+                    .and_then(|v| v.as_f64())
+                    .filter(|v| *v > 0.0)?;
+                let expires = base.get("end_time").and_then(dt_of);
+                let label = pack
+                    .get("display_desc")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("积分包")
+                    .to_string();
+                Some((limit, expires, label))
+            })
+            .collect();
+        packs.sort_by_key(|a| a.1);
+
+        // 消耗顺序是「剩余有效期最短的批次优先」：按到期日从早到晚扣掉已用量，
+        // 剩下的才是每个批次现在可用的部分。
+        let now = chrono::Local::now();
+        let mut left = consumed;
+        let mut lots = Vec::new();
+        for (mut amount, expires, label) in packs {
+            if left >= amount {
+                left -= amount;
+                continue;
+            }
+            amount -= left;
+            left = 0.0;
+            if expires.map(|e| e <= now).unwrap_or(false) {
+                continue;
+            }
+            lots.push(CreditLot {
+                amount,
+                expires_at: expires,
+                granted_at: None,
+                lot_key: String::new(),
+                label,
+            });
+        }
+
+        let mut summary = match balance {
+            Some(b) => format!("剩余 {} 积分", trim(b)),
+            None => "无可用积分".into(),
+        };
+        if let Some(total) = total {
+            if consumed > 0.0 {
+                summary.push_str(&format!("（已用 {}/{}）", trim(consumed), trim(total)));
+            }
+        }
+        Ok((summary, balance, Some(lots)))
+    }
+}
+
+/// 有的版本把字段包在 `data` 里，有的不包；两边都认。
+fn unwrap(resp: Value) -> Value {
+    if resp.get("checked_in").is_none() {
+        if let Some(data) = resp.get("data").filter(|v| v.get("checked_in").is_some()) {
+            return data.clone();
+        }
+    }
+    resp
+}
+
+fn dt_of(value: &Value) -> Option<chrono::DateTime<chrono::Local>> {
+    crate::app::timeutil::parse_ts(value)
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|d| d.with_timezone(&chrono::Local))
+}
+
+fn trim(value: f64) -> String {
+    if (value.fract()).abs() < f64::EPSILON {
+        format!("{value:.0}")
+    } else {
+        format!("{value}")
+    }
+}
+
+fn truncate(text: &str, n: usize) -> String {
+    text.chars().take(n).collect()
 }
 
 #[cfg(test)]
@@ -268,13 +557,11 @@ mod tests {
         let mut buf = plain.clone();
         buf.resize(plain.len() + 16, 0);
         let len = {
-            let ciphertext = cbc::Encryptor::<aes_gcm::aes::Aes128>::new_from_slices(
-                &seed[..16],
-                &seed[16..32],
-            )
-            .unwrap()
-            .encrypt_padded_mut::<Pkcs7>(&mut buf, plain.len())
-            .unwrap();
+            let ciphertext =
+                cbc::Encryptor::<aes_gcm::aes::Aes128>::new_from_slices(&seed[..16], &seed[16..32])
+                    .unwrap()
+                    .encrypt_padded_mut::<Pkcs7>(&mut buf, plain.len())
+                    .unwrap();
             ciphertext.len()
         };
         buf.truncate(len);
@@ -342,7 +629,12 @@ mod tests {
     #[test]
     fn missing_client_returns_zero() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert_eq!(TraeProvider::at(dir.path().to_path_buf()).scan(&mut |_| Ok(())).unwrap(), 0);
+        assert_eq!(
+            TraeProvider::at(dir.path().to_path_buf())
+                .scan(&mut |_| Ok(()))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -364,7 +656,10 @@ mod tests {
 
         let mut rows = Vec::new();
         TraeProvider::at(dir.path().to_path_buf())
-            .scan(&mut |acc| { rows.push(acc); Ok(()) })
+            .scan(&mut |acc| {
+                rows.push(acc);
+                Ok(())
+            })
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].identity.iid, "trae:u1");

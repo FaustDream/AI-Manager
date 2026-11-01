@@ -127,7 +127,11 @@ pub fn set_secret(db: &Db, iid: &str, plain: &[u8], expires_at: Option<i64>) -> 
 pub fn secret_of(db: &Db, iid: &str) -> Result<Option<Vec<u8>>> {
     let blob = db.read(|conn| {
         let blob: Option<Vec<u8>> = conn
-            .query_row("SELECT secret_blob FROM accounts WHERE iid = ?1", [iid], |r| r.get(0))
+            .query_row(
+                "SELECT secret_blob FROM accounts WHERE iid = ?1",
+                [iid],
+                |r| r.get(0),
+            )
             .optional()?
             .flatten();
         Ok(blob)
@@ -194,7 +198,10 @@ mod tests {
         assert_eq!(view.name, "新");
         assert!(view.has_secret, "重扫不得清掉已有凭据");
         assert_eq!(view.expires_at, Some(9_999));
-        assert_eq!(secret_of(&db, "qoder:1").unwrap().as_deref(), Some(&b"tok"[..]));
+        assert_eq!(
+            secret_of(&db, "qoder:1").unwrap().as_deref(),
+            Some(&b"tok"[..])
+        );
     }
 
     #[test]
@@ -203,7 +210,10 @@ mod tests {
         upsert_identity(&db, &identity("a:1", "A"), 1).unwrap();
         upsert_identity(&db, &identity("b:2", "B"), 1).unwrap();
         let rows = list(&db).unwrap();
-        assert_eq!(rows.iter().map(|r| r.sort_order).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(
+            rows.iter().map(|r| r.sort_order).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
     }
 
     #[test]
@@ -214,7 +224,10 @@ mod tests {
         }
         reorder(&db, &["c:3".into(), "a:1".into(), "b:2".into()]).unwrap();
         let rows = list(&db).unwrap();
-        assert_eq!(rows.iter().map(|r| r.iid.as_str()).collect::<Vec<_>>(), vec!["c:3", "a:1", "b:2"]);
+        assert_eq!(
+            rows.iter().map(|r| r.iid.as_str()).collect::<Vec<_>>(),
+            vec!["c:3", "a:1", "b:2"]
+        );
     }
 
     #[test]

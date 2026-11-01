@@ -1,0 +1,75 @@
+/* 设计令牌：颜色 / 间距 / 圆角与主题无关的放 @theme，深浅两套同键不同值。
+   与 v1 的 index.html 同一套色板，P7 打磨只动这里。 */
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #ffffff;
+  --color-fg: #1c1f23;
+  --color-fg2: #4b5563;
+  --color-muted: #6b7280;
+  --color-line: #e5e7eb;
+  --color-line-strong: #cbd5e1;
+  --color-card: #f8fafc;
+  --color-hover: #f1f5f9;
+  --color-accent: #2563eb;
+  --color-accent-strong: #1d4ed8;
+  --color-on-accent: #ffffff;
+  --color-ok: #16a34a;
+  --color-warn: #d97706;
+  --color-bad: #dc2626;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --font-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: Consolas, monospace;
+}
+
+/* 深浅两套：系统偏好走媒体查询，显式选择用 data-theme 覆盖（后者同特异性但在后，必胜） */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #16181d; --color-fg: #e6e8ec; --color-fg2: #b6bdc8; --color-muted: #9aa3af;
+    --color-line: #2a2e37; --color-line-strong: #3a404b; --color-card: #1d2026; --color-hover: #23272f;
+    --color-accent: #5b8cff; --color-accent-strong: #7aa2ff; --color-on-accent: #0d1117;
+    --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171;
+    color-scheme: dark;
+  }
+}
+[data-theme="light"] {
+  --color-bg: #ffffff; --color-fg: #1c1f23; --color-fg2: #4b5563; --color-muted: #6b7280;
+  --color-line: #e5e7eb; --color-line-strong: #cbd5e1; --color-card: #f8fafc; --color-hover: #f1f5f9;
+  --color-accent: #2563eb; --color-accent-strong: #1d4ed8; --color-on-accent: #ffffff;
+  --color-ok: #16a34a; --color-warn: #d97706; --color-bad: #dc2626;
+  color-scheme: light;
+}
+[data-theme="dark"] {
+  --color-bg: #16181d; --color-fg: #e6e8ec; --color-fg2: #b6bdc8; --color-muted: #9aa3af;
+  --color-line: #2a2e37; --color-line-strong: #3a404b; --color-card: #1d2026; --color-hover: #23272f;
+  --color-accent: #5b8cff; --color-accent-strong: #7aa2ff; --color-on-accent: #0d1117;
+  --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font: var(--text-md)/1.55 var(--font-sans);
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.view-enter { animation: fade-up 180ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}

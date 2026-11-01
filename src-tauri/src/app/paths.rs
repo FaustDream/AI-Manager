@@ -1,18 +1,21 @@
 //! 路径的唯一来源。测试里必须能指向临时目录，绝不允许写真实 data/。
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
-static OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+// 可覆盖而不是 OnceLock：OnceLock 会被第一个测试钉死，后续测试在已删除的
+// 临时目录里工作，偶发翻车（contract_10 踩过）。串行化由 TestPaths 的
+// 进程级锁保证——同一时刻只有一个测试在用全局目录。
+static OVERRIDE: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// 测试注入点：仅应在 #[cfg(test)] 或 integration test 中调用。
 pub fn set_data_dir_for_test(dir: &Path) {
-    let _ = OVERRIDE.set(dir.to_path_buf());
+    *OVERRIDE.write().unwrap_or_else(|e| e.into_inner()) = Some(dir.to_path_buf());
 }
 
 pub fn data_dir() -> PathBuf {
-    if let Some(dir) = OVERRIDE.get() {
-        return dir.clone();
+    if let Some(dir) = OVERRIDE.read().unwrap_or_else(|e| e.into_inner()).clone() {
+        return dir;
     }
     // 开发期把数据目录指到项目里的 data/：与 v1 的数据、档案包共用一份，
     // 免得 target/debug/data 与 target/release/data 各有一份互不相认的账号库
@@ -26,10 +29,10 @@ pub fn data_dir() -> PathBuf {
     #[cfg(debug_assertions)]
     {
         let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        return project
+        project
             .parent()
             .map(|root| root.join("data"))
-            .unwrap_or_else(|| project.join("data"));
+            .unwrap_or_else(|| project.join("data"))
     }
     // 生产环境：与可执行文件同级的 data/（沿用 v1 的「整个目录拷走即可」约定）
     #[cfg(not(debug_assertions))]

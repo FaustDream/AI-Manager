@@ -25,6 +25,8 @@ pub struct AccountIdentity {
     pub has_secret: bool,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountView {
     // ---- 身份（重扫覆盖）----
@@ -35,15 +37,19 @@ pub struct AccountView {
     pub name: String,
     pub source: String,
     pub requires_checkin: bool,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub expires_at: Option<i64>,
     pub has_secret: bool,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub sort_order: i64,
 
     // ---- 状态（异步补齐，重扫不得清空）----
     pub checked_in: Option<bool>,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub checked_at: Option<i64>,
     pub balance: Option<f64>,
     pub quota: BTreeMap<String, f64>,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub next_at: Option<i64>,
     /// 最近一次查询失败的原因。**有值不代表整行不可用**——余额查不到不该挡住别名。
     pub error: Option<String>,
@@ -97,7 +103,9 @@ impl AccountView {
 
     /// 待签到：需要签到 + 明确未签 + 没有更早的 next_at 拦着
     pub fn pending(&self, now_ms: i64) -> bool {
-        self.requires_checkin && self.checked_in == Some(false) && self.next_at.map(|at| at <= now_ms).unwrap_or(true)
+        self.requires_checkin
+            && self.checked_in == Some(false)
+            && self.next_at.map(|at| at <= now_ms).unwrap_or(true)
     }
 }
 
@@ -131,7 +139,11 @@ impl AccountTable {
     }
 
     pub fn into_sorted(mut self) -> Vec<AccountView> {
-        self.rows.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.iid.cmp(&b.iid)));
+        self.rows.sort_by(|a, b| {
+            a.sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.iid.cmp(&b.iid))
+        });
         self.rows
     }
 
@@ -204,14 +216,23 @@ mod tests {
     fn phone_number_nickname_is_masked() {
         // 实测：ZCode 有个账号的昵称直接就是完整手机号
         assert_eq!(mask_phone("17679130626"), "176****0626");
-        assert_eq!(mask_phone("1767913062"), "1767913062", "10 位不是手机号，原样返回");
+        assert_eq!(
+            mask_phone("1767913062"),
+            "1767913062",
+            "10 位不是手机号，原样返回"
+        );
         assert_eq!(mask_phone("Faust Dream"), "Faust Dream");
         assert_eq!(mask_phone("935411629@qq.com"), "935411629@qq.com");
-        assert_eq!(mask_phone("159****0626"), "159****0626", "已脱敏的不要二次处理");
+        assert_eq!(
+            mask_phone("159****0626"),
+            "159****0626",
+            "已脱敏的不要二次处理"
+        );
     }
 
     #[test]
-    fn pending_requires_flag_and_no_cooldown() {        let mut row = AccountView::new(identity("trae:1", "x"), 0);
+    fn pending_requires_flag_and_no_cooldown() {
+        let mut row = AccountView::new(identity("trae:1", "x"), 0);
         row.checked_in = Some(false);
         assert!(row.pending(1_000), "未签且无冷却 → 待签");
         row.next_at = Some(2_000);

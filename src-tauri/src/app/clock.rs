@@ -30,7 +30,9 @@ impl FakeClock {
         let fixed = DateTime::parse_from_rfc3339(rfc3339)
             .unwrap_or_else(|e| panic!("FakeClock 时间格式错误 {rfc3339}: {e}"))
             .with_timezone(&Local);
-        Self { at: Mutex::new(fixed) }
+        Self {
+            at: Mutex::new(fixed),
+        }
     }
 
     pub fn set(&self, rfc3339: &str) {
@@ -42,7 +44,7 @@ impl FakeClock {
 
     pub fn advance(&self, hours: i64) {
         let mut guard = self.at.lock().unwrap();
-        *guard = *guard + chrono::Duration::hours(hours);
+        *guard += chrono::Duration::hours(hours);
     }
 }
 

@@ -6,7 +6,7 @@
 //!
 //! 文件结构：`Local State` 里的 `os_crypt.encrypted_key`（DPAPI 保护的主密钥）
 //! + `auth.v1.dat`（`v10` 信封的 AES-256-GCM 密文）。解出来的 JSON 里有
-//! `token` / `refreshToken` / `expiresAt` / `user{id,name,email,phone}`。
+//!   `token` / `refreshToken` / `expiresAt` / `user{id,name,email,phone}`。
 //!
 //! **写回只要重封 `auth.v1.dat`**：Qoder 启动时只认这个文件里的 token，
 //! 不像 WorkBuddy 那样还要换整份 Chromium 登录态。
@@ -15,9 +15,12 @@ use super::{Provider, ScannedAccount, Sink, SwitchOutcome};
 use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::AccountIdentity;
 use crate::app::error::{AppError, Result};
+use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, process, secret};
+use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key};
+use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -25,16 +28,39 @@ pub struct QoderProvider {
     pub intl: bool,
     /// 可注入：测试指向临时目录，生产指向 `%APPDATA%`
     profile: Option<PathBuf>,
+    /// 进程探测的注入点：`None` = 真去查全局进程表（生产路径）
+    alive: Option<bool>,
 }
 
 impl QoderProvider {
     pub fn new(intl: bool) -> Self {
-        Self { intl, profile: default_profile(intl) }
+        Self {
+            intl,
+            profile: default_profile(intl),
+            alive: None,
+        }
     }
 
     /// 指定 profile 目录（测试与「额外来源」用）
     pub fn at(intl: bool, profile: PathBuf) -> Self {
-        Self { intl, profile: Some(profile) }
+        Self {
+            intl,
+            profile: Some(profile),
+            alive: None,
+        }
+    }
+
+    /// 测试专用：固定「客户端是否在跑」，不碰真实进程表。
+    /// 不注入的话「客户端开着就红」的用例会在开发机上随机红绿，CI 上必炸。
+    pub fn assume_alive(mut self, value: bool) -> Self {
+        self.alive = Some(value);
+        self
+    }
+
+    /// 客户端是否在运行。生产路径走真实探测，测试由 `assume_alive` 覆盖。
+    fn client_running(&self) -> bool {
+        self.alive
+            .unwrap_or_else(|| process::process_running(self.process_names()))
     }
 
     pub fn platform_key(&self) -> &'static str {
@@ -59,7 +85,9 @@ impl QoderProvider {
 
     /// 解开登录态并返回 (JSON, 主密钥)。缺文件返回 Ok(None)。
     fn read_auth(&self) -> Result<Option<(Value, Key<Aes256Gcm>)>> {
-        let Some(profile) = self.profile_dir() else { return Ok(None) };
+        let Some(profile) = self.profile_dir() else {
+            return Ok(None);
+        };
         let auth_file = profile.join("auth.v1.dat");
         let local_state = profile.join("Local State");
         if !auth_file.exists() || !local_state.exists() {
@@ -93,7 +121,12 @@ impl QoderProvider {
 /// `current` 是切换前客户端里的那份：`schemaVersion` / `authenticationContext` /
 /// 头像等字段客户端自己写的，没有对应的凭据来源，只能沿用；
 /// 但 `user` 的身份字段只在**同一个账号**时才沿用——否则会把 A 的邮箱写给 B。
-pub fn build_auth(cred: &Credential, account_id: &str, name: &str, current: Option<&Value>) -> Value {
+pub fn build_auth(
+    cred: &Credential,
+    account_id: &str,
+    name: &str,
+    current: Option<&Value>,
+) -> Value {
     let now = chrono::Local::now();
     let expires = if cred.expires_at.trim().is_empty() {
         // 没有到期时间时给一小时：客户端据此触发 refresh，比空串安全
@@ -105,7 +138,9 @@ pub fn build_auth(cred: &Credential, account_id: &str, name: &str, current: Opti
         .meta_str("refresh_expires_at")
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| (now + chrono::Duration::days(30)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        .unwrap_or_else(|| {
+            (now + chrono::Duration::days(30)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        });
 
     let old_user = current.and_then(|c| c.get("user"));
     let same_user = old_user
@@ -120,11 +155,19 @@ pub fn build_auth(cred: &Credential, account_id: &str, name: &str, current: Opti
     user.insert("email".into(), json!(cred.meta_str("email").unwrap_or("")));
     user.insert(
         "phone".into(),
-        json!(if same_user { old_user.and_then(|u| u.get("phone")).cloned() } else { None }),
+        json!(if same_user {
+            old_user.and_then(|u| u.get("phone")).cloned()
+        } else {
+            None
+        }),
     );
     user.insert(
         "avatarUrl".into(),
-        json!(if same_user { old_user.and_then(|u| u.get("avatarUrl")).cloned() } else { None }),
+        json!(if same_user {
+            old_user.and_then(|u| u.get("avatarUrl")).cloned()
+        } else {
+            None
+        }),
     );
 
     json!({
@@ -154,10 +197,16 @@ pub fn switch_to(
     }
     // 先判凭据：缺 refresh token 时写回去只会立刻被登出，不必让用户关客户端
     if cred.refresh().is_empty() {
-        return Err(AppError::new("invalid", "这个账号没有 refresh token，写回去会被立刻登出"));
+        return Err(AppError::new(
+            "invalid",
+            "这个账号没有 refresh token，写回去会被立刻登出",
+        ));
     }
-    if process::process_running(provider.process_names()) {
-        return Err(AppError::new("client_running", "请先关闭 Qoder 客户端再切换"));
+    if provider.client_running() {
+        return Err(AppError::new(
+            "client_running",
+            "请先关闭 Qoder 客户端再切换",
+        ));
     }
 
     let path = profile.join("auth.v1.dat");
@@ -181,7 +230,10 @@ pub fn switch_to(
         .and_then(|v| v.as_str())
         == Some(account_id)
     {
-        return Err(AppError::new("invalid", "这个账号就是客户端当前登录的账号，不需要切换"));
+        return Err(AppError::new(
+            "invalid",
+            "这个账号就是客户端当前登录的账号，不需要切换",
+        ));
     }
 
     let auth = build_auth(cred, account_id, name, current.as_ref());
@@ -200,7 +252,10 @@ pub fn switch_to(
         .unwrap_or(false);
     if !ok {
         std::fs::copy(&backup, &path)?;
-        return Err(AppError::new("write_failed", "写入后校验失败，已回滚到切换前的登录态"));
+        return Err(AppError::new(
+            "write_failed",
+            "写入后校验失败，已回滚到切换前的登录态",
+        ));
     }
 
     Ok(SwitchOutcome {
@@ -209,9 +264,15 @@ pub fn switch_to(
     })
 }
 
+#[async_trait]
 impl Provider for QoderProvider {
     fn platform(&self) -> &'static str {
         self.platform_key()
+    }
+
+    /// Qoder 是唯一按「上次签到 + 24h」冷却的平台（契约 4 的第二套口径）。
+    fn cooldown_hours(&self) -> u32 {
+        24
     }
 
     fn label(&self) -> &'static str {
@@ -223,7 +284,9 @@ impl Provider for QoderProvider {
     }
 
     fn scan(&self, sink: &mut Sink<'_>) -> Result<usize> {
-        let Some((auth, _key)) = self.read_auth()? else { return Ok(0) };
+        let Some((auth, _key)) = self.read_auth()? else {
+            return Ok(0);
+        };
         let token = auth
             .get("token")
             .and_then(|v| v.as_str())
@@ -243,11 +306,17 @@ impl Provider for QoderProvider {
                 other => other.to_string(),
             })
             .unwrap_or_else(|| tail(token, 16));
-        let expires_at = auth.get("expiresAt").and_then(crate::app::timeutil::parse_ts);
+        let expires_at = auth
+            .get("expiresAt")
+            .and_then(crate::app::timeutil::parse_ts);
 
         let mut cred = Credential {
             token: token.to_string(),
-            refresh_token: auth.get("refreshToken").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            refresh_token: auth
+                .get("refreshToken")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             expires_at: expires_at.map(iso_from_ms).unwrap_or_default(),
             ..Default::default()
         };
@@ -283,17 +352,545 @@ impl Provider for QoderProvider {
 
     fn current_id(&self) -> Option<String> {
         let (auth, _) = self.read_auth().ok()??;
-        auth.pointer("/user/id").and_then(|v| v.as_str()).map(str::to_string)
+        auth.pointer("/user/id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    // ------------------------------------------------------------ P3：签到与积分
+
+    async fn status(&self, cred: &Credential, http: &dyn Http) -> Result<StatusResult> {
+        let (base_summary, balance, lots) = self.quota(cred, http).await?;
+        let mut summary = base_summary;
+        let mut checked = None;
+        let mut next_at = None;
+
+        // 活动接口挂了也要把余额给出去，所以这里不 `?`，失败就保持「状态未知」
+        if let Ok(campaigns) = self.campaigns(cred, http).await {
+            let now = chrono::Local::now();
+            let benefits = benefits_of(&campaigns, now.timestamp());
+            let pending: Vec<&Value> = benefits
+                .iter()
+                .filter(|c| c.get("claimStatus").and_then(|v| v.as_str()) == Some("CLAIMABLE"))
+                .collect();
+            let daily = daily_of(&benefits);
+            let today = now.date_naive();
+            if !pending.is_empty() {
+                checked = Some(false);
+                summary = format!("{summary}；可领 {} 项", pending.len());
+            } else if let Some(daily) = daily {
+                let opened = opened_at(daily);
+                match daily.get("claimStatus").and_then(|v| v.as_str()) {
+                    Some("CLAIMABLE") => checked = Some(false),
+                    // 「已领取」只说明这一轮领过。窗口开在今天才算今天已签；
+                    // 开在昨天说明今天这轮还没下发，不能显示成「今天已签」。
+                    Some("CLAIMED") => {
+                        if let Some(opened) = opened {
+                            checked = Some(opened.date_naive() == today);
+                            next_at = next_window(&benefits);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(StatusResult {
+            checked_in: checked,
+            summary,
+            balance,
+            lots: Some(lots),
+            next_at,
+        })
+    }
+
+    async fn credits(&self, cred: &Credential, http: &dyn Http) -> Result<CreditSnapshot> {
+        // 只打额度接口，不请求 campaigns，因此不会顺便查签到状态
+        let (summary, balance, lots) = self.quota(cred, http).await?;
+        Ok(CreditSnapshot {
+            summary,
+            balance,
+            lots: Some(lots),
+            quota: None,
+        })
+    }
+
+    async fn checkin(&self, cred: &Credential, http: &dyn Http) -> Result<ActionResult> {
+        let campaigns = self.campaigns(cred, http).await?;
+        let now = chrono::Local::now();
+        let benefits = benefits_of(&campaigns, now.timestamp());
+        let targets: Vec<&Value> = benefits
+            .iter()
+            .filter(|c| c.get("claimStatus").and_then(|v| v.as_str()) == Some("CLAIMABLE"))
+            .collect();
+
+        if targets.is_empty() {
+            let daily = daily_of(&benefits);
+            if let Some(opened) = daily.and_then(opened_at) {
+                if opened.date_naive() < now.date_naive() {
+                    let hint = next_window(&benefits)
+                        .map(|n| n.format("%H:%M").to_string())
+                        .unwrap_or_else(|| "10:00".into());
+                    return Ok(ActionResult {
+                        ok: true,
+                        message: format!("本轮已领取，今日 {hint} 后开放下一轮"),
+                        granted: None,
+                        validity_days: None,
+                        already: true,
+                    });
+                }
+            }
+            if !benefits.is_empty() {
+                return Ok(ActionResult {
+                    ok: true,
+                    message: "今日已领取".into(),
+                    granted: None,
+                    validity_days: None,
+                    already: true,
+                });
+            }
+            return Ok(ActionResult {
+                ok: false,
+                message: "签到活动未下发（通常 10:00 UTC+8 后开放）".into(),
+                granted: None,
+                validity_days: None,
+                already: false,
+            });
+        }
+
+        let (mut claimed, mut granted, mut validity_days) = (0usize, 0.0f64, None);
+        let mut failed: Vec<String> = Vec::new();
+        for campaign in &targets {
+            let id = campaign
+                .get("campaignId")
+                .map(value_text)
+                .unwrap_or_default();
+            let url = format!("{}/sash/api/v1/me/campaigns/{id}/claim", self.api_base());
+            let resp = http
+                .send(HttpRequest::post(url).headers(&self.headers(cred).await))
+                .await?;
+            let body = resp.json().unwrap_or(Value::Null);
+            let data = body.get("data").filter(|v| v.is_object()).unwrap_or(&body);
+            let replayed = data
+                .get("replayed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let ok = resp.is_ok()
+                && (data.get("status").and_then(|v| v.as_str()) == Some("CLAIMED") || replayed);
+            if ok {
+                claimed += 1;
+                if !replayed {
+                    if let Some(amount) =
+                        campaign.pointer("/benefit/amount").and_then(|v| v.as_f64())
+                    {
+                        granted += amount;
+                    }
+                    let validity = campaign.pointer("/benefit/validity");
+                    if validity
+                        .and_then(|v| v.get("mode"))
+                        .and_then(|v| v.as_str())
+                        == Some("RELATIVE_DAYS")
+                    {
+                        validity_days = validity
+                            .and_then(|v| v.get("days"))
+                            .and_then(|v| v.as_i64());
+                    }
+                }
+            } else {
+                let message = data
+                    .get("message")
+                    .or_else(|| body.get("message"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("HTTP {}", resp.status));
+                failed.push(message);
+            }
+        }
+
+        if !failed.is_empty() {
+            return Ok(ActionResult {
+                ok: claimed > 0,
+                message: format!("领取 {claimed}/{} 项，失败：{}", targets.len(), failed[0]),
+                granted: (granted > 0.0).then_some(granted),
+                validity_days,
+                already: false,
+            });
+        }
+        let head = if granted > 0.0 {
+            format!("领取 {claimed} 项，+{granted} 积分")
+        } else {
+            format!("领取 {claimed} 项")
+        };
+        let tail = self
+            .credits(cred, http)
+            .await
+            .map(|c| c.summary)
+            .unwrap_or_default();
+        Ok(ActionResult {
+            ok: true,
+            message: if tail.is_empty() {
+                head
+            } else {
+                format!("{head}，{tail}")
+            },
+            granted: (granted > 0.0).then_some(granted),
+            validity_days,
+            already: false,
+        })
     }
 }
 
+/// P3 的接口基址与常量。
+const API_CN: &str = "https://openapi.qoder.com.cn";
+const API_INTL: &str = "https://openapi.qoder.sh";
+const CLIENT_TYPE: &str = "10";
+const CLIENT_VERSION: &str = "0.3.4";
+
+impl QoderProvider {
+    fn api_base(&self) -> &'static str {
+        if self.intl {
+            API_INTL
+        } else {
+            API_CN
+        }
+    }
+
+    /// async 是给 risk_headers 让路：首次拿设备风控头要跑子进程，不能占 async 线程。
+    async fn headers(&self, cred: &Credential) -> Vec<(String, String)> {
+        let mut headers = vec![
+            ("Accept".to_string(), "application/json".to_string()),
+            ("User-Agent".to_string(), "Qoder".to_string()),
+            (
+                "Authorization".to_string(),
+                format!("Bearer {}", cred.token),
+            ),
+        ];
+        headers.extend(risk_headers(self.intl).await);
+        headers
+    }
+
+    async fn get_json(&self, cred: &Credential, http: &dyn Http, path: &str) -> Result<Value> {
+        let url = format!("{}{path}", self.api_base());
+        let resp = http
+            .send(HttpRequest::get(url).headers(&self.headers(cred).await))
+            .await?;
+        if resp.status == 401 {
+            return Err(AppError::new("provider", "HTTP 401（登录态可能过期）"));
+        }
+        if !resp.is_ok() {
+            return Err(AppError::new("provider", format!("HTTP {}", resp.status)));
+        }
+        resp.json()
+    }
+
+    async fn campaigns(&self, cred: &Credential, http: &dyn Http) -> Result<Vec<Value>> {
+        let doc = self
+            .get_json(cred, http, "/sash/api/v1/me/campaigns")
+            .await?;
+        Ok(doc
+            .get("campaigns")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// 套餐额度 + 资源包。返回 (一句话摘要, 余额, 批次)。
+    async fn quota(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+    ) -> Result<(String, Option<f64>, Vec<CreditLot>)> {
+        let doc = self.get_json(cred, http, "/api/v2/quota/usage").await?;
+        let payload = doc
+            .get("qoderUsage")
+            .filter(|v| v.is_object())
+            .unwrap_or(&doc);
+
+        let mut parts: Vec<String> = Vec::new();
+        let mut lots: Vec<CreditLot> = Vec::new();
+        let mut balance = 0.0f64;
+        let mut counted = false;
+
+        // 企业版会给一个 2100 年的「永不过期」，当成没有到期日
+        let plan_expiry = payload
+            .get("expiresAt")
+            .and_then(dt_of)
+            .filter(|d| d.format("%Y").to_string().parse::<i32>().unwrap_or(0) < 2100);
+
+        for (label, key) in [("套餐", "userQuota"), ("资源包", "addOnQuota")] {
+            let item = payload.get(key);
+            let total = item
+                .and_then(|v| v.get("total"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let Some(remaining) = item
+                .and_then(|v| v.get("remaining"))
+                .and_then(|v| v.as_f64())
+            else {
+                continue;
+            };
+            let remaining = remaining.max(0.0);
+            if total > 0.0 || remaining > 0.0 {
+                parts.push(format!(
+                    "{label} {}/{}",
+                    trim_f64(remaining),
+                    trim_f64(total)
+                ));
+                balance += remaining;
+                counted = true;
+            }
+            if remaining > 0.0 {
+                lots.push(CreditLot {
+                    amount: remaining,
+                    expires_at: if key == "userQuota" {
+                        plan_expiry
+                    } else {
+                        None
+                    },
+                    granted_at: None,
+                    lot_key: String::new(),
+                    label: label.to_string(),
+                });
+            }
+        }
+
+        // 某些组织账号会额外下发独立资源包，各有自己的到期时间
+        for item in payload
+            .get("dedicatedResourcePackages")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let Some(remaining) = item.get("remaining").and_then(|v| v.as_f64()) else {
+                continue;
+            };
+            if remaining <= 0.0 {
+                continue;
+            }
+            lots.push(CreditLot {
+                amount: remaining,
+                expires_at: item
+                    .get("expiresAt")
+                    .or_else(|| item.get("endTime"))
+                    .and_then(dt_of),
+                granted_at: None,
+                lot_key: String::new(),
+                label: item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("资源包")
+                    .to_string(),
+            });
+            balance += remaining;
+            counted = true;
+        }
+
+        if payload.get("isQuotaExceeded").and_then(|v| v.as_bool()) == Some(true) {
+            parts.push("已超额".to_string());
+        }
+        let summary = if parts.is_empty() {
+            "无可用额度".to_string()
+        } else {
+            parts.join("，")
+        };
+        Ok((summary, counted.then_some(balance), lots))
+    }
+}
+
+/// 每日签到窗口正好是 23 小时 59 分（10:00 → 次日 09:59），
+/// 一次性活动不会是这个长度，靠它把两类发币活动区分开。
+const DAILY_SPAN: (i64, i64) = (86300, 86400);
+
+/// 只看发币型活动，并限定在当前窗口内。
+/// `VIEW_DETAILS` 之类的横幅不是签到，拿它推断「今天已签」必错。
+fn benefits_of(campaigns: &[Value], now_secs: i64) -> Vec<Value> {
+    campaigns
+        .iter()
+        .filter(|item| item.get("actionType").and_then(|v| v.as_str()) == Some("CLAIM_BENEFIT"))
+        .filter(|item| {
+            let start = item.get("startAt").and_then(secs_of);
+            let end = item.get("endAt").and_then(secs_of);
+            start.map(|s| now_secs >= s).unwrap_or(true)
+                && end.map(|e| now_secs < e).unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
+fn daily_of(benefits: &[Value]) -> Option<&Value> {
+    benefits.iter().find(|item| {
+        let start = item.get("startAt").and_then(secs_of);
+        let end = item.get("endAt").and_then(secs_of);
+        match (start, end) {
+            (Some(s), Some(e)) => (DAILY_SPAN.0..=DAILY_SPAN.1).contains(&(e - s)),
+            _ => false,
+        }
+    })
+}
+
+/// 活动窗口的开放时刻。
+fn opened_at(campaign: &Value) -> Option<chrono::DateTime<chrono::Local>> {
+    campaign.get("startAt").and_then(dt_of)
+}
+
+/// 本轮已签后下一次可签的时刻：接口只下发当前窗口，没有排期字段，
+/// 只能按同一节奏用 `startAt + 24h` 推算。实际开放时间会漂，界面文案用「约」。
+fn next_window(benefits: &[Value]) -> Option<chrono::DateTime<chrono::Local>> {
+    let opened = daily_of(benefits).and_then(opened_at)?;
+    // 先在 UTC 上加一天再换本地时区，跨夏令时也不会偏一小时
+    Some(
+        (opened.with_timezone(&chrono::Utc) + chrono::Duration::hours(24))
+            .with_timezone(&chrono::Local),
+    )
+}
+
+/// 接口给的是 unix 秒；个别字段是毫秒，按量级区分。
+fn secs_of(value: &Value) -> Option<i64> {
+    let n = value.as_f64()?;
+    if n > 1e11 {
+        Some((n / 1000.0) as i64)
+    } else {
+        Some(n as i64)
+    }
+}
+
+fn dt_of(value: &Value) -> Option<chrono::DateTime<chrono::Local>> {
+    let secs = if value.is_string() {
+        let text = value.as_str()?.trim().replace('Z', "+00:00");
+        chrono::DateTime::parse_from_rfc3339(&text)
+            .ok()?
+            .timestamp()
+    } else {
+        secs_of(value)?
+    };
+    chrono::DateTime::from_timestamp(secs, 0).map(|d| d.with_timezone(&chrono::Local))
+}
+
+fn value_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn trim_f64(value: f64) -> String {
+    if (value.fract()).abs() < f64::EPSILON {
+        format!("{value:.0}")
+    } else {
+        format!("{value}")
+    }
+}
+
+/// 设备风控头。签到活动接口从 2026-09-26 起要求携带 `Cosy-Machine*`，
+/// 否则服务端不下发每日活动。设备标识不伪造，直接跑客户端自带的
+/// `resources/umid/runtime-info.exe` 取；拿不到就退回最小可用头。
+/// async：runtime-info.exe 是同步轮询等退出（最长 12s），必须进阻塞池，
+/// 挂在 async 线程上会让并发刷积分把 worker 全部占死。
+async fn risk_headers(intl: bool) -> Vec<(String, String)> {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    // type_complexity：一次性缓存的三元组，type alias 只在这里用一次
+    #[allow(clippy::type_complexity)]
+    static CACHE: OnceLock<Mutex<Option<(bool, Instant, Vec<(String, String)>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((flag, at, headers)) = guard.as_ref() {
+            if *flag == intl && at.elapsed() < Duration::from_secs(1800) {
+                return headers.clone();
+            }
+        }
+    }
+
+    let mut headers = vec![("Cosy-ClientType".to_string(), CLIENT_TYPE.to_string())];
+    let profile = default_profile(intl);
+    let root = install_dir(intl);
+
+    if let Some(root) = root {
+        let exe = root.join("resources").join("umid").join("runtime-info.exe");
+        let data: Value = match crate::app::runtime::blocking(move || {
+            process::run_capture(&exe, Duration::from_secs(12))
+        })
+        .await
+        {
+            // 内层 run_capture 失败、外层任务崩溃，都按「拿不到」退回最小头
+            Ok(Ok(out)) => serde_json::from_str(out.trim()).unwrap_or(Value::Null),
+            Ok(Err(_)) | Err(_) => Value::Null,
+        };
+
+        headers.push(("Cosy-MachineOS".into(), "x86_64_windows".into()));
+        if let Ok(host) = std::env::var("COMPUTERNAME") {
+            headers.push(("Cosy-MachineHostname".into(), host));
+        }
+        let version = std::fs::read_to_string(root.join("resources").join("build-manifest.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|v| {
+                v.get("productVersion")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| CLIENT_VERSION.to_string());
+        headers.push(("Cosy-Version".into(), version));
+
+        if let Some(dir) = profile {
+            if let Ok(machine_id) = std::fs::read_to_string(dir.join("auth.machine-id")) {
+                let machine_id = machine_id.trim();
+                if !machine_id.is_empty() {
+                    headers.push(("Cosy-MachineId".into(), machine_id.to_string()));
+                }
+            }
+        }
+        for (source, target) in [
+            ("machineToken", "Cosy-MachineToken"),
+            ("machineCode", "Cosy-MachineCode"),
+            ("machineType", "Cosy-MachineType"),
+        ] {
+            if let Some(value) = data.get(source).and_then(|v| v.as_str()) {
+                if !value.is_empty() {
+                    headers.push((target.to_string(), value.to_string()));
+                }
+            }
+        }
+    }
+
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((intl, Instant::now(), headers.clone()));
+    }
+    headers
+}
+
+fn install_dir(intl: bool) -> Option<PathBuf> {
+    let base = PathBuf::from(std::env::var("LOCALAPPDATA").ok()?).join("Programs");
+    let names: &[&str] = if intl {
+        &["Qoder"]
+    } else {
+        &["Qoder CN", "Qoder"]
+    };
+    names.iter().map(|name| base.join(name)).find(|root| {
+        root.join("resources")
+            .join("umid")
+            .join("runtime-info.exe")
+            .exists()
+    })
+}
+
 fn tail(text: &str, n: usize) -> String {
-    text.chars().rev().take(n).collect::<String>().chars().rev().collect()
+    text.chars()
+        .rev()
+        .take(n)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
 }
 
 fn default_profile(intl: bool) -> Option<PathBuf> {
     let appdata = std::env::var("APPDATA").ok()?;
-    let name = if intl { "com.qoder.app.stable" } else { "com.qodercn.app.stable" };
+    let name = if intl {
+        "com.qoder.app.stable"
+    } else {
+        "com.qodercn.app.stable"
+    };
     Some(PathBuf::from(appdata).join(name))
 }
 
@@ -327,7 +924,10 @@ mod tests {
     fn other_users_phone_and_avatar_are_not_carried_over() {
         let current = json!({"user": {"id": "u2", "phone": "13800000000", "avatarUrl": "x"}});
         let auth = build_auth(&sample_cred(), "u1", "某人", Some(&current));
-        assert!(auth.pointer("/user/phone").unwrap().is_null(), "不能把别人的手机号写给这个账号");
+        assert!(
+            auth.pointer("/user/phone").unwrap().is_null(),
+            "不能把别人的手机号写给这个账号"
+        );
         assert!(auth.pointer("/user/avatarUrl").unwrap().is_null());
     }
 
@@ -343,7 +943,11 @@ mod tests {
 
     #[test]
     fn missing_expiry_does_not_write_empty_string() {
-        let cred = Credential { token: "t".into(), refresh_token: "r".into(), ..Default::default() };
+        let cred = Credential {
+            token: "t".into(),
+            refresh_token: "r".into(),
+            ..Default::default()
+        };
         let auth = build_auth(&cred, "u1", "n", None);
         let expires = auth.pointer("/expiresAt").unwrap().as_str().unwrap();
         assert!(!expires.is_empty(), "空串会让客户端的时间解析失败");
@@ -354,7 +958,10 @@ mod tests {
         let key = *Key::<Aes256Gcm>::from_slice(&[9u8; 32]);
         let sealed = QoderProvider::seal(&key, br#"{"token":"x"}"#).unwrap();
         assert_eq!(&sealed[..3], b"v10");
-        assert_eq!(secret::chromium_open(&key, &sealed).unwrap(), br#"{"token":"x"}"#);
+        assert_eq!(
+            secret::chromium_open(&key, &sealed).unwrap(),
+            br#"{"token":"x"}"#
+        );
     }
 
     /// 造一个「客户端已经登录过 old」的 profile：Local State（DPAPI 包着 32 字节密钥）
@@ -389,7 +996,7 @@ mod tests {
     fn switch_rewrites_login_state_and_backs_up() {
         let dir = tempfile::TempDir::new().unwrap();
         let key = fake_profile(dir.path());
-        let provider = QoderProvider::at(false, dir.path().to_path_buf());
+        let provider = QoderProvider::at(false, dir.path().to_path_buf()).assume_alive(false);
         let mut cred = Credential {
             token: "new-token".into(),
             refresh_token: "new-refresh".into(),
@@ -398,12 +1005,20 @@ mod tests {
         };
         cred.put("email", json!("new@b.c"));
 
-        let out = switch_to(&provider, "u2", "新账号", &cred, &dir.path().join("backups")).unwrap();
+        let out = switch_to(
+            &provider,
+            "u2",
+            "新账号",
+            &cred,
+            &dir.path().join("backups"),
+        )
+        .unwrap();
 
         assert!(out.backup.is_some(), "写前必须备份");
         let raw = std::fs::read(dir.path().join("auth.v1.dat")).unwrap();
         assert_eq!(&raw[..3], b"v10");
-        let plain: Value = serde_json::from_slice(&secret::chromium_open(&key, &raw).unwrap()).unwrap();
+        let plain: Value =
+            serde_json::from_slice(&secret::chromium_open(&key, &raw).unwrap()).unwrap();
         assert_eq!(plain.pointer("/user/id").unwrap(), "u2");
         assert_eq!(plain.pointer("/token").unwrap(), "new-token");
         assert_eq!(plain.pointer("/refreshToken").unwrap(), "new-refresh");
@@ -417,22 +1032,44 @@ mod tests {
     fn switch_refuses_the_account_already_logged_in() {
         let dir = tempfile::TempDir::new().unwrap();
         fake_profile(dir.path());
-        let provider = QoderProvider::at(false, dir.path().to_path_buf());
+        let provider = QoderProvider::at(false, dir.path().to_path_buf()).assume_alive(false);
         let cred = sample_cred();
-        let err = switch_to(&provider, "old", "旧账号", &cred, &dir.path().join("backups")).unwrap_err();
+        let err = switch_to(
+            &provider,
+            "old",
+            "旧账号",
+            &cred,
+            &dir.path().join("backups"),
+        )
+        .unwrap_err();
         assert!(err.message.contains("不需要切换"));
     }
 
     #[test]
     fn switch_refuses_when_client_running() {
-        // 进程名取一个必定存在的名字，模拟「客户端在跑」
+        // 客户端在跑：必须在写任何东西之前就退，并给出 client_running
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-        let provider = QoderProvider::at(false, dir.path().to_path_buf());
-        let mut provider = provider;
-        provider.profile = Some(dir.path().to_path_buf());
-        // 直接构造一个在跑的进程名不方便，改用「缺文件」的早退路径验证错误码
-        let err = switch_to(&provider, "u1", "n", &sample_cred(), &dir.path().join("bk")).unwrap_err();
+        fake_profile(dir.path());
+        let provider = QoderProvider::at(false, dir.path().to_path_buf()).assume_alive(true);
+
+        let err = switch_to(
+            &provider,
+            "u2",
+            "新账号",
+            &sample_cred(),
+            &dir.path().join("bk"),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind, crate::app::error::ErrorKind::ClientRunning);
+    }
+
+    #[test]
+    fn switch_refuses_when_login_files_missing() {
+        // 客户端没开，但目录里没有登录态文件：报 io，不是 client_running
+        let dir = tempfile::TempDir::new().unwrap();
+        let provider = QoderProvider::at(false, dir.path().to_path_buf()).assume_alive(false);
+        let err =
+            switch_to(&provider, "u1", "n", &sample_cred(), &dir.path().join("bk")).unwrap_err();
         assert!(matches!(err.kind, crate::app::error::ErrorKind::Io));
     }
 
@@ -455,13 +1092,20 @@ mod tests {
             let mut found = Vec::new();
             let count = provider
                 .scan(&mut |acc| {
-                    found.push((acc.identity.name.clone(), acc.identity.iid.clone(), acc.secret.len()));
+                    found.push((
+                        acc.identity.name.clone(),
+                        acc.identity.iid.clone(),
+                        acc.secret.len(),
+                    ));
                     Ok(())
                 })
                 .expect("扫描不应失败");
             println!("{}: {count} 个账号", provider.label());
             for (name, iid, size) in &found {
-                println!("   {name} · {} · 凭据 {size} 字节", &iid[..iid.len().min(24)]);
+                println!(
+                    "   {name} · {} · 凭据 {size} 字节",
+                    &iid[..iid.len().min(24)]
+                );
             }
         }
     }

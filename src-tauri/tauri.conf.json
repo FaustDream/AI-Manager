@@ -4,10 +4,13 @@
   "version": "1.5.0",
   "identifier": "com.faustdream.aimanager",
   "build": {
-    "frontendDist": "ui"
+    "frontendDist": "../dist",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "title": "AI Manager",
@@ -24,8 +27,18 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/icon.png"]
+    "icon": ["icons/icon.png"],
+    "publisher": "FaustDream",
+    "copyright": "© 2026 FaustDream",
+    "shortDescription": "签到 / 会话 / 技能分发一体化桌面工作台",
+    "longDescription": "把三家 AI 编程平台的每日签到与本地会话库管理合并到一个界面：账号与登录态切换、积分台账、会话浏览与删除、技能与 MCP 分发、日志与维护。",
+    "category": "DeveloperTool",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

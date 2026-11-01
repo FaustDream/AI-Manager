@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 
 /// 支持添加账号的平台（Trae 的登录态只读，见 `providers::trae`）。
 pub fn supported(platform: &str) -> bool {
-    matches!(platform, "qoder" | "qoder_intl" | "workbuddy" | "workbuddy_intl" | "zcode")
+    matches!(
+        platform,
+        "qoder" | "qoder_intl" | "workbuddy" | "workbuddy_intl" | "zcode"
+    )
 }
 
 /// 退出目标平台的登录态并启动客户端。返回给用户看的下一步提示。
@@ -35,7 +38,10 @@ pub fn prepare(platform: &str) -> Result<String> {
     }
 
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let keep = paths::data_dir().join("backups").join("logout").join(format!("{platform}-{stamp}"));
+    let keep = paths::data_dir()
+        .join("backups")
+        .join("logout")
+        .join(format!("{platform}-{stamp}"));
 
     match platform {
         "qoder" | "qoder_intl" => logout_qoder(platform, &keep)?,
@@ -69,9 +75,11 @@ fn logout_workbuddy(platform: &str, keep: &Path) -> Result<()> {
     let root = profiles::workbuddy(intl)
         .ok_or_else(|| AppError::new("io", "没有找到 WorkBuddy 的客户端数据目录"))?;
 
-    // 先把当前账号存成档案：退出登录后再想切回来就不用重新登录了
+    // 先把当前账号存成档案：退出登录后再想切回来就不用重新登录了。
+    // 档案里的 sessionState 由服务端签发、无法重建，存不下来就不能继续——
+    // 否则这个账号从此切不回来。
     if let Some(uid) = provider.current_uid() {
-        let _ = provider.save_current_as_pack(&uid);
+        provider.save_current_as_pack(&uid)?;
     }
     for rel in ["app/session", "storage/skeleton/account-snapshot.json"] {
         let path = root.join(rel);
@@ -130,8 +138,16 @@ fn candidates(platform: &str) -> Vec<PathBuf> {
     };
     match platform {
         "qoder" => {
-            push(programs.as_ref().map(|p| p.join("Qoder CN").join("Qoder CN.exe")));
-            push(local.as_ref().map(|p| p.join("Qoder CN").join("Qoder CN.exe")));
+            push(
+                programs
+                    .as_ref()
+                    .map(|p| p.join("Qoder CN").join("Qoder CN.exe")),
+            );
+            push(
+                local
+                    .as_ref()
+                    .map(|p| p.join("Qoder CN").join("Qoder CN.exe")),
+            );
             push(pf.as_ref().map(|p| p.join("Qoder CN").join("Qoder CN.exe")));
         }
         "qoder_intl" => {
@@ -140,14 +156,32 @@ fn candidates(platform: &str) -> Vec<PathBuf> {
         }
         "workbuddy" => {
             push(Some(PathBuf::from(r"C:\App\WB\CN\WorkBuddy.exe")));
-            push(programs.as_ref().map(|p| p.join("WorkBuddy").join("WorkBuddy.exe")));
-            push(programs.as_ref().map(|p| p.join("CodeBuddy CN").join("CodeBuddy CN.exe")));
-            push(pf.as_ref().map(|p| p.join("WorkBuddy").join("WorkBuddy.exe")));
+            push(
+                programs
+                    .as_ref()
+                    .map(|p| p.join("WorkBuddy").join("WorkBuddy.exe")),
+            );
+            push(
+                programs
+                    .as_ref()
+                    .map(|p| p.join("CodeBuddy CN").join("CodeBuddy CN.exe")),
+            );
+            push(
+                pf.as_ref()
+                    .map(|p| p.join("WorkBuddy").join("WorkBuddy.exe")),
+            );
         }
         "workbuddy_intl" => {
             push(Some(PathBuf::from(r"C:\App\WB\AI\WorkBuddyAI.exe")));
-            push(programs.as_ref().map(|p| p.join("WorkBuddyAI").join("WorkBuddyAI.exe")));
-            push(pf.as_ref().map(|p| p.join("WorkBuddyAI").join("WorkBuddyAI.exe")));
+            push(
+                programs
+                    .as_ref()
+                    .map(|p| p.join("WorkBuddyAI").join("WorkBuddyAI.exe")),
+            );
+            push(
+                pf.as_ref()
+                    .map(|p| p.join("WorkBuddyAI").join("WorkBuddyAI.exe")),
+            );
         }
         "zcode" => {
             push(pf.as_ref().map(|p| p.join("ZCode").join("ZCode.exe")));
@@ -165,7 +199,11 @@ mod profiles {
 
     pub fn qoder(platform: &str) -> Option<PathBuf> {
         let appdata = std::env::var("APPDATA").ok()?;
-        let name = if platform == "qoder_intl" { "com.qoder.app.stable" } else { "com.qodercn.app.stable" };
+        let name = if platform == "qoder_intl" {
+            "com.qoder.app.stable"
+        } else {
+            "com.qodercn.app.stable"
+        };
         Some(PathBuf::from(appdata).join(name))
     }
 
@@ -181,15 +219,27 @@ mod tests {
     #[test]
     fn unsupported_platform_is_refused() {
         let err = prepare("trae").unwrap_err();
-        assert!(matches!(err.kind, crate::app::error::ErrorKind::Unsupported));
+        assert!(matches!(
+            err.kind,
+            crate::app::error::ErrorKind::Unsupported
+        ));
     }
 
     #[test]
     fn every_supported_platform_has_process_names() {
-        for platform in ["qoder", "qoder_intl", "workbuddy", "workbuddy_intl", "zcode"] {
+        for platform in [
+            "qoder",
+            "qoder_intl",
+            "workbuddy",
+            "workbuddy_intl",
+            "zcode",
+        ] {
             assert!(supported(platform));
             assert!(!process_names(platform).is_empty(), "{platform} 缺进程名");
-            assert!(!candidates(platform).is_empty(), "{platform} 缺安装位置候选");
+            assert!(
+                !candidates(platform).is_empty(),
+                "{platform} 缺安装位置候选"
+            );
         }
     }
 

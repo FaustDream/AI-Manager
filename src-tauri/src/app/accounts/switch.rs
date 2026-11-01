@@ -9,9 +9,11 @@ use super::credential::Credential;
 use super::repo;
 use crate::app::db::Db;
 use crate::app::error::{AppError, Result};
-use crate::app::{paths, providers};
+use crate::app::{paths, process, providers};
 use serde::Serialize;
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize)]
 pub struct SwitchResult {
     pub message: String,
@@ -28,24 +30,48 @@ pub fn switch(db: &Db, iid: &str) -> Result<SwitchResult> {
     let cred = Credential::parse(&secret)?;
 
     let backup_dir = paths::data_dir().join("backups").join("switch");
-    let outcome = providers::switch(iid, &identity.account_id, &identity.name, &cred, &backup_dir)?;
+    let outcome = providers::switch(
+        iid,
+        &identity.account_id,
+        &identity.name,
+        &cred,
+        &backup_dir,
+    )?;
+
+    // 各平台 switch_to 都要求客户端先关闭（运行中写入一律拒绝），用户多半是
+    // 专为切换才关的——切完自动开回去，对齐 v1 switcher 的重启体验。
+    // 没找到 exe 或启动失败都不算切换失败，只落日志。
+    let mut message = outcome.message;
+    if let Some(exe) = super::add::client_exe(providers::platform_of(iid).unwrap_or_default()) {
+        match process::start_detached(&exe) {
+            Ok(()) => message.push_str("，客户端已重新启动"),
+            Err(e) => crate::app::log::log(
+                crate::app::log::Level::Warn,
+                "accounts",
+                format!("切换后启动客户端失败：{}", e.message),
+            ),
+        }
+    }
 
     crate::app::log::log(
         crate::app::log::Level::Info,
         "accounts",
-        format!("切换登录：{iid} → {}", outcome.message),
+        // 日志用昵称，不出现完整 iid（uid 只走「复制 UID」）
+        format!("切换登录：{} → {message}", identity.name),
     );
     Ok(SwitchResult {
-        message: outcome.message,
+        message,
         backup: outcome.backup.map(|p| p.display().to_string()),
     })
 }
 
 /// 这个账号是不是客户端当前登录的账号。读不到（没装/没登录）一律 false。
 pub fn is_current(db: &Db, iid: &str) -> Result<bool> {
-    let identity = repo::identity(db, iid)?
-        .ok_or_else(|| AppError::new("invalid", "账号不存在"))?;
-    let Some(provider) = providers::for_iid(iid) else { return Ok(false) };
+    let identity =
+        repo::identity(db, iid)?.ok_or_else(|| AppError::new("invalid", "账号不存在"))?;
+    let Some(provider) = providers::for_iid(iid) else {
+        return Ok(false);
+    };
     Ok(provider.current_id().as_deref() == Some(identity.account_id.as_str()))
 }
 
@@ -54,7 +80,9 @@ pub fn is_current(db: &Db, iid: &str) -> Result<bool> {
 pub fn current_iids() -> Vec<String> {
     let mut out = Vec::new();
     for provider in providers::all() {
-        let Some(id) = provider.current_id() else { continue };
+        let Some(id) = provider.current_id() else {
+            continue;
+        };
         // WorkBuddy 的 current_id 已经带了 @intl 后缀，其余平台直接拼
         out.push(format!("{}:{id}", provider.platform()));
     }

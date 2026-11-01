@@ -6,7 +6,7 @@
 use crate::app::error::{AppError, Result};
 use windows::Win32::Foundation::{LocalFree, HLOCAL};
 use windows::Win32::Security::Cryptography::{
-    CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+    CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
 };
 
 /// 加密。返回可直接存进 BLOB 列的字节。
@@ -25,7 +25,8 @@ pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>> {
     dpapi(blob, false)
 }
 
-fn dpapi(input: &[u8], encrypt: bool) -> Result<Vec<u8>> {    let in_blob = CRYPT_INTEGER_BLOB {
+fn dpapi(input: &[u8], encrypt: bool) -> Result<Vec<u8>> {
+    let in_blob = CRYPT_INTEGER_BLOB {
         cbData: input.len() as u32,
         pbData: input.as_ptr() as *mut u8,
     };
@@ -58,8 +59,15 @@ fn dpapi(input: &[u8], encrypt: bool) -> Result<Vec<u8>> {    let in_blob = CRYP
     // 无论成败都要释放，否则泄漏 LocalAlloc 出来的内存
     let _guard = BlobGuard(out_blob);
     ok.map_err(|e| {
-        AppError::new("crypto", if encrypt { "加密失败" } else { "解密失败（可能不是本机/本用户加密的数据）" })
-            .with_detail(e.to_string())
+        AppError::new(
+            "crypto",
+            if encrypt {
+                "加密失败"
+            } else {
+                "解密失败（可能不是本机/本用户加密的数据）"
+            },
+        )
+        .with_detail(e.to_string())
     })?;
 
     Ok(copied(&out_blob))
@@ -109,7 +117,10 @@ pub fn chromium_key(local_state: &std::path::Path) -> Result<aes_gcm::Key<aes_gc
     }
     let key = unprotect(&blob[5..])?;
     if key.len() != 32 {
-        return Err(AppError::new("crypto", format!("Chromium 主密钥长度异常：{} 字节", key.len())));
+        return Err(AppError::new(
+            "crypto",
+            format!("Chromium 主密钥长度异常：{} 字节", key.len()),
+        ));
     }
     Ok(*aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&key))
 }
@@ -160,7 +171,10 @@ mod tests {
         let cipher = aes_gcm::Aes256Gcm::new(&key);
         let nonce_bytes = [3u8; 12];
         let ciphertext = cipher
-            .encrypt(aes_gcm::Nonce::from_slice(&nonce_bytes), br#"{"token":"tk"}"#.as_ref())
+            .encrypt(
+                aes_gcm::Nonce::from_slice(&nonce_bytes),
+                br#"{"token":"tk"}"#.as_ref(),
+            )
             .unwrap();
 
         let mut blob = b"v10".to_vec();
