@@ -244,7 +244,12 @@ impl<'a> SqliteSessions<'a> {
                         title: row.get(5)?,
                         last_at: ms_to_dt(row.get::<_, i64>(6)?),
                         msgs: row.get(7)?,
-                        size: row.get(8)?,
+                        // 0 = 没有本地正文可管理（云端占位 / 无正文 / ZCode 这类
+                        // 不逐条算体积的来源），显示为「—」而不是误导性的「0 B」
+                        size: match row.get::<_, i64>(8)? {
+                            0 => None,
+                            n => Some(n),
+                        },
                         state: state_of(row.get::<_, Option<String>>(9)?.as_deref()),
                         has_body: row.get::<_, Option<i64>>(10)?.unwrap_or(0) != 0,
                     })
