@@ -201,14 +201,22 @@ export default function HubPage() {
           </div>
 
           <div className="rounded-lg border border-line bg-card p-3">
-            <h2 className="mb-2 text-sm font-semibold">技能库（{snap.skills.length}）</h2>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold">技能库（{snap.skills.length}）</h2>
+              {/* 图例：点阵颜色不单独表意（悬停有完整文字提示） */}
+              <span className="flex items-center gap-3 text-xs text-muted">
+                <span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-ok" />最新</span>
+                <span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-warn" />待更新</span>
+                <span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-line-strong" />未部署</span>
+              </span>
+            </div>
             <table className="w-full border-collapse">
               <thead>
                 <tr>
                   <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">技能</th>
                   <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">说明</th>
-                  <th className="w-24 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">大小</th>
-                  <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">平台副本状态</th>
+                  <th className="w-20 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">大小</th>
+                  <th className="w-44 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">平台副本状态</th>
                   <th className="w-40 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">操作</th>
                 </tr>
               </thead>
@@ -221,7 +229,7 @@ export default function HubPage() {
                   </tr>
                 )}
                 {snap.skills.map((skill) => (
-                  <tr key={skill.name} className="hover:bg-hover">
+                  <tr key={skill.name} className="group hover:bg-hover">
                     <td className="border-b border-line px-2 py-1.5 text-sm">
                       {skill.name}
                       {!skill.valid && <Tag tone="bad">{skill.reason}</Tag>}
@@ -232,21 +240,27 @@ export default function HubPage() {
                     <td className="border-b border-line px-2 py-1.5 text-xs tabular-nums text-muted">
                       {fmtSize(skill.size)}
                     </td>
-                    <td className="border-b border-line px-2 py-1.5" style={{ whiteSpace: 'normal', lineHeight: 2 }}>
-                      {skill.states.map(([key, state]) => (
-                        <button
-                          key={key}
-                          className={`chip mr-1 rounded-full border px-2 py-px text-xs ${
-                            state === 'synced' ? 'border-ok text-ok' : state === 'stale' ? 'border-warn text-warn' : 'border-line text-muted'
-                          }`}
-                          title={state === 'stale' ? '副本与库不一致，点「部署」刷新' : state}
-                          onClick={() => {
-                            setTab(key);
-                          }}
-                        >
-                          {key}·{STATE_LABEL[state] ?? state}
-                        </button>
-                      ))}
+                    {/* 状态点阵：列序与平台标签栏一致，点一个跳对应平台页 */}
+                    <td className="border-b border-line px-2 py-1.5">
+                      <span className="flex items-center gap-2">
+                        {snap.targets.map((t) => {
+                          const state = skill.states.find(([k]) => k === t.key)?.[1] ?? 'missing';
+                          return (
+                            <button
+                              key={t.key}
+                              className={`h-2.5 w-2.5 cursor-pointer rounded-full transition-transform hover:scale-125 ${
+                                state === 'synced'
+                                  ? 'bg-ok'
+                                  : state === 'stale'
+                                    ? 'bg-warn ring-2 ring-warn/30'
+                                    : 'bg-line-strong group-hover:bg-muted'
+                              }`}
+                              title={`${t.label}：${STATE_LABEL[state] ?? state}`}
+                              onClick={() => setTab(t.key)}
+                            />
+                          );
+                        })}
+                      </span>
                     </td>
                     <td className="border-b border-line px-2 py-1.5">
                       <span className="flex gap-1">
