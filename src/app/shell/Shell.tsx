@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
-  LayoutDashboard, Users, MessagesSquare, Blocks, Settings, RefreshCw,
+  Users, MessagesSquare, Blocks, Settings, RefreshCw,
 } from 'lucide-react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { capabilities } from '@/app/router';
@@ -16,7 +16,6 @@ import { Suspense } from 'react';
 import { StateBlock } from '@/components/ui/form';
 
 const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
-  overview: LayoutDashboard,
   'account-center': Users,
   sessions: MessagesSquare,
   hub: Blocks,
@@ -47,7 +46,7 @@ export function Shell() {
         <h1 className="text-lg font-semibold">AI Manager</h1>
         <nav className="ml-1 flex gap-1">
           {caps.map((cap) => {
-            const Icon = ICONS[cap.manifest.id] ?? LayoutDashboard;
+            const Icon = ICONS[cap.manifest.id] ?? Users;
             return (
               <button
                 key={cap.manifest.id}
