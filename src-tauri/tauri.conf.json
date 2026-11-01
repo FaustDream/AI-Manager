@@ -29,7 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/icon.png"],
+    "icon": ["icons/icon.ico", "icons/icon.png", "icons/32x32.png", "icons/128x128.png"],
     "publisher": "FaustDream",
     "copyright": "© 2026 FaustDream",
     "shortDescription": "签到 / 会话 / 技能分发一体化桌面工作台",
