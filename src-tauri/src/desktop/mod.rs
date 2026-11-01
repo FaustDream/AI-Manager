@@ -11,7 +11,7 @@ use crate::app::db::Db;
 use crate::app::error::AppError;
 use crate::app::log::{self, Level};
 use crate::app::process;
-use crate::app::task::{resources::ResourceRegistry, TaskEnv, TaskStore, TaskView};
+use crate::app::task::{TaskState, TaskStore, TaskView};
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -20,7 +20,12 @@ use tauri::{Manager, State, WindowEvent};
 pub struct AppState {
     pub db: Arc<Db>,
     pub tasks: Arc<TaskStore>,
-    pub env: Arc<TaskEnv>,
+    /// 签到编排。持有网络与时钟，命令层只转接
+    pub checkin: Arc<crate::app::checkin::Service>,
+    /// 会话索引。只读写 app.db，客户端库由扫描任务自己碰
+    pub sessions: Arc<crate::app::sessions::Service>,
+    /// 技能与 MCP：只写配置文件，每次写前备份
+    pub hub: Arc<crate::app::hub::Hub>,
     /// 单实例句柄必须活到进程结束，Drop 提前释放会让第二次启动挤进来
     _instance: Option<process::SingleInstance>,
 }
@@ -62,8 +67,10 @@ fn window_show(app: tauri::AppHandle) -> std::result::Result<(), String> {
     let Some(w) = app.get_webview_window("main") else {
         return Err(err_text(AppError::new("invalid", "主窗口不存在")));
     };
-    w.show().map_err(|e| err_text(AppError::new("io", e.to_string())))?;
-    w.set_focus().map_err(|e| err_text(AppError::new("io", e.to_string())))?;
+    w.show()
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?;
+    w.set_focus()
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?;
     Ok(())
 }
 
@@ -72,7 +79,8 @@ fn window_hide(app: tauri::AppHandle) -> std::result::Result<(), String> {
     let Some(w) = app.get_webview_window("main") else {
         return Err(err_text(AppError::new("invalid", "主窗口不存在")));
     };
-    w.hide().map_err(|e| err_text(AppError::new("io", e.to_string())))?;
+    w.hide()
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?;
     Ok(())
 }
 
@@ -83,7 +91,10 @@ fn tray_set_autostart(enabled: bool) -> std::result::Result<(), String> {
 }
 
 #[tauri::command]
-async fn settings_get(state: State<'_, AppState>, key: String) -> std::result::Result<Option<serde_json::Value>, String> {
+async fn settings_get(
+    state: State<'_, AppState>,
+    key: String,
+) -> std::result::Result<Option<serde_json::Value>, String> {
     let db = state.db.clone();
     let raw = tokio::task::spawn_blocking(move || db.kv_get(&key))
         .await
@@ -114,23 +125,37 @@ fn task_list(state: State<'_, AppState>) -> Vec<TaskView> {
 // ------------------------------------------------------------------ 账号中心
 
 #[tauri::command]
-async fn account_list(state: State<'_, AppState>) -> std::result::Result<Vec<crate::app::accounts::AccountView>, String> {
+async fn account_list(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<crate::app::accounts::AccountView>, String> {
     let db = state.db.clone();
     // 数据库调用必须在阻塞线程里跑，否则界面在等结果期间没有响应
-    let mut rows = tokio::task::spawn_blocking(move || crate::app::accounts::repo::list(&db))
-        .await
-        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
-        .map_err(err_text)?;
+    let mut rows = tokio::task::spawn_blocking(move || {
+        let mut rows = crate::app::accounts::repo::list(&db)?;
+        // 余额 / 今日已签 从库里补出来：重扫与重启都不会把它们冲掉（契约 21）
+        crate::app::checkin::store::hydrate(&db, &mut rows, &crate::app::clock::SystemClock);
+        Ok::<_, AppError>(rows)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+    .map_err(err_text)?;
     // 脱敏在出口做一次：前端不必各自实现，也就不会有人漏掉
     for row in &mut rows {
         row.name = row.display_name();
     }
-    log::log(Level::Info, "accounts", format!("列表返回 {} 个账号", rows.len()));
+    log::log(
+        Level::Info,
+        "accounts",
+        format!("列表返回 {} 个账号", rows.len()),
+    );
     Ok(rows)
 }
 
 #[tauri::command]
-async fn account_reorder(state: State<'_, AppState>, iids: Vec<String>) -> std::result::Result<(), String> {
+async fn account_reorder(
+    state: State<'_, AppState>,
+    iids: Vec<String>,
+) -> std::result::Result<(), String> {
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || crate::app::accounts::repo::reorder(&db, &iids))
         .await
@@ -139,7 +164,10 @@ async fn account_reorder(state: State<'_, AppState>, iids: Vec<String>) -> std::
 }
 
 #[tauri::command]
-async fn account_delete(state: State<'_, AppState>, iid: String) -> std::result::Result<bool, String> {
+async fn account_delete(
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<bool, String> {
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || crate::app::accounts::repo::delete(&db, &iid))
         .await
@@ -150,7 +178,9 @@ async fn account_delete(state: State<'_, AppState>, iid: String) -> std::result:
 /// 扫描各客户端登录态并入库。
 /// 走 `spawn_blocking`：读客户端库 + DPAPI/AES 解密是纯阻塞活，放主线程会让窗口变灰。
 #[tauri::command]
-async fn account_scan(state: State<'_, AppState>) -> std::result::Result<crate::app::accounts::ScanReport, String> {
+async fn account_scan(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::accounts::ScanReport, String> {
     let db = state.db.clone();
     let report = tokio::task::spawn_blocking(move || crate::app::accounts::scan_all(&db))
         .await
@@ -159,14 +189,20 @@ async fn account_scan(state: State<'_, AppState>) -> std::result::Result<crate::
     log::log(
         Level::Info,
         "accounts",
-        format!("扫描完成：{} 个账号（新增 {}）", report.scanned, report.added),
+        format!(
+            "扫描完成：{} 个账号（新增 {}）",
+            report.scanned, report.added
+        ),
     );
     Ok(report)
 }
 
 /// 切换登录。会写客户端登录态文件：失败一律带结构化 kind，界面按 kind 给话术。
 #[tauri::command]
-async fn account_switch(state: State<'_, AppState>, iid: String) -> std::result::Result<crate::app::accounts::SwitchResult, String> {
+async fn account_switch(
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<crate::app::accounts::SwitchResult, String> {
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || crate::app::accounts::switch(&db, &iid))
         .await
@@ -180,7 +216,11 @@ async fn account_current() -> std::result::Result<Vec<String>, String> {
     let current = tokio::task::spawn_blocking(crate::app::accounts::current_iids)
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?;
-    log::log(Level::Info, "accounts", format!("客户端当前登录：{} 个", current.len()));
+    log::log(
+        Level::Info,
+        "accounts",
+        format!("客户端当前登录：{} 个", current.len()),
+    );
     Ok(current)
 }
 
@@ -199,14 +239,573 @@ fn task_cancel(state: State<'_, AppState>, task_id: u64) -> bool {
     state.tasks.cancel_task(task_id)
 }
 
+// ------------------------------------------------------------ 技能与 MCP
+
+fn target_keys(names: &[String]) -> Vec<crate::contracts::TargetKey> {
+    names
+        .iter()
+        .filter_map(|name| crate::app::hub::targets::from_key_name(name))
+        .collect()
+}
+
+/// 技能 + MCP + 平台清单，一次读完。
 #[tauri::command]
-fn log_tail(limit: Option<usize>) -> Vec<String> {
-    log::tail(limit.unwrap_or(200).min(2000))
+async fn hub_snapshot(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::hub::HubSnapshot, String> {
+    let hub = state.hub.clone();
+    crate::app::runtime::blocking(move || crate::app::hub::snapshot(&hub))
+        .await
+        .map_err(err_text)
+}
+
+/// 部署技能到选中的平台。`overwrite=true` 才允许盖掉内容不同的同名副本。
+#[tauri::command]
+async fn hub_skill_deploy(
+    state: State<'_, AppState>,
+    name: String,
+    targets: Vec<String>,
+    overwrite: Option<bool>,
+) -> std::result::Result<crate::app::hub::DeployReport, String> {
+    let hub = state.hub.clone();
+    let keys = target_keys(&targets);
+    let overwrite = overwrite.unwrap_or(false);
+    let report = crate::app::runtime::blocking(move || {
+        crate::app::hub::skills::deploy(&hub, &name, &keys, overwrite)
+    })
+    .await
+    .map_err(err_text)?
+    .map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "hub",
+        format!("部署技能：{}", report.summary()),
+    );
+    Ok(report)
+}
+
+/// 从平台移除技能（只删本工具部署的副本）。
+#[tauri::command]
+async fn hub_skill_remove(
+    state: State<'_, AppState>,
+    name: String,
+    targets: Vec<String>,
+) -> std::result::Result<crate::app::hub::DeployReport, String> {
+    let hub = state.hub.clone();
+    let keys = target_keys(&targets);
+    let report =
+        crate::app::runtime::blocking(move || crate::app::hub::skills::remove(&hub, &name, &keys))
+            .await
+            .map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "hub",
+        format!("移除技能：{}", report.summary()),
+    );
+    Ok(report)
+}
+
+/// 从某个平台把技能导入库。
+#[tauri::command]
+async fn hub_skill_import(
+    state: State<'_, AppState>,
+    target: String,
+    name: String,
+) -> std::result::Result<crate::app::hub::skills::SkillInfo, String> {
+    let hub = state.hub.clone();
+    let key = crate::app::hub::targets::from_key_name(&target)
+        .ok_or_else(|| err_text(AppError::new("invalid", format!("未知平台：{target}"))))?;
+    crate::app::runtime::blocking(move || crate::app::hub::skills::import(&hub, key, &name))
+        .await
+        .map_err(err_text)?
+        .map_err(err_text)
+}
+
+#[derive(serde::Serialize)]
+pub struct McpImportReport {
+    pub names: Vec<String>,
+    pub report: crate::app::hub::DeployReport,
+}
+
+/// 粘贴一段 MCP 配置，写到选中的平台。
+#[tauri::command]
+async fn hub_mcp_import(
+    state: State<'_, AppState>,
+    text: String,
+    targets: Vec<String>,
+) -> std::result::Result<McpImportReport, String> {
+    let hub = state.hub.clone();
+    let keys = target_keys(&targets);
+    if keys.is_empty() {
+        return Err(err_text(AppError::new("invalid", "先选至少一个平台")));
+    }
+    crate::app::runtime::blocking(move || {
+        let entries = crate::app::hub::parse_text(&text)?;
+        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+        let mut report = crate::app::hub::DeployReport::default();
+        for entry in &entries {
+            let one = crate::app::hub::mcp_add(&hub, entry, &keys);
+            report.steps.extend(one.steps);
+        }
+        Ok(McpImportReport { names, report })
+    })
+    .await
+    .map_err(err_text)?
+    .map_err(err_text)
+}
+
+/// 从选中的平台删掉一条 MCP（只删本工具写的）。
+#[tauri::command]
+async fn hub_mcp_remove(
+    state: State<'_, AppState>,
+    name: String,
+    targets: Vec<String>,
+) -> std::result::Result<crate::app::hub::DeployReport, String> {
+    let hub = state.hub.clone();
+    let keys = target_keys(&targets);
+    crate::app::runtime::blocking(move || crate::app::hub::mcp_remove(&hub, &name, &keys))
+        .await
+        .map_err(err_text)
+}
+
+// ------------------------------------------------------------ 会话
+
+/// 增量扫描会话索引：任务化，扫完 emit `session:scan`。
+#[tauri::command]
+async fn session_scan(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> std::result::Result<u64, String> {
+    use crate::app::task::CapabilityId;
+    use tauri::Emitter;
+
+    let service = state.sessions.clone();
+    let emitter = app.clone();
+    let task_id = state.tasks.spawn_managed(
+        CapabilityId::Sessions,
+        "扫描会话索引",
+        move |handle| async move {
+            match service.scan(handle.cancel.clone()).await {
+                Ok(report) => {
+                    log::log(
+                        Level::Info,
+                        "sessions",
+                        format!("会话扫描：{}", report.summary()),
+                    );
+                    handle.message(report.summary());
+                    let _ = emitter.emit("session:scan", &report);
+                    Ok(())
+                }
+                Err(e) => {
+                    log::log(
+                        Level::Warn,
+                        "sessions",
+                        format!("会话扫描失败：{}", e.message),
+                    );
+                    let _ = emitter.emit("session:scan", &e);
+                    Err(e)
+                }
+            }
+        },
+    );
+    Ok(task_id)
+}
+
+/// 列表页：只读 app.db，客户端正在写也不影响。
+#[tauri::command]
+async fn session_page(
+    state: State<'_, AppState>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+    filter: Option<crate::app::sessions::Filter>,
+) -> std::result::Result<crate::types::Page<crate::types::SessionRow>, String> {
+    let service = state.sessions.clone();
+    service
+        .page(filter.unwrap_or_default(), cursor, limit.unwrap_or(100))
+        .await
+        .map_err(err_text)
+}
+
+/// 正文预览：按行 key 找正文。只读、只取头尾。
+#[tauri::command]
+async fn session_preview(
+    state: State<'_, AppState>,
+    key: String,
+) -> std::result::Result<crate::app::sessions::Preview, String> {
+    let service = state.sessions.clone();
+    service.preview(key).await.map_err(err_text)
+}
+
+/// 删除会话：进回收站，可恢复。会临时关掉正在运行的客户端。
+#[tauri::command]
+async fn session_delete(
+    state: State<'_, AppState>,
+    keys: Vec<String>,
+) -> std::result::Result<crate::app::sessions::delete::DeleteReport, String> {
+    let service = state.sessions.clone();
+    let report = service.remove(keys).await.map_err(err_text)?;
+    log::log(
+        if report.errors.is_empty() {
+            Level::Info
+        } else {
+            Level::Warn
+        },
+        "sessions",
+        format!("删除会话：{}", report.summary()),
+    );
+    Ok(report)
+}
+
+/// 整库快照（备份与清理页也会用）。
+#[tauri::command]
+async fn session_backup(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::sessions::backup::Snapshot, String> {
+    let service = state.sessions.clone();
+    let snapshot = service.backup().await.map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "sessions",
+        format!("会话快照：{}", snapshot.summary()),
+    );
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn session_backups(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<crate::app::sessions::backup::Snapshot>, String> {
+    let service = state.sessions.clone();
+    Ok(service.backups().await)
+}
+
+/// 回收站批次列表。
+#[tauri::command]
+async fn session_trash(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<crate::app::sessions::trash::Manifest>, String> {
+    let service = state.sessions.clone();
+    Ok(service.trash().await)
+}
+
+/// 按批次恢复。
+#[tauri::command]
+async fn session_trash_restore(
+    state: State<'_, AppState>,
+    tag: String,
+) -> std::result::Result<crate::app::sessions::delete::RestoreReport, String> {
+    let service = state.sessions.clone();
+    service.trash_restore(tag).await.map_err(err_text)
+}
+
+/// 彻底清掉一个批次，不可恢复。
+#[tauri::command]
+async fn session_trash_purge(
+    state: State<'_, AppState>,
+    tag: String,
+) -> std::result::Result<i64, String> {
+    let service = state.sessions.clone();
+    service.trash_purge(tag).await.map_err(err_text)
+}
+
+/// 三个下拉的取值与计数（来源 / 账号 / 状态）。
+#[tauri::command]
+async fn session_facets(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::sessions::Facets, String> {
+    let service = state.sessions.clone();
+    service.facets().await.map_err(err_text)
+}
+
+// ------------------------------------------------------------ 签到与积分
+
+/// 查单个账号的签到状态（会顺带刷新余额）。
+#[tauri::command]
+async fn checkin_status(
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<crate::types::StatusResult, String> {
+    let service = state.checkin.clone();
+    service.status(&iid).await.map_err(err_text)
+}
+
+/// 只查积分，不动签到状态（「刷新积分」走这条）。
+#[tauri::command]
+async fn checkin_credits(
+    state: State<'_, AppState>,
+    iids: Vec<String>,
+) -> std::result::Result<Vec<(String, crate::types::CreditSnapshot)>, String> {
+    // 并发与失败兜底都在 Service::credits_batch 里，命令层只转接
+    Ok(state.checkin.credits_batch(&iids).await)
+}
+
+/// 详情面板：余额、今日增减、批次、下次可签。只读本地库，不打接口。
+#[tauri::command]
+async fn checkin_detail(
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<crate::app::checkin::AccountDetail, String> {
+    let service = state.checkin.clone();
+    Ok(service.detail(&iid).await)
+}
+
+/// 单账号签到。**会真的调接口**，幂等由 daily_marks 保证。
+#[tauri::command]
+async fn checkin_run(
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<crate::types::ActionResult, String> {
+    let service = state.checkin.clone();
+    let result = service.checkin(&iid).await.map_err(err_text)?;
+    log::log(
+        if result.ok { Level::Info } else { Level::Warn },
+        "checkin",
+        format!(
+            "{}：{}",
+            iid.split(':').next().unwrap_or("-"),
+            result.message
+        ),
+    );
+    Ok(result)
+}
+
+/// 批量签到：任务化，可取消，并发 3。
+#[tauri::command]
+async fn checkin_batch(
+    state: State<'_, AppState>,
+    iids: Vec<String>,
+) -> std::result::Result<u64, String> {
+    use crate::app::task::CapabilityId;
+
+    let total = iids.len();
+    let service = state.checkin.clone();
+    let task_id = state.tasks.spawn_managed(
+        CapabilityId::AccountCenter,
+        format!("批量签到 {total} 个账号"),
+        move |handle| async move {
+            let cancel = handle.cancel.clone();
+            let round = service
+                .batch(&iids, cancel, |done, total| {
+                    handle.progress(
+                        done as f32 / total.max(1) as f32,
+                        format!("{done}/{total}"),
+                    );
+                })
+                .await;
+            let message = round.message.clone();
+            handle.message(message.clone());
+            log::log(Level::Info, "checkin", format!("批量签到结束：{message}"));
+            // 结束态交给统一归类：全失败记 Failed、部分失败记 Partial、取消记 Cancelled
+            if handle.cancel.is_cancelled() {
+                Err(crate::app::error::AppError::new("cancelled", message))
+            } else if round.failed > 0 && round.success == 0 {
+                Err(crate::app::error::AppError::new("io", message))
+            } else if round.failed > 0 {
+                Err(crate::app::error::AppError::new("conflict", message))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    Ok(task_id)
+}
+
+/// 每日轮询的最近一轮结果（界面底部那一行）。
+#[tauri::command]
+fn daily_state(state: State<'_, AppState>) -> Option<crate::app::checkin::RoundResult> {
+    state.checkin.daily_state()
+}
+
+/// 手动跑一轮（会在后台执行，返回任务 id）。
+#[tauri::command]
+async fn daily_run_now(state: State<'_, AppState>) -> std::result::Result<u64, String> {
+    use crate::app::task::CapabilityId;
+
+    let service = state.checkin.clone();
+    let task_id = state.tasks.spawn_managed(
+        CapabilityId::AccountCenter,
+        "每日轮询（手动）",
+        move |handle| async move {
+            let round = service.run_round(&handle.cancel).await;
+            log::log(
+                if round.failed > 0 {
+                    Level::Warn
+                } else {
+                    Level::Info
+                },
+                "checkin",
+                format!("每日轮询：{}", round.message),
+            );
+            handle.message(round.message.clone());
+            if handle.cancel.is_cancelled() {
+                Err(crate::app::error::AppError::new("cancelled", round.message))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    Ok(task_id)
+}
+
+/// ZCode 可领取的活动套餐（v1 的「领取」按钮第一步）。
+#[tauri::command]
+async fn zcode_claim_plans(
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<Vec<crate::app::providers::zclaim::ClaimPlan>, String> {
+    let service = state.checkin.clone();
+    service.zcode_claimable(&iid).await.map_err(err_text)
+}
+
+/// 领取一个 ZCode 活动套餐：**会打开浏览器过验证码**，验证完自动提交。
+#[tauri::command]
+async fn zcode_claim_run(
+    state: State<'_, AppState>,
+    iid: String,
+    plan_id: String,
+) -> std::result::Result<crate::app::providers::zclaim::ClaimOutcome, String> {
+    let service = state.checkin.clone();
+    service.zcode_claim(&iid, &plan_id).await.map_err(err_text)
+}
+
+#[tauri::command]
+async fn log_tail(limit: Option<usize>) -> Vec<String> {
+    let limit = limit.unwrap_or(200).min(2000);
+    // 整读 app.log 是磁盘活，不占主线程；闭包 panic（JoinError）回落空列表
+    tokio::task::spawn_blocking(move || log::tail(limit))
+        .await
+        .unwrap_or_default()
+}
+
+/// 结构化日志查询（按级别 / 模块 / 关键词）。
+/// 返回 `Result`：读日志失败要让界面说「读日志失败」，不能伪装成「没有符合条件的日志」。
+#[tauri::command]
+async fn log_query(
+    filter: crate::app::log::LogFilter,
+) -> std::result::Result<Vec<crate::app::log::Line>, String> {
+    // query 是整读 app.jsonl 再逐行过滤，必须进阻塞池
+    tokio::task::spawn_blocking(move || crate::app::log::query(&filter))
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+        .map_err(err_text)
+}
+
+/// 导出日志到文件；不给路径就落到 `data/logs/export-<时间戳>.txt`。
+/// 返回一句可以直接显示的话（行数 + 落在哪）。
+#[tauri::command]
+async fn log_export(
+    path: Option<String>,
+    filter: crate::app::log::LogFilter,
+) -> std::result::Result<String, String> {
+    let target = match path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => std::path::PathBuf::from(p),
+        None => crate::app::paths::logs_dir().join(format!(
+            "export-{}.txt",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        )),
+    };
+    let shown = target.display().to_string();
+    let count = tokio::task::spawn_blocking(move || crate::app::log::export(&target, &filter))
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+        .map_err(err_text)?;
+    Ok(format!("已导出 {count} 行到 {shown}"))
+}
+
+/// 清掉已完成 / 失败 / 取消的任务，返回清掉几条。
+#[tauri::command]
+fn task_clear_finished(state: State<'_, AppState>) -> usize {
+    state.tasks.clear_finished()
+}
+
+/// 数据目录占用。
+#[tauri::command]
+async fn maintenance_space() -> crate::app::maintenance::SpaceReport {
+    // 递归遍历整个 data/（含会话正文），主线程上跑会卡住界面
+    tokio::task::spawn_blocking(crate::app::maintenance::space)
+        .await
+        .unwrap_or_default()
+}
+
+/// 回收站批次（会话删除与平台技能移除都算）。
+#[tauri::command]
+async fn maintenance_trash() -> Vec<crate::app::maintenance::SpaceEntry> {
+    tokio::task::spawn_blocking(crate::app::maintenance::trash_batches)
+        .await
+        .unwrap_or_default()
+}
+
+/// 清空回收站：`tag=None` 全清。返回释放的字节数。
+#[tauri::command]
+async fn maintenance_purge_trash(tag: Option<String>) -> std::result::Result<i64, String> {
+    tokio::task::spawn_blocking(move || crate::app::maintenance::purge_trash(tag.as_deref()))
+        .await
+        .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+        .map_err(err_text)
+}
+
+/// 打开数据目录。
+#[tauri::command]
+fn maintenance_open_data() -> std::result::Result<(), String> {
+    crate::app::maintenance::open_data_dir().map_err(err_text)
+}
+
+/// 迁移收尾第一步：三项计数校验。只读，随时可点。
+#[tauri::command]
+async fn migrate_verify(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::migrate::verify::MigrationReport, String> {
+    let db = state.db.clone();
+    // 读 accounts.dat 要过 DPAPI、还要解 JSON，纯阻塞活，不能占着异步线程
+    let report = tokio::task::spawn_blocking(move || {
+        crate::app::migrate::verify::verify(&db, &crate::app::paths::data_dir())
+    })
+    .await
+    .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+    .map_err(err_text)?;
+    log::log(
+        if report.ok { Level::Info } else { Level::Warn },
+        "migrate",
+        format!("迁移校验：{}", report.describe()),
+    );
+    Ok(report)
+}
+
+/// 迁移收尾第二步：**复制** v1 文件到 `data-v1-archive/<时间戳>/`。
+/// 计数不一致直接拒绝，什么都不写；原文件永不移动、永不删除。
+#[tauri::command]
+async fn migrate_archive(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::migrate::verify::ArchiveReport, String> {
+    let db = state.db.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        crate::app::migrate::verify::archive(&db, &crate::app::paths::data_dir())
+    })
+    .await
+    .map_err(|e| err_text(AppError::new("io", e.to_string())))?
+    .map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "migrate",
+        format!("v1 文件已归档到 {}", report.archive_dir),
+    );
+    Ok(report)
+}
+
+#[tauri::command]
+fn autostart_get() -> bool {
+    crate::app::process::autostart_enabled()
+}
+
+#[tauri::command]
+fn autostart_set(enabled: bool) -> std::result::Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| err_text(AppError::new("io", e.to_string())))?;
+    crate::app::process::set_autostart(enabled, &exe).map_err(err_text)
 }
 
 #[tauri::command]
 fn log_level(level: String) -> std::result::Result<(), String> {
-    let parsed = Level::from_str(&level);
+    let parsed = Level::parse_lossy(&level);
     log::set_level(parsed);
     Ok(())
 }
@@ -222,16 +821,33 @@ pub fn run() -> tauri::Result<()> {
             focus_existing();
             return Ok(());
         }
-        Err(_) => None,
+        Err(e) => {
+            // 拿不到互斥体不是小事：双开会并发写同一个 app.db，至少要留痕
+            log::log(
+                Level::Warn,
+                "app",
+                format!("单实例互斥体获取失败（{}），双开保护失效", e.message),
+            );
+            None
+        }
     };
 
     tauri::Builder::default()
         .setup(move |app| {
             let state = init_state(instance)?;
+            let service = state.checkin.clone();
+            let hub = state.hub.clone();
+            let sync_db = state.db.clone();
+            let claim_db = state.db.clone();
+            let state_tasks = state.tasks.clone();
             app.manage(state);
 
             build_tray(app)?;
             hook_window(app);
+            spawn_daily_round(service.clone(), app.handle().clone());
+            spawn_hub_auto_sync(sync_db, hub);
+            spawn_zcode_auto_claim(claim_db, service, app.handle().clone());
+            spawn_event_bridges(app.handle().clone(), state_tasks);
 
             log::log(Level::Info, "app", "P1 外壳启动完成");
             Ok(())
@@ -254,22 +870,229 @@ pub fn run() -> tauri::Result<()> {
             account_switch,
             account_current,
             account_add_prepare,
+            hub_snapshot,
+            hub_skill_deploy,
+            hub_skill_remove,
+            hub_skill_import,
+            hub_mcp_import,
+            hub_mcp_remove,
+            session_scan,
+            session_page,
+            session_facets,
+            session_preview,
+            session_delete,
+            session_backup,
+            session_backups,
+            session_trash,
+            session_trash_restore,
+            session_trash_purge,
+            checkin_status,
+            checkin_credits,
+            checkin_detail,
+            checkin_run,
+            checkin_batch,
+            daily_state,
+            daily_run_now,
+            zcode_claim_plans,
+            zcode_claim_run,
             log_tail,
-            log_level
+            log_query,
+            log_export,
+            log_level,
+            task_clear_finished,
+            maintenance_space,
+            maintenance_trash,
+            maintenance_purge_trash,
+            maintenance_open_data,
+            migrate_verify,
+            migrate_archive,
+            autostart_get,
+            autostart_set
         ])
         .run(tauri::generate_context!())
 }
 
-fn init_state(instance: Option<process::SingleInstance>) -> std::result::Result<AppState, Box<dyn std::error::Error>> {
+fn init_state(
+    instance: Option<process::SingleInstance>,
+) -> std::result::Result<AppState, Box<dyn std::error::Error>> {
     log::init(Level::Info)?;
     let db = Arc::new(Db::open()?);
     let tasks = TaskStore::new();
-    let resources = ResourceRegistry::new();
-    let env = Arc::new(TaskEnv::new(tasks.clone(), resources));
 
-    log::log(Level::Info, "app", format!("数据目录 {}", crate::app::paths::data_dir().display()));
+    log::log(
+        Level::Info,
+        "app",
+        format!("数据目录 {}", crate::app::paths::data_dir().display()),
+    );
 
-    Ok(AppState { db, tasks, env, _instance: instance })
+    // 跨天清理放在后台：签到记录留 3 天、余额快照留 60 天，不阻塞启动
+    let cleanup_db = db.clone();
+    tauri::async_runtime::spawn(async move {
+        match tokio::task::spawn_blocking(move || {
+            crate::app::checkin::SqliteCheckin::new(&cleanup_db)
+                .cleanup(&crate::app::clock::SystemClock)
+        })
+        .await
+        {
+            Ok(Ok(_)) => {}
+            // store.rs 的约定是「失败只 warn，不影响主流程」——但得真的 warn
+            Ok(Err(e)) => log::log(Level::Warn, "checkin", format!("跨天清理失败：{}", e.message)),
+            Err(e) => log::log(Level::Warn, "checkin", format!("跨天清理失败：{e}")),
+        }
+    });
+
+    let checkin = Arc::new(crate::app::checkin::Service::new(
+        db.clone(),
+        Arc::new(crate::app::net::RealHttp::new()),
+        Arc::new(crate::app::clock::SystemClock),
+    ));
+
+    let sessions = Arc::new(crate::app::sessions::Service::new(
+        db.clone(),
+        crate::app::clients::Roots::system(),
+    ));
+
+    Ok(AppState {
+        db,
+        tasks,
+        checkin,
+        sessions,
+        hub: Arc::new(crate::app::hub::Hub::system()),
+        _instance: instance,
+    })
+}
+
+/// 每日轮询：启动后跑一轮，之后每 6 小时一轮。
+///
+/// **定时器必须在 Rust 侧**：前端 `setInterval` 在窗口隐藏/被挂起时就停了，
+/// 而后台常驻正是这个工具的主场景。
+fn spawn_daily_round(service: Arc<crate::app::checkin::Service>, app: tauri::AppHandle) {
+    use tauri::Emitter;
+
+    tauri::async_runtime::spawn(async move {
+        // 等首屏稳定再跑，别和账号列表抢 SQLite 的读连接
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        loop {
+            // 定时轮询没有取消方：令牌永远不被触发，只为对齐 run_round 的签名
+            let cancel = Arc::new(crate::app::task::CancelToken::new());
+            let round = service.run_round(&cancel).await;
+            log::log(
+                if round.failed > 0 {
+                    Level::Warn
+                } else {
+                    Level::Info
+                },
+                "checkin",
+                format!("每日轮询：{}", round.message),
+            );
+            // 界面收到就更新底部那一行；收不到也不影响结算
+            let _ = app.emit("checkin:round", &round);
+            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+        }
+    });
+}
+
+/// ZCode 活动自动领取（v1 行为，开关 kv `zcode_auto_claim` **默认关**）：
+/// 每 15 分钟探测一轮，找到可领的就领第一个——领取会开浏览器过验证码，
+/// 所以必须是用户主动打开的开关。
+fn spawn_zcode_auto_claim(
+    db: Arc<Db>,
+    service: Arc<crate::app::checkin::Service>,
+    app: tauri::AppHandle,
+) {
+    use tauri::Emitter;
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+            let enabled = crate::app::runtime::blocking({
+                let db = db.clone();
+                move || {
+                    db.kv_get("zcode_auto_claim")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| serde_json::from_str::<bool>(&v).ok())
+                        .unwrap_or(false)
+                }
+            })
+            .await;
+            // panic / 读库失败都按「开关关闭」处理——这个开关本来就是缺省关
+            if !enabled.unwrap_or(false) {
+                continue;
+            }
+            if let Some(line) = service.zcode_auto_claim_round().await {
+                log::log(Level::Info, "checkin", format!("ZCode 自动领取：{line}"));
+                let _ = app.emit("zcode:claim", &line);
+            }
+        }
+    });
+}
+
+/// 任务与日志的事件桥（§6.3）：TaskStore 的广播 → `task:state` / `task:progress`，
+/// log 的实时行 → `log:line`。进度单独成一个事件，界面的进度条只订阅它，
+/// 状态变化不会把进度条重画一遍。
+fn spawn_event_bridges(app: tauri::AppHandle, tasks: Arc<TaskStore>) {
+    use std::collections::HashMap;
+    use tauri::Emitter;
+
+    let log_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut rx = tasks.subscribe();
+        let mut last: HashMap<u64, (TaskState, Option<f32>)> = HashMap::new();
+        loop {
+            let Ok(view) = rx.recv().await else { break };
+            let prev = last.insert(view.id, (view.state, view.progress));
+            let state_changed = prev.map(|(s, _)| s != view.state).unwrap_or(true);
+            if state_changed {
+                let _ = app.emit("task:state", &view);
+            } else if prev.map(|(_, p)| p != view.progress).unwrap_or(false) {
+                let _ = app.emit("task:progress", &view);
+            }
+        }
+    });
+
+    tauri::async_runtime::spawn(async move {
+        let mut rx = log::subscribe_live();
+        loop {
+            match rx.recv().await {
+                Ok(line) => {
+                    let _ = log_app.emit("log:line", &line);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+/// 启动自动同步技能（STAGES §7.1）。开关在 kv `hub.auto_sync`，缺省视为开（对齐 v1）。
+/// 挪到启动 20 秒后执行，别跟账号列表抢首屏；MCP 不参与（见 `skills::sync_all` 的注释）。
+fn spawn_hub_auto_sync(db: Arc<Db>, hub: Arc<crate::app::hub::Hub>) {
+    tauri::async_runtime::spawn(async move {
+        let enabled = crate::app::runtime::blocking(move || {
+            db.kv_get("hub.auto_sync")
+                .ok()
+                .flatten()
+                .and_then(|v| serde_json::from_str::<bool>(&v).ok())
+                .unwrap_or(true)
+        })
+        .await;
+        // 读开关失败按缺省开处理（对齐 v1）；panic 导致的 Err 也走这一支
+        if !enabled.unwrap_or(true) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        let report = crate::app::runtime::blocking(move || crate::app::hub::skills::sync_all(&hub))
+            .await
+            .unwrap_or_default();
+        if report.done() > 0 {
+            log::log(
+                Level::Info,
+                "hub",
+                format!("启动自动同步：{}", report.summary()),
+            );
+        }
+    });
 }
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
@@ -292,7 +1115,12 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
                 let app = tray.app_handle();
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
@@ -310,7 +1138,9 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
 /// 关窗口 = 收到托盘，不退出进程（工作台要常驻）
 fn hook_window(app: &mut tauri::App) {
-    let Some(window) = app.get_webview_window("main") else { return };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
     let handle = window.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
@@ -320,8 +1150,8 @@ fn hook_window(app: &mut tauri::App) {
     });
 }
 
-/// 第二个实例启动时，尽力把已有窗口叫到前台。
+/// 第二个实例启动时，把已有窗口叫到前台。
 /// 不做 IPC 握手（要多一套进程间通道），只做「窗口还在就激活」的尽力而为。
 fn focus_existing() {
-    // 已有实例在跑：什么都不做，让操作系统保持它原本的层级
+    process::focus_window("AI Manager");
 }

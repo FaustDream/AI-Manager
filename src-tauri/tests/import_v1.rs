@@ -89,7 +89,12 @@ fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_file())
-        .map(|e| (e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).unwrap()))
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().to_string(),
+                std::fs::read(e.path()).unwrap(),
+            )
+        })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
@@ -114,7 +119,10 @@ fn imports_full_v1_dataset() {
     assert_eq!(report.credit_snapshots, 2);
     assert_eq!(report.checkins, 1);
     assert_eq!(report.daily_marks, 2);
-    assert_eq!(report.orphan_ledger, 2, "qoder 在 daily 与 credits 各一条记录暂无账号行");
+    assert_eq!(
+        report.orphan_ledger, 2,
+        "qoder 在 daily 与 credits 各一条记录暂无账号行"
+    );
 
     // v1 目录必须字节级不变
     assert_eq!(snapshot(&v1), before, "导入器绝不能修改 v1 的 data/");
@@ -144,7 +152,10 @@ fn keeps_intl_suffix_and_stores_credentials_encrypted() {
     // meta 只存键名，值（refresh_token / email）绝不落明文列
     let keys: Vec<String> = serde_json::from_str(&meta_keys).unwrap();
     assert!(keys.contains(&"refresh_token".to_string()));
-    assert!(!meta_keys.contains("rt-should-not-leak"), "meta 明文值不得入库");
+    assert!(
+        !meta_keys.contains("rt-should-not-leak"),
+        "meta 明文值不得入库"
+    );
     assert!(!meta_keys.contains("a@b.c"));
 
     // 凭据在密文里，解密后能拿回原文
@@ -161,7 +172,10 @@ fn keeps_intl_suffix_and_stores_credentials_encrypted() {
             Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>().join("|"))
         })
         .unwrap();
-    assert!(!dump.contains("should-not-leak"), "明文凭据不得出现在可查询列");
+    assert!(
+        !dump.contains("should-not-leak"),
+        "明文凭据不得出现在可查询列"
+    );
 }
 
 #[test]
@@ -174,7 +188,11 @@ fn second_import_is_rejected() {
 
     import_v1(&db, &v1).unwrap();
     let err = import_v1(&db, &v1).expect_err("重复导入必须被拒");
-    assert!(err.message.contains("已导入"), "错误信息应说清原因：{}", err.message);
+    assert!(
+        err.message.contains("已导入"),
+        "错误信息应说清原因：{}",
+        err.message
+    );
 }
 
 #[test]
@@ -188,8 +206,14 @@ fn missing_files_are_skipped_not_fatal() {
     let db = Db::open_at(&tmp.path().join("app.db")).unwrap();
     let report = import_v1(&db, &v1).expect("缺文件不应中断导入");
     assert_eq!(report.accounts, 0);
-    assert!(report.warnings.iter().any(|w| w.contains("accounts.dat")), "缺失要有明确提示");
-    assert_eq!(db.kv_get("config.theme").unwrap().as_deref(), Some("\"light\""));
+    assert!(
+        report.warnings.iter().any(|w| w.contains("accounts.dat")),
+        "缺失要有明确提示"
+    );
+    assert_eq!(
+        db.kv_get("config.theme").unwrap().as_deref(),
+        Some("\"light\"")
+    );
 }
 
 /// 真实数据集：只在开发机有意义（依赖本机 DPAPI 与 v1 目录）。
@@ -206,7 +230,10 @@ fn imports_real_v1_dataset() {
     let db = Db::open_at(&tmp.path().join("app.db")).unwrap();
     let report = import_v1(&db, &data).expect("真实数据导入应成功");
     println!("{}", report.summary());
-    println!("孤立台账 {}/ 警告 {:?}", report.orphan_ledger, report.warnings);
+    println!(
+        "孤立台账 {}/ 警告 {:?}",
+        report.orphan_ledger, report.warnings
+    );
 
     assert!(report.accounts >= 7, "账号库实测 7 个");
     assert!(report.sessions >= 100, "会话索引实测 103 条");

@@ -1,21 +1,22 @@
-//! 任务调度层。三层正交隔离（详见 `docs/TASK-CONCURRENCY.md`）：
-//!   ① 能力配额：A 占满自身份额，抢不走 B 的线程
-//!   ② 资源租约：A 只锁它真正写的资源
-//!   ③ 取消令牌：长任务可停，写路径只压到事务边界
+//! 任务调度层：任务表（TaskStore）+ 取消令牌（CancelToken）+ 统一托管入口。
 //!
-//! **硬规则：等待不占线程。** 等配额、等锁全发生在 async 侧；
-//! `spawn_blocking` 只执行「已拿到全部资源」的就绪工作。
-
-pub mod resources;
+//! 长任务一律走 `TaskStore::spawn_managed`，不要手写
+//! `tauri::async_runtime::spawn` + 手动 `set(Running)`——那会让业务 panic
+//! 之后任务永远卡在 Running，前端再也收不到结果。
+//! 互斥与并发上限由各能力自己协调（阻塞池上限见 `runtime.rs`），
+//! 本层只负责「看得见、能取消、崩溃有交代」。
 
 use serde::Serialize;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::watch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 pub enum CapabilityId {
     AccountCenter,
     Sessions,
@@ -24,25 +25,8 @@ pub enum CapabilityId {
     Settings,
 }
 
-pub struct Capability {
-    pub id: CapabilityId,
-    pub title: &'static str,
-    pub quota: usize,
-}
-
-/// 加能力 = 这张表加一行。调度核心不认识任何业务含义。
-pub static CAPABILITIES: &[Capability] = &[
-    Capability { id: CapabilityId::AccountCenter, title: "账号中心", quota: 3 },
-    Capability { id: CapabilityId::Sessions, title: "会话管理", quota: 2 },
-    Capability { id: CapabilityId::Hub, title: "技能与 MCP", quota: 1 },
-    Capability { id: CapabilityId::Maintenance, title: "备份与清理", quota: 1 },
-    Capability { id: CapabilityId::Settings, title: "设置与迁移", quota: 1 },
-];
-
-pub fn quota_of(id: CapabilityId) -> usize {
-    CAPABILITIES.iter().find(|c| c.id == id).map(|c| c.quota).unwrap_or(1)
-}
-
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 /// 七态。比 v1 多了 cancelling——用户点了取消必须看见反馈。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,47 +41,27 @@ pub enum TaskState {
     Cancelled,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskView {
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub id: u64,
     pub capability: CapabilityId,
     pub name: String,
     pub state: TaskState,
     pub progress: Option<f32>,
     pub message: String,
+    /// spawn → 开始执行的排队耗时；Queued 时为 None，转 Running 时填一次。
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub queue_ms: Option<u64>,
     /// 单调递增，前端据此丢弃过期帧
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub rev: u64,
-}
-
-/// 能力配额。每个能力一把信号量，互不相干。
-pub struct Quotas {
-    sem: HashMap<CapabilityId, Arc<Semaphore>>,
-}
-
-impl Quotas {
-    pub fn new() -> Self {
-        let sem = CAPABILITIES
-            .iter()
-            .map(|c| (c.id, Arc::new(Semaphore::new(c.quota))))
-            .collect();
-        Self { sem }
-    }
-
-    /// 等待发生在 async 侧，不占线程。
-    pub async fn acquire(&self, id: CapabilityId) -> tokio::sync::SemaphorePermit<'_> {
-        let sem = self.sem.get(&id).expect("未知能力");
-        sem.acquire().await.expect("信号量被关闭")
-    }
-
-    pub fn available(&self, id: CapabilityId) -> usize {
-        self.sem.get(&id).map(|s| s.available_permits()).unwrap_or(0)
-    }
-}
-
-impl Default for Quotas {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// 排队开始时刻，只在进程内算 queue_ms 用，不给前端
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub queued_at: Option<std::time::Instant>,
 }
 
 /// 取消令牌。排队中立即生效；运行中的同步代码需在安全点调 `checkpoint()`。
@@ -212,7 +176,9 @@ impl TaskStore {
             state: TaskState::Queued,
             progress: None,
             message: String::new(),
+            queue_ms: None,
             rev: 1,
+            queued_at: Some(std::time::Instant::now()),
         };
         self.inner.write().unwrap().insert(id, view.clone());
         let _ = self.tx.send(view);
@@ -223,6 +189,12 @@ impl TaskStore {
         let mut guard = self.inner.write().unwrap();
         if let Some(view) = guard.get_mut(&id) {
             f(view);
+            // queue_ms 打点：第一次转 Running 时结算排队耗时（TASK-CONCURRENCY §9）
+            if view.state == TaskState::Running && view.queue_ms.is_none() {
+                if let Some(at) = view.queued_at {
+                    view.queue_ms = Some(at.elapsed().as_millis() as u64);
+                }
+            }
             view.rev += 1;
             let snapshot = view.clone();
             drop(guard);
@@ -236,7 +208,7 @@ impl TaskStore {
 
     pub fn list(&self) -> Vec<TaskView> {
         let mut rows: Vec<_> = self.inner.read().unwrap().values().cloned().collect();
-        rows.sort_by(|a, b| b.id.cmp(&a.id));
+        rows.sort_by_key(|v| std::cmp::Reverse(v.id));
         rows
     }
 
@@ -245,7 +217,10 @@ impl TaskStore {
         let mut guard = self.inner.write().unwrap();
         let before = guard.len();
         guard.retain(|_, v| {
-            matches!(v.state, TaskState::Queued | TaskState::Running | TaskState::Cancelling)
+            matches!(
+                v.state,
+                TaskState::Queued | TaskState::Running | TaskState::Cancelling
+            )
         });
         let removed: Vec<u64> = {
             let alive: std::collections::HashSet<u64> = guard.keys().copied().collect();
@@ -262,6 +237,53 @@ impl TaskStore {
             cancels.remove(&id);
         }
         before - guard.len()
+    }
+
+    /// 长任务的统一入口：登记取消令牌 → Running → 执行 → 结束归类。
+    ///
+    /// work 返回 `Err(cancelled)` 记 Cancelled、`Err(conflict)` 记 Partial、
+    /// 其余 Err 记 Failed、Ok 记 Done（最终文案用 `handle.message` 自己报）；
+    /// work panic 由 JoinError 兜底记 Failed——**任务不会卡在 Running**。
+    /// 取消只在 work 主动检查 `handle.cancel` 的安全点生效。
+    pub fn spawn_managed<F, Fut>(
+        self: &Arc<Self>,
+        capability: CapabilityId,
+        name: impl Into<String>,
+        work: F,
+    ) -> u64
+    where
+        F: FnOnce(TaskHandle) -> Fut + Send + 'static,
+        Fut: Future<Output = crate::app::error::Result<()>> + Send + 'static,
+    {
+        let id = self.spawn(capability, name);
+        let cancel = Arc::new(CancelToken::new());
+        self.register_cancel(id, cancel.clone());
+        let store = Arc::clone(self);
+        tokio::task::spawn(async move {
+            let handle = TaskHandle {
+                id,
+                cancel: cancel.clone(),
+                store: store.clone(),
+            };
+            store.set(id, |v| v.state = TaskState::Running);
+            // work 单独 spawn：它 panic 时 JoinError 在这里被接住归类
+            let outcome = tokio::task::spawn(work(handle)).await;
+            // 失败时把原因带上：Err(e) 的文案、panic 的 JoinError 描述
+            let message = match &outcome {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e.message.clone()),
+                Err(e) => Some(format!("任务崩溃：{e}")),
+            };
+            let state = settle(outcome);
+            store.set(id, |v| {
+                v.state = state;
+                v.progress = None;
+                if let Some(message) = message {
+                    v.message = message;
+                }
+            });
+        });
+        id
     }
 }
 
@@ -293,80 +315,8 @@ impl TaskHandle {
     }
 }
 
-/// 任务执行环境：配额 / 租约 / 取消三层的唯一入口。
-///
-/// 顺序是刻意的：**先排队拿配额，再等资源，最后才 spawn_blocking**。
-/// 等待全部在 async 侧，阻塞池只跑「资源已就绪」的工作——这是死锁免疫的地基。
-pub struct TaskEnv {
-    pub store: Arc<TaskStore>,
-    pub quotas: Quotas,
-    pub resources: Arc<resources::ResourceRegistry>,
-}
-
-impl TaskEnv {
-    pub fn new(store: Arc<TaskStore>, resources: Arc<resources::ResourceRegistry>) -> Self {
-        Self { store, quotas: Quotas::new(), resources }
-    }
-
-    pub async fn run<F>(
-        &self,
-        capability: CapabilityId,
-        name: impl Into<String>,
-        reqs: &[(resources::ResourceKey, resources::Access)],
-        cancel: Arc<CancelToken>,
-        work: F,
-    ) -> TaskState
-    where
-        F: FnOnce(TaskHandle) -> crate::app::error::Result<()> + Send + 'static,
-    {
-        let id = self.store.spawn(capability, name);
-        self.store.register_cancel(id, cancel.clone());
-        let handle = TaskHandle { id, cancel: cancel.clone(), store: self.store.clone() };
-
-        // ① 配额：能力之间互不侵占
-        let _permit = self.quotas.acquire(capability).await;
-
-        // 排队期间被取消 → 直接结束，连资源都不申请
-        if cancel.is_cancelled() {
-            self.store.set(id, |v| v.state = TaskState::Cancelled);
-            return TaskState::Cancelled;
-        }
-        self.store.set(id, |v| v.state = TaskState::Running);
-
-        // ② 资源：超时是强制项，否则 bug 会表现为「界面永远转圈」
-        let lease = match self.resources.lease_with_timeout(reqs, std::time::Duration::from_secs(60)).await {
-            Ok(lease) => lease,
-            Err(e) => {
-                let state = if e.is_cancelled() { TaskState::Cancelled } else { TaskState::Failed };
-                self.store.set(id, |v| {
-                    v.state = state;
-                    v.message = e.message.clone();
-                });
-                return state;
-            }
-        };
-
-        // ③ 执行：阻塞工作进 blocking 池，租约随任务结束释放
-        let outcome = tokio::task::spawn_blocking(move || {
-            let result = work(handle);
-            drop(lease);
-            result
-        })
-        .await;
-
-        let state = settle(outcome);
-        self.store.set(id, |v| {
-            v.state = state;
-            v.progress = None;
-        });
-        state
-    }
-}
-
 /// 把 tokio 任务的结果归到七态之一。**取消不能被记成失败。**
-pub fn settle(
-    outcome: Result<crate::app::error::Result<()>, tokio::task::JoinError>,
-) -> TaskState {
+pub fn settle(outcome: Result<crate::app::error::Result<()>, tokio::task::JoinError>) -> TaskState {
     use crate::app::error::ErrorKind;
     match outcome {
         Ok(Ok(())) => TaskState::Done,
@@ -381,21 +331,6 @@ pub fn settle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::runtime::MAX_BLOCKING_THREADS;
-
-    #[test]
-    fn quota_budget_matches_blocking_pool() {
-        let total: usize = CAPABILITIES.iter().map(|c| c.quota).sum();
-        assert_eq!(total, 8, "配额合计应为 8（3+2+1+1+1）");
-        assert!(MAX_BLOCKING_THREADS >= total * 2, "阻塞线程需 ≥ 配额合计 × 2");
-    }
-
-    #[test]
-    fn quotas_are_independent_per_capability() {
-        let quotas = Quotas::new();
-        assert_eq!(quotas.available(CapabilityId::AccountCenter), 3);
-        assert_eq!(quotas.available(CapabilityId::Hub), 1);
-    }
 
     #[test]
     fn cancel_token_reports_state() {
@@ -429,21 +364,49 @@ mod tests {
         assert_eq!(settle(Ok(Ok(()))), TaskState::Done);
     }
 
-    /// 用户问题的直接断言：A 能力占满自己的配额，不能影响 B 能力。
-    #[tokio::test]
-    async fn exhausted_capability_does_not_block_another() {
-        use std::time::Duration;
-        let quotas = Quotas::new();
-
-        let mut held = Vec::new();
-        for _ in 0..3 {
-            held.push(quotas.acquire(CapabilityId::AccountCenter).await);
+    /// panic 的任务必须被记成 Failed，不能永远卡在 Running。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn managed_task_survives_panic() {
+        let store = TaskStore::new();
+        let id = store.spawn_managed(CapabilityId::Sessions, "会崩的任务", |_h| async {
+            panic!("业务崩了");
+            #[allow(unreachable_code)]
+            Ok(())
+        });
+        for _ in 0..200 {
+            if store.get(id).map(|v| v.state) == Some(TaskState::Failed) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert_eq!(quotas.available(CapabilityId::AccountCenter), 0, "3 个槽位应被占满");
-        assert_eq!(quotas.available(CapabilityId::Sessions), 2, "会话的配额不受牵连");
+        let view = store.get(id).unwrap();
+        assert_eq!(view.state, TaskState::Failed);
+        assert!(view.message.contains("任务崩溃"), "失败原因要写进 message");
+    }
 
-        let got = tokio::time::timeout(Duration::from_millis(50), quotas.acquire(CapabilityId::Sessions)).await;
-        assert!(got.is_ok(), "账号中心排队时，会话任务必须立刻拿到配额");
+    /// work 主动响应取消令牌时，最终态必须是 Cancelled 而不是 Failed。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn managed_task_cancel_maps_to_cancelled() {
+        let store = TaskStore::new();
+        let id = store.spawn_managed(CapabilityId::Sessions, "可取消任务", |h| async move {
+            h.cancel.cancelled().await;
+            Err(crate::app::error::AppError::new("cancelled", "用户取消"))
+        });
+        // 等它转 Running 再取消：太早点击会被「取消只在安全点生效」语义吞掉
+        for _ in 0..200 {
+            if store.get(id).map(|v| v.state) == Some(TaskState::Running) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(store.cancel_task(id));
+        for _ in 0..200 {
+            if store.get(id).map(|v| v.state) == Some(TaskState::Cancelled) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(store.get(id).unwrap().state, TaskState::Cancelled);
     }
 
     /// 取消必须按任务隔离：停掉 A 不能把 B 一起停掉。
@@ -455,33 +418,5 @@ mod tests {
         assert!(a.is_cancelled());
         assert!(!b.is_cancelled(), "取消 A 不得影响 B");
         assert!(b.checkpoint().is_ok());
-    }
-
-    /// 排队中被取消：连 work 都不该执行。
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancelled_while_queued_skips_work() {
-        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-        let store = TaskStore::new();
-        let env = TaskEnv::new(store, resources::ResourceRegistry::new());
-        let ran = Arc::new(AtomicBool::new(false));
-        let flag = ran.clone();
-        let cancel = Arc::new(CancelToken::new());
-        cancel.cancel();
-
-        let state = env
-            .run(
-                CapabilityId::Sessions,
-                "扫会话",
-                &[],
-                cancel,
-                move |_h| {
-                    flag.store(true, AtomicOrdering::SeqCst);
-                    Ok(())
-                },
-            )
-            .await;
-
-        assert_eq!(state, TaskState::Cancelled);
-        assert!(!ran.load(AtomicOrdering::SeqCst), "已取消的排队任务不得执行 work");
     }
 }

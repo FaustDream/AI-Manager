@@ -1,27 +1,41 @@
 //! 测试夹具。每个用例独立临时目录与独立库，绝不碰真实 data/。
 //!
-//! `Todo*` 一族是各阶段要替换掉的空实现：方法体全是 todo!()，
-//! 因此本阶段 22 个契约测试**必然全红**——这是 P0 的预期状态。
+//! `Todo*` 一族是各阶段要替换掉的空实现：方法体全是 todo!()。
+//!
+//! **本文件被每个测试二进制各自 `mod support;` 引一次**，所以「某个二进制里没用到」
+//! 是常态而不是死代码——dead_code 在这里只会有噪音。
 
-// pub use：让 `use support::*` 带上 Clock trait，否则测试里调不到 clock.now()
+#![allow(dead_code)]
+
+// `pub use`：`use support::*` 就能拿到 FakeClock 与 Clock trait。
+// 只有真去调 `clock.now()` 的二进制用得到 Clock，其余会报 unused_imports。
+#[allow(unused_imports)]
 pub use ai_manager::app::clock::{Clock, FakeClock};
-use ai_manager::app::error::{AppError, Result};
+use ai_manager::app::error::AppError;
 use ai_manager::app::paths;
-use ai_manager::contracts::*;
 use ai_manager::types::*;
 use chrono::{DateTime, Local};
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
-/// 独立临时目录，Drop 即删。
+/// 进程级串行锁：全局 data_dir override 只有一份，两个并行测试同时用
+/// 各自的临时目录必然互相污染（contract_10 / maintenance 都踩过）。
+/// TestPaths 持有它到 Drop——同一测试二进制内，任一时刻只有一个测试在用全局目录。
+static TEST_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+/// 独立临时目录，Drop 即删。持有串行锁；字段顺序是刻意的——
+/// 逆序 Drop 时先删目录再放锁，锁外的下一个测试看到的是自己的新目录。
 pub struct TestPaths {
+    _lock: MutexGuard<'static, ()>,
     dir: tempfile::TempDir,
 }
 
 impl TestPaths {
     pub fn new() -> Self {
+        let lock = TEST_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::TempDir::new().expect("创建临时目录失败");
         paths::set_data_dir_for_test(dir.path());
-        Self { dir }
+        Self { _lock: lock, dir }
     }
 
     pub fn join(&self, name: &str) -> PathBuf {
@@ -63,50 +77,6 @@ pub fn sample_account(iid: &str, _live: bool) -> Account {
         meta_keys: vec!["region".into()],
     }
 }
-
-macro_rules! todo_impl {
-    ($trait:ident for $ty:ident { $(fn $m:ident($($arg:ident: $t:ty),*) $(-> $ret:ty)?;)* }) => {
-        pub struct $ty;
-        impl $trait for $ty {
-            $(fn $m(&self, $(_: $t),*) $(-> $ret)? { todo!("P1~P6 实现") })*
-        }
-    };
-}
-
-todo_impl!(CheckinStore for TodoCheckin {
-    fn resolve_checked(iid: &str, remote: Option<bool>, clock: &dyn Clock) -> bool;
-    fn marked_today(iid: &str, clock: &dyn Clock) -> bool;
-    fn mark_today(iid: &str, clock: &dyn Clock) -> Result<()>;
-    fn next_at(iid: &str) -> Option<DateTime<Local>>;
-    fn note_next_at(iid: &str, at: DateTime<Local>) -> Result<()>;
-    fn next_checkin_at(cooldown_hours: u32, last: DateTime<Local>, clock: &dyn Clock) -> Option<DateTime<Local>>;
-    fn note_balance(iid: &str, balance: f64, clock: &dyn Clock) -> Result<bool>;
-    fn balance_on(iid: &str, day: &str) -> Option<f64>;
-});
-
-todo_impl!(Ledger for TodoLedger {
-    fn add_if_needed(live_credit: bool, iid: &str, granted: f64, clock: &dyn Clock) -> Result<bool>;
-    fn count(iid: &str) -> usize;
-});
-
-todo_impl!(SessionStore for TodoSessions {
-    fn page(cursor: Option<&str>, limit: usize, state: Option<&str>) -> Result<Page<SessionRow>>;
-    fn restore_account(edition: &str, uid: &str) -> Result<RestoreReport>;
-});
-
-todo_impl!(HubStore for TodoHub {
-    fn target_dir(key: TargetKey) -> PathBuf;
-    fn to_platform(entry: &McpEntry, key: TargetKey) -> serde_json::Value;
-    fn from_platform(raw: &serde_json::Value, key: TargetKey) -> Result<McpEntry>;
-    fn backup_before_write(key: TargetKey) -> Result<PathBuf>;
-    fn check_conflict(name: &str, key: TargetKey) -> Result<()>;
-});
-
-todo_impl!(PlatformApi for TodoPlatform {
-    fn acquire_single_instance(name: &str) -> Result<bool>;
-    fn spawn_hidden(exe: &str, args: &[&str]) -> Result<()>;
-    fn client_running(key: PlatformKey) -> bool;
-});
 
 /// 契约 18 的辅助断言：UTC 输入必须按本地时区渲染。
 pub fn render_local(dt: DateTime<Local>) -> String {

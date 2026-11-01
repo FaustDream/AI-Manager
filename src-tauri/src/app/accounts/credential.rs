@@ -12,7 +12,7 @@ use crate::app::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Credential {
     #[serde(default)]
     pub token: String,
@@ -25,6 +25,22 @@ pub struct Credential {
     /// region / device_id / credentials / config / ticket …
     #[serde(default)]
     pub meta: Map<String, Value>,
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 手写 Debug：token / meta 里是登录态与账号信息，
+        // 派生实现会让任何一次 {:?}（unwrap_err 的 panic 消息也算）带出明文
+        f.debug_struct("Credential")
+            .field("token", &format!("[redacted:{}]", self.token.len()))
+            .field(
+                "refresh_token",
+                &format!("[redacted:{}]", self.refresh_token.len()),
+            )
+            .field("expires_at", &self.expires_at)
+            .field("meta_keys", &self.meta.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl Credential {
@@ -95,7 +111,10 @@ mod tests {
         let cred = Credential::parse(V1_ITEM.as_bytes()).unwrap();
         assert_eq!(cred.token, "tk_live");
         assert_eq!(cred.refresh(), "rt_live");
-        assert_eq!(cred.meta_str("uid"), Some("cceec57c-ac71-48e0-996c-6df5cc602cf3"));
+        assert_eq!(
+            cred.meta_str("uid"),
+            Some("cceec57c-ac71-48e0-996c-6df5cc602cf3")
+        );
         assert!(cred.expires_ms().is_some(), "ISO 到期时间必须能解析成 ms");
     }
 
@@ -130,8 +149,14 @@ mod tests {
     fn iso_roundtrip_is_utc_seconds() {
         let iso = iso_from_ms(1_700_000_000_000);
         assert_eq!(iso, "2023-11-14T22:13:20Z");
-        assert_eq!(Credential { expires_at: iso, ..Default::default() }.expires_ms(),
-                   Some(1_700_000_000_000));
+        assert_eq!(
+            Credential {
+                expires_at: iso,
+                ..Default::default()
+            }
+            .expires_ms(),
+            Some(1_700_000_000_000)
+        );
     }
 
     #[test]

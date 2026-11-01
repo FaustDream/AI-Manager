@@ -14,8 +14,17 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    // tmp 名带原子递增序号：同进程两个线程写同一路径不能互相踩
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp-{}-{seq}", std::process::id()));
     std::fs::write(&tmp, bytes)?;
+    // rename 前把数据刷盘：MOVEFILE_WRITE_THROUGH 只保证改名元数据落盘，
+    // 不保证 tmp 的内容已经在磁盘上——掉电时会以新文件名留下半截内容
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&tmp)
+        .and_then(|file| file.sync_all());
     if path.exists() {
         let _ = clear_readonly(path);
     }
@@ -38,7 +47,10 @@ fn replace_file(tmp: &Path, dst: &Path) -> std::io::Result<()> {
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
     fn wide(path: &Path) -> Vec<u16> {
-        path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
     let from = wide(tmp);
     let to = wide(dst);
@@ -60,7 +72,10 @@ fn replace_file(tmp: &Path, dst: &Path) -> std::io::Result<()> {
 /// 备份到指定目录，保留原文件名 + 时间戳；返回备份路径。
 pub fn backup_to(src: &Path, dir: &Path, tag: &str) -> Result<PathBuf> {
     if !src.exists() {
-        return Err(AppError::new("backup_failed", format!("待备份文件不存在：{}", src.display())));
+        return Err(AppError::new(
+            "backup_failed",
+            format!("待备份文件不存在：{}", src.display()),
+        ));
     }
     std::fs::create_dir_all(dir)
         .map_err(|e| AppError::new("backup_failed", format!("创建备份目录失败：{e}")))?;
@@ -167,7 +182,11 @@ mod tests {
         copy_dir_merge(&src, &dst).unwrap();
 
         assert_eq!(std::fs::read(dst.join("sub/new.txt")).unwrap(), b"new");
-        assert_eq!(std::fs::read(dst.join("sub/keep.txt")).unwrap(), b"keep", "不能删掉目标独有文件");
+        assert_eq!(
+            std::fs::read(dst.join("sub/keep.txt")).unwrap(),
+            b"keep",
+            "不能删掉目标独有文件"
+        );
     }
 
     #[test]
@@ -206,7 +225,11 @@ mod tests {
         std::fs::write(&src, b"ticket").unwrap();
         let backup = backup_to(&src, &dir.path().join("backups"), "qoder").unwrap();
         assert!(backup.to_string_lossy().contains("backups"));
-        assert!(backup.file_name().unwrap().to_string_lossy().starts_with("qoder-"));
+        assert!(backup
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("qoder-"));
         assert_eq!(std::fs::read(&backup).unwrap(), b"ticket");
     }
 }

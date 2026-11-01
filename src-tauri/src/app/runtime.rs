@@ -28,12 +28,17 @@ pub fn runtime() -> &'static tokio::runtime::Runtime {
 
 /// 同步阻塞调用（rusqlite、文件写入、DPAPI）必须走这里，
 /// 直接调用会阻塞 WebView 的命令通道，表现为界面卡死而非报错。
-pub async fn blocking<F, T>(f: F) -> T
+/// 闭包 panic 返回 Err 而不是把 panic 传染给命令——
+/// 前端能收到一条错误提示，而不是一个永远不 resolve 的 promise。
+pub async fn blocking<F, T>(f: F) -> crate::app::error::Result<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    runtime().spawn_blocking(f).await.expect("阻塞任务 panic")
+    runtime()
+        .spawn_blocking(f)
+        .await
+        .map_err(|e| crate::app::error::AppError::new("io", format!("后台任务崩溃：{e}")))
 }
 
 #[cfg(test)]
@@ -44,9 +49,7 @@ mod tests {
     fn runtime_can_spawn_and_run_blocking() {
         let handle = runtime();
         // 在运行时内部取结果，避免嵌套 runtime 导致 panic
-        let value: i32 = handle.block_on(async {
-            blocking(|| 6 * 7).await
-        });
+        let value: i32 = handle.block_on(async { blocking(|| 6 * 7).await.unwrap() });
         assert_eq!(value, 42, "spawn_blocking 应能执行同步闭包并返回结果");
     }
 

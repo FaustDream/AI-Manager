@@ -9,6 +9,8 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlatformKey {
@@ -21,6 +23,8 @@ pub enum PlatformKey {
     ZCode,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     /// "{platform}:{account_id}"，账号库 / 台账 / 签到记录 / UI 行 key 共用
@@ -43,6 +47,8 @@ impl Account {
     }
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreditLot {
     pub amount: f64,
@@ -55,6 +61,8 @@ pub struct CreditLot {
     pub label: String,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusResult {
     pub checked_in: Option<bool>,
@@ -65,6 +73,8 @@ pub struct StatusResult {
     pub next_at: Option<DateTime<Local>>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreditSnapshot {
     pub summary: String,
@@ -74,44 +84,62 @@ pub struct CreditSnapshot {
     pub quota: Option<HashMap<String, f64>>,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionResult {
     pub ok: bool,
     pub message: String,
     pub granted: Option<f64>,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub validity_days: Option<i64>,
     /// 本轮早领过：不算失败，但也**不算今日已签**
     pub already: bool,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
     Visible,
     Deleted,
+    /// 归属账号不是当前登录的那个：客户端里还在，但当前账号的列表看不到
     OldAccount,
+    /// 只在服务端：本地没有正文，删不掉
     Cloud,
+    /// 客户端里被归档：不显示在默认列表，但数据还在
+    Archived,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRow {
     pub kind: String,
     pub source_key: String,
     pub source_label: String,
     pub account: String,
+    /// 界面显示用昵称（与账号库匹配）；uid 原文只留给行 key 与筛选
+    pub account_label: String,
     pub session_id: String,
     pub title: String,
     pub last_at: Option<DateTime<Local>>,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub msgs: Option<i64>,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub size: Option<i64>,
     pub state: SessionState,
     pub has_body: bool,
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 /// 游标分页结果。会话类必须用它；账号 / 技能数量天然有限，直接返回 Vec。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub total: usize,
 }

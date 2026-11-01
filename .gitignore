@@ -13,6 +13,19 @@ legacy/
 build/
 dist/
 
+# 2.0 的发布产物（exe / 免安装 zip / NSIS 安装包）由 CI 构建，不入库
+dist-v2/
+packaging/nsis/*.exe
+
+# v2 前端：依赖由 npm 安装（package-lock.json 入库，CI 用 npm ci）
+node_modules/
+
+# 本机 cargo 镜像配置（tuna 的 dl 在本机连不上，换 rsproxy；CI 走默认源）
+src-tauri/.cargo/
+
+# v1 数据归档：由「归档 v1 文件」生成，内含账号库密文与会话索引，属用户数据
+data-v1-archive/
+
 # Python
 __pycache__/
 *.py[cod]

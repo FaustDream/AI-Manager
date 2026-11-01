@@ -9,11 +9,15 @@ use crate::app::error::Result;
 use crate::app::providers::{self, ScannedAccount};
 use crate::app::timeutil::now_ms;
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct ScanReport {
     /// 扫到的账号总数（含已存在的）
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub scanned: usize,
     /// 新增的（库里原来没有）
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub added: usize,
     /// 每个平台的明细：平台标签 → 条数
     pub by_platform: std::collections::BTreeMap<String, usize>,
@@ -52,8 +56,15 @@ pub fn scan_all(db: &Db) -> Result<ScanReport> {
 }
 
 fn persist(db: &Db, scanned: ScannedAccount, user_platform: &str) -> Result<()> {
-    let AccountIdentity { ref iid, ref platform, .. } = scanned.identity;
-    debug_assert_eq!(platform, user_platform, "Provider 的 platform 必须与身份一致");
+    let AccountIdentity {
+        ref iid,
+        ref platform,
+        ..
+    } = scanned.identity;
+    debug_assert_eq!(
+        platform, user_platform,
+        "Provider 的 platform 必须与身份一致"
+    );
     repo::upsert_identity(db, &scanned.identity, now_ms())?;
     repo::set_secret(db, iid, &scanned.secret, scanned.identity.expires_at)?;
     // scanned 在这里释放：凭据明文不跨账号留存
@@ -67,7 +78,10 @@ mod tests {
 
     fn fake(iid: &str, secret: &str) -> ScannedAccount {
         let (platform, account_id) = iid.split_once(':').unwrap();
-        let cred = Credential { token: secret.into(), ..Default::default() };
+        let cred = Credential {
+            token: secret.into(),
+            ..Default::default()
+        };
         ScannedAccount::new(
             AccountIdentity {
                 iid: iid.into(),
@@ -121,7 +135,10 @@ mod tests {
         let report = scan_all(&db).unwrap();
         println!("扫描结果：{report:?}");
         for row in repo::list(&db).unwrap() {
-            println!("  {} · {} · 凭据 {}", row.platform_label, row.name, row.has_secret);
+            println!(
+                "  {} · {} · 凭据 {}",
+                row.platform_label, row.name, row.has_secret
+            );
         }
     }
 }

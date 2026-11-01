@@ -12,11 +12,15 @@
 
 use crate::app::accounts::credential::Credential;
 use crate::app::accounts::AccountIdentity;
-use crate::app::error::Result;
+use crate::app::error::{AppError, Result};
+use crate::app::net::Http;
+use crate::types::{ActionResult, CreditSnapshot, StatusResult};
+use async_trait::async_trait;
 
 pub mod qoder;
 pub mod trae;
 pub mod workbuddy;
+pub mod zclaim;
 pub mod zcode;
 
 pub use qoder::QoderProvider;
@@ -40,14 +44,18 @@ pub struct ScannedAccount {
 
 impl ScannedAccount {
     pub fn new(identity: AccountIdentity, credential: &Credential) -> Result<Self> {
-        Ok(Self { identity, secret: credential.to_bytes()? })
+        Ok(Self {
+            identity,
+            secret: credential.to_bytes()?,
+        })
     }
 }
 
 /// 扫描回调。用 `&mut dyn` 而不是泛型：`scan_all` 要能遍历一个异构 Provider 列表。
 pub type Sink<'a> = dyn FnMut(ScannedAccount) -> Result<()> + 'a;
 
-pub trait Provider {
+#[async_trait]
+pub trait Provider: Send + Sync {
     /// 平台键，与 `accounts.platform` 一致
     fn platform(&self) -> &'static str;
     fn label(&self) -> &'static str;
@@ -55,6 +63,42 @@ pub trait Provider {
     fn scan(&self, sink: &mut Sink<'_>) -> Result<usize>;
     /// 客户端**当前**登录的 account_id；读不到返回 None（客户端没装/没登录）。
     fn current_id(&self) -> Option<String>;
+
+    // ---- 以下是 P3 加的接口：默认实现一律「不支持」，各家按需覆盖 ----
+    /// 平台本身有没有签到玩法。WorkBuddy 国际版与 ZCode 都没有，只查积分。
+    fn requires_checkin(&self) -> bool {
+        true
+    }
+    /// 平台自己会返回「发放批次」（Trae / WorkBuddy）。这类平台**不写台账**（契约 5）。
+    fn live_credit(&self) -> bool {
+        false
+    }
+    /// 契约 4 的冷却口径：`0` = 自然日（次日 0 点可签），`24` = 上次签到 + 24h（Qoder）。
+    /// 活动制平台的下次可签时刻由接口下发，这个值只做接口没给时的本地推算兜底。
+    fn cooldown_hours(&self) -> u32 {
+        0
+    }
+    /// 查签到状态。会顺带读余额。
+    async fn status(&self, _cred: &Credential, _http: &dyn Http) -> Result<StatusResult> {
+        Err(AppError::new(
+            "unsupported",
+            format!("{} 暂不支持查询签到状态", self.label()),
+        ))
+    }
+    /// 只查积分，**不碰签到状态**（高频刷新走这条，避免无意义地打签到接口）。
+    async fn credits(&self, _cred: &Credential, _http: &dyn Http) -> Result<CreditSnapshot> {
+        Err(AppError::new(
+            "unsupported",
+            format!("{} 暂不支持查询积分", self.label()),
+        ))
+    }
+    /// 真正调用签到接口。调用方负责幂等（当日去重表）。
+    async fn checkin(&self, _cred: &Credential, _http: &dyn Http) -> Result<ActionResult> {
+        Err(AppError::new(
+            "unsupported",
+            format!("{} 暂不支持签到", self.label()),
+        ))
+    }
 }
 
 /// 全部 Provider。顺序 = 扫描顺序 = 新账号首次入表时的排序。
@@ -97,17 +141,37 @@ pub fn switch(
     backup_dir: &std::path::Path,
 ) -> Result<SwitchOutcome> {
     match platform_of(iid) {
-        Some("qoder") => qoder::switch_to(&QoderProvider::new(false), account_id, name, cred, backup_dir),
-        Some("qoder_intl") => qoder::switch_to(&QoderProvider::new(true), account_id, name, cred, backup_dir),
-        Some("workbuddy") => {
-            workbuddy::switch_to(&WorkBuddyProvider::new(iid.ends_with("@intl")), account_id, name, backup_dir)
+        Some("qoder") => qoder::switch_to(
+            &QoderProvider::new(false),
+            account_id,
+            name,
+            cred,
+            backup_dir,
+        ),
+        Some("qoder_intl") => qoder::switch_to(
+            &QoderProvider::new(true),
+            account_id,
+            name,
+            cred,
+            backup_dir,
+        ),
+        Some("workbuddy") => workbuddy::switch_to(
+            &WorkBuddyProvider::new(iid.ends_with("@intl")),
+            account_id,
+            name,
+            backup_dir,
+        ),
+        Some("zcode") => {
+            zcode::switch_to(&ZCodeProvider::new(), account_id, name, cred, backup_dir)
         }
-        Some("zcode") => zcode::switch_to(&ZCodeProvider::new(), account_id, name, cred, backup_dir),
         Some("trae") => Err(crate::app::error::AppError::new(
             "unsupported",
             "Trae 的登录态是设备绑定的加密格式，无法安全写回。请在 Trae 客户端里手动切换账号。",
         )),
-        _ => Err(crate::app::error::AppError::new("unsupported", "这个平台不支持切换登录")),
+        _ => Err(crate::app::error::AppError::new(
+            "unsupported",
+            "这个平台不支持切换登录",
+        )),
     }
 }
 
@@ -118,8 +182,14 @@ mod tests {
     #[test]
     fn iid_routes_to_the_right_variant() {
         assert_eq!(for_iid("qoder_intl:abc").unwrap().platform(), "qoder_intl");
-        assert_eq!(for_iid("workbuddy:abc@intl").unwrap().label(), "WorkBuddy 国际版");
-        assert_eq!(for_iid("workbuddy:abc").unwrap().label(), "WorkBuddy 国内版");
+        assert_eq!(
+            for_iid("workbuddy:abc@intl").unwrap().label(),
+            "WorkBuddy 国际版"
+        );
+        assert_eq!(
+            for_iid("workbuddy:abc").unwrap().label(),
+            "WorkBuddy 国内版"
+        );
         assert!(for_iid("unknown:abc").is_none());
     }
 
@@ -127,6 +197,9 @@ mod tests {
     fn trae_refuses_to_switch() {
         let cred = crate::app::accounts::credential::Credential::default();
         let err = switch("trae:u1", "u1", "n", &cred, std::path::Path::new(".")).unwrap_err();
-        assert!(matches!(err.kind, crate::app::error::ErrorKind::Unsupported));
+        assert!(matches!(
+            err.kind,
+            crate::app::error::ErrorKind::Unsupported
+        ));
     }
 }

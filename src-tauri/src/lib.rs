@@ -1,5 +1,4 @@
-// P0 阶段：只有类型与注入点，全部业务实现为 todo!()，测试必然全红。
-// 契约编号对应 ARCHITECTURE-v2.md §7。
+// 库入口：契约层（contracts/）与各层模块。契约编号对应 ARCHITECTURE-v2.md §7。
 
 pub mod app;
 pub mod contracts;

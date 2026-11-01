@@ -5,18 +5,24 @@
 //! 产生 0 增减」这类边界根本无法构造。
 
 pub mod accounts;
+pub mod checkin;
+pub mod clients;
 pub mod clock;
 pub mod db;
 pub mod error;
 pub mod fsx;
+pub mod hub;
 pub mod log;
+pub mod maintenance;
 pub mod migrate;
 pub mod net;
 pub mod paths;
-pub mod providers;
+pub mod platform;
 pub mod process;
+pub mod providers;
 pub mod runtime;
 pub mod secret;
+pub mod sessions;
 pub mod task;
 pub mod timeutil;
 
@@ -31,7 +37,15 @@ pub struct TaskCtx<'a> {
 }
 
 impl<'a> TaskCtx<'a> {
-    pub fn new(clock: &'a dyn Clock, http: &'a dyn net::Http, data_dir: &'a std::path::Path) -> Self {
-        Self { clock, http, data_dir }
+    pub fn new(
+        clock: &'a dyn Clock,
+        http: &'a dyn net::Http,
+        data_dir: &'a std::path::Path,
+    ) -> Self {
+        Self {
+            clock,
+            http,
+            data_dir,
+        }
     }
 }

@@ -42,9 +42,19 @@ mod tests {
 
     #[test]
     fn parses_all_four_shapes() {
-        assert_eq!(parse_ts(&json!(1_700_000_000_000i64)), Some(1_700_000_000_000));
-        assert_eq!(parse_ts(&json!(1_700_000_000i64)), Some(1_700_000_000_000), "秒级要乘 1000");
-        assert_eq!(parse_ts(&json!("2026-10-30T11:06:25")), parse_ts(&json!("2026-10-30T11:06:25")));
+        assert_eq!(
+            parse_ts(&json!(1_700_000_000_000i64)),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            parse_ts(&json!(1_700_000_000i64)),
+            Some(1_700_000_000_000),
+            "秒级要乘 1000"
+        );
+        assert_eq!(
+            parse_ts(&json!("2026-10-30T11:06:25")),
+            parse_ts(&json!("2026-10-30T11:06:25"))
+        );
         assert!(parse_ts(&json!("2026-10-30T03:06:25Z")).is_some());
         assert!(parse_ts(&json!("")).is_none());
         assert!(parse_ts(&json!("不是时间")).is_none());

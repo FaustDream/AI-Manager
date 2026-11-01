@@ -26,9 +26,12 @@ impl Db {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let write = open_conn(&path)?;
-        let read = open_conn(&path)?;
-        let db = Self { write: Mutex::new(write), read: Mutex::new(read) };
+        let write = open_conn(path)?;
+        let read = open_conn(path)?;
+        let db = Self {
+            write: Mutex::new(write),
+            read: Mutex::new(read),
+        };
         db.bootstrap()?;
         Ok(db)
     }
@@ -121,9 +124,23 @@ impl Db {
                  );",
             )?;
             // execute_batch 不支持 ?1 占位符，首行只能单独插
-            let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_meta", [], |r| r.get(0))?;
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM schema_meta", [], |r| r.get(0))?;
             if count == 0 {
-                conn.execute("INSERT INTO schema_meta(version) VALUES (?1)", [SCHEMA_VERSION])?;
+                conn.execute(
+                    "INSERT INTO schema_meta(version) VALUES (?1)",
+                    [SCHEMA_VERSION],
+                )?;
+            } else {
+                // 上面注释承诺「升级 SCHEMA_VERSION」：版本错配时带病运行比启动期报错糟
+                let stored: i64 =
+                    conn.query_row("SELECT MAX(version) FROM schema_meta", [], |r| r.get(0))?;
+                if stored != SCHEMA_VERSION as i64 {
+                    return Err(AppError::new(
+                        "sqlite",
+                        format!("库 schema 版本不匹配：库是 v{stored}，程序要 v{SCHEMA_VERSION}"),
+                    ));
+                }
             }
             Ok(())
         })
@@ -153,7 +170,7 @@ impl Db {
     }
 
     pub fn kv_set(&self, key: &str, value: &str) -> Result<()> {
-        let now = now_ms();
+        let now = crate::app::timeutil::now_ms();
         self.write(|conn| {
             conn.execute(
                 "INSERT INTO kv(key, value, updated_at) VALUES (?1, ?2, ?3)
@@ -184,7 +201,9 @@ impl Db {
     pub fn migrated_from(&self) -> Result<Option<String>> {
         self.read(|conn| {
             let value: Option<String> =
-                conn.query_row("SELECT migrated_from FROM schema_meta LIMIT 1", [], |r| r.get(0))?;
+                conn.query_row("SELECT migrated_from FROM schema_meta LIMIT 1", [], |r| {
+                    r.get(0)
+                })?;
             Ok(value)
         })
     }
@@ -193,7 +212,7 @@ impl Db {
         self.write(|conn| {
             conn.execute(
                 "UPDATE schema_meta SET migrated_from = ?1, migrated_at = ?2",
-                rusqlite::params![from, now_ms()],
+                rusqlite::params![from, crate::app::timeutil::now_ms()],
             )?;
             Ok(())
         })
@@ -203,19 +222,14 @@ impl Db {
 fn open_conn(path: &std::path::Path) -> Result<Connection> {
     let conn = Connection::open(path)
         .map_err(|e| AppError::new("sqlite", format!("打开数据库失败：{e}")))?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+    )?;
     Ok(conn)
 }
 
 fn poisoned() -> AppError {
     AppError::new("sqlite", "数据库锁被污染（上一次操作 panic 过）")
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -231,7 +245,11 @@ mod tests {
         db.kv_set("theme", "dark").unwrap();
         assert_eq!(db.kv_get("theme").unwrap().as_deref(), Some("dark"));
         db.kv_set("theme", "light").unwrap();
-        assert_eq!(db.kv_get("theme").unwrap().as_deref(), Some("light"), "kv_set 必须是 upsert");
+        assert_eq!(
+            db.kv_get("theme").unwrap().as_deref(),
+            Some("light"),
+            "kv_set 必须是 upsert"
+        );
         assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
         assert_eq!(db.migrated_from().unwrap(), None);
     }
