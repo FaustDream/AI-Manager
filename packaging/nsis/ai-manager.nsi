@@ -65,6 +65,8 @@ VIAddVersionKey /LANG=1033 "FileDescription" "AI Manager installer"
 
 Section "AI Manager" SEC_MAIN
   SectionIn RO
+  ; 覆盖安装前先停掉常驻托盘的旧实例：关窗口不退出，不杀进程 File 必报占用
+  nsExec::Exec 'taskkill /F /IM "${PRODUCT_EXE}" /T'
   SetOutPath "$INSTDIR"
 
   ; 主程序。Tauri 2 把前端资源嵌进 exe，安装目录里只有这一个可执行文件。

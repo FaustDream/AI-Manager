@@ -91,14 +91,8 @@ pub fn kill_by_name(name: &str) -> Result<usize> {
     Ok(killed)
 }
 
-/// 静默启动一个可执行文件（不带参数，启动客户端够用）。
-/// 用于外部命令/脚本：带 `CREATE_NO_WINDOW`，不弹控制台。
-pub fn start_hidden(exe: &Path) -> Result<()> {
-    spawn(exe, true)
-}
-
-/// 正常启动一个 GUI 程序（客户端）。**不能复用 start_hidden**：
-/// SW_HIDE 会让客户端窗口出来就是隐藏的，用户以为没启动。
+/// 正常启动一个 GUI 程序（客户端）。**不能用 SW_HIDE**：
+/// 窗口出来就是隐藏的，用户以为没启动。
 pub fn start_detached(exe: &Path) -> Result<()> {
     spawn(exe, false)
 }
@@ -336,10 +330,5 @@ mod tests {
         let second = acquire_single_instance(name).expect("第二次调用本身不该报错");
         assert!(second.is_none(), "已有实例时第二次必须返回 None");
         // 注意：句柄故意不关闭，进程退出后系统自动回收互斥体
-    }
-
-    #[test]
-    fn start_hidden_rejects_missing_file() {
-        assert!(start_hidden(Path::new("D:/不存在的程序.exe")).is_err());
     }
 }

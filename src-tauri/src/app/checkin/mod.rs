@@ -25,16 +25,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-/// 单个账号一次查询/签到的结果，界面直接照着渲染。
-#[derive(Debug, Clone, Serialize)]
-pub struct Outcome {
-    pub iid: String,
-    pub ok: bool,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<StatusResult>,
-}
-
 /// 写盘失败的兜底：不中断签到流程，但必须留痕（红线：不裸吞写盘错误）。
 /// 日志只带平台前缀，不带完整 iid——界面与日志不显示 uid。
 fn log_write_failure(what: &str, scope: &str, e: AppError) {

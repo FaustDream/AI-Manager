@@ -18,7 +18,7 @@ use crate::app::accounts::AccountIdentity;
 use crate::app::error::{AppError, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, paths, process};
-use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult};
+use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult, trim_f64};
 use aes_gcm::aead::consts::U16;
 use aes_gcm::aead::KeyInit;
 use async_trait::async_trait;
@@ -495,12 +495,12 @@ impl Provider for WorkBuddyProvider {
         let balance = match &lots {
             Some(lots) => {
                 let total: f64 = lots.iter().map(|l| l.amount).sum();
-                parts.push(format!("剩余 {} 积分", trim(total)));
+                parts.push(format!("剩余 {} 积分", trim_f64(total)));
                 Some(total)
             }
             None => match data.get("total_credits").and_then(|v| v.as_f64()) {
                 Some(total) => {
-                    parts.push(format!("累计 {} 积分", trim(total)));
+                    parts.push(format!("累计 {} 积分", trim_f64(total)));
                     Some(total)
                 }
                 None => None,
@@ -542,7 +542,7 @@ impl Provider for WorkBuddyProvider {
         let lots = self.resource_lots(cred, http).await?;
         let total: f64 = lots.iter().map(|l| l.amount).sum();
         Ok(CreditSnapshot {
-            summary: format!("剩余 {} 积分", trim(total)),
+            summary: format!("剩余 {} 积分", trim_f64(total)),
             balance: Some(total),
             lots: Some(lots),
             quota: None,
@@ -571,7 +571,7 @@ impl Provider for WorkBuddyProvider {
                 Ok(ActionResult {
                     ok: true,
                     message: match credit {
-                        Some(c) => format!("签到成功，+{} 积分", trim(c)),
+                        Some(c) => format!("签到成功，+{} 积分", trim_f64(c)),
                         None => "签到成功".into(),
                     },
                     granted: credit,
@@ -752,13 +752,6 @@ fn local_text(value: &Value) -> Option<chrono::DateTime<chrono::Local>> {
     naive.and_local_timezone(chrono::Local).single()
 }
 
-fn trim(value: f64) -> String {
-    if (value.fract()).abs() < f64::EPSILON {
-        format!("{value:.0}")
-    } else {
-        format!("{value}")
-    }
-}
 
 /// 切换登录：存档当前账号 → 换入目标档案。
 pub fn switch_to(

@@ -266,32 +266,35 @@ fn titles_of(
     db: &Db,
     targets: &[(String, preview::Target)],
 ) -> std::collections::HashMap<String, String> {
-    let mut out = std::collections::HashMap::new();
-    for (key, target) in targets {
-        let title: Option<String> = db
-            .read(|conn| {
-                let value = conn
-                    .query_row(
-                        "SELECT title FROM session_index
-                         WHERE kind = ?1 AND source_key = ?2 AND account = ?3 AND session_id = ?4",
-                        rusqlite::params![
-                            target.kind,
-                            target.source_key,
-                            target.account,
-                            target.session_id
-                        ],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .ok();
-                Ok(value)
-            })
-            .ok()
-            .flatten();
-        if let Some(title) = title {
-            out.insert(key.clone(), title);
+    // 一条连接循环查：每个 key 各开一次事务太浪费
+    db.read(|conn| {
+        let mut out = std::collections::HashMap::new();
+        let mut stmt = match conn.prepare(
+            "SELECT title FROM session_index
+             WHERE kind = ?1 AND source_key = ?2 AND account = ?3 AND session_id = ?4",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return Ok(out),
+        };
+        for (key, target) in targets {
+            let title: Option<String> = stmt
+                .query_row(
+                    rusqlite::params![
+                        target.kind,
+                        target.source_key,
+                        target.account,
+                        target.session_id
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            if let Some(title) = title {
+                out.insert(key.clone(), title);
+            }
         }
-    }
-    out
+        Ok(out)
+    })
+    .unwrap_or_default()
 }
 
 // ------------------------------------------------------------------ WorkBuddy
@@ -639,6 +642,15 @@ fn delete_sqlite(
 
 // ------------------------------------------------------------------ 恢复 / 清空
 
+/// 清单是本地文件，但一份被截断/手改过的 manifest 不该能把文件写穿客户端目录：
+/// 相对路径里出现 `..` 直接拒绝。
+fn check_rel(rel: &str) -> Result<()> {
+    if rel.split('/').any(|seg| seg == "..") {
+        return Err(AppError::new("invalid", "清单里的路径不合法"));
+    }
+    Ok(())
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Default, Serialize)]
@@ -723,6 +735,7 @@ fn restore_workbuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
         }
     }
     for rel in &item.files {
+        check_rel(rel)?;
         // 批次里的相对路径形如 `cn/projects/<slug>/<sid>.jsonl`
         let dest = rel
             .split_once('/')
@@ -735,12 +748,14 @@ fn restore_workbuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
 }
 
 fn restore_codebuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
+    check_rel(&item.session_id)?;
     let workspace = item
         .rows
         .as_ref()
         .and_then(|v| v.get("workspace"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    check_rel(workspace)?;
     let base = roots
         .codebuddy()
         .join(&item.account)
@@ -831,7 +846,8 @@ pub fn list_in(root: &Path) -> Vec<Manifest> {
 
 // ------------------------------------------------------------------ SQL 小工具
 
-fn checkpoint(conn: &Connection) -> Result<()> {
+/// 写前清 WAL：客户端读不到没 checkpoint 的改动，这条在四条写路径上都要走。
+pub fn checkpoint(conn: &Connection) -> Result<()> {
     conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
         .or_else(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => Ok(()),

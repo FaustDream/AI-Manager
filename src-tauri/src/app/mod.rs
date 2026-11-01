@@ -25,27 +25,3 @@ pub mod secret;
 pub mod sessions;
 pub mod task;
 pub mod timeutil;
-
-use crate::app::clock::Clock;
-
-/// 传给每个业务函数的上下文：时钟、网络、数据目录、取消信号都从这里取。
-/// 业务代码不得绕过它直接访问系统资源。
-pub struct TaskCtx<'a> {
-    pub clock: &'a dyn Clock,
-    pub http: &'a dyn net::Http,
-    pub data_dir: &'a std::path::Path,
-}
-
-impl<'a> TaskCtx<'a> {
-    pub fn new(
-        clock: &'a dyn Clock,
-        http: &'a dyn net::Http,
-        data_dir: &'a std::path::Path,
-    ) -> Self {
-        Self {
-            clock,
-            http,
-            data_dir,
-        }
-    }
-}

@@ -11,7 +11,7 @@ use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::AccountIdentity;
 use crate::app::error::{AppError, Result};
 use crate::app::net::{Http, HttpRequest};
-use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult};
+use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult, trim_f64};
 use async_trait::async_trait;
 use base64::Engine;
 use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
@@ -316,7 +316,7 @@ impl Provider for TraeProvider {
             Err(_) => {
                 let balance = data.get("credits").and_then(|v| v.as_f64());
                 let summary = balance
-                    .map(|b| format!("剩余 {} 积分", trim(b)))
+                    .map(|b| format!("剩余 {} 积分", trim_f64(b)))
                     .unwrap_or_default();
                 (summary, balance, None)
             }
@@ -498,12 +498,12 @@ impl TraeProvider {
         }
 
         let mut summary = match balance {
-            Some(b) => format!("剩余 {} 积分", trim(b)),
+            Some(b) => format!("剩余 {} 积分", trim_f64(b)),
             None => "无可用积分".into(),
         };
         if let Some(total) = total {
             if consumed > 0.0 {
-                summary.push_str(&format!("（已用 {}/{}）", trim(consumed), trim(total)));
+                summary.push_str(&format!("（已用 {}/{}）", trim_f64(consumed), trim_f64(total)));
             }
         }
         Ok((summary, balance, Some(lots)))
@@ -526,13 +526,6 @@ fn dt_of(value: &Value) -> Option<chrono::DateTime<chrono::Local>> {
         .map(|d| d.with_timezone(&chrono::Local))
 }
 
-fn trim(value: f64) -> String {
-    if (value.fract()).abs() < f64::EPSILON {
-        format!("{value:.0}")
-    } else {
-        format!("{value}")
-    }
-}
 
 fn truncate(text: &str, n: usize) -> String {
     text.chars().take(n).collect()

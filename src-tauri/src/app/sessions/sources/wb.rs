@@ -8,7 +8,7 @@ use crate::app::clients::Roots;
 use crate::app::sessions::sources::MsgCache;
 use crate::app::sessions::store::RawRow;
 use crate::types::SessionState;
-use chrono::{Local, TimeZone};
+
 use rusqlite::Connection;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -343,14 +343,6 @@ fn is_message_line(line: &[u8]) -> bool {
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
-}
-
-/// 毫秒时间戳 → 本地时间。给「最近一次活动」用。
-pub fn local_of(ms: i64) -> Option<chrono::DateTime<Local>> {
-    if ms <= 0 {
-        return None;
-    }
-    Local.timestamp_millis_opt(ms).single()
 }
 
 #[cfg(test)]

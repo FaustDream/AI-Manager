@@ -53,14 +53,7 @@ pub fn account(roots: &Roots, edition: &str, uid: &str) -> Result<RestoreReport>
 
     let conn = rusqlite::Connection::open_with_flags(ep.db(), OpenFlags::SQLITE_OPEN_READ_WRITE)
         .map_err(|e| AppError::new("sqlite", format!("打开 {} 失败：{e}", ep.db().display())))?;
-    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(()),
-            other => Err(AppError::new(
-                "sqlite",
-                format!("wal_checkpoint 失败：{other}"),
-            )),
-        })?;
+    crate::app::sessions::delete::checkpoint(&conn)?;
 
     let changed = conn
         .execute(
@@ -70,14 +63,7 @@ pub fn account(roots: &Roots, edition: &str, uid: &str) -> Result<RestoreReport>
         )
         .map_err(|e| AppError::new("sqlite", format!("改归属失败：{e}")))?;
 
-    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(()),
-            other => Err(AppError::new(
-                "sqlite",
-                format!("wal_checkpoint 失败：{other}"),
-            )),
-        })?;
+    crate::app::sessions::delete::checkpoint(&conn)?;
 
     let files_after = wb::project_files(&ep.projects)
         .values()

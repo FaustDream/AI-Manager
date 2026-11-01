@@ -173,8 +173,9 @@ fn import_accounts(
         let secret_blob = match secret::protect(&serde_json::to_vec(item)?) {
             Ok(blob) => Some(blob),
             Err(e) => {
+                // 警告文本会进界面（ImportReport 是领域对象）：用昵称，不出现 iid
                 rep.warnings
-                    .push(format!("{iid} 凭据加密失败（{e}），该账号将无登录态"));
+                    .push(format!("{name} 凭据加密失败（{e}），该账号将无登录态"));
                 None
             }
         };

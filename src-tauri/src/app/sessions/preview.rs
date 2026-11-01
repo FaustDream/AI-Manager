@@ -594,7 +594,9 @@ fn load_zcode(roots: &Roots, target: &Target) -> Preview {
             id: String::new(),
         });
     }
-    let truncated = total as usize > messages.len();
+    // 与头尾截取同口径：只有「总量超出头尾之和」才是真的只读了片段；
+    // 用 messages.len() 比，会把 system/空正文行误算成被截断
+    let truncated = total as usize > HEAD_MESSAGES + TAIL_MESSAGES;
     result(messages, truncated, "")
 }
 

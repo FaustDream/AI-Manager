@@ -23,6 +23,16 @@ pub enum PlatformKey {
     ZCode,
 }
 
+/// 积分数字展示：整数值不带小数点，其余原样。
+/// 三家平台适配器各写过一份，第三次照写前提到了这里。
+pub fn trim_f64(value: f64) -> String {
+    if (value.fract()).abs() < f64::EPSILON {
+        format!("{value:.0}")
+    } else {
+        format!("{value}")
+    }
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
