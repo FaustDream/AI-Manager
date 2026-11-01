@@ -10,7 +10,8 @@ root = fso.GetParentFolderName(WScript.ScriptFullName)
 exe = root & "\src-tauri\target\release\ai-manager.exe"
 
 If Not fso.FileExists(exe) Then
-  MsgBox "release exe not found. Build first:" & vbCrLf & "  cargo build --release", 16, "AI Manager"
+  MsgBox "release exe not found. Build first:" & vbCrLf & _
+    "  cargo build --release --features custom-protocol", 16, "AI Manager"
   WScript.Quit 1
 End If
 
