@@ -13,6 +13,13 @@ export function DetailPanel({ account }: { account: AccountView | null }) {
   const qc = useQueryClient();
   const [switchOpen, setSwitchOpen] = useState(false);
   const [claimPlans, setClaimPlans] = useState<ClaimPlan[] | null>(null);
+  // 慢操作（签到/切换/拉活动列表都是几秒级的网络+写盘）的按钮加载态
+  const [busy, setBusy] = useState<string | null>(null);
+  const runBusy = (key: string, work: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(key);
+    void work().finally(() => setBusy(null));
+  };
 
   const detail = useQuery<AccountDetail>({
     queryKey: ['detail', account?.iid],
@@ -29,49 +36,53 @@ export function DetailPanel({ account }: { account: AccountView | null }) {
     qc.invalidateQueries({ queryKey: ['detail', account.iid] });
   };
 
-  const runOne = async () => {
-    try {
-      const r = await call<ActionResult>('checkin_run', { iid: account.iid });
-      toast(r.message);
-      refresh();
-    } catch (e) {
-      toast(errText(e));
-    }
-  };
+  const runOne = () =>
+    runBusy('checkin', async () => {
+      try {
+        const r = await call<ActionResult>('checkin_run', { iid: account.iid });
+        toast(r.message);
+        refresh();
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
 
-  const doSwitch = async () => {
-    setSwitchOpen(false);
-    try {
-      const r = await call<SwitchResult>('account_switch', { iid: account.iid });
-      toast(r.message + (r.backup ? `\n备份：${r.backup}` : ''));
-      qc.invalidateQueries({ queryKey: ['current'] });
-    } catch (e) {
-      // 切换失败代价高，kind 给界面机会说清下一步（如 client_running 要先关客户端）
-      const kind = errKind(e);
-      toast(kind === 'client_running' ? `请先关闭客户端再切换。\n${errText(e)}` : errText(e));
-    }
-  };
+  const doSwitch = () =>
+    runBusy('switch', async () => {
+      setSwitchOpen(false);
+      try {
+        const r = await call<SwitchResult>('account_switch', { iid: account.iid });
+        toast(r.message + (r.backup ? `\n备份：${r.backup}` : ''));
+        qc.invalidateQueries({ queryKey: ['current'] });
+      } catch (e) {
+        // 切换失败代价高，kind 给界面机会说清下一步（如 client_running 要先关客户端）
+        const kind = errKind(e);
+        toast(kind === 'client_running' ? `请先关闭客户端再切换。\n${errText(e)}` : errText(e));
+      }
+    });
 
-  const openClaim = async () => {
-    try {
-      const plans = await call<ClaimPlan[]>('zcode_claim_plans', { iid: account.iid });
-      setClaimPlans(plans);
-    } catch (e) {
-      toast(errText(e));
-    }
-  };
+  const openClaim = () =>
+    runBusy('plans', async () => {
+      try {
+        const plans = await call<ClaimPlan[]>('zcode_claim_plans', { iid: account.iid });
+        setClaimPlans(plans);
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
 
-  const claim = async (planId: string, name: string) => {
-    setClaimPlans(null);
-    toast(`已打开浏览器，请在页面里完成验证…`);
-    try {
-      const r = await call<ClaimOutcome>('zcode_claim_run', { iid: account.iid, planId });
-      toast(`领取成功：${r.name || name}`);
-      refresh();
-    } catch (e) {
-      toast(errText(e));
-    }
-  };
+  const claim = (planId: string, name: string) =>
+    runBusy('claim', async () => {
+      setClaimPlans(null);
+      toast(`已打开浏览器，请在页面里完成验证…`);
+      try {
+        const r = await call<ClaimOutcome>('zcode_claim_run', { iid: account.iid, planId });
+        toast(`领取成功：${r.name || name}`);
+        refresh();
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
 
   const d = detail.data;
   return (
@@ -86,21 +97,26 @@ export function DetailPanel({ account }: { account: AccountView | null }) {
         )}
         <span className="flex-1" />
         {account.platform === 'zcode' && (
-          <Button size="sm" onClick={openClaim}>
-            领取活动
+          <Button size="sm" onClick={openClaim} disabled={!!busy}>
+            {busy === 'plans' ? '查询中…' : '领取活动'}
           </Button>
         )}
         {account.requires_checkin && (
-          <Button size="sm" variant="primary" onClick={runOne}>
-            签到
+          <Button size="sm" variant="primary" onClick={runOne} disabled={!!busy}>
+            {busy === 'checkin' ? '签到中…' : '签到'}
           </Button>
         )}
-        <Button size="sm" onClick={() => setSwitchOpen(true)} disabled={!account.has_secret}>
+        <Button
+          size="sm"
+          onClick={() => setSwitchOpen(true)}
+          disabled={!account.has_secret || !!busy}
+        >
           切换到此账号
         </Button>
         <Button
           size="sm"
           variant="danger"
+          disabled={!!busy}
           onClick={async () => {
             // 不可逆动作（同页的会话删除、清空回收站都有确认）
             if (!window.confirm(`从账号库移除「${account.name}」？`)) return;

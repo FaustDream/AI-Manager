@@ -120,26 +120,40 @@ export default function AccountCenterPage() {
 
   const widthOf = (key: string, fallback: number) => widths[key] ?? fallback;
 
-  const scanAndRefresh = async () => {
+  // 慢操作的按钮加载态：扫描/刷积分要等几秒，不给 busy 态看起来就像没点上
+  const [busy, setBusy] = useState<string | null>(null);
+  const runBusy = async (key: string, work: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(key);
     try {
-      const report = await call<ScanReport>('account_scan');
-      toast(`扫描完成：${report.scanned} 个账号（新增 ${report.added}）`);
-      qc.invalidateQueries({ queryKey: ['accounts'] });
-    } catch (e) {
-      toast(errText(e));
+      await work();
+    } finally {
+      setBusy(null);
     }
   };
 
-  const refreshCredits = async () => {
-    const iids = rows.filter((r) => r.has_secret).map((r) => r.iid);
-    try {
-      await call('checkin_credits', { iids });
-      toast(`已刷新 ${iids.length} 个账号的积分`);
-      qc.invalidateQueries({ queryKey: ['accounts'] });
-    } catch (e) {
-      toast(errText(e));
-    }
-  };
+  const scanAndRefresh = () =>
+    runBusy('scan', async () => {
+      try {
+        const report = await call<ScanReport>('account_scan');
+        toast(`扫描完成：${report.scanned} 个账号（新增 ${report.added}）`);
+        qc.invalidateQueries({ queryKey: ['accounts'] });
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
+
+  const refreshCredits = () =>
+    runBusy('credits', async () => {
+      const iids = rows.filter((r) => r.has_secret).map((r) => r.iid);
+      try {
+        await call('checkin_credits', { iids });
+        toast(`已刷新 ${iids.length} 个账号的积分`);
+        qc.invalidateQueries({ queryKey: ['accounts'] });
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
 
   const batchCheckin = async () => {
     const iids = rows
@@ -172,11 +186,15 @@ export default function AccountCenterPage() {
   return (
     <div className="flex flex-col gap-2.5" style={{ overflowX: 'auto' }}>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" onClick={scanAndRefresh}>
-          扫描客户端
+        <Button variant="primary" onClick={scanAndRefresh} disabled={!!busy}>
+          {busy === 'scan' ? '扫描中…' : '扫描客户端'}
         </Button>
-        <Button onClick={() => setAddOpen(true)}>添加账号</Button>
-        <Button onClick={refreshCredits}>刷新积分</Button>
+        <Button onClick={() => setAddOpen(true)} disabled={!!busy}>
+          添加账号
+        </Button>
+        <Button onClick={refreshCredits} disabled={!!busy}>
+          {busy === 'credits' ? '刷新中…' : '刷新积分'}
+        </Button>
         <Button onClick={batchCheckin} disabled={!!batchTask}>
           批量签到
         </Button>
