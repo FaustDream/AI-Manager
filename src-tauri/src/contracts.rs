@@ -5,7 +5,7 @@
 
 use crate::app::clock::Clock;
 use crate::app::error::Result;
-use crate::types::{Account, ActionResult, PlatformKey, SessionRow, StatusResult};
+use crate::types::{PlatformKey, SessionRow};
 use chrono::{DateTime, Local};
 use std::path::{Path, PathBuf};
 
@@ -126,17 +126,4 @@ pub trait PlatformApi {
     /// 契约 20：外部命令不得弹控制台。
     fn spawn_hidden(&self, exe: &str, args: &[&str]) -> Result<()>;
     fn client_running(&self, key: PlatformKey) -> bool;
-}
-
-/// 扫描（P2 实现）。
-pub trait Scanner {
-    fn scan_all(&self, ctx: &crate::app::TaskCtx) -> Result<Vec<Account>>;
-    fn status(&self, account: &Account, ctx: &crate::app::TaskCtx) -> Result<StatusResult>;
-    fn checkin(&self, account: &Account, ctx: &crate::app::TaskCtx) -> Result<ActionResult>;
-}
-
-/// 账号视图合并（P2 实现）。契约 21——重扫不得清空已异步补齐的字段。
-pub trait AccountViews {
-    fn merge_scan(&self, scanned: Vec<Account>) -> Result<usize>;
-    fn balance_of(&self, iid: &str) -> Option<f64>;
 }

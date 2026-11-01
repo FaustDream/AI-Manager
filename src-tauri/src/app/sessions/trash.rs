@@ -15,15 +15,22 @@ pub fn root() -> PathBuf {
 }
 
 /// 同一秒内多次删除不能撞目录：撞了就加序号。
+/// `create_dir` 的 AlreadyExists 错误做原子判定，不靠先 exists 再建
+/// （并发删除请求落在同一秒时，exists 检查与创建之间会互相穿透）。
 pub fn new_tag(root: &Path) -> String {
     let base = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let mut tag = base.clone();
     let mut index = 2;
-    while root.join(&tag).exists() {
-        tag = format!("{base}-{index}");
-        index += 1;
+    loop {
+        match std::fs::create_dir(root.join(&tag)) {
+            Ok(()) => return tag,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                tag = format!("{base}-{index}");
+                index += 1;
+            }
+            Err(_) => return tag, // 建不了目录交给调用方在写清单时报错
+        }
     }
-    tag
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

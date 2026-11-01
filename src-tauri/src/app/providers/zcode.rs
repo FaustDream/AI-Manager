@@ -635,7 +635,6 @@ fn quota_from_limit(data: &Value, subscription: Option<&Value>) -> QuotaView {
     let body = data.get("data").cloned().unwrap_or_else(|| json!({}));
     let mut windows = std::collections::HashMap::new();
     let mut parts: Vec<String> = Vec::new();
-    let mut main: Option<(String, f64)> = None;
 
     for entry in body
         .get("limits")
@@ -678,14 +677,8 @@ fn quota_from_limit(data: &Value, subscription: Option<&Value>) -> QuotaView {
                 },
                 100.0 - percent
             ));
-            let better = main.as_ref().map(|(_, p)| percent < *p).unwrap_or(true);
-            if better {
-                main = Some((label, percent));
-            }
         }
     }
-    let _ = main;
-
     let mut tier = tier_from_level(body.get("level").and_then(|v| v.as_str()).unwrap_or(""));
     if let Some(rows) = subscription
         .filter(|s| business_ok(s))

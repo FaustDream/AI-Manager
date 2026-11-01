@@ -17,7 +17,7 @@ use crate::app::accounts::AccountIdentity;
 use crate::app::error::{AppError, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, process, secret};
-use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult};
+use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult, trim_f64};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key};
 use async_trait::async_trait;
@@ -465,9 +465,17 @@ impl Provider for QoderProvider {
                 .map(value_text)
                 .unwrap_or_default();
             let url = format!("{}/sash/api/v1/me/campaigns/{id}/claim", self.api_base());
-            let resp = http
+            // 单项网络错误不中断整轮：已领到的别丢信息，未试的接着试
+            let resp = match http
                 .send(HttpRequest::post(url).headers(&self.headers(cred).await))
-                .await?;
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    failed.push(e.message);
+                    continue;
+                }
+            };
             let body = resp.json().unwrap_or(Value::Null);
             let data = body.get("data").filter(|v| v.is_object()).unwrap_or(&body);
             let replayed = data
@@ -772,13 +780,6 @@ fn value_text(value: &Value) -> String {
     }
 }
 
-fn trim_f64(value: f64) -> String {
-    if (value.fract()).abs() < f64::EPSILON {
-        format!("{value:.0}")
-    } else {
-        format!("{value}")
-    }
-}
 
 /// 设备风控头。签到活动接口从 2026-09-26 起要求携带 `Cosy-Machine*`，
 /// 否则服务端不下发每日活动。设备标识不伪造，直接跑客户端自带的

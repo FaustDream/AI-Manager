@@ -96,7 +96,7 @@ async fn settings_get(
     key: String,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let db = state.db.clone();
-    let raw = tokio::task::spawn_blocking(move || db.kv_get(&key))
+    let raw = crate::app::runtime::blocking(move || db.kv_get(&key))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)?;
@@ -111,7 +111,7 @@ async fn settings_set(
 ) -> std::result::Result<(), String> {
     let db = state.db.clone();
     let text = value.to_string();
-    tokio::task::spawn_blocking(move || db.kv_set(&key, &text))
+    crate::app::runtime::blocking(move || db.kv_set(&key, &text))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)
@@ -130,7 +130,7 @@ async fn account_list(
 ) -> std::result::Result<Vec<crate::app::accounts::AccountView>, String> {
     let db = state.db.clone();
     // 数据库调用必须在阻塞线程里跑，否则界面在等结果期间没有响应
-    let mut rows = tokio::task::spawn_blocking(move || {
+    let mut rows = crate::app::runtime::blocking(move || {
         let mut rows = crate::app::accounts::repo::list(&db)?;
         // 余额 / 今日已签 从库里补出来：重扫与重启都不会把它们冲掉（契约 21）
         crate::app::checkin::store::hydrate(&db, &mut rows, &crate::app::clock::SystemClock);
@@ -157,7 +157,7 @@ async fn account_reorder(
     iids: Vec<String>,
 ) -> std::result::Result<(), String> {
     let db = state.db.clone();
-    tokio::task::spawn_blocking(move || crate::app::accounts::repo::reorder(&db, &iids))
+    crate::app::runtime::blocking(move || crate::app::accounts::repo::reorder(&db, &iids))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)
@@ -169,7 +169,7 @@ async fn account_delete(
     iid: String,
 ) -> std::result::Result<bool, String> {
     let db = state.db.clone();
-    tokio::task::spawn_blocking(move || crate::app::accounts::repo::delete(&db, &iid))
+    crate::app::runtime::blocking(move || crate::app::accounts::repo::delete(&db, &iid))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)
@@ -182,7 +182,7 @@ async fn account_scan(
     state: State<'_, AppState>,
 ) -> std::result::Result<crate::app::accounts::ScanReport, String> {
     let db = state.db.clone();
-    let report = tokio::task::spawn_blocking(move || crate::app::accounts::scan_all(&db))
+    let report = crate::app::runtime::blocking(move || crate::app::accounts::scan_all(&db))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)?;
@@ -204,7 +204,7 @@ async fn account_switch(
     iid: String,
 ) -> std::result::Result<crate::app::accounts::SwitchResult, String> {
     let db = state.db.clone();
-    tokio::task::spawn_blocking(move || crate::app::accounts::switch(&db, &iid))
+    crate::app::runtime::blocking(move || crate::app::accounts::switch(&db, &iid))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)
@@ -213,7 +213,7 @@ async fn account_switch(
 /// 各客户端当前登录的账号（界面给行标「当前」）。
 #[tauri::command]
 async fn account_current() -> std::result::Result<Vec<String>, String> {
-    let current = tokio::task::spawn_blocking(crate::app::accounts::current_iids)
+    let current = crate::app::runtime::blocking(crate::app::accounts::current_iids)
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?;
     log::log(
@@ -228,7 +228,7 @@ async fn account_current() -> std::result::Result<Vec<String>, String> {
 /// 第二步是用户自己在客户端里登录，然后点「扫描客户端」——见 `accounts::add` 的说明。
 #[tauri::command]
 async fn account_add_prepare(platform: String) -> std::result::Result<String, String> {
-    tokio::task::spawn_blocking(move || crate::app::accounts::add::prepare(&platform))
+    crate::app::runtime::blocking(move || crate::app::accounts::add::prepare(&platform))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)
@@ -672,7 +672,7 @@ async fn zcode_claim_run(
 async fn log_tail(limit: Option<usize>) -> Vec<String> {
     let limit = limit.unwrap_or(200).min(2000);
     // 整读 app.log 是磁盘活，不占主线程；闭包 panic（JoinError）回落空列表
-    tokio::task::spawn_blocking(move || log::tail(limit))
+    crate::app::runtime::blocking(move || log::tail(limit))
         .await
         .unwrap_or_default()
 }
@@ -684,7 +684,7 @@ async fn log_query(
     filter: crate::app::log::LogFilter,
 ) -> std::result::Result<Vec<crate::app::log::Line>, String> {
     // query 是整读 app.jsonl 再逐行过滤，必须进阻塞池
-    tokio::task::spawn_blocking(move || crate::app::log::query(&filter))
+    crate::app::runtime::blocking(move || crate::app::log::query(&filter))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)
@@ -705,7 +705,7 @@ async fn log_export(
         )),
     };
     let shown = target.display().to_string();
-    let count = tokio::task::spawn_blocking(move || crate::app::log::export(&target, &filter))
+    let count = crate::app::runtime::blocking(move || crate::app::log::export(&target, &filter))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)?;
@@ -722,7 +722,7 @@ fn task_clear_finished(state: State<'_, AppState>) -> usize {
 #[tauri::command]
 async fn maintenance_space() -> crate::app::maintenance::SpaceReport {
     // 递归遍历整个 data/（含会话正文），主线程上跑会卡住界面
-    tokio::task::spawn_blocking(crate::app::maintenance::space)
+    crate::app::runtime::blocking(crate::app::maintenance::space)
         .await
         .unwrap_or_default()
 }
@@ -730,7 +730,7 @@ async fn maintenance_space() -> crate::app::maintenance::SpaceReport {
 /// 回收站批次（会话删除与平台技能移除都算）。
 #[tauri::command]
 async fn maintenance_trash() -> Vec<crate::app::maintenance::SpaceEntry> {
-    tokio::task::spawn_blocking(crate::app::maintenance::trash_batches)
+    crate::app::runtime::blocking(crate::app::maintenance::trash_batches)
         .await
         .unwrap_or_default()
 }
@@ -738,7 +738,7 @@ async fn maintenance_trash() -> Vec<crate::app::maintenance::SpaceEntry> {
 /// 清空回收站：`tag=None` 全清。返回释放的字节数。
 #[tauri::command]
 async fn maintenance_purge_trash(tag: Option<String>) -> std::result::Result<i64, String> {
-    tokio::task::spawn_blocking(move || crate::app::maintenance::purge_trash(tag.as_deref()))
+    crate::app::runtime::blocking(move || crate::app::maintenance::purge_trash(tag.as_deref()))
         .await
         .map_err(|e| err_text(AppError::new("io", e.to_string())))?
         .map_err(err_text)
@@ -757,7 +757,7 @@ async fn migrate_verify(
 ) -> std::result::Result<crate::app::migrate::verify::MigrationReport, String> {
     let db = state.db.clone();
     // 读 accounts.dat 要过 DPAPI、还要解 JSON，纯阻塞活，不能占着异步线程
-    let report = tokio::task::spawn_blocking(move || {
+    let report = crate::app::runtime::blocking(move || {
         crate::app::migrate::verify::verify(&db, &crate::app::paths::data_dir())
     })
     .await
@@ -778,7 +778,7 @@ async fn migrate_archive(
     state: State<'_, AppState>,
 ) -> std::result::Result<crate::app::migrate::verify::ArchiveReport, String> {
     let db = state.db.clone();
-    let report = tokio::task::spawn_blocking(move || {
+    let report = crate::app::runtime::blocking(move || {
         crate::app::migrate::verify::archive(&db, &crate::app::paths::data_dir())
     })
     .await
@@ -928,7 +928,7 @@ fn init_state(
     // 跨天清理放在后台：签到记录留 3 天、余额快照留 60 天，不阻塞启动
     let cleanup_db = db.clone();
     tauri::async_runtime::spawn(async move {
-        match tokio::task::spawn_blocking(move || {
+        match crate::app::runtime::blocking(move || {
             crate::app::checkin::SqliteCheckin::new(&cleanup_db)
                 .cleanup(&crate::app::clock::SystemClock)
         })

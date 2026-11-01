@@ -123,19 +123,6 @@ async fn marketing_plans(
     out.into_values().collect()
 }
 
-/// 已生效套餐，用来区分「没有活动」和「已领取、正在生效」。
-pub async fn active_plans(
-    cred: &crate::app::accounts::credential::Credential,
-    http: &dyn Http,
-    mid: Option<&str>,
-) -> Result<Vec<Value>> {
-    let url = format!(
-        "{API_BASE}/api/v1/zcode-plan/billing/current?app_version={APP_VERSION}&platform=win32-x64"
-    );
-    let data = get_ok(cred, http, mid, &url, "已领取套餐").await?;
-    Ok(plans_of(&data).into_iter().cloned().collect())
-}
-
 // ------------------------------------------------------------------ 领取
 
 /// 完整领取：验证码 → 提交。验证码被拒（3007）不自动重试，交给用户重新发起。
@@ -425,12 +412,18 @@ fn captcha_blocking() -> Result<(String, String)> {
         }
     });
 
-    // 走 explorer 打默认浏览器：与 open_data_dir 同一套路，不产生控制台窗口
-    let _ = crate::app::process::spawn_with_args(
+    // 走 explorer 打默认浏览器：与 open_data_dir 同一套路，不产生控制台窗口。
+    // 打不开就把地址还给用户，别让他对着 180 秒超时干等
+    if let Err(e) = crate::app::process::spawn_with_args(
         &std::path::PathBuf::from("explorer.exe"),
         &[url.as_str()],
         true,
-    );
+    ) {
+        return Err(AppError::new(
+            "provider",
+            format!("浏览器打开失败（{}），请手动访问 {url}", e.message),
+        ));
+    }
 
     let param = rx
         .recv_timeout(std::time::Duration::from_secs(CAPTCHA_TIMEOUT_SECS))

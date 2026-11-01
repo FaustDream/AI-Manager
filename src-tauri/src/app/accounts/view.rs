@@ -95,18 +95,6 @@ impl AccountView {
         self.has_secret = identity.has_secret;
         // 注意：checked_in / balance / quota / next_at / error 一个都不动
     }
-
-    /// 是否已过期。没有到期时间视为不过期（v1 同样处理）。
-    pub fn expired(&self, now_ms: i64) -> bool {
-        self.expires_at.map(|at| at <= now_ms).unwrap_or(false)
-    }
-
-    /// 待签到：需要签到 + 明确未签 + 没有更早的 next_at 拦着
-    pub fn pending(&self, now_ms: i64) -> bool {
-        self.requires_checkin
-            && self.checked_in == Some(false)
-            && self.next_at.map(|at| at <= now_ms).unwrap_or(true)
-    }
 }
 
 /// 账号表：一个 `Vec` 取代 v1 的十来个 HashMap。
@@ -228,16 +216,5 @@ mod tests {
             "159****0626",
             "已脱敏的不要二次处理"
         );
-    }
-
-    #[test]
-    fn pending_requires_flag_and_no_cooldown() {
-        let mut row = AccountView::new(identity("trae:1", "x"), 0);
-        row.checked_in = Some(false);
-        assert!(row.pending(1_000), "未签且无冷却 → 待签");
-        row.next_at = Some(2_000);
-        assert!(!row.pending(1_000), "冷却未到 → 不算待签");
-        row.next_at = Some(500);
-        assert!(row.pending(1_000), "冷却已过 → 重新待签");
     }
 }

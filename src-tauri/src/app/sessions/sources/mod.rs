@@ -13,7 +13,7 @@ use crate::app::error::Result;
 use crate::app::sessions::store::RawRow;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+
 
 /// 消息条数与体积的缓存：**按会话**而不是按来源。
 ///
@@ -49,12 +49,8 @@ impl MsgCache {
         );
     }
 
-    /// 只保留这次真扫到的条目：文件被删了缓存也该跟着走。
-    pub fn retain_prefix(&mut self, prefix: &str, seen: &std::collections::HashSet<String>) {
-        self.entries
-            .retain(|key, _| !key.starts_with(prefix) || seen.contains(key));
-    }
 }
+
 
 /// 一个来源的身份与指纹。`present=false` 表示这个客户端没装/没登录过。
 #[derive(Debug, Clone)]
@@ -108,12 +104,4 @@ pub fn scan_one(
         return Ok(codebuddy::scan(&src, errors));
     }
     Ok(others::scan_one(roots, key, errors))
-}
-
-/// 会话正文所在目录（备份 / 删除要用），目前只需要 WorkBuddy 的 projects。
-pub fn workbuddy_projects(roots: &Roots, key: &str) -> Option<PathBuf> {
-    wb::editions(roots)
-        .into_iter()
-        .find(|ep| ep.key == key)
-        .map(|ep| ep.projects)
 }
