@@ -519,16 +519,6 @@ async fn session_facets(
 
 // ------------------------------------------------------------ 签到与积分
 
-/// 查单个账号的签到状态（会顺带刷新余额）。
-#[tauri::command]
-async fn checkin_status(
-    state: State<'_, AppState>,
-    iid: String,
-) -> std::result::Result<crate::types::StatusResult, String> {
-    let service = state.checkin.clone();
-    service.status(&iid).await.map_err(err_text)
-}
-
 /// 只查积分，不动签到状态（「刷新积分」走这条）。
 #[tauri::command]
 async fn checkin_credits(
@@ -666,15 +656,6 @@ async fn zcode_claim_run(
 ) -> std::result::Result<crate::app::providers::zclaim::ClaimOutcome, String> {
     let service = state.checkin.clone();
     service.zcode_claim(&iid, &plan_id).await.map_err(err_text)
-}
-
-#[tauri::command]
-async fn log_tail(limit: Option<usize>) -> Vec<String> {
-    let limit = limit.unwrap_or(200).min(2000);
-    // 整读 app.log 是磁盘活，不占主线程；闭包 panic（JoinError）回落空列表
-    crate::app::runtime::blocking(move || log::tail(limit))
-        .await
-        .unwrap_or_default()
 }
 
 /// 结构化日志查询（按级别 / 模块 / 关键词）。
@@ -886,7 +867,6 @@ pub fn run() -> tauri::Result<()> {
             session_trash,
             session_trash_restore,
             session_trash_purge,
-            checkin_status,
             checkin_credits,
             checkin_detail,
             checkin_run,
@@ -895,7 +875,6 @@ pub fn run() -> tauri::Result<()> {
             daily_run_now,
             zcode_claim_plans,
             zcode_claim_run,
-            log_tail,
             log_query,
             log_export,
             log_level,

@@ -210,11 +210,6 @@ impl Service {
         })
         .await?
     }
-
-    pub async fn count(&self) -> Result<usize> {
-        let db = self.db.clone();
-        blocking(move || SqliteSessions::new(&db).count()).await?
-    }
 }
 
 /// 账号库的 (platform, iid, name) 列表，给账号列昵称映射用。
