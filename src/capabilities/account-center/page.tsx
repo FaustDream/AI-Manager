@@ -44,21 +44,12 @@ export default function AccountCenterPage() {
     queryKey: ['current'],
     queryFn: () => call<string[]>('account_current'),
   });
-  const tasks = useQuery<TaskView[]>({
-    queryKey: ['tasks'],
-    queryFn: () => call<TaskView[]>('task_list'),
-    refetchInterval: 2000,
-  });
 
   const [selected, setSelected] = useState<string | null>(null);
   const [widths, setWidths] = useState<Record<string, number>>({});
   const [addOpen, setAddOpen] = useState(false);
   const rows = accounts.data ?? [];
   const selectedRow = rows.find((r) => r.iid === selected) ?? null;
-
-  const batchTask = (tasks.data ?? []).find(
-    (t) => t.name.startsWith('批量签到') && (t.state === 'running' || t.state === 'queued' || t.state === 'cancelling'),
-  );
 
   // ---- 列宽：持久化在 kv ui.columns（v1 同键） ----
   useEffect(() => {
@@ -100,22 +91,99 @@ export default function AccountCenterPage() {
     // onMove/onUp 全走 ref，不依赖渲染期值：只在挂载时装一次
   }, []);
 
-  // ---- 拖动排序（落点 = 移除源行后的插入位置；持久化 account_reorder）----
+  // ---- 拖动排序：指针事件自实现（HTML5 drag 的 onDragOver 每次都整表渲染，
+  // 且系统拖影与 2s 轮询互相打架，实测卡顿；指针方案只在落点真正变化时渲染，
+  // 拖影走 transform，拖拽期间暂停 tasks 轮询）----
+  // 落点 = 移除源行后的插入位置；持久化 account_reorder
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropAt, setDropAt] = useState<{ iid: string; before: boolean } | null>(null);
-  const commitReorder = async () => {
-    if (!dragging || !dropAt || dragging === dropAt.iid) return;
-    const ids = rows.map((r) => r.iid).filter((id) => id !== dragging);
-    const at = ids.indexOf(dropAt.iid);
-    ids.splice(dropAt.before ? at : at + 1, 0, dragging);
+  const tasks = useQuery<TaskView[]>({
+    queryKey: ['tasks'],
+    queryFn: () => call<TaskView[]>('task_list'),
+    // 拖拽进行中暂停轮询：每次返回新数组引用都会整页 re-render，打断拖影
+    refetchInterval: dragging ? false : 2000,
+  });
+  const batchTask = (tasks.data ?? []).find(
+    (t) => t.name.startsWith('批量签到') && (t.state === 'running' || t.state === 'queued' || t.state === 'cancelling'),
+  );
+  const dragRef = useRef<{
+    iid: string;
+    ghost: HTMLDivElement | null;
+    lastKey: string;
+    raf: number;
+  } | null>(null);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
+  const startDrag = (e: React.PointerEvent, iid: string) => {
+    if (e.button !== 0 || busy) return;
+    e.preventDefault();
+    const ghost = document.createElement('div');
+    ghost.textContent = rows.find((r) => r.iid === iid)?.name ?? '';
+    ghost.style.cssText =
+      'position:fixed;z-index:60;pointer-events:none;padding:2px 10px;border-radius:6px;' +
+      'background:var(--color-card);border:1px solid var(--color-line-strong);' +
+      'font:600 12px var(--font-sans);color:var(--color-fg);box-shadow:0 4px 12px rgb(0 0 0 / 0.18)';
+    const move = (e: PointerEvent) => {
+      ghost.style.transform = `translate(${e.clientX + 12}px, ${e.clientY + 8}px)`;
+    };
+    ghost.style.transform = `translate(${e.clientX + 12}px, ${e.clientY + 8}px)`;
+    document.body.appendChild(ghost);
+    window.addEventListener('pointermove', move, true);
+    dragRef.current = { iid, ghost, lastKey: iid, raf: 0 };
+
+    const onMove = (ev: PointerEvent) => {
+      // rAF 节流：一帧最多算一次落点
+      if (dragRef.current?.raf) return;
+      dragRef.current!.raf = requestAnimationFrame(() => {
+        dragRef.current!.raf = 0;
+        const row = (ev.target as HTMLElement)?.closest?.('tr[data-iid]') as HTMLTableRowElement | null;
+        if (!row) return;
+        const iid2 = row.dataset.iid!;
+        if (iid2 === dragRef.current?.lastKey) {
+          // 同一行内也要更新前后半区
+          const rect = row.getBoundingClientRect();
+          const before = ev.clientX - rect.left < rect.width / 2;
+          setDropAt((old) =>
+            old?.iid === iid2 && old.before === before ? old : { iid: iid2, before },
+          );
+          return;
+        }
+        dragRef.current!.lastKey = iid2;
+        const rect = row.getBoundingClientRect();
+        setDropAt({ iid: iid2, before: ev.clientX - rect.left < rect.width / 2 });
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+      const ghost2 = dragRef.current?.ghost;
+      ghost2?.remove();
+      const drag = dragRef.current;
+      dragRef.current = null;
+      setDragging(null);
+      // 落点在提交前读 ref：state 在闭包里可能是旧的
+      setDropAt((drop) => {
+        void commitReorder(drag?.iid ?? null, drop);
+        return null;
+      });
+    };
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+    setDragging(iid);
+  };
+
+  const commitReorder = async (from: string | null, drop: { iid: string; before: boolean } | null) => {
+    if (!from || !drop || from === drop.iid) return;
+    const ids = rowsRef.current.map((r) => r.iid).filter((id) => id !== from);
+    const at = ids.indexOf(drop.iid);
+    ids.splice(drop.before ? at : at + 1, 0, from);
     try {
       await call('account_reorder', { iids: ids });
       qc.invalidateQueries({ queryKey: ['accounts'] });
     } catch (e) {
       toast(errText(e));
     }
-    setDragging(null);
-    setDropAt(null);
   };
 
   const widthOf = (key: string, fallback: number) => widths[key] ?? fallback;
@@ -267,21 +335,25 @@ export default function AccountCenterPage() {
             return (
               <tr
                 key={row.iid}
-                draggable
-                onDragStart={() => setDragging(row.iid)}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  setDropAt({ iid: row.iid, before: e.clientX - rect.left < rect.width / 2 });
-                }}
-                onDragEnd={commitReorder}
+                data-iid={row.iid}
                 onClick={() => setSelected(row.iid)}
-                className={`row cursor-pointer hover:bg-hover ${selected === row.iid ? 'bg-hover' : ''} ${
+                className={`cursor-pointer ${selected === row.iid ? 'bg-hover' : ''} ${
                   isDragging ? 'opacity-40' : ''
                 }`}
-                style={dropBefore ? { boxShadow: 'inset 0 2px 0 var(--color-accent)' } : dropAfter ? { boxShadow: 'inset 0 -2px 0 var(--color-accent)' } : undefined}
+                style={
+                  dropBefore
+                    ? { boxShadow: 'inset 0 2px 0 var(--color-accent)' }
+                    : dropAfter
+                      ? { boxShadow: 'inset 0 -2px 0 var(--color-accent)' }
+                      : undefined
+                }
               >
-                <td className="px-1 py-1.5 text-center text-muted" style={{ cursor: 'grab' }}>
+                <td
+                  className="px-1 py-1.5 text-center text-muted select-none"
+                  style={{ cursor: 'grab', touchAction: 'none' }}
+                  onPointerDown={(e) => startDrag(e, row.iid)}
+                  title="拖动排序"
+                >
                   ⠿
                 </td>
                 {table.map((col) => (
