@@ -342,6 +342,8 @@ pub struct TargetInfo {
     pub skills: usize,
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub mcp: usize,
+    /// 平台技能目录里实际存在的技能（分发部署的 + 平台自带的）
+    pub installed: Vec<skills::InstalledSkill>,
 }
 
 pub fn snapshot(hub: &Hub) -> HubSnapshot {
@@ -412,6 +414,7 @@ pub fn snapshot(hub: &Hub) -> HubSnapshot {
             mcp_file: hub.mcp_path(target.key).display().to_string(),
             skills: skill_count,
             mcp: own,
+            installed: skills::installed(hub, target.key),
         });
     }
 

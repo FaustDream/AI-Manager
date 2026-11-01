@@ -68,6 +68,55 @@ pub fn find(hub: &Hub, name: &str) -> Option<SkillInfo> {
     path.is_dir().then(|| read_skill(&path))
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize)]
+pub struct InstalledSkill {
+    pub name: String,
+    /// 在技能库里：state 是与库对账的结果（synced/stale）；
+    /// 不在库里（平台自带或用户手工放置）：state = foreign
+    pub in_library: bool,
+    pub state: String,
+}
+
+/// 平台技能目录里**实际存在**的技能（平台页按这个展示，不列整个库）。
+pub fn installed(hub: &Hub, key: TargetKey) -> Vec<InstalledSkill> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(hub.skill_dir(key)) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !path.join("SKILL.md").is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            continue;
+        };
+        match find(hub, &name) {
+            Some(skill) => {
+                let state = if digest_dir_cached(&path) == skill.digest {
+                    "synced"
+                } else {
+                    "stale"
+                };
+                out.push(InstalledSkill {
+                    name,
+                    in_library: true,
+                    state: state.into(),
+                });
+            }
+            None => out.push(InstalledSkill {
+                name,
+                in_library: false,
+                state: "foreign".into(),
+            }),
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
 pub fn read_skill(folder: &Path) -> SkillInfo {
     let name = folder
         .file_name()
