@@ -18,7 +18,7 @@ use crate::app::net::Http;
 use crate::app::providers;
 use crate::app::runtime::blocking;
 use crate::app::task::CancelToken;
-use crate::contracts::CheckinStore;
+use crate::contracts::{CheckinStore, Ledger};
 use crate::types::{ActionResult, CreditSnapshot, StatusResult};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
@@ -340,19 +340,20 @@ impl Service {
             return round;
         }
 
-        // 第二步：逐个查接口状态（并发 3）。校验失败的账号直接计失败并跳过——
-        // 「查不到状态」不是「接口说没签」，落进待签会误触发签到
-        let (statuses, failed_status) = self.statuses_of(&targets).await;
-        round.failed += failed_status.len();
+        // 第二步：逐个查接口状态（并发 3）
+        let statuses = self.statuses_of(&targets).await;
 
         let mut due: Vec<String> = Vec::new();
         for account in &targets {
-            if failed_status.contains(&account.iid) {
-                continue;
-            }
             let status = statuses.get(&account.iid);
-            let checked = status.and_then(|s| s.checked_in);
-            if checked == Some(true) {
+            let remote = status.and_then(|s| s.checked_in);
+            // 契约 1（resolve_checked）的生产接线：接口说了算，
+            // 接口没给值（查询失败也在内）才看本地兜底
+            let checked = match remote {
+                Some(checked) => checked,
+                None => self.marked_today(&account.iid).await,
+            };
+            if checked {
                 // 接口说今天已签：写进去重表，后面就不必再问
                 if let Err(e) = self.mark_today(&account.iid).await {
                     log_write_failure("写入去重标记失败", &account.platform, e);
@@ -360,6 +361,7 @@ impl Service {
                 round.skipped += 1;
                 continue;
             }
+            // 契约 2：当日已签成功的不重复调用——接口偶发说没签也不信
             if self.marked_today(&account.iid).await {
                 round.skipped += 1;
                 continue;
@@ -499,15 +501,12 @@ impl Service {
         blocking(move || accounts::repo::list(&db)).await?
     }
 
-    /// 逐个查接口状态（并发 3）。返回查到的状态与「校验失败」的 iid 集合，
-    /// 失败者由调用方计 failed——它们的 `checked_in` 是未知，不是「未签」。
+    /// 逐个查接口状态（并发 3）。查询失败的账号不进结果表，
+    /// 由调用方按契约 1 用本地记录兜底。
     async fn statuses_of(
         &self,
         targets: &[AccountView],
-    ) -> (
-        std::collections::HashMap<String, StatusResult>,
-        std::collections::HashSet<String>,
-    ) {
+    ) -> std::collections::HashMap<String, StatusResult> {
         let semaphore = Arc::new(Semaphore::new(3));
         let mut tasks = tokio::task::JoinSet::new();
         for account in targets {
@@ -520,15 +519,12 @@ impl Service {
             });
         }
         let mut out = std::collections::HashMap::new();
-        let mut failed = std::collections::HashSet::new();
         while let Some(joined) = tasks.join_next().await {
             match joined {
                 Ok((iid, Ok(status))) => {
                     out.insert(iid, status);
                 }
-                Ok((iid, Err(_))) => {
-                    failed.insert(iid);
-                }
+                Ok((_, Err(_))) => {}
                 Err(e) => crate::app::log::log(
                     crate::app::log::Level::Warn,
                     "checkin",
@@ -536,7 +532,7 @@ impl Service {
                 ),
             }
         }
-        (out, failed)
+        out
     }
 
     async fn persist(&self, iid: &str, status: &StatusResult) {
@@ -633,16 +629,16 @@ impl Service {
         validity_days: Option<i64>,
         live_credit: bool,
     ) {
-        if live_credit {
-            // 契约 5：平台自己返回批次，写台账只会重复记一份
-            return;
-        }
         let db = self.db.clone();
         let clock = self.clock.clone();
         let iid = iid.to_string();
         let scope = platform_scope(&iid);
         match blocking(move || {
-            SqliteLedger::new(&db).record(&iid, granted, None, validity_days, clock.as_ref())
+            // 契约 5 的生产接线（add_if_needed）：live_credit=true 平台自己返回
+            // 批次，台账不重复记——这条幂等判断收在契约实现里，不在调用方
+            SqliteLedger::new(&db).add_if_needed(
+                live_credit, &iid, granted, validity_days, clock.as_ref(),
+            )
         })
         .await
         {
