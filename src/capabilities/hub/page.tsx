@@ -54,16 +54,16 @@ function reportText(steps: Step[]): string {
     .join('\n');
 }
 
-// 状态点旁的短名：8 个平台全称太长，这里约定缩写（悬停仍有全称提示）
-const SHORT: Record<string, string> = {
-  qoder_cn: 'Qoder',
-  qoder_intl: 'Qoder 国际',
-  trae_cn: 'Trae',
-  trae_intl: 'Trae 国际',
-  workbuddy_cn: 'WB 国内',
-  workbuddy_intl: 'WB 国际',
+// 状态矩阵列头的平台代码：3 字符内，与点阵共用同一网格严格对齐（悬停有全称）
+const CODE: Record<string, string> = {
+  qoder_cn: 'QCN',
+  qoder_intl: 'QIN',
+  trae_cn: 'TCN',
+  trae_intl: 'TIN',
+  workbuddy_cn: 'WCN',
+  workbuddy_intl: 'WIN',
   codebuddy: 'CB',
-  zcode: 'ZCode',
+  zcode: 'ZC',
 };
 
 /** 子标签（技能 / MCP）：与顶部主标签同款式，但更小一档。 */
@@ -279,7 +279,16 @@ export default function HubPage() {
                   <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">技能</th>
                   <th className="border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">说明</th>
                   <th className="w-20 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">大小</th>
-                  <th className="w-44 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">平台副本状态</th>
+                  <th className="w-48 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">
+                    {/* 列头代码与数据行的点共用同一网格，逐列对齐 */}
+                    <div className="grid w-44 grid-cols-8">
+                      {snap.targets.map((t) => (
+                        <span key={t.key} title={t.label} className="cursor-help text-center text-[9px] leading-4 text-muted">
+                          {CODE[t.key] ?? t.key}
+                        </span>
+                      ))}
+                    </div>
+                  </th>
                   <th className="w-40 border-b border-line px-2 py-1 text-left text-xs font-semibold text-muted">操作</th>
                 </tr>
               </thead>
@@ -307,32 +316,28 @@ export default function HubPage() {
                     <td className="border-b border-line px-2 py-1.5 text-xs tabular-nums text-muted">
                       {fmtSize(skill.size)}
                     </td>
-                    {/* 状态点阵：点 + 平台短名（4×2），颜色表状态，点击直达平台页 */}
+                    {/* 状态矩阵：一列一个平台（列头是代码），点色表状态，点击直达平台页 */}
                     <td className="border-b border-line px-2 py-1.5">
-                      <span className="grid grid-cols-4 gap-x-3 gap-y-1">
+                      <div className="grid w-44 grid-cols-8">
                         {snap.targets.map((t) => {
                           const state = skill.states.find(([k]) => k === t.key)?.[1] ?? 'missing';
                           return (
-                            <button
-                              key={t.key}
-                              className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted transition-colors hover:text-fg"
-                              title={`${t.label}：${STATE_LABEL[state] ?? state}`}
-                              onClick={() => setTab(t.key)}
-                            >
-                              <i
-                                className={`h-2 w-2 shrink-0 rounded-full ${
+                            <span key={t.key} className="flex justify-center">
+                              <button
+                                className={`h-2.5 w-2.5 cursor-pointer rounded-full transition-transform hover:scale-125 ${
                                   state === 'synced'
                                     ? 'bg-ok'
                                     : state === 'stale'
                                       ? 'bg-warn ring-2 ring-warn/30'
                                       : 'bg-line-strong'
                                 }`}
+                                title={`${t.label}：${STATE_LABEL[state] ?? state}`}
+                                onClick={() => setTab(t.key)}
                               />
-                              {SHORT[t.key] ?? t.key}
-                            </button>
+                            </span>
                           );
                         })}
-                      </span>
+                      </div>
                     </td>
                     <td className="border-b border-line px-2 py-1.5">
                       <span className="flex gap-1">
