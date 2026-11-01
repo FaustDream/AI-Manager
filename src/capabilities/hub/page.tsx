@@ -117,6 +117,9 @@ export default function HubPage() {
   const [mcpOpen, setMcpOpen] = useState(false);
   const [mcpText, setMcpText] = useState('');
   const [mcpTargets, setMcpTargets] = useState<Set<string>>(new Set());
+  // MCP 行「部署」对话框：把已有条目写到更多平台
+  const [mcpDeployName, setMcpDeployName] = useState<string | null>(null);
+  const [mcpPicked, setMcpPicked] = useState<Set<string>>(new Set());
 
   const toggle = (set: Set<string>, key: string, apply: (s: Set<string>) => void) => {
     const next = new Set(set);
@@ -181,6 +184,23 @@ export default function HubPage() {
       try {
         const report = await call<DeployReport>('hub_mcp_remove', { name, targets: keys });
         toast(reportText(report.steps) || '先在右侧勾选平台');
+        refresh();
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
+
+  // 把一条已存在的 MCP 条目写到更多平台（源条目由后端从所在平台读回）
+  const deployMcp = () =>
+    runBusy('mcp-deploy', async () => {
+      const name = mcpDeployName!;
+      try {
+        const report = await call<DeployReport>('hub_mcp_deploy', {
+          name,
+          targets: [...mcpPicked],
+        });
+        toast(reportText(report.steps) || '没有选择平台');
+        setMcpDeployName(null);
         refresh();
       } catch (e) {
         toast(errText(e));
@@ -389,17 +409,36 @@ export default function HubPage() {
                       {row.targets.join('、') || '—'}
                     </td>
                     <td className="border-b border-line px-2 py-1.5">
-                      {!row.foreign && (
+                      <span className="flex justify-end gap-1">
                         <Button
                           size="sm"
-                          variant="danger"
-                          onClick={() => removeMcp(row.name, [...picked])}
-                          loading={busy === `mcp-remove:${row.name}`}
-                          disabled={!!busy || picked.size === 0}
+                          onClick={() => {
+                            setMcpDeployName(row.name);
+                            // 预选还没有这条的平台：已写入的不用再发
+                            setMcpPicked(
+                              new Set(
+                                snap.targets
+                                  .filter((t) => !row.present.includes(t.key))
+                                  .map((t) => t.key),
+                              ),
+                            );
+                          }}
                         >
-                          移除
+                          部署
                         </Button>
-                      )}
+                        {!row.foreign && (
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() => removeMcp(row.name, [...picked])}
+                            loading={busy === `mcp-remove:${row.name}`}
+                            disabled={!!busy || picked.size === 0}
+                            title="先在上方平台标签里选中要移除的平台"
+                          >
+                            移除
+                          </Button>
+                        )}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -600,17 +639,34 @@ export default function HubPage() {
                         {row.targets.includes(tab) ? '本工具部署' : '非本工具写入'}
                       </td>
                       <td className="border-b border-line px-2 py-1.5">
-                        {!row.foreign && (
+                        <span className="flex justify-end gap-1">
                           <Button
                             size="sm"
-                            variant="danger"
-                            onClick={() => removeMcp(row.name, [tab])}
-                            loading={busy === `mcp-remove:${row.name}`}
-                            disabled={!!busy}
+                            onClick={() => {
+                              setMcpDeployName(row.name);
+                              setMcpPicked(
+                                new Set(
+                                  snap.targets
+                                    .filter((t) => !row.present.includes(t.key))
+                                    .map((t) => t.key),
+                                ),
+                              );
+                            }}
                           >
-                            移除
+                            部署
                           </Button>
-                        )}
+                          {!row.foreign && (
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              onClick={() => removeMcp(row.name, [tab])}
+                              loading={busy === `mcp-remove:${row.name}`}
+                              disabled={!!busy}
+                            >
+                              移除
+                            </Button>
+                          )}
+                        </span>
                       </td>
                     </tr>
                   ))}
@@ -723,6 +779,40 @@ export default function HubPage() {
             }
           />
         </div>
+      </Dialog>
+
+      {/* MCP 行「部署」：把已有条目写到更多平台；源条目由后端从所在平台读回 */}
+      <Dialog
+        open={mcpDeployName !== null}
+        title={`部署「${mcpDeployName ?? ''}」到其他平台`}
+        onClose={() => setMcpDeployName(null)}
+        footer={
+          <>
+            <Button onClick={() => setMcpDeployName(null)} disabled={!!busy}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              disabled={mcpPicked.size === 0 || !!busy}
+              loading={busy === 'mcp-deploy'}
+              onClick={deployMcp}
+            >
+              部署
+            </Button>
+          </>
+        }
+      >
+        <TargetPicker
+          targets={snap.targets}
+          picked={mcpPicked}
+          onToggle={(key) => toggle(mcpPicked, key, setMcpPicked)}
+          onAll={(all) =>
+            setMcpPicked(all ? new Set(snap.targets.map((t) => t.key)) : new Set())
+          }
+        />
+        <p className="mt-3 text-xs text-muted">
+          条目内容从它当前所在的平台读回，按各平台格式写入；目标已有同名但内容不同的条目时报冲突，不会静默覆盖。
+        </p>
       </Dialog>
     </div>
   );
