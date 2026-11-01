@@ -55,6 +55,13 @@ export default function HubPage() {
 
   const [deployName, setDeployName] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // 对话框动作（部署/移除/写 MCP）的加载态
+  const [busy, setBusy] = useState<string | null>(null);
+  const runBusy = (key: string, work: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(key);
+    void work().finally(() => setBusy(null));
+  };
   const [importPick, setImportPick] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [mcpText, setMcpText] = useState('');
@@ -69,47 +76,65 @@ export default function HubPage() {
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['hub'] });
 
-  const deploy = async (overwrite: boolean) => {
-    const name = deployName!;
-    try {
-      const report = await call<DeployReport>('hub_skill_deploy', {
-        name,
-        targets: [...picked],
-        overwrite,
-      });
-      toast(reportText(report.steps) || '没有选择平台');
-      setDeployName(null);
-      refresh();
-    } catch (e) {
-      toast(errText(e));
-    }
-  };
+  const deploy = (overwrite: boolean) =>
+    runBusy('deploy', async () => {
+      const name = deployName!;
+      try {
+        const report = await call<DeployReport>('hub_skill_deploy', {
+          name,
+          targets: [...picked],
+          overwrite,
+        });
+        toast(reportText(report.steps) || '没有选择平台');
+        setDeployName(null);
+        refresh();
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
 
-  const importMcp = async () => {
-    if (!mcpText.trim() || mcpTargets.size === 0) return;
-    try {
-      const r = await call<{ names: string[]; report: DeployReport }>('hub_mcp_import', {
-        text: mcpText,
-        targets: [...mcpTargets],
-      });
-      toast(`写入 ${r.names.join('、')}\n${reportText(r.report.steps)}`);
-      setMcpOpen(false);
-      setMcpText('');
-      refresh();
-    } catch (e) {
-      toast(errText(e));
-    }
-  };
+  const importMcp = () =>
+    runBusy('mcp', async () => {
+      if (!mcpText.trim() || mcpTargets.size === 0) return;
+      try {
+        const r = await call<{ names: string[]; report: DeployReport }>('hub_mcp_import', {
+          text: mcpText,
+          targets: [...mcpTargets],
+        });
+        toast(`写入 ${r.names.join('、')}\n${reportText(r.report.steps)}`);
+        setMcpOpen(false);
+        setMcpText('');
+        refresh();
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
 
-  const removeMcp = async (name: string) => {
-    try {
-      const report = await call<DeployReport>('hub_mcp_remove', { name, targets: [...picked] });
-      toast(reportText(report.steps) || '先在右侧勾选平台');
-      refresh();
-    } catch (e) {
-      toast(errText(e));
-    }
-  };
+  const removeSkill = () =>
+    runBusy('remove', async () => {
+      try {
+        const report = await call<DeployReport>('hub_skill_remove', {
+          name: deployName,
+          targets: [...picked],
+        });
+        toast(reportText(report.steps));
+        setDeployName(null);
+        refresh();
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
+
+  const removeMcp = (name: string) =>
+    runBusy(`mcp-remove:${name}`, async () => {
+      try {
+        const report = await call<DeployReport>('hub_mcp_remove', { name, targets: [...picked] });
+        toast(reportText(report.steps) || '先在右侧勾选平台');
+        refresh();
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
 
   if (hub.isLoading) return <SkeletonRows rows={4} cols={3} />;
   if (hub.isError) {
@@ -246,7 +271,13 @@ export default function HubPage() {
                 </td>
                 <td className="border-b border-line px-2 py-1.5">
                   {!row.foreign && (
-                    <Button size="sm" variant="danger" onClick={() => removeMcp(row.name)}>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onClick={() => removeMcp(row.name)}
+                      loading={busy === `mcp-remove:${row.name}`}
+                      disabled={!!busy}
+                    >
                       移除
                     </Button>
                   )}
@@ -264,8 +295,15 @@ export default function HubPage() {
         onClose={() => setDeployName(null)}
         footer={
           <>
-            <Button onClick={() => setDeployName(null)}>取消</Button>
-            <Button variant="primary" disabled={picked.size === 0} onClick={() => deploy(false)}>
+            <Button onClick={() => setDeployName(null)} disabled={!!busy}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              disabled={picked.size === 0 || !!busy}
+              loading={busy === 'deploy'}
+              onClick={() => deploy(false)}
+            >
               部署
             </Button>
           </>
@@ -283,26 +321,21 @@ export default function HubPage() {
           目标已有同名但内容不同的副本时会报冲突，需要你在结果里确认覆盖。
         </p>
         <div className="mt-2 flex gap-2">
-          <Button size="sm" variant="danger" onClick={() => deploy(true)} disabled={picked.size === 0}>
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() => deploy(true)}
+            disabled={picked.size === 0 || !!busy}
+            loading={busy === 'deploy'}
+          >
             强制覆盖部署
           </Button>
           <Button
             size="sm"
             variant="ghost"
-            disabled={picked.size === 0}
-            onClick={async () => {
-              try {
-                const report = await call<DeployReport>('hub_skill_remove', {
-                  name: deployName,
-                  targets: [...picked],
-                });
-                toast(reportText(report.steps));
-                setDeployName(null);
-                refresh();
-              } catch (e) {
-                toast(errText(e));
-              }
-            }}
+            disabled={picked.size === 0 || !!busy}
+            loading={busy === 'remove'}
+            onClick={removeSkill}
           >
             从选中平台移除
           </Button>
@@ -318,8 +351,15 @@ export default function HubPage() {
         wide
         footer={
           <>
-            <Button onClick={() => setMcpOpen(false)}>取消</Button>
-            <Button variant="primary" onClick={importMcp} disabled={!mcpText.trim() || mcpTargets.size === 0}>
+            <Button onClick={() => setMcpOpen(false)} disabled={!!busy}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              onClick={importMcp}
+              disabled={!mcpText.trim() || mcpTargets.size === 0 || !!busy}
+              loading={busy === 'mcp'}
+            >
               写入选中平台
             </Button>
           </>
@@ -361,6 +401,7 @@ function ImportDialog({
   const qc = useQueryClient();
   const [source, setSource] = useState(targets[0]?.key ?? '');
   const [name, setName] = useState('');
+  const [importing, setImporting] = useState(false);
 
   return (
     <Dialog
@@ -372,7 +413,10 @@ function ImportDialog({
           <Button onClick={onClose}>取消</Button>
           <Button
             variant="primary"
+            loading={importing}
+            disabled={!name.trim() || importing}
             onClick={async () => {
+              setImporting(true);
               try {
                 const info = await call<{ name: string }>('hub_skill_import', { target: source, name });
                 toast(`已导入 ${info.name}`);
@@ -380,6 +424,8 @@ function ImportDialog({
                 onClose();
               } catch (e) {
                 toast(errText(e));
+              } finally {
+                setImporting(false);
               }
             }}
           >

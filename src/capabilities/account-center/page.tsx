@@ -186,14 +186,14 @@ export default function AccountCenterPage() {
   return (
     <div className="flex flex-col gap-2.5" style={{ overflowX: 'auto' }}>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" onClick={scanAndRefresh} disabled={!!busy}>
-          {busy === 'scan' ? '扫描中…' : '扫描客户端'}
+        <Button variant="primary" onClick={scanAndRefresh} loading={busy === 'scan'} disabled={!!busy}>
+          扫描客户端
         </Button>
         <Button onClick={() => setAddOpen(true)} disabled={!!busy}>
           添加账号
         </Button>
-        <Button onClick={refreshCredits} disabled={!!busy}>
-          {busy === 'credits' ? '刷新中…' : '刷新积分'}
+        <Button onClick={refreshCredits} loading={busy === 'credits'} disabled={!!busy}>
+          刷新积分
         </Button>
         <Button onClick={batchCheckin} disabled={!!batchTask}>
           批量签到

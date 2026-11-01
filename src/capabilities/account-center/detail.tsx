@@ -97,13 +97,19 @@ export function DetailPanel({ account }: { account: AccountView | null }) {
         )}
         <span className="flex-1" />
         {account.platform === 'zcode' && (
-          <Button size="sm" onClick={openClaim} disabled={!!busy}>
-            {busy === 'plans' ? '查询中…' : '领取活动'}
+          <Button size="sm" onClick={openClaim} loading={busy === 'plans'} disabled={!!busy}>
+            领取活动
           </Button>
         )}
         {account.requires_checkin && (
-          <Button size="sm" variant="primary" onClick={runOne} disabled={!!busy}>
-            {busy === 'checkin' ? '签到中…' : '签到'}
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={runOne}
+            loading={busy === 'checkin'}
+            disabled={!!busy}
+          >
+            签到
           </Button>
         )}
         <Button
