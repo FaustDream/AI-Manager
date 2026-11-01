@@ -100,6 +100,7 @@ function GeneralPane() {
 
 function LogsPane() {
   const [filter, setFilter] = useState<LogFilter>({ level: null, module: null, keyword: null, limit: 300 });
+  const [exporting, setExporting] = useState(false);
   const query = useQuery<LogLine[]>({
     queryKey: ['log', JSON.stringify(filter)],
     queryFn: () => call<LogLine[]>('log_query', { filter }),
@@ -150,11 +151,15 @@ function LogsPane() {
         <LogLevelPicker />
         <Button
           size="sm"
+          loading={exporting}
           onClick={async () => {
+            setExporting(true);
             try {
               toast(await call<string>('log_export', { path: null, filter }));
             } catch (e) {
               toast(errText(e));
+            } finally {
+              setExporting(false);
             }
           }}
         >
@@ -218,6 +223,7 @@ function LogLevelPicker() {
 
 function TasksPane() {
   const qc = useQueryClient();
+  const [cleaning, setCleaning] = useState(false);
   const tasks = useQuery<TaskView[]>({
     queryKey: ['tasks'],
     queryFn: () => call<TaskView[]>('task_list'),
@@ -231,10 +237,18 @@ function TasksPane() {
       <div className="flex items-center gap-2">
         <Button
           size="sm"
+          loading={cleaning}
           onClick={async () => {
-            const n = await call<number>('task_clear_finished').catch(() => 0);
-            toast(`清理了 ${n} 条已结束的任务`);
-            qc.invalidateQueries({ queryKey: ['tasks'] });
+            setCleaning(true);
+            try {
+              const n = await call<number>('task_clear_finished');
+              toast(`清理了 ${n} 条已结束的任务`);
+              qc.invalidateQueries({ queryKey: ['tasks'] });
+            } catch (e) {
+              toast(errText(e));
+            } finally {
+              setCleaning(false);
+            }
           }}
         >
           清理已结束
@@ -276,6 +290,12 @@ function TasksPane() {
 
 function MaintenancePane() {
   const qc = useQueryClient();
+  const [busy, setBusy] = useState<string | null>(null);
+  const runBusy = (key: string, work: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(key);
+    void work().finally(() => setBusy(null));
+  };
   const space = useQuery<SpaceReport>({
     queryKey: ['space'],
     queryFn: () => call<SpaceReport>('maintenance_space'),
@@ -330,17 +350,21 @@ function MaintenancePane() {
             <Button
               size="sm"
               variant="danger"
-              onClick={async () => {
-                if (!window.confirm('清空整个回收站？不可恢复。')) return;
-                try {
-                  const bytes = await call<number>('maintenance_purge_trash', { tag: null });
-                  toast(`已释放 ${fmtSize(bytes)}`);
-                  qc.invalidateQueries({ queryKey: ['maint-trash'] });
-                  qc.invalidateQueries({ queryKey: ['space'] });
-                } catch (e) {
-                  toast(errText(e));
-                }
-              }}
+              loading={busy === 'purge'}
+              disabled={!!busy}
+              onClick={() =>
+                runBusy('purge', async () => {
+                  if (!window.confirm('清空整个回收站？不可恢复。')) return;
+                  try {
+                    const bytes = await call<number>('maintenance_purge_trash', { tag: null });
+                    toast(`已释放 ${fmtSize(bytes)}`);
+                    qc.invalidateQueries({ queryKey: ['maint-trash'] });
+                    qc.invalidateQueries({ queryKey: ['space'] });
+                  } catch (e) {
+                    toast(errText(e));
+                  }
+                })
+              }
             >
               清空回收站
             </Button>
@@ -357,33 +381,41 @@ function MaintenancePane() {
         <div className="flex gap-2">
           <Button
             size="sm"
-            onClick={async () => {
-              try {
-                const r = await call<{ accounts: CountPair; sessions: CountPair; ledger: CountPair; ok: boolean }>('migrate_verify');
-                const line = (name: string, pair: CountPair) =>
-                  `${name} ${pair.v1}/${pair.v2}`;
-                setVerify(
-                  `账号 ${line('', r.accounts)} · 会话 ${r.sessions.v1}/${r.sessions.v2} · 积分台账 ${r.ledger.v1}/${r.ledger.v2}\n` +
-                    (r.ok ? '计数一致，可以归档。' : '计数不一致，先处理差异再归档。'),
-                );
-              } catch (e) {
-                toast(errText(e));
-              }
-            }}
+            loading={busy === 'verify'}
+            disabled={!!busy}
+            onClick={() =>
+              runBusy('verify', async () => {
+                try {
+                  const r = await call<{ accounts: CountPair; sessions: CountPair; ledger: CountPair; ok: boolean }>('migrate_verify');
+                  const line = (name: string, pair: CountPair) =>
+                    `${name} ${pair.v1}/${pair.v2}`;
+                  setVerify(
+                    `账号 ${line('', r.accounts)} · 会话 ${r.sessions.v1}/${r.sessions.v2} · 积分台账 ${r.ledger.v1}/${r.ledger.v2}\n` +
+                      (r.ok ? '计数一致，可以归档。' : '计数不一致，先处理差异再归档。'),
+                  );
+                } catch (e) {
+                  toast(errText(e));
+                }
+              })
+            }
           >
             校验
           </Button>
           <Button
             size="sm"
             variant="primary"
-            onClick={async () => {
-              try {
-                const r = await call<{ archive_dir: string }>('migrate_archive');
-                toast(`v1 文件已归档到 ${r.archive_dir}`);
-              } catch (e) {
-                toast(errText(e));
-              }
-            }}
+            loading={busy === 'archive'}
+            disabled={!!busy}
+            onClick={() =>
+              runBusy('archive', async () => {
+                try {
+                  const r = await call<{ archive_dir: string }>('migrate_archive');
+                  toast(`v1 文件已归档到 ${r.archive_dir}`);
+                } catch (e) {
+                  toast(errText(e));
+                }
+              })
+            }
           >
             归档
           </Button>

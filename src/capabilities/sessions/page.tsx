@@ -80,42 +80,56 @@ export default function SessionsPage() {
 
   const rowKey = (r: SessionRow) => `${r.kind}|${r.source_key}|${r.account}|${r.session_id}`;
 
-  const deleteChecked = async () => {
-    const keys = [...checked];
-    if (keys.length === 0) return;
-    if (!window.confirm(`删除选中的 ${keys.length} 条会话？（进回收站，可恢复）`)) return;
-    try {
-      const report = await call<DeleteReport>('session_delete', { keys });
-      toast(
-        `已删除 ${report.sessions} 条（${report.files} 个文件）进回收站` +
-          (report.errors.length ? `；失败 ${report.errors.length}` : ''),
-      );
-      setChecked(new Set());
-      setSelected(null);
-      qc.invalidateQueries({ queryKey: ['facets'] });
-      qc.invalidateQueries({ queryKey: ['sessions'] });
-    } catch (e) {
-      toast(errText(e));
-    }
+  // 异步按钮的加载态（与账号中心同一套 Button loading）
+  const [busy, setBusy] = useState<string | null>(null);
+  const runBusy = (key: string, work: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(key);
+    void work().finally(() => setBusy(null));
   };
 
-  const scan = async () => {
-    try {
-      await call('session_scan');
-      toast('会话扫描已开始（后台任务）');
-    } catch (e) {
-      toast(errText(e));
-    }
-  };
+  const deleteChecked = () =>
+    runBusy('delete', async () => {
+      const keys = [...checked];
+      if (keys.length === 0) return;
+      if (!window.confirm(`删除选中的 ${keys.length} 条会话？（进回收站，可恢复）`)) return;
+      try {
+        const report = await call<DeleteReport>('session_delete', { keys });
+        toast(
+          `已删除 ${report.sessions} 条（${report.files} 个文件）进回收站` +
+            (report.errors.length ? `；失败 ${report.errors.length}` : ''),
+        );
+        setChecked(new Set());
+        setSelected(null);
+        qc.invalidateQueries({ queryKey: ['facets'] });
+        qc.invalidateQueries({ queryKey: ['sessions'] });
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
 
-  const backup = async () => {
-    try {
-      const snap = await call<Snapshot>('session_backup');
-      toast(`快照 ${snap.tag}：${snap.sources.length} 个来源，${fmtSize(snap.bytes)}`);
-    } catch (e) {
-      toast(errText(e));
-    }
-  };
+  const scan = () =>
+    runBusy('scan', async () => {
+      try {
+        await call('session_scan');
+        toast('会话扫描已开始（后台任务）');
+        // 扫描是后台任务：起个轮询等它收尾，完成时列表自然被事件桥刷新
+        setTimeout(() => qc.invalidateQueries({ queryKey: ['facets'] }), 3000);
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
+
+  const backup = () =>
+    runBusy('backup', async () => {
+      try {
+        const snap = await call<Snapshot>('session_backup');
+        toast(`快照 ${snap.tag}：${snap.sources.length} 个来源，${fmtSize(snap.bytes)}`);
+        qc.invalidateQueries({ queryKey: ['backups'] });
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
 
   const total = facets.data?.total ?? 0;
   return (
@@ -175,11 +189,21 @@ export default function SessionsPage() {
           </Select>
         </label>
         <span className="flex-1" />
-        <Button size="sm" onClick={scan}>重新扫描</Button>
-        <Button size="sm" onClick={backup}>整库备份</Button>
+        <Button size="sm" onClick={scan} loading={busy === 'scan'} disabled={!!busy}>
+          重新扫描
+        </Button>
+        <Button size="sm" onClick={backup} loading={busy === 'backup'} disabled={!!busy}>
+          整库备份
+        </Button>
         <Button size="sm" onClick={() => setBackupsOpen(true)}>备份列表</Button>
         <Button size="sm" onClick={() => setTrashOpen(true)}>回收站</Button>
-        <Button size="sm" variant="danger" disabled={checked.size === 0} onClick={deleteChecked}>
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={checked.size === 0 || !!busy}
+          loading={busy === 'delete'}
+          onClick={deleteChecked}
+        >
           删除选中（{checked.size}）
         </Button>
       </div>
@@ -361,28 +385,34 @@ function TrashDrawer({ open, onClose }: { open: boolean; onClose: () => void }) 
     enabled: open,
   });
 
-  const restore = async (tag: string) => {
-    try {
-      const r = await call<RestoreReport>('session_trash_restore', { tag });
-      toast(`已恢复 ${r.restored} 条${r.errors.length ? `；失败 ${r.errors.length}` : ''}`);
-      // 恢复会改动回收站批次与主列表（行会重新出现），两者都要失效
-      qc.invalidateQueries({ queryKey: ['trash'] });
-      qc.invalidateQueries({ queryKey: ['facets'] });
-      qc.invalidateQueries({ queryKey: ['sessions'] });
-    } catch (e) {
-      toast(errText(e));
-    }
+  const [busyTag, setBusyTag] = useState<string | null>(null);
+
+  const restore = (tag: string) => {
+    if (busyTag) return;
+    setBusyTag(tag);
+    void call<RestoreReport>('session_trash_restore', { tag })
+      .then((r) => {
+        toast(`已恢复 ${r.restored} 条${r.errors.length ? `；失败 ${r.errors.length}` : ''}`);
+        // 恢复会改动回收站批次与主列表（行会重新出现），两者都要失效
+        qc.invalidateQueries({ queryKey: ['trash'] });
+        qc.invalidateQueries({ queryKey: ['facets'] });
+        qc.invalidateQueries({ queryKey: ['sessions'] });
+      })
+      .catch((e) => toast(errText(e)))
+      .finally(() => setBusyTag(null));
   };
 
-  const purge = async (tag: string | null) => {
+  const purge = (tag: string | null) => {
+    if (busyTag) return;
     if (!window.confirm(tag ? `彻底删除批次 ${tag}？不可恢复。` : '清空整个回收站？不可恢复。')) return;
-    try {
-      const bytes = await call<number>('session_trash_purge', { tag });
-      toast(`已释放 ${fmtSize(bytes)}`);
-      qc.invalidateQueries({ queryKey: ['trash'] });
-    } catch (e) {
-      toast(errText(e));
-    }
+    setBusyTag(tag ?? '__all__');
+    void call<number>('session_trash_purge', { tag })
+      .then((bytes) => {
+        toast(`已释放 ${fmtSize(bytes)}`);
+        qc.invalidateQueries({ queryKey: ['trash'] });
+      })
+      .catch((e) => toast(errText(e)))
+      .finally(() => setBusyTag(null));
   };
 
   return (
@@ -398,8 +428,23 @@ function TrashDrawer({ open, onClose }: { open: boolean; onClose: () => void }) 
               <span className="font-mono text-xs">{batch.tag}</span>
               <span className="text-xs text-muted">{fmtTime(batch.at)} · {batch.items.length} 个文件</span>
               <span className="flex-1" />
-              <Button size="sm" onClick={() => restore(batch.tag)}>恢复</Button>
-              <Button size="sm" variant="danger" onClick={() => purge(batch.tag)}>彻底删除</Button>
+              <Button
+                size="sm"
+                onClick={() => restore(batch.tag)}
+                loading={busyTag === batch.tag}
+                disabled={!!busyTag}
+              >
+                恢复
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => purge(batch.tag)}
+                loading={busyTag === batch.tag}
+                disabled={!!busyTag}
+              >
+                彻底删除
+              </Button>
             </div>
             {batch.platforms.length > 0 && (
               <div className="mt-1 text-xs text-muted">涉及客户端：{batch.platforms.join('、')}</div>
@@ -409,7 +454,14 @@ function TrashDrawer({ open, onClose }: { open: boolean; onClose: () => void }) 
       </div>
       {(batches.data ?? []).length > 0 && (
         <div className="mt-3 flex justify-end">
-          <Button variant="danger" onClick={() => purge(null)}>清空回收站</Button>
+          <Button
+            variant="danger"
+            onClick={() => purge(null)}
+            loading={busyTag === '__all__'}
+            disabled={!!busyTag}
+          >
+            清空回收站
+          </Button>
         </div>
       )}
     </Dialog>
