@@ -43,6 +43,11 @@ jobs:
         run: cargo build --release --features custom-protocol
         working-directory: src-tauri
 
+      # release/ 被 .gitignore 忽略，克隆里不存在；makensis 与 Compress-Archive
+      # 都不会自动建目录（表现为 NSIS 的 "Can't open output file"）
+      - name: 准备产物目录
+        run: New-Item -ItemType Directory -Force release | Out-Null
+
       - name: 打 per-user 安装包
         run: |
           choco install nsis -y --no-progress
