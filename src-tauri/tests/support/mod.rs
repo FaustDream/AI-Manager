@@ -79,11 +79,6 @@ pub fn sample_account(iid: &str, _live: bool) -> Account {
     }
 }
 
-/// 契约 18 的辅助断言：UTC 输入必须按本地时区渲染。
-pub fn render_local(dt: DateTime<Local>) -> String {
-    dt.format("%m-%d %H:%M").to_string()
-}
-
 pub fn conflict_error(name: &str) -> AppError {
     AppError::new(
         ErrorKind::Conflict,

@@ -1,5 +1,5 @@
 # v2（Rust + Tauri 2）的持续集成：架构文档 §10 承诺的三件套。
-# v1 的发布流水线在 release.yml，两者互不干扰。
+# 发布流水线在 release.yml（v* 标签触发，产出安装包与免安装 zip）。
 name: ci
 
 on:
@@ -57,3 +57,6 @@ jobs:
 
       - name: 类型检查与构建
         run: npm run build
+
+      - name: 单元测试（纯函数）
+        run: npm test

@@ -18,11 +18,13 @@ src-tauri/.cargo/
 .workbuddy/
 .workbuddy-ai/
 
-# 本地留存，不入库（docs/shots 截图带账号昵称等信息；tools/ 打包脚本与素材随本机走）
+# 本地留存，不入库（docs/shots 截图带账号昵称等信息；tools/ 开发脚本与素材随本机走）
 docs/
 AGENTS.md
 tools/
-packaging/
+
+# 打包脚本必须入库（发布要可复现），只忽略产物
+packaging/nsis/*.exe
 
 # 临时与系统垃圾
 *.log
