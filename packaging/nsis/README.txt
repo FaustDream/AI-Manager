@@ -1,4 +1,4 @@
-AI Manager 1.8.0 · 免安装版（Windows x64）
+AI Manager 1.8.1 · 免安装版（Windows x64）
 ==========================================
 
 一、怎么用
@@ -39,6 +39,6 @@ AI Manager 1.8.0 · 免安装版（Windows x64）
 
 四、校验
 --------
-版本：1.8.0    产物：AI-Manager-1.8.0-windows-x64-portable.zip
-安装版请用 AI-Manager-1.8.0-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
+版本：1.8.1    产物：AI-Manager-1.8.1-windows-x64-portable.zip
+安装版请用 AI-Manager-1.8.1-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
 免管理员，卸载同样保留 data\）。

@@ -12,6 +12,7 @@ import type { ReactNode } from 'react';
 
 import { daysUntil, fmtAmount, fmtDay, fmtTime } from '@/lib/format';
 import { Button, cn } from '@/components/ui/button';
+import { confirmAction } from '@/components/ui/confirm';
 import { Dialog } from '@/components/ui/dialog';
 import { Notice, Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
@@ -127,6 +128,23 @@ export function DetailPanel({
       
     });
 
+  // 三端同号、分开切换：这两个按钮只动 CodeBuddy 软件 / IDEA 插件的登录，
+  // 用这个账号的 WorkBuddy 档案写入（列表上的「切换登录」只切 WorkBuddy 本体）
+  const switchCodebuddy = (target: 'software' | 'idea') =>
+    runBusy(`switch-${target}`, async () => {
+      const label = target === 'software' ? 'CodeBuddy 软件' : 'IDEA 插件';
+      const ok = await confirmAction({
+        title: `切换 ${label} 登录`,
+        message:
+          `把 ${label} 的登录切成「${account.name}」？\n\n` +
+          `用这个账号的 WorkBuddy 档案写入，写前自动备份；需要先关闭 ${label}。`,
+      });
+      if (!ok) return;
+      const r = await runCmd('account_switch_codebuddy', { iid: account.iid, target });
+      if (r === undefined) return;
+      toast(r.backup ? `${r.message}\n备份：${r.backup}` : r.message);
+    });
+
   const d = detail.data;
   const checked = d?.checked_in ?? account.checked_in === true;
   const now = Date.now();
@@ -174,6 +192,28 @@ export function DetailPanel({
           >
             签到
           </Button>
+        )}
+        {account.platform === 'workbuddy' && !account.iid.endsWith('@intl') && (
+          <>
+            <Button
+              size="sm"
+              onClick={() => switchCodebuddy('software')}
+              loading={busy === 'switch-software'}
+              disabled={!!busy}
+              title="把 CodeBuddy 软件的登录切成这个账号"
+            >
+              切换 CodeBuddy 软件
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => switchCodebuddy('idea')}
+              loading={busy === 'switch-idea'}
+              disabled={!!busy}
+              title="把 IDEA 里 CodeBuddy 插件的登录切成这个账号"
+            >
+              切换 IDEA 插件
+            </Button>
+          </>
         )}
       </div>
 

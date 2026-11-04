@@ -14,5 +14,5 @@ pub mod switch;
 pub mod view;
 
 pub use scan::{scan_all, ScanReport};
-pub use switch::{current_iids, is_current, switch, SwitchResult};
+pub use switch::{current_iids, is_current, switch, switch_codebuddy, SwitchResult};
 pub use view::{AccountIdentity, AccountTable, AccountView};

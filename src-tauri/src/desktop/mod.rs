@@ -153,6 +153,7 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_delete,
             commands::accounts::account_scan,
             commands::accounts::account_switch,
+            commands::accounts::account_switch_codebuddy,
             commands::accounts::account_restore_sessions,
             commands::accounts::account_uid,
             commands::accounts::account_current,
