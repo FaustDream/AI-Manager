@@ -6,6 +6,7 @@
 
 pub mod add;
 pub mod credential;
+pub mod login;
 pub mod profile;
 pub mod repo;
 pub mod scan;

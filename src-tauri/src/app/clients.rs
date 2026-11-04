@@ -6,7 +6,7 @@
 //!
 //! 路径全部经 `Roots`，测试可以指向临时目录，绝不允许碰真实客户端。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::contracts::ClientDb;
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
@@ -120,10 +120,17 @@ impl ClientConn {
             OpenFlags::SQLITE_OPEN_READ_ONLY
         };
         if !path.exists() {
-            return Err(AppError::new("io", format!("库不存在：{}", path.display())));
+            return Err(AppError::new(
+                ErrorKind::Io,
+                format!("库不存在：{}", path.display()),
+            ));
         }
-        let conn = Connection::open_with_flags(path, flags)
-            .map_err(|e| AppError::new("sqlite", format!("打开 {} 失败：{e}", path.display())))?;
+        let conn = Connection::open_with_flags(path, flags).map_err(|e| {
+            AppError::new(
+                ErrorKind::Sqlite,
+                format!("打开 {} 失败：{e}", path.display()),
+            )
+        })?;
         *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = Some(conn);
         *self.path.lock().unwrap_or_else(|e| e.into_inner()) = Some(path.to_path_buf());
         self.readonly.store(!write, Ordering::Relaxed);
@@ -141,7 +148,7 @@ impl ClientConn {
                     match e {
                         rusqlite::Error::QueryReturnedNoRows => Ok(()),
                         other => Err(AppError::new(
-                            "sqlite",
+                            ErrorKind::Sqlite,
                             format!("wal_checkpoint 失败：{other}"),
                         )),
                     }
@@ -153,7 +160,7 @@ impl ClientConn {
     pub fn execute(&self, sql: &str) -> Result<usize> {
         self.with(|conn| {
             conn.execute(sql, [])
-                .map_err(|e| AppError::new("sqlite", format!("执行失败：{e}")))
+                .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("执行失败：{e}")))
         })
     }
 
@@ -161,10 +168,10 @@ impl ClientConn {
         let guard = self
             .conn
             .lock()
-            .map_err(|_| AppError::new("sqlite", "连接已失效"))?;
+            .map_err(|_| AppError::new(ErrorKind::Sqlite, "连接已失效"))?;
         let conn = guard
             .as_ref()
-            .ok_or_else(|| AppError::new("invalid", "连接未打开"))?;
+            .ok_or_else(|| AppError::new(ErrorKind::Invalid, "连接未打开"))?;
         f(conn)
     }
 

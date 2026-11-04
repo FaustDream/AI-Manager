@@ -48,7 +48,15 @@ pub struct AccountView {
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub checked_at: Option<i64>,
     pub balance: Option<f64>,
+    /// 额度型平台（ZCode）：窗口名 → **已用**百分比
     pub quota: BTreeMap<String, f64>,
+    /// 配额快照时刻。空 = 从没刷过，界面不该把空配额当成「没有额度」
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub quota_at: Option<i64>,
+    /// 积分批次里最近的一个到期日与当天到期金额（不是登录凭据的到期）
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub lot_expires_at: Option<i64>,
+    pub lot_amount: Option<f64>,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub next_at: Option<i64>,
     /// 最近一次查询失败的原因。**有值不代表整行不可用**——余额查不到不该挡住别名。
@@ -78,6 +86,9 @@ impl AccountView {
             checked_at: None,
             balance: None,
             quota: BTreeMap::new(),
+            quota_at: None,
+            lot_expires_at: None,
+            lot_amount: None,
             next_at: None,
             error: None,
         }

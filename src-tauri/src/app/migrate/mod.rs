@@ -16,7 +16,7 @@
 //! 只统计数量作为提示，绝不丢弃、也不报错。
 
 use crate::app::db::Db;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::secret;
 use base64::Engine;
 use serde_json::Value;
@@ -60,13 +60,13 @@ impl ImportReport {
 pub fn import_v1(db: &Db, data_dir: &Path) -> Result<ImportReport> {
     if let Some(from) = db.migrated_from()? {
         return Err(AppError::new(
-            "conflict",
+            ErrorKind::Conflict,
             format!("已导入过（来自 {from}），拒绝重复导入"),
         ));
     }
     if !data_dir.exists() {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             format!("v1 数据目录不存在：{}", data_dir.display()),
         ));
     }
@@ -121,7 +121,12 @@ fn import_accounts(
     let text = String::from_utf8_lossy(&raw);
     let blob = base64::engine::general_purpose::STANDARD
         .decode(text.trim().as_bytes())
-        .map_err(|e| AppError::new("invalid", format!("accounts.dat 不是合法 base64：{e}")))?;
+        .map_err(|e| {
+            AppError::new(
+                ErrorKind::Invalid,
+                format!("accounts.dat 不是合法 base64：{e}"),
+            )
+        })?;
     let plain = match secret::unprotect(&blob) {
         Ok(plain) => plain,
         Err(_) => {
@@ -132,8 +137,12 @@ fn import_accounts(
             return Ok(Vec::new());
         }
     };
-    let list: Vec<Value> = serde_json::from_slice(&plain)
-        .map_err(|e| AppError::new("invalid", format!("accounts.dat 内容不是账号数组：{e}")))?;
+    let list: Vec<Value> = serde_json::from_slice(&plain).map_err(|e| {
+        AppError::new(
+            ErrorKind::Invalid,
+            format!("accounts.dat 内容不是账号数组：{e}"),
+        )
+    })?;
 
     let order = read_account_order(dir);
     let mut iids = Vec::with_capacity(list.len());

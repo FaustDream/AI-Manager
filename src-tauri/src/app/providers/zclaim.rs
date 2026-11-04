@@ -6,7 +6,7 @@
 //! 「本机 IPC 端口」，是用户交互的回调通道，v1 同款。
 //! 活动来源两条：billing/preview（常规）与 marketing/touch（客户端弹窗），都查才不漏。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::providers::zcode::{ZCodeProvider, APP_VERSION};
 use serde::Serialize;
@@ -145,12 +145,12 @@ async fn submit(
     region: &str,
 ) -> Result<ClaimOutcome> {
     if param.trim().is_empty() {
-        return Err(AppError::new("provider", "验证码参数为空"));
+        return Err(AppError::new(ErrorKind::Provider, "验证码参数为空"));
     }
     let tokens = ZCodeProvider::candidate_tokens(cred);
     let Some(token) = tokens.first() else {
         return Err(AppError::new(
-            "provider",
+            ErrorKind::Provider,
             "没有可用的登录凭据，请先保存该账号的登录",
         ));
     };
@@ -172,22 +172,28 @@ async fn submit(
     let resp = http
         .send(req)
         .await
-        .map_err(|e| AppError::new("provider", format!("领取请求失败：{}", e.message)))?;
+        .map_err(|e| AppError::new(ErrorKind::Provider, format!("领取请求失败：{}", e.message)))?;
     if resp.status == 401 || resp.status == 403 {
         // 401/403 也可能是人机校验挑战，不能一律当成登录失效。
         // v1 还会看响应头 x-aliyun-captcha-verify-param；我们的 HttpResponse 不带
         // 响应头，用 body 判别，实测上游两种都会在 body 里带 captcha 字样。
         if resp.body.to_lowercase().contains("captcha") {
-            return Err(AppError::new("provider", "需要重新完成人机校验"));
+            return Err(AppError::new(ErrorKind::Provider, "需要重新完成人机校验"));
         }
-        return Err(AppError::new("provider", "登录态已失效，请重新登录该账号"));
+        return Err(AppError::new(
+            ErrorKind::Provider,
+            "登录态已失效，请重新登录该账号",
+        ));
     }
     let data = resp
         .json()
-        .map_err(|_| AppError::new("provider", "领取接口返回的不是 JSON"))?;
+        .map_err(|_| AppError::new(ErrorKind::Provider, "领取接口返回的不是 JSON"))?;
     let code = data.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
     if code != 0 && code != 200 {
-        return Err(AppError::new("provider", failure_message(code, &data)));
+        return Err(AppError::new(
+            ErrorKind::Provider,
+            failure_message(code, &data),
+        ));
     }
     let plan = data.pointer("/data/plan").cloned().unwrap_or(Value::Null);
     Ok(ClaimOutcome {
@@ -239,27 +245,40 @@ async fn get_ok(
     let token = ZCodeProvider::candidate_tokens(cred)
         .first()
         .cloned()
-        .ok_or_else(|| AppError::new("provider", "没有可用的登录凭据，请先保存该账号的登录"))?;
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::Provider,
+                "没有可用的登录凭据，请先保存该账号的登录",
+            )
+        })?;
     let req = HttpRequest::get(url).headers(&ZCodeProvider::zai_headers(cred, &token, mid));
-    let resp = http
-        .send(req)
-        .await
-        .map_err(|e| AppError::new("provider", format!("{what}请求失败：{}", e.message)))?;
+    let resp = http.send(req).await.map_err(|e| {
+        AppError::new(
+            ErrorKind::Provider,
+            format!("{what}请求失败：{}", e.message),
+        )
+    })?;
     if resp.status == 401 || resp.status == 403 {
-        return Err(AppError::new("provider", "登录态已失效，请重新登录该账号"));
+        return Err(AppError::new(
+            ErrorKind::Provider,
+            "登录态已失效，请重新登录该账号",
+        ));
     }
     if resp.status >= 400 {
         return Err(AppError::new(
-            "provider",
+            ErrorKind::Provider,
             format!("{what}返回 HTTP {}", resp.status),
         ));
     }
     let data = resp
         .json()
-        .map_err(|_| AppError::new("provider", format!("{what}返回的不是 JSON")))?;
+        .map_err(|_| AppError::new(ErrorKind::Provider, format!("{what}返回的不是 JSON")))?;
     let code = data.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
     if code != 0 && code != 200 {
-        return Err(AppError::new("provider", failure_message(code, &data)));
+        return Err(AppError::new(
+            ErrorKind::Provider,
+            failure_message(code, &data),
+        ));
     }
     Ok(data)
 }
@@ -387,10 +406,10 @@ fn parse_plan(plan: &Value) -> Option<ClaimPlan> {
 /// 打开浏览器过验证，返回 (验证码参数, region)。阻塞在等 POST 上，调用方放阻塞线程。
 fn captcha_blocking() -> Result<(String, String)> {
     let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| AppError::new("io", format!("起验证码回调服务失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("起验证码回调服务失败：{e}")))?;
     let port = listener
         .local_addr()
-        .map_err(|e| AppError::new("io", format!("读回调端口失败：{e}")))?
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("读回调端口失败：{e}")))?
         .port();
     // 场景参数先按长期观测的默认值；上游下发参数的接口需要再打一次 configs，
     // v1 拿匿名头去取，这里保持一致：取不到就用默认，不影响领取本身。
@@ -405,7 +424,7 @@ fn captcha_blocking() -> Result<(String, String)> {
     let stop_server = stop.clone();
     listener
         .set_nonblocking(true)
-        .map_err(|e| AppError::new("io", format!("回调服务设非阻塞失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("回调服务设非阻塞失败：{e}")))?;
     let server = std::thread::spawn(move || {
         while !stop_server.load(std::sync::atomic::Ordering::Relaxed) {
             match listener.accept() {
@@ -438,20 +457,23 @@ fn captcha_blocking() -> Result<(String, String)> {
     ) {
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         return Err(AppError::new(
-            "provider",
+            ErrorKind::Provider,
             format!("浏览器打开失败（{}），请手动访问 {url}", e.message),
         ));
     }
 
-    let param = rx
-        .recv_timeout(std::time::Duration::from_secs(CAPTCHA_TIMEOUT_SECS));
+    let param = rx.recv_timeout(std::time::Duration::from_secs(CAPTCHA_TIMEOUT_SECS));
     // 无论拿到参数还是超时，都让服务线程停轮询退出，端口随之释放
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let param = param.map_err(|_| AppError::new("provider", "等待验证码超时，请重新发起领取"))?;
+    let param =
+        param.map_err(|_| AppError::new(ErrorKind::Provider, "等待验证码超时，请重新发起领取"))?;
     // detach：线程已在收尾，不等它
     let _ = server;
     if param.is_empty() {
-        return Err(AppError::new("provider", "验证码参数为空，请重新发起领取"));
+        return Err(AppError::new(
+            ErrorKind::Provider,
+            "验证码参数为空，请重新发起领取",
+        ));
     }
     Ok((param, region.to_string()))
 }

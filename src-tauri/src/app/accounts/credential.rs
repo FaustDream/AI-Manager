@@ -8,7 +8,7 @@
 //! **边界**：`Credential` 只在 `repo::secret_of()` 之后短暂存在，
 //! 用于一次切换或一次接口调用；不得挂到 `AccountView` 上、不得进日志。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -46,7 +46,7 @@ impl std::fmt::Debug for Credential {
 impl Credential {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         serde_json::from_slice(bytes)
-            .map_err(|e| AppError::new("invalid", format!("凭据包不是合法 JSON：{e}")))
+            .map_err(|e| AppError::new(ErrorKind::Invalid, format!("凭据包不是合法 JSON：{e}")))
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>> {

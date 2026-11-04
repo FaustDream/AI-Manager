@@ -5,7 +5,7 @@
 //! P3 起请求要带鉴权头与 JSON body，所以统一成 `HttpRequest`。
 //! `RealHttp`（reqwest）只在这里出现一次，业务代码拿到的永远是 `&dyn Http`。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -26,7 +26,7 @@ impl HttpResponse {
     pub fn json(&self) -> Result<serde_json::Value> {
         serde_json::from_str(&self.body).map_err(|_| {
             AppError::new(
-                "provider",
+                ErrorKind::Provider,
                 format!("HTTP {}（返回内容不是 JSON）", self.status),
             )
         })
@@ -140,10 +140,9 @@ impl Http for RealHttp {
         if let Some(body) = req.body {
             builder = builder.body(body);
         }
-        let resp = builder
-            .send()
-            .await
-            .map_err(|e| AppError::new("provider", format!("网络请求失败：{}", brief(&e))))?;
+        let resp = builder.send().await.map_err(|e| {
+            AppError::new(ErrorKind::Provider, format!("网络请求失败：{}", brief(&e)))
+        })?;
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
         Ok(HttpResponse { status, body })
@@ -253,9 +252,9 @@ fn respond(
     url: &str,
 ) -> Result<HttpResponse> {
     let mut guard = routes.lock().unwrap();
-    let queue = guard
-        .get_mut(url)
-        .ok_or_else(|| AppError::new("provider", format!("MockHttp 未预设该 URL：{url}")))?;
+    let queue = guard.get_mut(url).ok_or_else(|| {
+        AppError::new(ErrorKind::Provider, format!("MockHttp 未预设该 URL：{url}"))
+    })?;
     // 队列里保留最后一个，用完继续返回它，避免测试因调用次数多一次就失败
     let (status, body) = if queue.len() > 1 {
         queue.pop_front().unwrap()

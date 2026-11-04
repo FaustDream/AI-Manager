@@ -2,7 +2,7 @@
 //!
 //! 只做「量得出来、删得掉」两件事，不引入新的业务逻辑。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::paths;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -174,7 +174,10 @@ fn purge_trash_in(root: &Path, tag: Option<&str>) -> Result<i64> {
             }
             freed += dir_size(&batch);
             if crate::app::fsx::remove_path(&batch).is_err() {
-                return Err(AppError::new("io", format!("清不掉 {}", batch.display())));
+                return Err(AppError::new(
+                    ErrorKind::Io,
+                    format!("清不掉 {}", batch.display()),
+                ));
             }
         }
         // 组目录空了就一并删掉，不留空壳

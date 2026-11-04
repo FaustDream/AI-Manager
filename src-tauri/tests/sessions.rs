@@ -7,10 +7,11 @@ mod support;
 
 use ai_manager::app::clients::Roots;
 use ai_manager::app::db::Db;
+use ai_manager::app::sessions::marks;
 use ai_manager::app::sessions::store::{Facets, Filter, RawRow, SqliteSessions};
 use ai_manager::app::sessions::Service;
-use ai_manager::types::SessionState;
 use ai_manager::app::task::CancelToken;
+use ai_manager::types::SessionState;
 use std::sync::Arc;
 use support::*;
 
@@ -184,6 +185,213 @@ fn filters_and_facets_are_consistent() {
     let visible = facets.states.iter().find(|f| f.value == "visible").unwrap();
     assert_eq!(visible.count, 2);
     assert_eq!(visible.label, "可见");
+}
+
+/// 归档是本地标记：默认不出现在列表里，显式筛「已归档」才看得到。
+#[test]
+fn archived_rows_are_hidden_until_asked_for() {
+    let paths = TestPaths::new();
+    let db = Db::open_at(&paths.join("app.db")).unwrap();
+    let store = SqliteSessions::new(&db);
+    store
+        .replace_source(
+            "cn",
+            &[row(1, SessionState::Visible), row(2, SessionState::Visible)],
+        )
+        .unwrap();
+
+    let key = "workbuddy|cn|u1|s0002";
+    marks::archive(&db, &[key.to_string()], true).unwrap();
+
+    // 默认视图：只剩没归档的那条
+    let default = store.page(&Filter::default(), None, 50).unwrap();
+    assert_eq!(default.items.len(), 1);
+    assert_eq!(default.total, 1);
+    assert_eq!(default.items[0].session_id, "s0001");
+
+    // 勾「显示已归档」：两条都在，且状态是 archived
+    let shown = store
+        .page(
+            &Filter {
+                show_archived: true,
+                ..Default::default()
+            },
+            None,
+            50,
+        )
+        .unwrap();
+    assert_eq!(shown.items.len(), 2);
+
+    // 显式筛已归档：即使没勾「显示已归档」也要能看到
+    let only_archived = store
+        .page(
+            &Filter {
+                state: Some("archived".into()),
+                ..Default::default()
+            },
+            None,
+            50,
+        )
+        .unwrap();
+    assert_eq!(only_archived.items.len(), 1);
+    assert_eq!(only_archived.items[0].state, SessionState::Archived);
+
+    // 计数与列表同一口径
+    let facets = store.facets().unwrap();
+    let archived = facets
+        .states
+        .iter()
+        .find(|f| f.value == "archived")
+        .unwrap();
+    assert_eq!(archived.count, 1);
+}
+
+/// 本地隐藏（Trae 这类只有云端占位的来源）之后，重扫也不该再冒出来。
+#[test]
+fn hidden_rows_never_come_back() {
+    let paths = TestPaths::new();
+    let db = Db::open_at(&paths.join("app.db")).unwrap();
+    let store = SqliteSessions::new(&db);
+    let mut placeholder = row(1, SessionState::Cloud);
+    placeholder.kind = "trae".into();
+    placeholder.source_key = "trae_cn".into();
+    placeholder.source_label = "Trae CN".into();
+    store.replace_source("trae_cn", &[placeholder]).unwrap();
+
+    marks::hide(&db, &["trae|trae_cn|u1|s0001".to_string()]).unwrap();
+    let page = store.page(&Filter::default(), None, 50).unwrap();
+    assert_eq!(page.items.len(), 0, "隐藏的行不该出现在任何列表里");
+    assert_eq!(page.total, 0);
+
+    // 重扫（整源重建）之后标记仍然生效
+    let mut again = row(1, SessionState::Cloud);
+    again.kind = "trae".into();
+    again.source_key = "trae_cn".into();
+    again.source_label = "Trae CN".into();
+    store.replace_source("trae_cn", &[again]).unwrap();
+    assert_eq!(
+        store
+            .page(&Filter::default(), None, 50)
+            .unwrap()
+            .items
+            .len(),
+        0
+    );
+}
+
+/// 彻底删除的门槛在后端：没归档的会话一律拒绝，归档后才放行。
+#[tokio::test]
+async fn purge_refuses_sessions_that_are_not_archived() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let store = SqliteSessions::new(&db);
+    store
+        .replace_source("cn", &[row(1, SessionState::Visible)])
+        .unwrap();
+    let service = Service::new(
+        db.clone(),
+        Roots::at(
+            paths.join("home"),
+            paths.join("appdata"),
+            paths.join("local"),
+        ),
+    );
+
+    let key = "workbuddy|cn|u1|s0001".to_string();
+    let err = service.purge(vec![key.clone()]).await.unwrap_err();
+    assert!(
+        err.message.contains("已归档"),
+        "未归档必须被挡下并说明原因：{}",
+        err.message
+    );
+
+    marks::archive(&db, std::slice::from_ref(&key), true).unwrap();
+    // 归档后门槛放行（这里没有真的客户端目录，逐条删除会失败，但不该再被判为「拒绝」）
+    let report = service.purge(vec![key]).await.unwrap();
+    assert_eq!(report.refused, 0);
+}
+
+/// 「选中全部」用的 keys()：必须与列表同一套筛选口径（归档默认不出现）。
+#[test]
+fn keys_follow_the_same_filter_as_the_list() {
+    let paths = TestPaths::new();
+    let db = Db::open_at(&paths.join("app.db")).unwrap();
+    let store = SqliteSessions::new(&db);
+    store
+        .replace_source(
+            "cn",
+            &[
+                row(1, SessionState::Visible),
+                row(2, SessionState::Visible),
+                row(3, SessionState::Visible),
+            ],
+        )
+        .unwrap();
+    marks::archive(&db, &["workbuddy|cn|u1|s0002".to_string()], true).unwrap();
+
+    let default_keys = store.keys(&Filter::default()).unwrap();
+    assert_eq!(default_keys.len(), 2, "默认不该带上已归档的");
+    assert!(default_keys
+        .iter()
+        .all(|k| k.starts_with("workbuddy|cn|u1|")));
+
+    let with_archived = store
+        .keys(&Filter {
+            show_archived: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(with_archived.len(), 3);
+
+    let only_archived = store
+        .keys(&Filter {
+            state: Some("archived".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(only_archived, vec!["workbuddy|cn|u1|s0002".to_string()]);
+}
+
+/// 彻底删除要能报进度：每删完一条回调一次，最后一次必须是 (total, total)。
+#[tokio::test]
+async fn purge_reports_progress_for_each_session() {
+    use std::sync::{Arc, Mutex};
+
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let store = SqliteSessions::new(&db);
+    store
+        .replace_source(
+            "cn",
+            &[row(1, SessionState::Visible), row(2, SessionState::Visible)],
+        )
+        .unwrap();
+    let keys = vec![
+        "workbuddy|cn|u1|s0001".to_string(),
+        "workbuddy|cn|u1|s0002".to_string(),
+    ];
+    marks::archive(&db, &keys, true).unwrap();
+
+    let service = Service::new(
+        db.clone(),
+        Roots::at(
+            paths.join("home"),
+            paths.join("appdata"),
+            paths.join("local"),
+        ),
+    );
+    let seen: Arc<Mutex<Vec<(usize, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    // 这里没有真的客户端目录，逐条删除会失败，但进度回调必须照常推进
+    let _ = service
+        .purge_with(keys, move |done, total| {
+            sink.lock().unwrap().push((done, total));
+        })
+        .await;
+
+    let seen = seen.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "必须回调过进度");
+    assert_eq!(*seen.last().unwrap(), (2, 2), "最后一条进度应是 2/2");
 }
 
 #[tokio::test]

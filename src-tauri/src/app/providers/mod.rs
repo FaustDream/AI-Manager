@@ -12,7 +12,7 @@
 
 use crate::app::accounts::credential::Credential;
 use crate::app::accounts::AccountIdentity;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::Http;
 use crate::types::{ActionResult, CreditSnapshot, StatusResult};
 use async_trait::async_trait;
@@ -81,54 +81,83 @@ pub trait Provider: Send + Sync {
     /// 查签到状态。会顺带读余额。
     async fn status(&self, _cred: &Credential, _http: &dyn Http) -> Result<StatusResult> {
         Err(AppError::new(
-            "unsupported",
+            ErrorKind::Unsupported,
             format!("{} 暂不支持查询签到状态", self.label()),
         ))
     }
     /// 只查积分，**不碰签到状态**（高频刷新走这条，避免无意义地打签到接口）。
     async fn credits(&self, _cred: &Credential, _http: &dyn Http) -> Result<CreditSnapshot> {
         Err(AppError::new(
-            "unsupported",
+            ErrorKind::Unsupported,
             format!("{} 暂不支持查询积分", self.label()),
         ))
     }
     /// 真正调用签到接口。调用方负责幂等（当日去重表）。
     async fn checkin(&self, _cred: &Credential, _http: &dyn Http) -> Result<ActionResult> {
         Err(AppError::new(
-            "unsupported",
+            ErrorKind::Unsupported,
             format!("{} 暂不支持签到", self.label()),
         ))
     }
 }
 
-/// 全部 Provider。顺序 = 扫描顺序 = 新账号首次入表时的排序。
-pub fn all() -> Vec<Box<dyn Provider>> {
-    vec![
-        Box::new(QoderProvider::new(false)),
-        Box::new(QoderProvider::new(true)),
-        Box::new(WorkBuddyProvider::new(false)),
-        Box::new(WorkBuddyProvider::new(true)),
-        Box::new(ZCodeProvider::new()),
-        Box::new(TraeProvider::new()),
-    ]
-}
-
-/// 按 iid 的平台前缀找回对应 Provider（只读用途：判断「是不是当前账号」等）。
-pub fn for_iid(iid: &str) -> Option<Box<dyn Provider>> {
-    match platform_of(iid)? {
+/// 平台登记表（架构评审 C4）：**客户端平台键** → Provider 构造，全库唯一分支点。
+/// `all` / `for_iid` / `for_platform` 共用；新增平台只改这一处，三边不会再漂移。
+fn make(client_key: &str) -> Option<Box<dyn Provider>> {
+    match client_key {
         "qoder" => Some(Box::new(QoderProvider::new(false))),
         "qoder_intl" => Some(Box::new(QoderProvider::new(true))),
-        // WorkBuddy 的国内/国际共用 platform 键，靠 account_id 的 @intl 后缀区分
-        "workbuddy" => Some(Box::new(WorkBuddyProvider::new(iid.ends_with("@intl")))),
+        "workbuddy" => Some(Box::new(WorkBuddyProvider::new(false))),
+        "workbuddy_intl" => Some(Box::new(WorkBuddyProvider::new(true))),
         "zcode" => Some(Box::new(ZCodeProvider::new())),
         "trae" => Some(Box::new(TraeProvider::new())),
         _ => None,
     }
 }
 
+/// 全部 Provider。顺序 = 扫描顺序 = 新账号首次入表时的排序。
+pub fn all() -> Vec<Box<dyn Provider>> {
+    [
+        "qoder",
+        "qoder_intl",
+        "workbuddy",
+        "workbuddy_intl",
+        "zcode",
+        "trae",
+    ]
+    .iter()
+    .filter_map(|key| make(key))
+    .collect()
+}
+
+/// 按 iid 的平台前缀找回对应 Provider（只读用途：判断「是不是当前账号」等）。
+/// WorkBuddy 两版共用 `workbuddy` 前缀，先经 `client_key_of` 换算再查登记表。
+pub fn for_iid(iid: &str) -> Option<Box<dyn Provider>> {
+    platform_of(iid)?;
+    make(client_key_of(iid))
+}
+
+/// 按**客户端平台键**找回 Provider（`accounts::add` 用的是这套键：
+/// `workbuddy` / `workbuddy_intl` 分开）。
+pub fn for_platform(platform: &str) -> Option<Box<dyn Provider>> {
+    make(platform)
+}
+
 /// iid 的平台前缀。
 pub fn platform_of(iid: &str) -> Option<&str> {
     iid.split(':').next().filter(|s| !s.is_empty())
+}
+
+/// iid → **客户端**平台键（`accounts::add` 的 `process_names` / `client_exe` 用同一套键）。
+///
+/// 和 `platform_of` 的区别只有 WorkBuddy：两个版本共用 `workbuddy` 前缀，靠账号 id 的
+/// `@intl` 后缀区分。直接拿前缀去关/启客户端会落到国内版——关错版本、启动错版本。
+pub fn client_key_of(iid: &str) -> &str {
+    match platform_of(iid) {
+        Some("workbuddy") if iid.ends_with("@intl") => "workbuddy_intl",
+        Some(key) => key,
+        None => "",
+    }
 }
 
 /// **切换登录的统一入口**：按平台分发到各自的实现。
@@ -165,11 +194,11 @@ pub fn switch(
             zcode::switch_to(&ZCodeProvider::new(), account_id, name, cred, backup_dir)
         }
         Some("trae") => Err(crate::app::error::AppError::new(
-            "unsupported",
+            ErrorKind::Unsupported,
             "Trae 的登录态是设备绑定的加密格式，无法安全写回。请在 Trae 客户端里手动切换账号。",
         )),
         _ => Err(crate::app::error::AppError::new(
-            "unsupported",
+            ErrorKind::Unsupported,
             "这个平台不支持切换登录",
         )),
     }
@@ -191,6 +220,15 @@ mod tests {
             "WorkBuddy 国内版"
         );
         assert!(for_iid("unknown:abc").is_none());
+    }
+
+    #[test]
+    fn client_key_keeps_the_edition_apart() {
+        // 关/启客户端必须按版本走：只拿平台前缀会把国际版操作到国内版上
+        assert_eq!(client_key_of("workbuddy:abc@intl"), "workbuddy_intl");
+        assert_eq!(client_key_of("workbuddy:abc"), "workbuddy");
+        assert_eq!(client_key_of("qoder_intl:abc"), "qoder_intl");
+        assert_eq!(client_key_of(""), "");
     }
 
     #[test]

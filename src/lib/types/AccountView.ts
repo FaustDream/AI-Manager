@@ -4,7 +4,19 @@ export type AccountView = { iid: string, platform: string, platform_label: strin
 /**
  * 原始昵称。**不要直接显示**——用 `display_name()`，有些平台的昵称就是手机号。
  */
-name: string, source: string, requires_checkin: boolean, expires_at: number | null, has_secret: boolean, sort_order: number, checked_in: boolean | null, checked_at: number | null, balance: number | null, quota: { [key: string]: number }, next_at: number | null, 
+name: string, source: string, requires_checkin: boolean, expires_at: number | null, has_secret: boolean, sort_order: number, checked_in: boolean | null, checked_at: number | null, balance: number | null, 
+/**
+ * 额度型平台（ZCode）：窗口名 → **已用**百分比
+ */
+quota: { [key: string]: number }, 
+/**
+ * 配额快照时刻。空 = 从没刷过，界面不该把空配额当成「没有额度」
+ */
+quota_at: number | null, 
+/**
+ * 积分批次里最近的一个到期日与当天到期金额（不是登录凭据的到期）
+ */
+lot_expires_at: number | null, lot_amount: number | null, next_at: number | null, 
 /**
  * 最近一次查询失败的原因。**有值不代表整行不可用**——余额查不到不该挡住别名。
  */

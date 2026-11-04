@@ -7,8 +7,9 @@
 
 use super::credential::Credential;
 use super::repo;
+use crate::app::clients::Roots;
 use crate::app::db::Db;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::{paths, process, providers};
 use serde::Serialize;
 
@@ -22,35 +23,90 @@ pub struct SwitchResult {
 }
 
 /// 切换登录。会写客户端文件，失败代价是「客户端跳登录页」。
-pub fn switch(db: &Db, iid: &str) -> Result<SwitchResult> {
+pub fn switch(db: &Db, roots: &Roots, iid: &str) -> Result<SwitchResult> {
     let identity = repo::identity(db, iid)?
-        .ok_or_else(|| AppError::new("invalid", "账号不存在，可能已被删除"))?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "账号不存在，可能已被删除"))?;
     let secret = repo::secret_of(db, iid)?
-        .ok_or_else(|| AppError::new("invalid", "这个账号没有保存登录凭据，无法切换"))?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "这个账号没有保存登录凭据，无法切换"))?;
     let cred = Credential::parse(&secret)?;
 
+    // 切换前先记下客户端当前登录的账号：切换后它就是「这些会话的旧主人」。
+    // 必须写在 providers::switch 之前，之后读到的已经是新账号了。
+    let previous = if providers::platform_of(iid) == Some("workbuddy") {
+        providers::for_iid(iid).and_then(|provider| provider.current_id())
+    } else {
+        None
+    };
+
     let backup_dir = paths::data_dir().join("backups").join("switch");
-    let outcome = providers::switch(
+
+    // 写客户端文件必须在进程退出之后，所以这里按**版本**先把对应客户端关掉：
+    // WorkBuddy 国内/国际是两个进程，`client_key_of` 带着 `@intl` 一起判断，
+    // 免得切国际版时去关国内版（或反过来）。关不掉就直接报错，一个字节都不写。
+    let key = providers::client_key_of(iid);
+    let closed = super::add::close_client(key)?;
+    if closed {
+        crate::app::log::log(
+            crate::app::log::Level::Info,
+            "accounts",
+            format!("切换前已关闭 {} 客户端", identity.platform_label),
+        );
+    }
+
+    let outcome = match providers::switch(
         iid,
         &identity.account_id,
         &identity.name,
         &cred,
         &backup_dir,
-    )?;
-
-    // 各平台 switch_to 都要求客户端先关闭（运行中写入一律拒绝），用户多半是
-    // 专为切换才关的——切完自动开回去，对齐 v1 switcher 的重启体验。
-    // 没找到 exe 或启动失败都不算切换失败，只落日志。
-    let mut message = outcome.message;
-    if let Some(exe) = super::add::client_exe(providers::platform_of(iid).unwrap_or_default()) {
-        match process::start_detached(&exe) {
-            Ok(()) => message.push_str("，客户端已重新启动"),
-            Err(e) => crate::app::log::log(
-                crate::app::log::Level::Warn,
-                "accounts",
-                format!("切换后启动客户端失败：{}", e.message),
-            ),
+    ) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            // 切换失败也要把客户端还回去，别让用户面对一个被关掉的软件
+            if closed {
+                start_client(key);
+            }
+            return Err(e);
         }
+    };
+
+    let mut message = outcome.message;
+
+    // WorkBuddy：切完把旧账号名下的会话按引用关联到新账号（契约 10）。
+    // 必须在客户端重新启动之前做——写客户端库要求进程已退出。
+    if let Some(previous) = previous {
+        let uid = identity.account_id.trim_end_matches("@intl");
+        let edition = if identity.account_id.ends_with("@intl") {
+            "intl"
+        } else {
+            "cn"
+        };
+        let source = previous.trim_end_matches("@intl");
+        match crate::app::sessions::restore::from_account(roots, edition, uid, source) {
+            Ok(report) if report.changed_rows > 0 => {
+                message.push_str(&format!("，已关联 {} 条历史会话", report.changed_rows));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // 会话没关联上不影响登录态已经切好：给用户一条能自己重试的路
+                crate::app::log::log(
+                    crate::app::log::Level::Warn,
+                    "accounts",
+                    format!("切换后关联会话失败：{}", e.message),
+                );
+                message.push_str("，历史会话未关联（可在账号上点「恢复会话」重试）");
+            }
+        }
+    }
+
+    // 切完把客户端以新账号打开：**exe 也要按版本取**，只拿平台前缀会开成国内版。
+    // 启动失败不算切换失败，只落日志。
+    if start_client(key) {
+        message.push_str(if closed {
+            "，客户端已重新启动"
+        } else {
+            "，已打开客户端"
+        });
     }
 
     crate::app::log::log(
@@ -65,10 +121,34 @@ pub fn switch(db: &Db, iid: &str) -> Result<SwitchResult> {
     })
 }
 
+/// 拉起客户端（切换前关过、或切换完该以新账号进入）。
+/// 找不到 exe 或启动失败都只落日志，不影响「登录态已经切好」这个结论。
+fn start_client(key: &str) -> bool {
+    let Some(exe) = super::add::client_exe(key) else {
+        crate::app::log::log(
+            crate::app::log::Level::Warn,
+            "accounts",
+            format!("没找到 {key} 的客户端安装位置，请手动打开"),
+        );
+        return false;
+    };
+    match process::start_detached(&exe) {
+        Ok(()) => true,
+        Err(e) => {
+            crate::app::log::log(
+                crate::app::log::Level::Warn,
+                "accounts",
+                format!("启动客户端失败：{}", e.message),
+            );
+            false
+        }
+    }
+}
+
 /// 这个账号是不是客户端当前登录的账号。读不到（没装/没登录）一律 false。
 pub fn is_current(db: &Db, iid: &str) -> Result<bool> {
     let identity =
-        repo::identity(db, iid)?.ok_or_else(|| AppError::new("invalid", "账号不存在"))?;
+        repo::identity(db, iid)?.ok_or_else(|| AppError::new(ErrorKind::Invalid, "账号不存在"))?;
     let Some(provider) = providers::for_iid(iid) else {
         return Ok(false);
     };
@@ -109,11 +189,15 @@ mod tests {
         identity
     }
 
+    fn roots(dir: &tempfile::TempDir) -> Roots {
+        Roots::at(dir.path(), dir.path(), dir.path())
+    }
+
     #[test]
     fn unknown_account_is_an_invalid_error() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
-        let err = switch(&db, "qoder:none").unwrap_err();
+        let err = switch(&db, &roots(&dir), "qoder:none").unwrap_err();
         assert!(matches!(err.kind, crate::app::error::ErrorKind::Invalid));
     }
 
@@ -122,7 +206,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
         seed(&db, "workbuddy:u1");
-        let err = switch(&db, "workbuddy:u1").unwrap_err();
+        let err = switch(&db, &roots(&dir), "workbuddy:u1").unwrap_err();
         assert_eq!(err.message, "这个账号没有保存登录凭据，无法切换");
     }
 
@@ -132,7 +216,7 @@ mod tests {
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
         seed(&db, "qoder:u1");
         repo::set_secret(&db, "qoder:u1", b"not-json", None).unwrap();
-        let err = switch(&db, "qoder:u1").unwrap_err();
+        let err = switch(&db, &roots(&dir), "qoder:u1").unwrap_err();
         assert!(matches!(err.kind, crate::app::error::ErrorKind::Invalid));
     }
 

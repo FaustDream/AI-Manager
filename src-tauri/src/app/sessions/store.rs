@@ -4,7 +4,7 @@
 //! 可空、由扫描补齐。**列表页只读这张表，永远不碰客户端库**——这是 §2.2 的核心约定。
 
 use crate::app::db::Db;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::types::{Page, SessionRow, SessionState};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -102,6 +102,10 @@ pub struct Filter {
     pub state: Option<String>,
     #[serde(default)]
     pub sort: Sort,
+    /// 默认不显示已归档：归档的意义就是让列表安静下来。
+    /// 用「显示」而不是「隐藏」命名，缺省值 false 正好等于默认行为。
+    #[serde(default)]
+    pub show_archived: bool,
 }
 
 impl Filter {
@@ -193,6 +197,79 @@ impl<'a> SqliteSessions<'a> {
         })
     }
 
+    /// 精确摘掉这几行索引（删除 / 彻底删除之后调用）。
+    ///
+    /// 不用 `drop_source`：那会把**整个来源**的列表清空，用户得手动重扫才看得见
+    /// 别的会话——「删了一条，结果整页都没了」就是它干的。四段主键一起给，
+    /// 少一段就可能误删同 id 的另一份会话（不同账号 / 不同版本共用 id）。
+    pub fn forget(&self, rows: &[(String, String, String, String)]) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        self.db.write(|conn| {
+            let mut stmt = conn.prepare(
+                "DELETE FROM session_index
+                 WHERE kind = ?1 AND source_key = ?2 AND account = ?3 AND session_id = ?4",
+            )?;
+            let mut removed = 0;
+            for (kind, source, account, id) in rows {
+                removed += stmt.execute(rusqlite::params![kind, source, account, id])?;
+            }
+            Ok(removed)
+        })
+    }
+
+    /// 按 `(行 key, target)` 取 session_index 的标题（删除前取标题、迁移校验共用）。
+    /// 一条连接循环查——每个 key 各开一次事务太浪费；查不到的行不返回。
+    pub fn titles_of(
+        &self,
+        targets: &[(String, super::preview::Target)],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        self.db.read(|conn| {
+            let mut out = std::collections::HashMap::new();
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT title FROM session_index
+                 WHERE kind = ?1 AND source_key = ?2 AND account = ?3 AND session_id = ?4",
+            ) else {
+                return Ok(out);
+            };
+            for (key, target) in targets {
+                let title: Option<String> = stmt
+                    .query_row(
+                        rusqlite::params![
+                            target.kind,
+                            target.source_key,
+                            target.account,
+                            target.session_id
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok();
+                if let Some(title) = title {
+                    out.insert(key.clone(), title);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// 迁移校验：`kind='workbuddy'` 的行数与会话 id 全集。
+    pub fn workbuddy_keys(&self) -> Result<(u32, Vec<String>)> {
+        self.db.read(|conn| {
+            let rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM session_index WHERE kind = 'workbuddy'",
+                [],
+                |r| r.get(0),
+            )?;
+            let mut stmt =
+                conn.prepare("SELECT session_id FROM session_index WHERE kind = 'workbuddy'")?;
+            let ids = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((rows as u32, ids))
+        })
+    }
+
     /// 游标分页。`(排序键值, session_id)` 是排序键 + 唯一键，缺一个都会翻页重复。
     pub fn page(
         &self,
@@ -215,14 +292,29 @@ impl<'a> SqliteSessions<'a> {
         let account = Filter::clean(&filter.account);
         let state = Filter::clean(&filter.state);
         let col = sort.column();
+        // 生效状态：已删除优先（客户端已经删了，归档与否没意义），其次看本地归档标记，
+        // 其余沿用客户端给的 state。本地隐藏的行整行不出现。
         // ORDER BY 列名只能静态拼——三档都是白名单枚举，不存在注入面
         let sql = format!(
             "SELECT kind, source_key, source_label, account, session_id, title,
-                    last_at, msgs, size, state, has_body
-             FROM session_index
+                    last_at, msgs, size, state, has_body, slug, cwd
+             FROM (
+                 SELECT s.kind, s.source_key, s.source_label, s.account, s.session_id, s.title,
+                        s.last_at, s.msgs, s.size, s.has_body, s.slug, s.cwd,
+                        CASE
+                            WHEN COALESCE(s.state, 'visible') = 'deleted' THEN 'deleted'
+                            WHEN m.archived_at IS NOT NULL THEN 'archived'
+                            ELSE COALESCE(s.state, 'visible')
+                        END AS state
+                 FROM session_index s
+                 LEFT JOIN session_marks m
+                   ON m.source_key = s.source_key AND m.session_id = s.session_id
+                 WHERE m.hidden_at IS NULL
+             )
              WHERE (?1 IS NULL OR source_key = ?1)
                AND (?2 IS NULL OR account = ?2)
                AND (?3 IS NULL OR state = ?3)
+               AND (?7 = 1 OR ?3 IS NOT NULL OR state <> 'archived')
                AND (?4 IS NULL OR {col} < ?4 OR ({col} = ?4 AND session_id < ?5))
              ORDER BY {col} DESC, session_id DESC
              LIMIT ?6"
@@ -231,8 +323,18 @@ impl<'a> SqliteSessions<'a> {
         self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(
-                rusqlite::params![source, account, state, cur, cur_sid, limit + 1],
+                rusqlite::params![
+                    source,
+                    account,
+                    state,
+                    cur,
+                    cur_sid,
+                    limit + 1,
+                    if filter.show_archived { 1 } else { 0 }
+                ],
                 |row| {
+                    let slug: String = row.get(11)?;
+                    let cwd: String = row.get(12)?;
                     Ok(SessionRow {
                         kind: row.get(0)?,
                         source_key: row.get(1)?,
@@ -252,6 +354,8 @@ impl<'a> SqliteSessions<'a> {
                         },
                         state: state_of(row.get::<_, Option<String>>(9)?.as_deref()),
                         has_body: row.get::<_, Option<i64>>(10)?.unwrap_or(0) != 0,
+                        project: project_name(&slug, &cwd),
+                        cwd,
                     })
                 },
             )?;
@@ -273,7 +377,7 @@ impl<'a> SqliteSessions<'a> {
             } else {
                 None
             };
-            let total = count_with(conn, source, account, state)?;
+            let total = count_with(conn, source, account, state, filter.show_archived)?;
             Ok(Page {
                 items,
                 next_cursor,
@@ -286,8 +390,11 @@ impl<'a> SqliteSessions<'a> {
         self.db.read(|conn| {
             let mut facets = Facets::default();
             let mut stmt = conn.prepare(
-                "SELECT source_key, source_label, COUNT(*) FROM session_index
-                 GROUP BY source_key, source_label ORDER BY source_label",
+                "SELECT s.source_key, s.source_label, COUNT(*) FROM session_index s
+                 LEFT JOIN session_marks m
+                   ON m.source_key = s.source_key AND m.session_id = s.session_id
+                 WHERE m.hidden_at IS NULL
+                 GROUP BY s.source_key, s.source_label ORDER BY s.source_label",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok(FacetItem {
@@ -301,7 +408,11 @@ impl<'a> SqliteSessions<'a> {
             }
 
             let mut stmt = conn.prepare(
-                "SELECT account, COUNT(*) FROM session_index GROUP BY account ORDER BY account",
+                "SELECT s.account, COUNT(*) FROM session_index s
+                 LEFT JOIN session_marks m
+                   ON m.source_key = s.source_key AND m.session_id = s.session_id
+                 WHERE m.hidden_at IS NULL
+                 GROUP BY s.account ORDER BY s.account",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok(FacetItem {
@@ -314,9 +425,9 @@ impl<'a> SqliteSessions<'a> {
                 facets.accounts.push(item?);
             }
 
-            let mut stmt = conn.prepare(
-                "SELECT state, COUNT(*) FROM session_index GROUP BY state ORDER BY state",
-            )?;
+            // 状态计数必须与列表同一口径（含归档与已删除的合并规则）
+            let sql = format!("SELECT state, COUNT(*) FROM ({EFFECTIVE_STATE_SQL}) GROUP BY state");
+            let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map([], |row| {
                 let value: String = row.get(0)?;
                 Ok(FacetItem {
@@ -329,9 +440,7 @@ impl<'a> SqliteSessions<'a> {
                 facets.states.push(item?);
             }
 
-            let total: i64 =
-                conn.query_row("SELECT COUNT(*) FROM session_index", [], |r| r.get(0))?;
-            facets.total = total as usize;
+            facets.total = facets.sources.iter().map(|s| s.count).sum();
             Ok(facets)
         })
     }
@@ -343,20 +452,133 @@ impl<'a> SqliteSessions<'a> {
             Ok(total as usize)
         })
     }
+
+    /// 单行的**生效状态**（含归档合并）。行不存在返回 `None`。
+    /// 彻底删除前用它判断「这条能不能删」，与列表显示的口径完全一致。
+    pub fn state_of(&self, source_key: &str, session_id: &str) -> Result<Option<SessionState>> {
+        let sql = format!(
+            "SELECT state FROM ({EFFECTIVE_STATE_SQL})
+             WHERE source_key = ?1 AND session_id = ?2"
+        );
+        self.db.read(|conn| {
+            let text: Option<String> = conn
+                .query_row(&sql, rusqlite::params![source_key, session_id], |row| {
+                    row.get(0)
+                })
+                .ok();
+            Ok(text.as_deref().map(|value| state_of(Some(value))))
+        })
+    }
+
+    /// 当前筛选下的**全部行 key**（不分页），给「选中全部」用。
+    /// key 的拼法与界面一致：`kind|source_key|account|session_id`。
+    pub fn keys(&self, filter: &Filter) -> Result<Vec<String>> {
+        let source = Filter::clean(&filter.source);
+        let account = Filter::clean(&filter.account);
+        let state = Filter::clean(&filter.state);
+        let sql = format!(
+            "SELECT kind, source_key, account, session_id FROM ({EFFECTIVE_STATE_SQL})
+             WHERE (?1 IS NULL OR source_key = ?1)
+               AND (?2 IS NULL OR account = ?2)
+               AND (?3 IS NULL OR state = ?3)
+               AND (?4 = 1 OR ?3 IS NOT NULL OR state <> 'archived')"
+        );
+        self.db.read(|conn| {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(
+                rusqlite::params![
+                    source,
+                    account,
+                    state,
+                    if filter.show_archived { 1 } else { 0 }
+                ],
+                |row| {
+                    let kind: String = row.get(0)?;
+                    let source_key: String = row.get(1)?;
+                    let account: String = row.get(2)?;
+                    let session_id: String = row.get(3)?;
+                    Ok(format!("{kind}|{source_key}|{account}|{session_id}"))
+                },
+            )?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
 }
+
+/// 项目名。三种来源各有各的形态，统一成「人能看懂的一句话」：
+///   - CodeBuddy 的 slug 是工作区目录的哈希（32 位十六进制），对人没意义，忽略；
+///   - 其余来源只有 cwd，取最后一段；
+///   - WorkBuddy 给「非项目会话」会自动建 `<...>/WorkBuddy/<时间戳>` 的临时工作区，
+///     那不是项目，标成「临时」比显示一串日期有用。
+///
+/// 什么都拿不到就返回空串，界面显示「—」。
+fn project_name(slug: &str, cwd: &str) -> String {
+    let slug = slug.trim();
+    if !slug.is_empty() && !looks_like_hash(slug) {
+        return slug.to_string();
+    }
+    let path = cwd.trim().trim_end_matches(['/', '\\']);
+    if path.is_empty() {
+        return String::new();
+    }
+    let last = path.rsplit(['/', '\\']).next().unwrap_or("");
+    if is_scratch_workspace(path, last) {
+        return "临时".to_string();
+    }
+    last.to_string()
+}
+
+fn looks_like_hash(text: &str) -> bool {
+    text.len() >= 16 && text.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// `2026-11-02-08-51-01` 这种「时间戳目录」= WorkBuddy 的临时工作区
+fn is_scratch_workspace(path: &str, last: &str) -> bool {
+    let timestamp_like = last.len() == 19
+        && last.chars().enumerate().all(|(i, c)| {
+            if matches!(i, 4 | 7 | 10 | 13 | 16) {
+                c == '-'
+            } else {
+                c.is_ascii_digit()
+            }
+        });
+    timestamp_like && path.contains("WorkBuddy")
+}
+
+/// 与 `page` 共用同一套「生效状态」口径，否则列表条数和筛选下拉的计数会对不上。
+const EFFECTIVE_STATE_SQL: &str = "
+    SELECT s.kind, s.source_key, s.session_id, s.account, s.last_at,
+           CASE
+               WHEN COALESCE(s.state, 'visible') = 'deleted' THEN 'deleted'
+               WHEN m.archived_at IS NOT NULL THEN 'archived'
+               ELSE COALESCE(s.state, 'visible')
+           END AS state
+    FROM session_index s
+    LEFT JOIN session_marks m
+      ON m.source_key = s.source_key AND m.session_id = s.session_id
+    WHERE m.hidden_at IS NULL";
 
 fn count_with(
     conn: &rusqlite::Connection,
     source: Option<&str>,
     account: Option<&str>,
     state: Option<&str>,
+    show_archived: bool,
 ) -> Result<usize> {
-    let total: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM session_index
+    let sql = format!(
+        "SELECT COUNT(*) FROM ({EFFECTIVE_STATE_SQL})
          WHERE (?1 IS NULL OR source_key = ?1)
            AND (?2 IS NULL OR account = ?2)
-           AND (?3 IS NULL OR state = ?3)",
-        rusqlite::params![source, account, state],
+           AND (?3 IS NULL OR state = ?3)
+           AND (?4 = 1 OR ?3 IS NOT NULL OR state <> 'archived')"
+    );
+    let total: i64 = conn.query_row(
+        &sql,
+        rusqlite::params![source, account, state, if show_archived { 1 } else { 0 }],
         |row| row.get(0),
     )?;
     Ok(total as usize)
@@ -408,8 +630,9 @@ pub fn encode_cursor(sort: Sort, value: i64, session_id: &str) -> String {
 pub fn decode_cursor(raw: &str) -> Result<(Sort, i64, String)> {
     let text = B64
         .decode(raw)
-        .map_err(|_| AppError::new("invalid", "游标格式不对"))?;
-    let text = String::from_utf8(text).map_err(|_| AppError::new("invalid", "游标不是 UTF-8"))?;
+        .map_err(|_| AppError::new(ErrorKind::Invalid, "游标格式不对"))?;
+    let text =
+        String::from_utf8(text).map_err(|_| AppError::new(ErrorKind::Invalid, "游标不是 UTF-8"))?;
     let (tag, rest) = match text.split_once('|') {
         Some((tag, rest)) => (Sort::from_tag(tag), rest),
         // 旧格式：last_at:session_id
@@ -417,9 +640,27 @@ pub fn decode_cursor(raw: &str) -> Result<(Sort, i64, String)> {
     };
     let (value, sid) = rest
         .split_once(':')
-        .ok_or_else(|| AppError::new("invalid", "游标缺少分隔符"))?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "游标缺少分隔符"))?;
     let value = value
         .parse::<i64>()
-        .map_err(|_| AppError::new("invalid", "游标里的排序值不是整数"))?;
+        .map_err(|_| AppError::new(ErrorKind::Invalid, "游标里的排序值不是整数"))?;
     Ok((tag, value, sid.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_name_prefers_slug_then_last_segment() {
+        // CodeBuddy 有工作区名，直接用
+        assert_eq!(project_name("AI Manager", "D:/whatever"), "AI Manager");
+        // 其余来源只有 cwd：取最后一段，正反斜杠都要认
+        assert_eq!(project_name("", "D:/AI Manager"), "AI Manager");
+        assert_eq!(project_name("", r"D:/AI Manager/"), "AI Manager");
+        assert_eq!(project_name("  ", "/home/lynn/work/"), "work");
+        // 都没有就留空，界面显示「—」
+        assert_eq!(project_name("", ""), "");
+        assert_eq!(project_name("", "   "), "");
+    }
 }

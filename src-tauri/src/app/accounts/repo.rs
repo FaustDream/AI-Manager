@@ -35,10 +35,26 @@ pub fn list(db: &Db) -> Result<Vec<AccountView>> {
                 checked_at: None,
                 balance: None,
                 quota: Default::default(),
+                quota_at: None,
+                lot_expires_at: None,
+                lot_amount: None,
                 next_at: None,
                 error: None,
             })
         })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    })
+}
+
+/// 全部 iid（迁移校验用：只要身份，不取整行）。
+pub fn iids(db: &Db) -> Result<Vec<String>> {
+    db.read(|conn| {
+        let mut stmt = conn.prepare("SELECT iid FROM accounts ORDER BY iid")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);

@@ -13,7 +13,7 @@ pub use store::{SqliteCheckin, SqliteLedger};
 use crate::app::accounts::{self, AccountView};
 use crate::app::clock::Clock;
 use crate::app::db::Db;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::Http;
 use crate::app::providers;
 use crate::app::runtime::blocking;
@@ -77,6 +77,13 @@ pub struct AccountDetail {
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub next_at: Option<i64>,
     pub checked_in: bool,
+    /// 今天真正签到的时刻（不是刷新时刻）
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub checked_at: Option<i64>,
+    /// 额度窗口：名称 → 已用百分比
+    pub quota: std::collections::BTreeMap<String, f64>,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub quota_at: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -107,9 +114,12 @@ impl Service {
             let view = accounts::repo::list(&db)?
                 .into_iter()
                 .find(|v| v.iid == wanted)
-                .ok_or_else(|| AppError::new("invalid", "账号不存在，可能已被删除"))?;
+                .ok_or_else(|| AppError::new(ErrorKind::Invalid, "账号不存在，可能已被删除"))?;
             let bytes = accounts::repo::secret_of(&db, &wanted)?.ok_or_else(|| {
-                AppError::new("invalid", "这个账号没有保存凭据，请重新点「扫描客户端」")
+                AppError::new(
+                    ErrorKind::Invalid,
+                    "这个账号没有保存凭据，请重新点「扫描客户端」",
+                )
             })?;
             Ok((view, accounts::credential::Credential::parse(&bytes)?))
         })
@@ -118,7 +128,7 @@ impl Service {
 
     fn provider_of(iid: &str) -> Result<Box<dyn providers::Provider>> {
         providers::for_iid(iid)
-            .ok_or_else(|| AppError::new("unsupported", "这个平台的账号暂不支持该操作"))
+            .ok_or_else(|| AppError::new(ErrorKind::Unsupported, "这个平台的账号暂不支持该操作"))
     }
 
     /// 查签到状态。免签到的平台只查积分，不去「看」签到状态。
@@ -140,6 +150,19 @@ impl Service {
             }
         };
         self.persist(iid, &result).await;
+        // 平台的签到结论要落到本地：本工具没签过（用户在官方客户端签的）时，
+        // 不补标记列表会一直停在「待查询」，每轮轮询还会再问一次接口；
+        // 平台明确说没签也要记下来，否则早上打开每个账号都只显示「待查询」。
+        // 只认接口明确给的 true/false——None 是「没查到」，别猜。
+        match result.checked_in {
+            Some(true) => {
+                if let Err(e) = self.mark_today(iid).await {
+                    log_write_failure("写入去重标记失败", &platform_scope(iid), e);
+                }
+            }
+            Some(false) => self.note_unchecked(iid).await,
+            None => {}
+        }
         if requires && result.next_at.is_none() {
             self.fallback_next_at(iid, cooldown).await;
         }
@@ -155,6 +178,12 @@ impl Service {
         if let Some(balance) = snapshot.balance {
             self.note_balance(iid, balance).await;
         }
+        let quota = snapshot.quota.as_ref().map(|map| {
+            map.iter()
+                .map(|(key, value)| (key.clone(), *value))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        });
+        self.note_view(iid, quota, snapshot.lots.clone()).await;
         Ok(snapshot)
     }
 
@@ -169,7 +198,7 @@ impl Service {
             let iid = iid.clone();
             tasks.spawn(async move {
                 let _permit = permit.acquire_owned().await.ok();
-                let snapshot = match service.credits(&iid).await {
+                let snapshot = match service.refresh_snapshot(&iid).await {
                     Ok(snapshot) => snapshot,
                     Err(e) => CreditSnapshot {
                         summary: e.message,
@@ -190,10 +219,37 @@ impl Service {
         out
     }
 
+    /// 「刷新积分」实际打的那一发：需要签到的平台走**状态查询**，顺带把签到结论落库。
+    ///
+    /// 只打积分接口的话，平台侧今天已经签过（用户在官方客户端签的）的账号会永远
+    /// 停在「待查询」——本工具没有它的签到记录，而余额接口从不过问签到状态。
+    async fn refresh_snapshot(&self, iid: &str) -> Result<CreditSnapshot> {
+        let provider = Self::provider_of(iid)?;
+        if !provider.requires_checkin() {
+            return self.credits(iid).await;
+        }
+        let status = self.status(iid).await?;
+        // 签到接口没给余额（例如 Trae 活动未开放）时退回纯积分查询：
+        // 否则这一行的余额会被冲成空，界面判成「查询失败」
+        if status.balance.is_none() {
+            return self.credits(iid).await;
+        }
+        Ok(CreditSnapshot {
+            summary: status.summary,
+            balance: status.balance,
+            lots: status.lots,
+            quota: None,
+        })
+    }
+
     /// 定时积分刷新：全部有凭据的账号刷一遍余额。返回 (总数, 失败数)。
     pub async fn credits_round(&self) -> (usize, usize) {
         let iids: Vec<String> = match self.accounts().await {
-            Ok(list) => list.into_iter().filter(|a| a.has_secret).map(|a| a.iid).collect(),
+            Ok(list) => list
+                .into_iter()
+                .filter(|a| a.has_secret)
+                .map(|a| a.iid)
+                .collect(),
             Err(_) => return (0, 0),
         };
         let total = iids.len();
@@ -209,30 +265,48 @@ impl Service {
         (total, failed)
     }
 
-    /// 详情面板：只读本地库（余额、今日增减、批次、下次可签），一次都不打接口。
+    /// 详情面板：只读本地库（余额、今日增减、批次、下次可签、额度），一次都不打接口。
     pub async fn detail(&self, iid: &str) -> AccountDetail {
         let checked_in = self.marked_today(iid).await;
         let today = self.clock.today();
         let stamp = today.format("%Y-%m-%d").to_string();
         let db = self.db.clone();
         let key = iid.to_string();
-        let (balance, delta, lots, next_at) = blocking(move || {
+        let (balance, delta, lots, next_at, checked_at, quota, quota_at) = blocking(move || {
             let store = SqliteCheckin::new(&db);
+            let view = store.view_of(&key);
+            // 实时批次比台账更接近「现在还剩什么」；没有就退回台账
+            let mut lots = view
+                .as_ref()
+                .map(|item| store::lots_for_display(&key, item.lots.clone()))
+                .unwrap_or_default();
+            if lots.is_empty() && !key.ends_with("@intl") {
+                // 国际版不退回台账：它的批次到期不可信，旧日期也不该翻出来
+                lots = store::lots_of(&db, &key, 10);
+            }
             (
                 store.balance_on(&key, &stamp),
                 store::today_delta(&db, &key, today),
-                store::lots_of(&db, &key, 10),
+                lots,
                 store.next_at(&key).map(|at| at.timestamp_millis()),
+                store.last_checkin_at(&key).map(|at| at.timestamp_millis()),
+                view.as_ref()
+                    .map(|item| item.quota.clone())
+                    .unwrap_or_default(),
+                view.map(|item| item.at),
             )
         })
         .await
-        .unwrap_or((None, None, Vec::new(), None));
+        .unwrap_or((None, None, Vec::new(), None, None, Default::default(), None));
         AccountDetail {
             balance,
             today_delta: delta,
             lots,
             next_at,
             checked_in,
+            checked_at,
+            quota,
+            quota_at,
         }
     }
 
@@ -303,7 +377,7 @@ impl Service {
             tasks.spawn(async move {
                 let _permit = permit_sem.acquire_owned().await.ok();
                 if cancel.is_cancelled() {
-                    return (iid, Err(AppError::new("cancelled", "任务已取消")));
+                    return (iid, Err(AppError::new(ErrorKind::Cancelled, "任务已取消")));
                 }
                 let result = service.checkin(&iid).await;
                 (iid, result)
@@ -492,34 +566,6 @@ impl Service {
         None
     }
 
-    /// 免签到账号也要补一次积分：否则整表重画后它们的余额永远是「—」（契约 21）。
-    pub async fn refresh_credits(&self) -> usize {
-        let Ok(accounts) = self.accounts().await else {
-            return 0;
-        };
-        let semaphore = Arc::new(Semaphore::new(3));
-        let mut tasks = tokio::task::JoinSet::new();
-        for account in accounts.into_iter().filter(|a| a.has_secret) {
-            let service = self.clone();
-            let permit = semaphore.clone();
-            tasks.spawn(async move {
-                let _permit = permit.acquire_owned().await.ok();
-                if account.requires_checkin {
-                    service.status(&account.iid).await.is_ok()
-                } else {
-                    service.credits(&account.iid).await.is_ok()
-                }
-            });
-        }
-        let mut ok = 0;
-        while let Some(joined) = tasks.join_next().await {
-            if matches!(joined, Ok(true)) {
-                ok += 1;
-            }
-        }
-        ok
-    }
-
     // ---------------------------------------------------------------- 内部
 
     async fn accounts(&self) -> Result<Vec<AccountView>> {
@@ -566,6 +612,32 @@ impl Service {
             self.note_balance(iid, balance).await;
         }
         self.note_next_at(iid, status.next_at).await;
+        self.note_view(iid, None, status.lots.clone()).await;
+    }
+
+    /// 把「平台此刻还剩什么」落成展示缓存。写失败只落日志：缓存丢了顶多显示旧值，
+    /// 不能因此把一次成功的签到判成失败。
+    async fn note_view(
+        &self,
+        iid: &str,
+        quota: Option<std::collections::BTreeMap<String, f64>>,
+        lots: Option<Vec<crate::types::CreditLot>>,
+    ) {
+        if quota.is_none() && lots.is_none() {
+            return;
+        }
+        let db = self.db.clone();
+        let clock = self.clock.clone();
+        let iid = iid.to_string();
+        let scope = platform_scope(&iid);
+        match blocking(move || {
+            SqliteCheckin::new(&db).note_view(&iid, quota, lots, clock.now().timestamp_millis())
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) | Err(e) => log_write_failure("写入额度缓存失败", &scope, e),
+        }
     }
 
     async fn note_balance(&self, iid: &str, balance: f64) {
@@ -573,10 +645,8 @@ impl Service {
         let clock = self.clock.clone();
         let iid = iid.to_string();
         let scope = platform_scope(&iid);
-        match blocking(move || {
-            SqliteCheckin::new(&db).note_balance(&iid, balance, clock.as_ref())
-        })
-        .await
+        match blocking(move || SqliteCheckin::new(&db).note_balance(&iid, balance, clock.as_ref()))
+            .await
         {
             // 内层返回的是「有没有记一笔」的 bool，写盘失败才要看
             Ok(Ok(_)) => {}
@@ -648,6 +718,18 @@ impl Service {
         blocking(move || SqliteCheckin::new(&db).mark_today(&iid, clock.as_ref())).await?
     }
 
+    /// 「平台说今天没签」只影响展示，写失败不值得打断任何流程。
+    async fn note_unchecked(&self, iid: &str) {
+        let db = self.db.clone();
+        let clock = self.clock.clone();
+        let iid = iid.to_string();
+        let scope = platform_scope(&iid);
+        match blocking(move || SqliteCheckin::new(&db).note_unchecked(&iid, clock.as_ref())).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) | Err(e) => log_write_failure("写入未签状态失败", &scope, e),
+        }
+    }
+
     async fn record_grant(
         &self,
         iid: &str,
@@ -663,7 +745,11 @@ impl Service {
             // 契约 5 的生产接线（add_if_needed）：live_credit=true 平台自己返回
             // 批次，台账不重复记——这条幂等判断收在契约实现里，不在调用方
             SqliteLedger::new(&db).add_if_needed(
-                live_credit, &iid, granted, validity_days, clock.as_ref(),
+                live_credit,
+                &iid,
+                granted,
+                validity_days,
+                clock.as_ref(),
             )
         })
         .await

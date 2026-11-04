@@ -4,7 +4,7 @@
 //! 单连接会把所有读写串成一条线，备份/迁移这类长事务会连任务页的刷新一起卡住。
 //! WAL 下读写本就并发，代价只有约 20 行。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::paths;
 use rusqlite::Connection;
 use std::sync::Mutex;
@@ -113,6 +113,17 @@ impl Db {
                  );
                  CREATE INDEX IF NOT EXISTS idx_sessions_cursor
                      ON session_index(last_at DESC, session_id);
+                 -- 会话的本地标记：归档与「本地隐藏」都只存在本工具里。
+                 -- 索引表每轮扫描整源重建，所以这类用户态必须单独存，不能挂在索引行上。
+                 --   archived_at  归档时刻（到点自动归档 / 手动归档）
+                 --   hidden_at    本地隐藏（Trae 这类只有云端占位、远端删不掉的来源）
+                 CREATE TABLE IF NOT EXISTS session_marks (
+                     source_key  TEXT NOT NULL,
+                     session_id  TEXT NOT NULL,
+                     archived_at TEXT,
+                     hidden_at   TEXT,
+                     PRIMARY KEY (source_key, session_id)
+                 );
                  CREATE TABLE IF NOT EXISTS hub_items (
                      kind       TEXT NOT NULL,
                      name       TEXT NOT NULL,
@@ -137,7 +148,7 @@ impl Db {
                     conn.query_row("SELECT MAX(version) FROM schema_meta", [], |r| r.get(0))?;
                 if stored != SCHEMA_VERSION as i64 {
                     return Err(AppError::new(
-                        "sqlite",
+                        ErrorKind::Sqlite,
                         format!("库 schema 版本不匹配：库是 v{stored}，程序要 v{SCHEMA_VERSION}"),
                     ));
                 }
@@ -221,7 +232,7 @@ impl Db {
 
 fn open_conn(path: &std::path::Path) -> Result<Connection> {
     let conn = Connection::open(path)
-        .map_err(|e| AppError::new("sqlite", format!("打开数据库失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("打开数据库失败：{e}")))?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
     )?;
@@ -229,7 +240,7 @@ fn open_conn(path: &std::path::Path) -> Result<Connection> {
 }
 
 fn poisoned() -> AppError {
-    AppError::new("sqlite", "数据库锁被污染（上一次操作 panic 过）")
+    AppError::new(ErrorKind::Sqlite, "数据库锁被污染（上一次操作 panic 过）")
 }
 
 #[cfg(test)]

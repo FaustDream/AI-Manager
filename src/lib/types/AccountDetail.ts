@@ -8,4 +8,12 @@ export type AccountDetail = { balance: number | null,
 /**
  * 契约 6：今天与上一次有记录那天的差值
  */
-today_delta: number | null, lots: Array<CreditLot>, next_at: number | null, checked_in: boolean, };
+today_delta: number | null, lots: Array<CreditLot>, next_at: number | null, checked_in: boolean, 
+/**
+ * 今天真正签到的时刻（不是刷新时刻）
+ */
+checked_at: number | null, 
+/**
+ * 额度窗口：名称 → 已用百分比
+ */
+quota: { [key: string]: number }, quota_at: number | null, };

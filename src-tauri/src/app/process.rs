@@ -6,7 +6,7 @@
 //!   - **单实例句柄持有到进程退出**（AGENTS §6）：不手工 CloseHandle，
 //!     否则互斥体可能提前释放，第二次启动就能进来。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use std::path::Path;
 use windows::core::HSTRING;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
@@ -19,7 +19,8 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::System::Threading::{
     CreateMutexW, CreateProcessW, OpenProcess, TerminateProcess, CREATE_NO_WINDOW,
-    PROCESS_INFORMATION, PROCESS_TERMINATE, STARTF_USESHOWWINDOW, STARTUPINFOW,
+    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_TERMINATE, STARTF_USESHOWWINDOW,
+    STARTUPINFOW,
 };
 
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -62,7 +63,7 @@ pub fn process_running(names: &[&str]) -> bool {
 /// 表现就是「删掉的会话第二天又回来了」。
 pub fn kill_by_name(name: &str) -> Result<usize> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
-        .map_err(|e| AppError::new("io", format!("枚举进程失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("枚举进程失败：{e}")))?;
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
@@ -97,15 +98,34 @@ pub fn start_detached(exe: &Path) -> Result<()> {
     spawn(exe, false)
 }
 
+/// 用系统默认程序打开一个 URL（浏览器登录页）。
+/// 走 ShellExecuteW：不产生控制台窗口，浏览器由 shell 拉起、不挂在我们的进程树上。
+pub fn open_url(url: &str) -> bool {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb = HSTRING::from("open");
+    let file = HSTRING::from(url);
+    let result = unsafe { ShellExecuteW(None, &verb, &file, None, None, SW_SHOWNORMAL) };
+    // 返回值 > 32 才算成功（历史约定：它不是句柄）
+    result.0 as usize > 32
+}
+
 fn spawn(exe: &Path, hidden: bool) -> Result<()> {
     spawn_with_args(exe, &[], hidden)
 }
 
 /// 带参数启动。`CREATE_NO_WINDOW` 与 SW_HIDE 仍然双保险（契约 20）。
+///
+/// **启动 GUI 客户端时不继承本进程的环境**：如果 AI Manager 是从某个 Electron 工具
+/// 的终端里拉起来的，环境里会带着 `ELECTRON_RUN_AS_NODE=1` / `NODE_OPTIONS`，
+/// 被启动的客户端会以 Node 模式跑一遍就退出（退出码 0、没有窗口），
+/// 表现就是「客户端关了再也起不来」。这几个变量在这里剥掉。
 pub fn spawn_with_args(exe: &Path, args: &[&str], hidden: bool) -> Result<()> {
     if !exe.exists() {
         return Err(AppError::new(
-            "io",
+            ErrorKind::Io,
             format!("可执行文件不存在：{}", exe.display()),
         ));
     }
@@ -125,20 +145,37 @@ pub fn spawn_with_args(exe: &Path, args: &[&str], hidden: bool) -> Result<()> {
         startup.wShowWindow = 0; // SW_HIDE，与 CREATE_NO_WINDOW 互为双保险
     }
 
+    // 环境块必须活到 CreateProcessW 返回
+    let env = env_block_without(&[
+        "ELECTRON_RUN_AS_NODE",
+        "ELECTRON_NO_ATTACH_CONSOLE",
+        "NODE_OPTIONS",
+    ]);
+    let env_ptr = if env.is_empty() {
+        None
+    } else {
+        Some(env.as_ptr() as *const core::ffi::c_void)
+    };
+
     let mut info = PROCESS_INFORMATION::default();
     unsafe {
+        // 传了环境块就必须声明它是 Unicode 块，否则 CreateProcessW 直接报参数错误
+        let mut flags = if hidden {
+            CREATE_NO_WINDOW
+        } else {
+            Default::default()
+        };
+        if env_ptr.is_some() {
+            flags |= CREATE_UNICODE_ENVIRONMENT;
+        }
         CreateProcessW(
             &path,
             command_ptr,
             None,
             None,
             false,
-            if hidden {
-                CREATE_NO_WINDOW
-            } else {
-                Default::default()
-            },
-            None,
+            flags,
+            env_ptr,
             None,
             &startup,
             &mut info,
@@ -148,6 +185,23 @@ pub fn spawn_with_args(exe: &Path, args: &[&str], hidden: bool) -> Result<()> {
         let _ = CloseHandle(info.hThread);
     }
     Ok(())
+}
+
+/// 复制当前环境并剔掉指定变量（大小写不敏感），返回 Windows 要求的 UTF-16 块：
+/// 每条 `KEY=VALUE\0`，整体再补一个 `\0`，且按不区分大小写排序。
+fn env_block_without(drop: &[&str]) -> Vec<u16> {
+    let mut items: Vec<String> = std::env::vars()
+        .filter(|(key, _)| !drop.iter().any(|d| d.eq_ignore_ascii_case(key)))
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    items.sort_by_key(|item| item.to_uppercase());
+    let mut block = Vec::new();
+    for item in items {
+        block.extend(item.encode_utf16());
+        block.push(0);
+    }
+    block.push(0);
+    block
 }
 
 /// 拼命令行：每个参数加引号并转义内部引号，Windows 只接受一整条命令行。
@@ -187,7 +241,7 @@ pub fn run_capture(exe: &Path, timeout: std::time::Duration) -> Result<String> {
 
     if !exe.exists() {
         return Err(AppError::new(
-            "io",
+            ErrorKind::Io,
             format!("可执行文件不存在：{}", exe.display()),
         ));
     }
@@ -197,7 +251,7 @@ pub fn run_capture(exe: &Path, timeout: std::time::Duration) -> Result<String> {
         .stderr(Stdio::null())
         .creation_flags(NO_WINDOW)
         .spawn()
-        .map_err(|e| AppError::new("io", format!("启动失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("启动失败：{e}")))?;
 
     let started = std::time::Instant::now();
     loop {
@@ -206,15 +260,15 @@ pub fn run_capture(exe: &Path, timeout: std::time::Duration) -> Result<String> {
             Ok(None) if started.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(AppError::new("io", "子进程执行超时"));
+                return Err(AppError::new(ErrorKind::Io, "子进程执行超时"));
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-            Err(e) => return Err(AppError::new("io", e.to_string())),
+            Err(e) => return Err(AppError::new(ErrorKind::Io, e.to_string())),
         }
     }
     let out = child
         .wait_with_output()
-        .map_err(|e| AppError::new("io", e.to_string()))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, e.to_string()))?;
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
@@ -259,7 +313,7 @@ pub fn set_autostart(enabled: bool, exe: &Path) -> Result<()> {
     };
     if status.0 != 0 {
         return Err(AppError::new(
-            "io",
+            ErrorKind::Io,
             format!("打开开机自启注册表项失败：{status:?}"),
         ));
     }
@@ -278,7 +332,10 @@ pub fn set_autostart(enabled: bool, exe: &Path) -> Result<()> {
         let _ = RegCloseKey(hkey);
     }
     if result.0 != 0 {
-        return Err(AppError::new("io", format!("设置开机自启失败：{result:?}")));
+        return Err(AppError::new(
+            ErrorKind::Io,
+            format!("设置开机自启失败：{result:?}"),
+        ));
     }
     Ok(())
 }

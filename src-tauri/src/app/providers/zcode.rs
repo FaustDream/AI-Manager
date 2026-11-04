@@ -10,7 +10,7 @@
 use super::{Provider, ScannedAccount, Sink, SwitchOutcome};
 use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::AccountIdentity;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, paths, process};
 use crate::types::{CreditSnapshot, StatusResult};
@@ -188,7 +188,7 @@ fn key() -> Key<Aes256Gcm> {
 fn b64(text: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(text.trim_end_matches('='))
-        .map_err(|e| AppError::new("invalid", format!("不是合法 base64url：{e}")))
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("不是合法 base64url：{e}")))
 }
 
 /// 解开一个 `enc:v1:` 字段；非加密值原样返回。
@@ -505,7 +505,7 @@ impl ZCodeProvider {
                 Ok(resp) => resp,
                 Err(e) => {
                     return Err(AppError::new(
-                        "provider",
+                        ErrorKind::Provider,
                         format!("网络错误：{}", e.message),
                     ))
                 }
@@ -516,25 +516,25 @@ impl ZCodeProvider {
             }
             if resp.status == 401 || resp.status == 403 {
                 return Err(AppError::new(
-                    "provider",
+                    ErrorKind::Provider,
                     format!("登录态已失效（HTTP {}）", resp.status),
                 ));
             }
             if resp.status >= 400 {
                 return Err(AppError::new(
-                    "provider",
+                    ErrorKind::Provider,
                     format!("额度接口返回 HTTP {}", resp.status),
                 ));
             }
             return resp.json();
         }
-        Err(AppError::new("provider", last))
+        Err(AppError::new(ErrorKind::Provider, last))
     }
 
     async fn quota(&self, cred: &Credential, http: &dyn Http) -> Result<QuotaView> {
         let tokens = Self::candidate_tokens(cred);
         if tokens.is_empty() {
-            return Err(AppError::new("provider", "没有可用的登录凭据"));
+            return Err(AppError::new(ErrorKind::Provider, "没有可用的登录凭据"));
         }
         let mut errors: Vec<String> = Vec::new();
         let mut auth_fail = 0;
@@ -611,7 +611,7 @@ impl ZCodeProvider {
             });
         }
         Err(AppError::new(
-            "provider",
+            ErrorKind::Provider,
             errors
                 .into_iter()
                 .next()
@@ -871,25 +871,25 @@ pub fn switch_to(
 ) -> Result<SwitchOutcome> {
     let Some(creds) = cred.meta_json("credentials").filter(|v| v.is_object()) else {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             "这条账号里没有 ZCode 登录凭据，无法切换",
         ));
     };
     if !is_logged_in(creds) {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             "登录凭据已经失效，请重新登录一次该账号",
         ));
     }
     if provider.current_id().as_deref() == Some(account_id) {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             "这个账号就是客户端当前登录的账号，不需要切换",
         ));
     }
     if provider.client_running() {
         return Err(AppError::new(
-            "client_running",
+            ErrorKind::ClientRunning,
             "请先关闭 ZCode 客户端再切换",
         ));
     }

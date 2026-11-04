@@ -268,6 +268,41 @@ pub fn project_files(projects: &Path) -> std::collections::HashMap<String, Vec<P
     out
 }
 
+/// 正文之外的会话文件：`assistant-display` / `file-tree-manifests` 各有一份按 id
+/// 命名的侧车，`logs/<日期>/sdk/conversations/` 下还有这个会话的日志。
+///
+/// 只搬 `projects/` 的话，删完客户端目录里还剩一堆按会话 id 命名的残渣，
+/// 其中两份 json 本身就带着会话内容——「彻底删除」就名不副实了。
+pub fn session_sidecars(ep: &Edition, id: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for dir in ["assistant-display", "file-tree-manifests"] {
+        let path = ep.root.join(dir).join(format!("{id}.json"));
+        if path.is_file() {
+            out.push(path);
+        }
+    }
+    let Ok(days) = std::fs::read_dir(ep.root.join("logs")) else {
+        return out;
+    };
+    for day in days.flatten() {
+        let dir = day.path().join("sdk").join("conversations");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // 只认 `<id>.log` / `<id>-warning.log`：前缀相同但后面不带分隔符的
+            // 不是这个会话的文件，别误伤
+            if let Some(rest) = name.strip_prefix(id) {
+                if rest.starts_with('.') || rest.starts_with('-') {
+                    out.push(entry.path());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// 会话 ID 是 uuid / 32 位十六进制；projects 下别的名字不是正文。
 fn is_session_id(value: &str) -> bool {
     value.len() >= 16

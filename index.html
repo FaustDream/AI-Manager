@@ -4,8 +4,117 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <title>AI Manager</title>
+    <!--
+      启动画面：样式必须内联。
+      原因：index.css 是打包产物的一部分，等它加载完才画，中间就是一片白；
+      这段 HTML 在 webview 解析到这里时立刻上屏，React 挂载后再淡出。
+    -->
+    <style>
+      :root {
+        --splash-bg: #ffffff;
+        --splash-fg: #1c1f23;
+        --splash-muted: #6b7280;
+        --splash-line: #e5e7eb;
+        --splash-accent: #2563eb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --splash-bg: #16181d;
+          --splash-fg: #e6e8ec;
+          --splash-muted: #9aa3af;
+          --splash-line: #2a2e37;
+          --splash-accent: #5b8cff;
+        }
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--splash-bg);
+      }
+      #splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        gap: 14px;
+        background: var(--splash-bg);
+        font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        color: var(--splash-fg);
+        transition: opacity 0.22s ease-out;
+      }
+      #splash[data-hide] {
+        opacity: 0;
+      }
+      .splash-mark {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border: 1px solid var(--splash-line);
+        border-radius: 9px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: var(--splash-muted);
+        animation: splash-breathe 2.4s ease-in-out infinite;
+      }
+      .splash-name {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .splash-track {
+        width: 132px;
+        height: 2px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: var(--splash-line);
+      }
+      .splash-track > span {
+        display: block;
+        width: 38%;
+        height: 100%;
+        border-radius: 2px;
+        background: var(--splash-accent);
+        animation: splash-slide 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      }
+      @keyframes splash-slide {
+        from {
+          transform: translateX(-100%);
+        }
+        to {
+          transform: translateX(320%);
+        }
+      }
+      @keyframes splash-breathe {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .splash-mark,
+        .splash-track > span {
+          animation: none;
+        }
+        .splash-track > span {
+          width: 100%;
+          opacity: 0.45;
+        }
+      }
+    </style>
   </head>
   <body>
+    <div id="splash" aria-hidden="true">
+      <div class="splash-mark">AI</div>
+      <div class="splash-name">AI Manager</div>
+      <div class="splash-track"><span></span></div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

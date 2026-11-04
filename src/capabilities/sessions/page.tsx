@@ -1,35 +1,98 @@
-// 会话页：筛选三下拉 + 排序（时间/大小/消息数）+ 游标分页无限滚动 + 正文预览 +
+// 会话页：状态/排序下拉 + 自动归档档位 + 游标分页无限滚动 + 正文预览 +
 // 删除（进回收站）+ 备份 + 回收站管理。行 key = kind|source|account|session_id。
+// 工具栏只保留不重复的三组：来源标签 / 筛选 / 动作；归档相关的入口只留一处。
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
-import { call, errText } from '@/lib/ipc';
+import { confirmAction } from '@/components/ui/confirm';
+import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
+import { findActiveTask, useTasks } from '@/lib/use-tasks';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { errText } from '@/lib/ipc';
 import { fmtSize, fmtTime } from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Checkbox, Select, SkeletonRows } from '@/components/ui/form';
 import { Notice, Tag } from '@/components/ui';
+import { DataTable, type Column } from '@/components/ui/table';
 import { toast } from '@/components/ui/toast';
 import type {
-  DeleteReport, Facets, Filter, Manifest, Message, Page, Preview, RestoreReport, SessionRow, Snapshot,
+  Facets, Filter, Manifest, Message, Preview, SessionRow, Snapshot,
 } from '@/lib/types';
 
 const PAGE_SIZE = 100;
+
+/** 主列表的列定义（C6）：加一列 = 加一行。 */
+const SESSION_COLUMNS: Column<SessionRow>[] = [
+  {
+    key: 'title',
+    header: '标题',
+    truncate: true,
+    cell: (row) => row.title || '（无标题）',
+  },
+  {
+    key: 'project',
+    header: '项目',
+    width: 144,
+    truncate: true,
+    className: 'text-muted',
+    title: (row) => row.cwd || undefined,
+    cell: (row) => row.project || '—',
+  },
+  { key: 'source', header: '来源', width: 144, truncate: true, className: 'text-muted', cell: (row) => row.source_label },
+  { key: 'account', header: '账号', width: 128, truncate: true, className: 'text-muted', cell: (row) => row.account_label },
+  { key: 'time', header: '时间', width: 112, className: 'tabular-nums text-muted', cell: (row) => fmtTime(row.last_at) },
+  { key: 'msgs', header: '消息', width: 80, className: 'tabular-nums text-muted', cell: (row) => row.msgs ?? '—' },
+  { key: 'size', header: '大小', width: 96, className: 'tabular-nums text-muted', cell: (row) => fmtSize(row.size) },
+  {
+    key: 'state',
+    header: '状态',
+    width: 80,
+    cell: (row) => (
+      <Tag tone={STATE_TONES[row.state] ?? 'muted'}>{STATE_LABELS[row.state] ?? row.state}</Tag>
+    ),
+  },
+];
 const STATE_LABELS: Record<string, string> = {
   visible: '可见', deleted: '已删除', old_account: '旧账号', cloud: '云端', archived: '已归档',
 };
+const STATE_TONES: Record<string, 'ok' | 'warn' | 'bad' | 'muted'> = {
+  visible: 'ok', archived: 'warn', deleted: 'bad', cloud: 'muted', old_account: 'muted',
+};
+/** 自动归档档位：关闭 + 四档。0 = 关闭，后端只认这几个值。 */
+const RETENTION_CHOICES = [
+  { days: 0, label: '关闭' },
+  { days: 3, label: '3 天' },
+  { days: 7, label: '7 天' },
+  { days: 15, label: '15 天' },
+  { days: 30, label: '30 天' },
+];
+/** 可以「彻底删除」的状态：归档过，或客户端那边已经删了。 */
+const PURGEABLE = new Set(['archived', 'deleted']);
 
 export default function SessionsPage() {
   const qc = useQueryClient();
-  const [filter, setFilter] = useState<Filter>({ source: null, account: null, state: null, sort: 'last_at' });
+  const [filter, setFilter] = useState<Filter>({
+    source: null, account: null, state: null, sort: 'last_at', show_archived: false,
+  });
   const [selected, setSelected] = useState<string | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [trashOpen, setTrashOpen] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
 
+  // 任务表：删除/彻底删除都在后台跑，这里取「本页正在跑的任务」画进度条
+  const tasks = useTasks({ refetchInterval: 1000 });
+  const job = findActiveTask(tasks.data, 'sessions');
+
   const facets = useQuery<Facets>({
     queryKey: ['facets'],
-    queryFn: () => call<Facets>('session_facets'),
+    queryFn: () => queryCmd('session_facets'),
   });
+  // 状态下拉 = facets 的状态 + 恒定的「已归档」。facets 里没有已归档时（一条都没归档过）
+  // 这一项就消失了，「只看已归档」的视图也点不到——所以这里补回来。
+  const stateOptions = useMemo(() => {
+    const list = facets.data?.states ?? [];
+    if (list.some((s) => s.value === 'archived')) return list;
+    return [...list, { value: 'archived', label: '已归档', count: 0 }];
+  }, [facets.data]);
 
   // 游标分页交给 useInfiniteQuery：queryKey 带上 filterKey，换筛选天然开新请求，
   // 旧响应不会覆盖新列表（手写 useState 累加在这里有竞态）；key 挂在 ['sessions']
@@ -38,7 +101,7 @@ export default function SessionsPage() {
   const listQuery = useInfiniteQuery({
     queryKey: ['sessions', 'page', filterKey],
     queryFn: ({ pageParam }) =>
-      call<Page<SessionRow>>('session_page', { cursor: pageParam, limit: PAGE_SIZE, filter }),
+      queryCmd('session_page', { cursor: pageParam, limit: PAGE_SIZE, filter }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next_cursor ?? undefined,
   });
@@ -65,9 +128,26 @@ export default function SessionsPage() {
 
   const preview = useQuery<Preview>({
     queryKey: ['preview', selected],
-    queryFn: () => call<Preview>('session_preview', { key: selected }),
+    queryFn: () => queryCmd('session_preview', { key: selected! }),
     enabled: !!selected,
   });
+
+  // 自动归档档位存在后端 kv 里：换机器/重启都跟着走，不落 localStorage
+  const retention = useQuery<number>({
+    queryKey: ['retention'],
+    queryFn: () => queryCmd('session_retention'),
+  });
+  const setRetention = (days: number) => {
+    void queryCmd('session_retention_set', { days })
+      .then((saved) => {
+        qc.setQueryData(['retention'], saved);
+        toast(saved === 0 ? '已关闭自动归档' : `超过 ${saved} 天没动的会话会自动归档`);
+        // 改档位可能立刻归档一批：列表与计数都要重拉
+        qc.invalidateQueries({ queryKey: ['facets'] });
+        qc.invalidateQueries({ queryKey: ['sessions'] });
+      })
+      .catch((e) => toast(errText(e)));
+  };
 
   const toggle = (key: string) => {
     setChecked((old) => {
@@ -80,128 +160,187 @@ export default function SessionsPage() {
 
   const rowKey = (r: SessionRow) => `${r.kind}|${r.source_key}|${r.account}|${r.session_id}`;
 
-  // 异步按钮的加载态（与账号中心同一套 Button loading）
-  const [busy, setBusy] = useState<string | null>(null);
-  const runBusy = (key: string, work: () => Promise<void>) => {
-    if (busy) return;
-    setBusy(key);
-    void work().finally(() => setBusy(null));
+  // 选中行能做什么，全由状态决定（与后端放行规则一一对应）：
+  //   归档 / 取消归档 —— 除了「客户端已删除」，谁都能归档
+  //   删除（进回收站）—— 未归档、未删除的（含云端）
+  //   彻底删除       —— 必须**整批**都是已归档 / 已删除，否则先归档
+  // 归档与删除各只留一个按钮：当前选中状态决定它显示成哪个动作，
+  // 避免同一条工具栏上摆四个按钮、还各有各的禁用条件。
+  // 计数用 checked.size（跨页全选也算），动作依据只看当前已加载的行。
+  const checkedRows = items.filter((row) => checked.has(rowKey(row)));
+  const hasSel = checked.size > 0;
+  const canArchive = checkedRows.some((row) => row.state !== 'archived' && row.state !== 'deleted');
+  const canUnarchive = checkedRows.some((row) => row.state === 'archived');
+  const canDelete = checkedRows.some((row) => row.state !== 'archived' && row.state !== 'deleted');
+  const canPurge = checkedRows.length > 0 && checkedRows.every((row) => PURGEABLE.has(row.state));
+  // 归档按钮三态：全是已归档 → 取消归档；能归档 → 归档；只剩已删除 → 不给动作
+  const archiveMode: 'archive' | 'unarchive' | 'none' = !hasSel
+    ? 'archive'
+    : checkedRows.length === 0
+      ? 'archive'
+      : checkedRows.every((row) => row.state === 'archived')
+        ? 'unarchive'
+        : canArchive
+          ? 'archive'
+          : canUnarchive
+            ? 'unarchive'
+            : 'none';
+  // 删除按钮两态：整批都已归档/已删除 → 彻底删除，否则进回收站
+  const deleteMode: 'trash' | 'purge' | 'none' = !hasSel
+    ? 'trash'
+    : checkedRows.length === 0
+      ? 'trash'
+      : canPurge
+        ? 'purge'
+        : canDelete
+          ? 'trash'
+          : 'none';
+
+  // 批量选择：表头勾选框管「本页」，本页全选后再给一个「选中全部 N 条」（跨页）
+  const pageKeys = items.map(rowKey);
+  const allOnPage = pageKeys.length > 0 && pageKeys.every((key) => checked.has(key));
+  const someOnPage = !allOnPage && pageKeys.some((key) => checked.has(key));
+  const headRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    // indeterminate 只能走 DOM 属性，React 没有对应 prop
+    if (headRef.current) headRef.current.indeterminate = someOnPage;
+  }, [someOnPage]);
+
+  const togglePage = () => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      for (const key of pageKeys) {
+        if (allOnPage) next.delete(key);
+        else next.add(key);
+      }
+      return next;
+    });
   };
+
+  const selectAllMatching = async () => {
+    
+      const keys = await runCmd('session_keys', { filter });
+
+      if (keys === undefined) return;
+      setChecked(new Set(keys));
+      toast(`已选中 ${keys.length} 条`);
+    
+  };
+
+  // 异步按钮的加载态（与账号中心同一套 Button loading）
+  const { busy, run: runBusy } = useBusy();
 
   const deleteChecked = () =>
     runBusy('delete', async () => {
       const keys = [...checked];
       if (keys.length === 0) return;
-      if (!window.confirm(`删除选中的 ${keys.length} 条会话？（进回收站，可恢复）`)) return;
-      try {
-        const report = await call<DeleteReport>('session_delete', { keys });
-        toast(
-          `已删除 ${report.sessions} 条（${report.files} 个文件）进回收站` +
-            (report.errors.length ? `；失败 ${report.errors.length}` : ''),
-        );
-        setChecked(new Set());
-        setSelected(null);
-        qc.invalidateQueries({ queryKey: ['facets'] });
-        qc.invalidateQueries({ queryKey: ['sessions'] });
-      } catch (e) {
-        toast(errText(e));
-      }
-    });
-
-  // 真实删除：删完立刻清掉回收站批次——客户端里的正文与库行在 delete 阶段
-  // 就已经真删了，purge 保证连回收站副本也不留，重扫不会再出现
-  const deleteForever = () =>
-    runBusy('delete-forever', async () => {
-      const keys = [...checked];
-      if (keys.length === 0) return;
+      const clients = await queryCmd('session_running_clients', { keys }).catch(
+        () => [] as string[],
+      );
       if (
         !window.confirm(
-          `彻底删除选中的 ${keys.length} 条会话？\n会同时从对应客户端删除其数据，不可恢复。`,
+          `删除选中的 ${keys.length} 条会话？（进回收站，可恢复）` +
+            (clients.length
+              ? `\n\n需要先临时关闭：${clients.join('、')}（删完自动重启）`
+              : ''),
         )
       )
         return;
       try {
-        const report = await call<DeleteReport>('session_delete', { keys });
-        const freed = report.tag
-          ? await call<number>('session_trash_purge', { tag: report.tag })
-          : 0;
-        toast(
-          `已彻底删除 ${report.sessions} 条（释放 ${fmtSize(freed)}）` +
-            (report.errors.length ? `；失败 ${report.errors.length}` : ''),
-        );
+        // 后端在任务里跑：立刻返回任务 id，进度由任务条展示，结果走 session:delete 事件
+        await queryCmd('session_delete', { keys });
+        setChecked(new Set());
+        setSelected(null);
+      } catch (e) {
+        toast(errText(e));
+      }
+    });
+
+  // 真实删除：只放行「已归档 / 已删除」的行，后端会再校验一次（界面置灰只是提示）。
+  // 后端顺手把回收站批次销毁，所以这里不用再调 purge。
+  const purgeChecked = () =>
+    runBusy('purge', async () => {
+      const keys = [...checked];
+      if (keys.length === 0) return;
+      const clients = await queryCmd('session_running_clients', { keys }).catch(
+        () => [] as string[],
+      );
+      if (
+        !window.confirm(
+          `彻底删除选中的 ${keys.length} 条会话？\n\n` +
+            '会从对应客户端真正删掉数据，不进回收站，不可恢复。' +
+            (clients.length
+              ? `\n\n需要先临时关闭：${clients.join('、')}（删完自动重启）`
+              : ''),
+        )
+      )
+        return;
+      
+        if ((await runCmd('session_purge', { keys })) === undefined) return;
+        setChecked(new Set());
+        setSelected(null);
+      
+    });
+
+  // 归档只写本地标记：不关客户端、不进回收站，随时可以取消
+  const archiveChecked = (on: boolean) =>
+    runBusy(on ? 'archive' : 'unarchive', async () => {
+      const keys = [...checked];
+      if (keys.length === 0) return;
+      
+        const count = await runCmd('session_archive', { keys, on });
+
+        if (count === undefined) return;
+        toast(on ? `已归档 ${count} 条会话` : `已取消归档 ${count} 条会话`);
         setChecked(new Set());
         setSelected(null);
         qc.invalidateQueries({ queryKey: ['facets'] });
         qc.invalidateQueries({ queryKey: ['sessions'] });
-        qc.invalidateQueries({ queryKey: ['trash'] });
-      } catch (e) {
-        toast(errText(e));
-      }
+      
     });
 
   const scan = () =>
     runBusy('scan', async () => {
-      try {
-        await call('session_scan');
+      
+        if ((await runCmd('session_scan')) === undefined) return;
         toast('会话扫描已开始（后台任务）');
         // 扫描是后台任务：起个轮询等它收尾，完成时列表自然被事件桥刷新
         setTimeout(() => qc.invalidateQueries({ queryKey: ['facets'] }), 3000);
-      } catch (e) {
-        toast(errText(e));
-      }
+      
     });
 
-  const backup = () =>
-    runBusy('backup', async () => {
-      try {
-        const snap = await call<Snapshot>('session_backup');
-        toast(`快照 ${snap.tag}：${snap.sources.length} 个来源，${fmtSize(snap.bytes)}`);
-        qc.invalidateQueries({ queryKey: ['backups'] });
-      } catch (e) {
-        toast(errText(e));
-      }
-    });
-
-  const total = facets.data?.total ?? 0;
+  // 用列表查询返回的 total（已按筛选口径算过），facets 的 total 是全库、不带筛选
+  const total = listQuery.data?.pages[0]?.total ?? 0;
   return (
     <div className="flex h-[calc(100vh-118px)] flex-col gap-2.5">
-      {/* 来源标签栏：按软件分栏；删掉的会话不会再出现在对应软件里 */}
+      {/* 来源标签栏：按软件分栏；删掉的会话不会再出现在对应软件里。
+          点来源只改来源，不再动状态——状态由下面的下拉管，两边互不干扰。 */}
       <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
         <button
           className={`rounded-md px-3 py-1 text-sm ${
-            filter.source === null ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
+            filter.source === null
+              ? 'bg-accent font-medium text-on-accent'
+              : 'text-muted hover:bg-hover hover:text-fg'
           }`}
           onClick={() => setFilter((f) => ({ ...f, source: null }))}
         >
-          全部（{facets.data?.total ?? 0}）
+          全部
         </button>
         {(facets.data?.sources ?? []).map((s) => (
           <button
             key={s.value}
             className={`rounded-md px-3 py-1 text-sm ${
-              filter.source === s.value ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
+              filter.source === s.value
+                ? 'bg-accent font-medium text-on-accent'
+                : 'text-muted hover:bg-hover hover:text-fg'
             }`}
             onClick={() => setFilter((f) => ({ ...f, source: s.value }))}
           >
-            {s.label}（{s.count}）
+            {s.label}
           </button>
         ))}
       </div>
       <div className="flex flex-wrap items-center gap-3 text-sm">
-        <label className="flex items-center gap-1 text-muted">
-          账号
-          <Select
-            value={filter.account ?? ''}
-            onChange={(e) => setFilter((f) => ({ ...f, account: e.target.value || null }))}
-          >
-            <option value="">全部</option>
-            {(facets.data?.accounts ?? []).map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}（{s.count}）
-              </option>
-            ))}
-          </Select>
-        </label>
         <label className="flex items-center gap-1 text-muted">
           状态
           <Select
@@ -209,9 +348,11 @@ export default function SessionsPage() {
             onChange={(e) => setFilter((f) => ({ ...f, state: e.target.value || null }))}
           >
             <option value="">全部</option>
-            {(facets.data?.states ?? []).map((s) => (
+            {/* 已归档不跟着 facets 走：一条都没归档时列表里就没有这一项，
+                但「只看已归档」这个视图本身应该一直能点到。 */}
+            {stateOptions.map((s) => (
               <option key={s.value} value={s.value}>
-                {s.label}（{s.count}）
+                {s.label}
               </option>
             ))}
           </Select>
@@ -227,92 +368,138 @@ export default function SessionsPage() {
             <option value="msgs">消息数</option>
           </Select>
         </label>
+        <label
+          className="flex items-center gap-1 text-muted"
+          title="超过这个天数没活动的会话，扫描时自动归档"
+        >
+          自动归档
+          <Select
+            value={String(retention.data ?? 0)}
+            onChange={(e) => setRetention(Number(e.target.value))}
+          >
+            {RETENTION_CHOICES.map((choice) => (
+              <option key={choice.days} value={choice.days}>
+                {choice.label}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label className="flex items-center gap-1 text-muted">
+          <Checkbox
+            checked={filter.show_archived}
+            onChange={(e) => setFilter((f) => ({ ...f, show_archived: e.target.checked }))}
+          />
+          显示已归档
+        </label>
         <span className="flex-1" />
         <Button size="sm" onClick={scan} loading={busy === 'scan'} disabled={!!busy}>
           重新扫描
         </Button>
-        <Button size="sm" onClick={backup} loading={busy === 'backup'} disabled={!!busy}>
-          整库备份
+        <Button size="sm" onClick={() => setBackupsOpen(true)}>
+          备份
         </Button>
-        <Button size="sm" onClick={() => setBackupsOpen(true)}>备份列表</Button>
-        <Button size="sm" onClick={() => setTrashOpen(true)}>回收站</Button>
-        <Button
-          size="sm"
-          variant="danger"
-          disabled={checked.size === 0 || !!busy}
-          loading={busy === 'delete'}
-          onClick={deleteChecked}
-        >
-          删除选中（{checked.size}）
-        </Button>
-        <Button
-          size="sm"
-          variant="danger"
-          disabled={checked.size === 0 || !!busy}
-          loading={busy === 'delete-forever'}
-          onClick={deleteForever}
-          title="同时从对应客户端删除其数据，不留回收站副本"
-        >
-          彻底删除
+        <Button size="sm" onClick={() => setTrashOpen(true)}>
+          回收站
         </Button>
       </div>
 
-      <div className="min-h-[180px] flex-1 overflow-auto">
-        <table className="w-full table-fixed border-collapse">
-          <thead className="sticky top-0 bg-bg">
-            <tr>
-              <th className="w-8 border-b border-line-strong px-1 py-1.5" />
-              <th className="border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted">标题</th>
-              <th className="w-36 border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted">来源</th>
-              <th className="w-32 border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted">账号</th>
-              <th className="w-28 border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted">时间</th>
-              <th className="w-20 border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted">消息</th>
-              <th className="w-24 border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted">大小</th>
-              <th className="w-20 border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted">状态</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.length === 0 && (listQuery.isLoading || total === 0) && (
-              <SkeletonRows rows={6} cols={8} />
+      {/* 选择操作单独一行：左边说清楚「选了几条」，右边才是动作，避免和筛选混在一起。
+          归档与删除各只留一个按钮——当前选中状态决定它显示成哪个动作。 */}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        {checked.size > 0 && <span className="text-xs text-muted">已选 {checked.size} 条</span>}
+        {job && (
+          <span className="flex items-center gap-2 text-xs text-muted">
+            {job.name}
+            {/* 有进度才画条：扫描这类任务不上报进度，画个 0% 的空条反而像卡住 */}
+            {job.progress != null && (
+              <span className="inline-block h-1.5 w-24 overflow-hidden rounded-full bg-hover">
+                <span
+                  className="block h-full bg-accent transition-[width] duration-300"
+                  style={{ width: `${Math.round(job.progress * 100)}%` }}
+                />
+              </span>
             )}
-            {items.map((row) => {
-              const key = rowKey(row);
-              return (
-                <tr
-                  key={key}
-                  className="cursor-pointer hover:bg-hover"
-                  style={selected === key ? { background: 'var(--color-hover)' } : undefined}
-                  onClick={() => setSelected(key)}
-                >
-                  <td className="px-1 py-1.5 text-center" onClick={(e) => e.stopPropagation()}>
-                    <Checkbox
-                      checked={checked.has(key)}
-                      onChange={() => toggle(key)}
-                      disabled={row.state !== 'visible'}
-                    />
-                  </td>
-                  <td className="overflow-hidden text-ellipsis whitespace-nowrap border-b border-line px-2.5 py-1.5">
-                    {row.title || '（无标题）'}
-                  </td>
-                  <td className="overflow-hidden text-ellipsis whitespace-nowrap border-b border-line px-2.5 py-1.5 text-muted">
-                    {row.source_label}
-                  </td>
-                  <td className="overflow-hidden text-ellipsis whitespace-nowrap border-b border-line px-2.5 py-1.5 text-muted">
-                    {row.account_label}
-                  </td>
-                  <td className="border-b border-line px-2.5 py-1.5 tabular-nums text-muted">{fmtTime(row.last_at)}</td>
-                  <td className="border-b border-line px-2.5 py-1.5 tabular-nums text-muted">{row.msgs ?? '—'}</td>
-                  <td className="border-b border-line px-2.5 py-1.5 tabular-nums text-muted">{fmtSize(row.size)}</td>
-                  <td className="border-b border-line px-2.5 py-1.5">
-                    <Tag tone={row.state === 'visible' ? 'ok' : 'muted'}>
-                      {STATE_LABELS[row.state] ?? row.state}
-                    </Tag>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+            <span className="tabular-nums">{job.message || '进行中…'}</span>
+          </span>
+        )}
+        {allOnPage && total > items.length && checked.size < total && (
+          <button
+            type="button"
+            className="cursor-pointer text-xs text-accent hover:underline"
+            onClick={() => void selectAllMatching()}
+          >
+            选中全部 {total} 条
+          </button>
+        )}
+        <span className="flex-1" />
+        {archiveMode !== 'none' && (
+          <Button
+            size="sm"
+            disabled={!hasSel || !!busy}
+            loading={busy === 'archive' || busy === 'unarchive'}
+            onClick={() => archiveChecked(archiveMode === 'archive')}
+            title={
+              archiveMode === 'archive'
+                ? '归档后不再出现在默认列表；归档是彻底删除的前提'
+                : '取消归档，重新回到默认列表'
+            }
+          >
+            {archiveMode === 'archive' ? '归档' : '取消归档'}
+            {hasSel ? `（${checked.size}）` : ''}
+          </Button>
+        )}
+        {deleteMode !== 'none' && (
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={!hasSel || !!busy}
+            loading={busy === 'delete' || busy === 'purge'}
+            onClick={deleteMode === 'purge' ? purgeChecked : deleteChecked}
+            title={
+              deleteMode === 'purge'
+                ? '从客户端真正删除，不进回收站'
+                : '进回收站，可恢复'
+            }
+          >
+            {deleteMode === 'purge' ? '彻底删除' : '删除'}
+            {hasSel ? `（${checked.size}）` : ''}
+          </Button>
+        )}
+      </div>
+
+      <div className="min-h-[180px] flex-1 overflow-auto">
+        <DataTable<SessionRow>
+          className="w-full table-fixed border-collapse"
+          stickyHead
+          columns={SESSION_COLUMNS}
+          rows={items}
+          rowKey={rowKey}
+          loading={items.length === 0 && (listQuery.isLoading || total === 0)}
+          skeletonRows={6}
+          empty={null}
+          lead={{
+            width: 32,
+            head: (
+              <input
+                ref={headRef}
+                type="checkbox"
+                aria-label="选中本页全部"
+                className="accent-[var(--color-accent)]"
+                checked={allOnPage}
+                onChange={togglePage}
+              />
+            ),
+            cell: (row) => (
+              <span onClick={(e) => e.stopPropagation()}>
+                <Checkbox checked={checked.has(rowKey(row))} onChange={() => toggle(rowKey(row))} />
+              </span>
+            ),
+          }}
+          onRowClick={(row) => setSelected(rowKey(row))}
+          rowClassName={(row) =>
+            selected === rowKey(row) ? 'cursor-pointer bg-hover' : 'cursor-pointer hover:bg-hover'
+          }
+        />
         <div ref={sentinel} className="h-px" />
         {isFetchingNextPage && <div className="p-2 text-center text-xs text-muted">加载中…</div>}
         {!hasNextPage && items.length > 0 && (
@@ -430,7 +617,7 @@ function TrashDrawer({ open, onClose }: { open: boolean; onClose: () => void }) 
   const qc = useQueryClient();
   const batches = useQuery<Manifest[]>({
     queryKey: ['trash'],
-    queryFn: () => call<Manifest[]>('session_trash'),
+    queryFn: () => queryCmd('session_trash'),
     enabled: open,
   });
 
@@ -439,7 +626,7 @@ function TrashDrawer({ open, onClose }: { open: boolean; onClose: () => void }) 
   const restore = (tag: string) => {
     if (busyTag) return;
     setBusyTag(tag);
-    void call<RestoreReport>('session_trash_restore', { tag })
+    void queryCmd('session_trash_restore', { tag })
       .then((r) => {
         toast(`已恢复 ${r.restored} 条${r.errors.length ? `；失败 ${r.errors.length}` : ''}`);
         // 恢复会改动回收站批次与主列表（行会重新出现），两者都要失效
@@ -451,11 +638,11 @@ function TrashDrawer({ open, onClose }: { open: boolean; onClose: () => void }) 
       .finally(() => setBusyTag(null));
   };
 
-  const purge = (tag: string | null) => {
+  const purge = async (tag: string | null) => {
     if (busyTag) return;
-    if (!window.confirm(tag ? `彻底删除批次 ${tag}？不可恢复。` : '清空整个回收站？不可恢复。')) return;
+    if (!(await confirmAction({ title: '确认操作', message: tag ? `彻底删除批次 ${tag}？不可恢复。` : '清空整个回收站？不可恢复。', danger: true }))) return;
     setBusyTag(tag ?? '__all__');
-    void call<number>('session_trash_purge', { tag })
+    void queryCmd('session_trash_purge', { tag })
       .then((bytes) => {
         toast(`已释放 ${fmtSize(bytes)}`);
         qc.invalidateQueries({ queryKey: ['trash'] });
@@ -466,56 +653,42 @@ function TrashDrawer({ open, onClose }: { open: boolean; onClose: () => void }) 
 
   return (
     <Dialog open={open} title="会话回收站" onClose={onClose} wide>
-      {batches.isLoading && <SkeletonRows rows={3} cols={2} />}
-      {(batches.data ?? []).length === 0 && !batches.isLoading && (
-        <p className="py-6 text-center text-sm text-muted">回收站是空的。</p>
-      )}
-      {(batches.data ?? []).length > 0 && (
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-line-strong text-left text-xs font-semibold text-muted">
-              <th className="px-2 py-1.5">删除时间</th>
-              <th className="px-2 py-1.5">涉及客户端</th>
-              <th className="w-20 px-2 py-1.5 text-right">文件数</th>
-              <th className="w-24 px-2 py-1.5 text-right">大小</th>
-              <th className="w-44 px-2 py-1.5 text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(batches.data ?? []).map((batch) => (
-              <tr key={batch.tag} className="border-b border-line hover:bg-hover">
-                <td className="px-2 py-2 tabular-nums">{fmtTime(batch.at)}</td>
-                <td className="px-2 py-2 text-muted">{batch.platforms.join('、') || '—'}</td>
-                <td className="px-2 py-2 text-right tabular-nums">{batch.items.length}</td>
-                <td className="px-2 py-2 text-right tabular-nums">
-                  {fmtSize(batch.items.reduce((sum, it) => sum + (it.size ?? 0), 0))}
-                </td>
-                <td className="px-2 py-2 text-right">
-                  <span className="flex justify-end gap-1.5">
-                    <Button
-                      size="sm"
-                      onClick={() => restore(batch.tag)}
-                      loading={busyTag === batch.tag}
-                      disabled={!!busyTag}
-                    >
-                      恢复
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      onClick={() => purge(batch.tag)}
-                      loading={busyTag === batch.tag}
-                      disabled={!!busyTag}
-                    >
-                      彻底删除
-                    </Button>
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <DataTable<Manifest>
+        className="text-sm"
+        dense
+        columns={[
+          { key: 'at', header: '删除时间', width: 150, className: 'tabular-nums', cell: (b) => fmtTime(b.at) },
+          { key: 'platforms', header: '涉及客户端', className: 'text-muted', cell: (b) => b.platforms.join('、') || '—' },
+          { key: 'files', header: '文件数', width: 80, align: 'right', cell: (b) => b.items.length },
+          {
+            key: 'size',
+            header: '大小',
+            width: 96,
+            align: 'right',
+            cell: (b) => fmtSize(b.items.reduce((sum, it) => sum + (it.size ?? 0), 0)),
+          },
+        ]}
+        rows={batches.data ?? []}
+        rowKey={(b) => b.tag}
+        loading={batches.isLoading}
+        skeletonRows={3}
+        empty={<p className="py-6 text-center text-sm text-muted">回收站是空的。</p>}
+        rowClassName={() => 'hover:bg-hover'}
+        trail={{
+          head: '操作',
+          width: 176,
+          cell: (b) => (
+            <span className="flex justify-end gap-1.5">
+              <Button size="sm" onClick={() => restore(b.tag)} loading={busyTag === b.tag} disabled={!!busyTag}>
+                恢复
+              </Button>
+              <Button size="sm" variant="danger" onClick={() => purge(b.tag)} loading={busyTag === b.tag} disabled={!!busyTag}>
+                彻底删除
+              </Button>
+            </span>
+          ),
+        }}
+      />
       {(batches.data ?? []).length > 0 && (
         <div className="mt-3 flex items-center justify-between">
           <p className="text-xs text-muted">恢复会把文件与记录放回原处；彻底删除不可恢复。</p>
@@ -534,43 +707,67 @@ function TrashDrawer({ open, onClose }: { open: boolean; onClose: () => void }) 
 }
 
 function BackupsDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const qc = useQueryClient();
   const backups = useQuery<Snapshot[]>({
     queryKey: ['backups'],
-    queryFn: () => call<Snapshot[]>('session_backups'),
+    queryFn: () => queryCmd('session_backups'),
     enabled: open,
   });
+  // 「立即备份」放进弹窗里：工具栏只留一个「备份」入口，创建与查看在同一个地方
+  const [busy, setBusy] = useState(false);
+  const backup = () => {
+    if (busy) return;
+    setBusy(true);
+    void queryCmd('session_backup')
+      .then((snap) => {
+        toast(`快照 ${snap.tag}：${snap.sources.length} 个来源，${fmtSize(snap.bytes)}`);
+        qc.invalidateQueries({ queryKey: ['backups'] });
+      })
+      .catch((e) => toast(errText(e)))
+      .finally(() => setBusy(false));
+  };
   return (
-    <Dialog open={open} title="整库备份（保留最近 10 份）" onClose={onClose} wide>
-      {(backups.data ?? []).length === 0 && (
-        <p className="py-6 text-center text-sm text-muted">还没有备份。点「整库备份」创建第一份。</p>
-      )}
-      {(backups.data ?? []).length > 0 && (
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-line-strong text-left text-xs font-semibold text-muted">
-              <th className="px-2 py-1.5">备份时间</th>
-              <th className="px-2 py-1.5">包含来源</th>
-              <th className="w-24 px-2 py-1.5 text-right">大小</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(backups.data ?? []).map((snap) => (
-              <tr key={snap.tag} className="border-b border-line hover:bg-hover">
-                <td className="px-2 py-2 tabular-nums">{fmtTime(snap.at)}</td>
-                <td className="px-2 py-2 text-muted">
-                  {snap.sources.join('、')}
-                  {snap.skipped.length > 0 && (
-                    <span className="block text-xs text-muted">
-                      跳过（太大）：{snap.skipped.join('、')}
-                    </span>
-                  )}
-                </td>
-                <td className="px-2 py-2 text-right tabular-nums">{fmtSize(snap.bytes)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+    <Dialog
+      open={open}
+      title="整库备份（保留最近 10 份）"
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            关闭
+          </Button>
+          <Button variant="primary" onClick={backup} loading={busy}>
+            立即备份
+          </Button>
+        </>
+      }
+    >
+      <DataTable<Snapshot>
+        className="text-sm"
+        dense
+        columns={[
+          { key: 'at', header: '备份时间', width: 150, className: 'tabular-nums', cell: (s) => fmtTime(s.at) },
+          {
+            key: 'sources',
+            header: '包含来源',
+            className: 'text-muted',
+            cell: (s) => (
+              <>
+                {s.sources.join('、')}
+                {s.skipped.length > 0 && (
+                  <span className="block text-xs text-muted">跳过（太大）：{s.skipped.join('、')}</span>
+                )}
+              </>
+            ),
+          },
+          { key: 'bytes', header: '大小', width: 96, align: 'right', cell: (s) => fmtSize(s.bytes) },
+        ]}
+        rows={backups.data ?? []}
+        rowKey={(s) => s.tag}
+        empty={<p className="py-6 text-center text-sm text-muted">还没有备份。点「立即备份」创建第一份。</p>}
+        rowClassName={() => 'hover:bg-hover'}
+      />
     </Dialog>
   );
 }

@@ -139,3 +139,73 @@ async fn status_records_balance_and_next_at() {
     ai_manager::app::checkin::store::hydrate(&db, &mut rows, clock.as_ref());
     assert_eq!(rows[0].balance, Some(60.0), "重启后列表仍要显示上次余额");
 }
+
+/// 平台侧今天已经签过（用户在官方客户端签的）时，「刷新积分」必须把本地去重标记补上。
+/// 不补的话：列表永远停在「待查询」，每轮轮询还会再问一次签到接口。
+#[tokio::test]
+async fn refresh_marks_today_when_platform_already_signed() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_trae_account(&db);
+    let http = Arc::new(MockHttp::new());
+    http.on(
+        STATUS_URL,
+        200,
+        r#"{"checked_in":true,"enable":true,"credits":10}"#,
+    );
+    http.on(
+        USAGE_URL,
+        200,
+        r#"{"usage_summary":{"total_amount":100,"consumed_amount":40}}"#,
+    );
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    let store = ai_manager::app::checkin::SqliteCheckin::new(&db);
+    assert!(
+        !store.marked_today(&iid, clock.as_ref()),
+        "前提：本工具没有这个账号的签到记录"
+    );
+
+    // 「刷新积分」按钮打的就是这一发
+    let out = service.credits_batch(std::slice::from_ref(&iid)).await;
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].1.balance, Some(60.0), "余额照旧要刷出来");
+    assert!(
+        store.marked_today(&iid, clock.as_ref()),
+        "平台说今天已签，本地标记必须补上"
+    );
+
+    let mut rows = repo::list(&db).unwrap();
+    ai_manager::app::checkin::store::hydrate(&db, &mut rows, clock.as_ref());
+    assert_eq!(
+        rows[0].checked_in,
+        Some(true),
+        "列表要显示「已签」，不是「待查询」"
+    );
+    assert_eq!(http.call_count(CLAIM_URL), 0, "状态已签就别再调签到接口");
+}
+
+/// 平台明确说「今天没签」时，列表要显示「未签」——不能也画成「待查询」。
+/// 「待查询」只留给平台没给结论（活动未开放 / 查询失败）的那一种。
+#[tokio::test]
+async fn status_records_negative_checkin_so_list_is_not_unknown() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_trae_account(&db);
+    // mock_http 的 status 返回 checked_in=false
+    let http = mock_http(200, r#"{"code":0}"#);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    let status = service.status(&iid).await.unwrap();
+    assert_eq!(status.checked_in, Some(false));
+
+    let mut rows = repo::list(&db).unwrap();
+    ai_manager::app::checkin::store::hydrate(&db, &mut rows, clock.as_ref());
+    assert_eq!(
+        rows[0].checked_in,
+        Some(false),
+        "要说「未签」，不是「待查询」"
+    );
+}

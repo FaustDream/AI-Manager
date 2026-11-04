@@ -3,7 +3,7 @@
 //! 单文件超 5MB 轮转，保留 3 份。级别过滤只影响 `app.log`，
 //! 任务事件与性能打点（event / perf）不受门槛限制——v1 就是这么定的。
 
-use crate::app::error::Result;
+use crate::app::error::{ErrorKind, Result};
 use crate::app::paths;
 use chrono::Local;
 use serde::Serialize;
@@ -103,7 +103,7 @@ pub fn init_at(level: Level, dir: &Path) -> Result<()> {
     };
     *slot()
         .lock()
-        .map_err(|_| crate::app::error::AppError::new("io", "日志锁被污染"))? = Some(sink);
+        .map_err(|_| crate::app::error::AppError::new(ErrorKind::Io, "日志锁被污染"))? = Some(sink);
     Ok(())
 }
 
@@ -198,7 +198,7 @@ pub fn query(filter: &LogFilter) -> Result<Vec<Line>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => {
             return Err(crate::app::error::AppError::new(
-                "io",
+                ErrorKind::Io,
                 format!("读取日志失败：{}（{e}）", path.display()),
             ))
         }
@@ -267,11 +267,13 @@ pub fn export(path: &Path, filter: &LogFilter) -> Result<usize> {
         text.push('\n');
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| crate::app::error::AppError::new("io", format!("建目录失败：{e}")))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            crate::app::error::AppError::new(ErrorKind::Io, format!("建目录失败：{e}"))
+        })?;
     }
-    std::fs::write(path, text)
-        .map_err(|e| crate::app::error::AppError::new("io", format!("写导出文件失败：{e}")))?;
+    std::fs::write(path, text).map_err(|e| {
+        crate::app::error::AppError::new(ErrorKind::Io, format!("写导出文件失败：{e}"))
+    })?;
     Ok(rows.len())
 }
 
@@ -314,7 +316,9 @@ fn open_rotating(path: std::path::PathBuf) -> Result<File> {
         .create(true)
         .append(true)
         .open(&path)
-        .map_err(|e| crate::app::error::AppError::new("io", format!("打开日志失败：{e}")))?;
+        .map_err(|e| {
+            crate::app::error::AppError::new(ErrorKind::Io, format!("打开日志失败：{e}"))
+        })?;
     Ok(file)
 }
 

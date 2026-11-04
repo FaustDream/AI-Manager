@@ -44,33 +44,11 @@ pub struct AppError {
 }
 
 impl AppError {
-    pub fn new(kind: &str, message: impl Into<String>) -> Self {
+    /// 唯一构造入口：kind 收枚举，编译期钉死（架构评审 C5）——
+    /// 拼错类别在写代码时就红，不会再静默落 Provider 让前端话术跟着错。
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
-            kind: match kind {
-                "io" => ErrorKind::Io,
-                "sqlite" => ErrorKind::Sqlite,
-                "crypto" => ErrorKind::Crypto,
-                "invalid" => ErrorKind::Invalid,
-                "conflict" => ErrorKind::Conflict,
-                "client_running" => ErrorKind::ClientRunning,
-                "cancelled" => ErrorKind::Cancelled,
-                "backup_failed" => ErrorKind::BackupFailed,
-                "profile_mismatch" => ErrorKind::ProfileMismatch,
-                "write_failed" => ErrorKind::WriteFailed,
-                "session_state_missing" => ErrorKind::SessionStateMissing,
-                "unsupported" => ErrorKind::Unsupported,
-                "migration_mismatch" => ErrorKind::MigrationMismatch,
-                "already_archived" => ErrorKind::AlreadyArchived,
-                "provider" => ErrorKind::Provider,
-                _ => {
-                    // 拼错的类别会静默落 Provider，前端话术跟着错——debug 构建直接炸出来
-                    debug_assert!(
-                        false,
-                        "未知的错误类别：{kind}（应使用 ErrorKind 登记过的名字）"
-                    );
-                    ErrorKind::Provider
-                }
-            },
+            kind,
             message: message.into(),
             detail: None,
         }
@@ -89,30 +67,30 @@ impl AppError {
 // 有了这几个转换，业务代码里可以直接 `?`，不必到处写 map_err
 impl From<rusqlite::Error> for AppError {
     fn from(e: rusqlite::Error) -> Self {
-        AppError::new("sqlite", e.to_string())
+        AppError::new(ErrorKind::Sqlite, e.to_string())
     }
 }
 
 impl From<std::io::Error> for AppError {
     fn from(e: std::io::Error) -> Self {
-        AppError::new("io", e.to_string())
+        AppError::new(ErrorKind::Io, e.to_string())
     }
 }
 
 impl From<serde_json::Error> for AppError {
     fn from(e: serde_json::Error) -> Self {
-        AppError::new("invalid", e.to_string())
+        AppError::new(ErrorKind::Invalid, e.to_string())
     }
 }
 impl From<chrono::ParseError> for AppError {
     fn from(e: chrono::ParseError) -> Self {
-        AppError::new("invalid", e.to_string())
+        AppError::new(ErrorKind::Invalid, e.to_string())
     }
 }
 
 impl From<windows::core::Error> for AppError {
     fn from(e: windows::core::Error) -> Self {
-        AppError::new("io", format!("Windows API 调用失败：{e}"))
+        AppError::new(ErrorKind::Io, format!("Windows API 调用失败：{e}"))
     }
 }
 

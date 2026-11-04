@@ -4,4 +4,9 @@ import type { Sort } from "./Sort";
 /**
  * 列表筛选。三个下拉对应 §7 的草图，空值 = 不限。
  */
-export type Filter = { source: string | null, account: string | null, state: string | null, sort: Sort, };
+export type Filter = { source: string | null, account: string | null, state: string | null, sort: Sort, 
+/**
+ * 默认不显示已归档：归档的意义就是让列表安静下来。
+ * 用「显示」而不是「隐藏」命名，缺省值 false 正好等于默认行为。
+ */
+show_archived: boolean, };

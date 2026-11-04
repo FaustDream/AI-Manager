@@ -9,7 +9,7 @@
 //! 而不是按字节——单条工具结果动辄几十 KB，按字节切经常只切到两三条。
 
 use crate::app::clients::Roots;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::sessions::sources::wb;
 use rusqlite::Connection;
 use serde::Serialize;
@@ -54,6 +54,7 @@ pub struct Preview {
 }
 
 /// 定位一条会话的正文需要的最小信息。由行 key 解析而来。
+#[derive(Debug, Clone)]
 pub struct Target {
     pub kind: String,
     pub source_key: String,
@@ -65,7 +66,7 @@ pub struct Target {
 pub fn parse_key(key: &str) -> Result<Target> {
     let parts: Vec<&str> = key.splitn(4, '|').collect();
     if parts.len() != 4 {
-        return Err(AppError::new("invalid", "会话标识格式不对"));
+        return Err(AppError::new(ErrorKind::Invalid, "会话标识格式不对"));
     }
     Ok(Target {
         kind: parts[0].to_string(),
@@ -76,17 +77,16 @@ pub fn parse_key(key: &str) -> Result<Target> {
 }
 
 pub fn load(roots: &Roots, target: &Target) -> Preview {
-    match target.kind.as_str() {
-        "workbuddy" => load_workbuddy(roots, target),
-        "codebuddy" => load_codebuddy(roots, target),
-        "qoder" => load_qoder(roots, target),
-        "zcode" => load_zcode(roots, target),
-        "trae" => Preview {
+    if target.kind == "trae" {
+        return Preview {
             note: "这条对话存在云端，本地只有输入历史，没有可读正文".into(),
             ..Default::default()
-        },
-        other => Preview {
-            note: format!("不认识的会话类型：{other}"),
+        };
+    }
+    match super::backend::backend_for(&target.kind) {
+        Some(backend) => backend.load_preview(roots, target),
+        None => Preview {
+            note: format!("不认识的会话类型：{}", target.kind),
             ..Default::default()
         },
     }
@@ -218,7 +218,7 @@ fn result(messages: Vec<Message>, truncated: bool, note: &str) -> Preview {
 
 // ------------------------------------------------------------------ WorkBuddy
 
-fn load_workbuddy(roots: &Roots, target: &Target) -> Preview {
+pub(crate) fn load_workbuddy(roots: &Roots, target: &Target) -> Preview {
     let Some(ep) = wb::editions(roots)
         .into_iter()
         .find(|ep| ep.key == target.source_key)
@@ -337,7 +337,7 @@ fn read_tail_messages(path: &Path, limit: usize) -> Vec<Message> {
 
 // ------------------------------------------------------------------ CodeBuddy
 
-fn load_codebuddy(roots: &Roots, target: &Target) -> Preview {
+pub(crate) fn load_codebuddy(roots: &Roots, target: &Target) -> Preview {
     // 会话目录在「工作区/<会话 id>/messages」，工作区名不固定：
     // 逐个工作区试一下比在索引里存一份 slug 更经得起客户端改目录结构
     let history = roots
@@ -419,7 +419,7 @@ fn parse_codebuddy(file: &Path) -> Option<Message> {
 
 // ------------------------------------------------------------------ Qoder
 
-fn load_qoder(roots: &Roots, target: &Target) -> Preview {
+pub(crate) fn load_qoder(roots: &Roots, target: &Target) -> Preview {
     let intl = target.source_key == "qoder_intl";
     let path = roots.qoder(intl).join("main.sqlite");
     let Some(conn) = open_ro(&path) else {
@@ -496,7 +496,7 @@ fn parse_qoder(mid: &str, raw: &str) -> Option<Message> {
 
 // ------------------------------------------------------------------ ZCode
 
-fn load_zcode(roots: &Roots, target: &Target) -> Preview {
+pub(crate) fn load_zcode(roots: &Roots, target: &Target) -> Preview {
     let path = roots.zcode().join("cli").join("db").join("db.sqlite");
     let Some(conn) = open_ro(&path) else {
         return result(Vec::new(), false, "会话库无法读取（客户端可能正在写入）");

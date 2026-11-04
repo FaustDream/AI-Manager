@@ -57,7 +57,10 @@ fn install_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let thread = std::thread::current().name().unwrap_or("<unnamed>").to_string();
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("<unnamed>")
+            .to_string();
         let location = info
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
@@ -140,7 +143,10 @@ fn scan_from_cli(args: &[String]) -> i32 {
     };
     match ai_manager::app::accounts::scan_all(&db) {
         Ok(report) => {
-            out(&format!("扫描：{} 个（新增 {}）", report.scanned, report.added));
+            out(&format!(
+                "扫描：{} 个（新增 {}）",
+                report.scanned, report.added
+            ));
             for (label, count) in &report.by_platform {
                 out(&format!("  {label}: {count}"));
             }
