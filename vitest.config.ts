@@ -6,6 +6,10 @@ import { defineConfig } from 'vitest/config';
 process.env.TZ = 'Asia/Shanghai';
 
 export default defineConfig({
+  // 与 vite.config.ts / tsconfig 的 paths 保持一致：'@' → src
+  resolve: {
+    alias: { '@': `${process.cwd()}/src` },
+  },
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],

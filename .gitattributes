@@ -2,11 +2,19 @@
 # 必须禁止 Git 做换行或编码转换，否则中文提示会变成乱码 / 语法错误。
 *.vbs -text
 
-# 其余文本文件统一按 LF 入库，工作区保持原样
+# 其余文本文件统一按 LF 入库，工作区保持原样。
+# 源码（ts/tsx/rs/json…）必须显式 eol=lf：Windows runner 上 autocrlf 会把检出态
+# 变成 CRLF，与 ts-rs 生成的 LF 产物对不上，D8「生成物=提交物」检查会全线误报。
 *.py   text eol=lf
 *.md   text eol=lf
 *.toml text eol=lf
 *.lock text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.rs   text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.css  text eol=lf
 
 # CI 工作流在 Linux runner 上由 bash 执行，CRLF 会让脚本报
 # "$'\r': command not found"，必须强制 LF
