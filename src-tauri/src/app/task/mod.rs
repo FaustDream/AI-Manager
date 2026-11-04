@@ -6,6 +6,7 @@
 //! 互斥与并发上限由各能力自己协调（阻塞池上限见 `runtime.rs`），
 //! 本层只负责「看得见、能取消、崩溃有交代」。
 
+use crate::app::error::ErrorKind;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::future::Future;
@@ -99,7 +100,10 @@ impl CancelToken {
     /// 同步阻塞代码（rusqlite 循环）在事务边界调用，返回 Err(Cancelled)。
     pub fn checkpoint(&self) -> crate::app::error::Result<()> {
         if self.is_cancelled() {
-            Err(crate::app::error::AppError::new("cancelled", "任务已取消"))
+            Err(crate::app::error::AppError::new(
+                ErrorKind::Cancelled,
+                "任务已取消",
+            ))
         } else {
             Ok(())
         }
@@ -359,7 +363,7 @@ mod tests {
     #[test]
     fn cancelled_is_not_failed() {
         // 契约：主动取消不得被记成失败，否则会污染错误统计
-        let err = crate::app::error::AppError::new("cancelled", "用户取消");
+        let err = crate::app::error::AppError::new(ErrorKind::Cancelled, "用户取消");
         assert_eq!(settle(Ok(Err(err))), TaskState::Cancelled);
         assert_eq!(settle(Ok(Ok(()))), TaskState::Done);
     }
@@ -390,7 +394,10 @@ mod tests {
         let store = TaskStore::new();
         let id = store.spawn_managed(CapabilityId::Sessions, "可取消任务", |h| async move {
             h.cancel.cancelled().await;
-            Err(crate::app::error::AppError::new("cancelled", "用户取消"))
+            Err(crate::app::error::AppError::new(
+                ErrorKind::Cancelled,
+                "用户取消",
+            ))
         });
         // 等它转 Running 再取消：太早点击会被「取消只在安全点生效」语义吞掉
         for _ in 0..200 {

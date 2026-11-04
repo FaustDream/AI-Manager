@@ -5,4 +5,12 @@ export type SessionRow = { kind: string, source_key: string, source_label: strin
 /**
  * 界面显示用昵称（与账号库匹配）；uid 原文只留给行 key 与筛选
  */
-account_label: string, session_id: string, title: string, last_at: string | null, msgs: number | null, size: number | null, state: SessionState, has_body: boolean, };
+account_label: string, session_id: string, title: string, 
+/**
+ * 所属项目：优先工作区名（slug），其次 cwd 的最后一段；都没有就是空串
+ */
+project: string, 
+/**
+ * 项目完整路径（界面放在 title 属性里，不占列宽）
+ */
+cwd: string, last_at: string | null, msgs: number | null, size: number | null, state: SessionState, has_body: boolean, };

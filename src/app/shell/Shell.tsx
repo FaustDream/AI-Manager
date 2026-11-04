@@ -1,17 +1,16 @@
-// 窗口框架：侧栏导航 + 内容区 + 底部每日轮询状态条 + toast。
+// 窗口框架：顶部导航 + 内容区 + toast。
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import {
-  Users, MessagesSquare, Blocks, Settings, RefreshCw,
+  Users, MessagesSquare, Blocks, Settings, RefreshCw, ListChecks, ScrollText,
 } from 'lucide-react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { capabilities } from '@/app/router';
-import { ToastHost } from '@/components/ui/toast';
+import { ToastHost, toast } from '@/components/ui/toast';
+import { ConfirmHost } from '@/components/ui/confirm';
 import { Button } from '@/components/ui/button';
-import { call } from '@/lib/ipc';
+import { runCmd } from '@/lib/cmd';
+import { hideSplash } from '@/lib/splash';
 import { loadTheme } from '@/lib/theme';
-import { fmtTime } from '@/lib/format';
-import type { RoundResult } from '@/lib/types';
 import { Suspense } from 'react';
 import { StateBlock } from '@/components/ui/form';
 
@@ -19,6 +18,8 @@ const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   'account-center': Users,
   sessions: MessagesSquare,
   hub: Blocks,
+  tasks: ListChecks,
+  logs: ScrollText,
   settings: Settings,
 };
 
@@ -29,13 +30,8 @@ export function Shell() {
   useEffect(() => {
     void loadTheme();
     // 挂载完成通知后端：IPC 通道正常（ui_ready 的意义见 Rust 侧注释）
-    call('ui_ready').catch(() => {});
+    void runCmd('ui_ready');
   }, []);
-
-  const daily = useQuery<RoundResult>({
-    queryKey: ['daily'],
-    queryFn: () => call<RoundResult>('daily_state'),
-  });
 
   const current = caps.find((c) => c.manifest.id === active) ?? caps[0];
 
@@ -67,14 +63,14 @@ export function Shell() {
           title="立即跑一轮每日轮询"
           onClick={async () => {
             // 结果由事件桥 checkin:round 统一失效 ['accounts']，这里不猜完成时刻
-            await call('daily_run_now').catch(() => {});
+            if ((await runCmd('daily_run_now')) !== undefined) toast('已开始跑一轮每日轮询');
           }}
         >
           <RefreshCw size={14} />
         </Button>
       </header>
 
-      <main className="flex-1 overflow-auto px-5 pb-16 pt-4">
+      <main className="flex-1 overflow-auto px-5 pb-6 pt-4">
         <AnimatePresence mode="wait" initial={false}>
           {current ? (
             <motion.div
@@ -84,8 +80,9 @@ export function Shell() {
               exit={{ opacity: 0, y: -4, transition: { duration: 0.08 } }}
               transition={{ duration: 0.15, ease: 'easeOut' }}
             >
-              <Suspense fallback={<StateBlock kind="empty" title="加载中…" />}>
+              <Suspense fallback={<PageSkeleton />}>
                 <current.page />
+                <PageReady />
               </Suspense>
             </motion.div>
           ) : (
@@ -94,14 +91,36 @@ export function Shell() {
         </AnimatePresence>
       </main>
 
-      <footer className="fixed bottom-0 left-5 right-5 flex items-center gap-2.5 border-t border-line bg-bg py-1.5 text-xs text-muted">
-        <span>
-          每日轮询：
-          {daily.data ? `${fmtTime(daily.data.at)} · ${daily.data.message}` : '启动 15 秒后自动跑第一轮'}
-        </span>
-      </footer>
       <ToastHost />
+      <ConfirmHost />
       </div>
     </MotionConfig>
+  );
+}
+
+/** 首屏页面渲染出来的信号：撤掉 index.html 里的启动画面。
+ *  窗口在 main.tsx 里就已经显示出来了（那时启动画面已上屏），所以这里直接收。 */
+function PageReady() {
+  useEffect(() => {
+    hideSplash();
+  }, []);
+  return null;
+}
+
+/** 页面 chunk 还没到时占位：画成表格骨架，别让用户看到一片空白 + 一行小字。 */
+function PageSkeleton() {
+  return (
+    <div className="flex flex-col gap-2.5" aria-busy="true">
+      <div className="flex items-center gap-2">
+        <div className="h-7 w-24 animate-pulse rounded-md bg-hover" />
+        <div className="h-7 w-24 animate-pulse rounded-md bg-hover" />
+        <div className="h-7 w-24 animate-pulse rounded-md bg-hover" />
+      </div>
+      <div className="mt-1 space-y-2">
+        {Array.from({ length: 9 }).map((_, index) => (
+          <div key={index} className="h-9 animate-pulse rounded-md bg-hover" />
+        ))}
+      </div>
+    </div>
   );
 }

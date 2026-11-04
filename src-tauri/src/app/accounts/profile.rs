@@ -4,7 +4,7 @@
 //! 代理指标：客户端认的是票据里的 `sessionState`（服务端每次登录签发），
 //! 任何一次「顺手重新格式化 JSON」都会让它失效，所以这里只做字节搬运，不解析。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::fsx;
 use crate::contracts::ProfileStore;
 use std::path::Path;
@@ -14,14 +14,18 @@ pub struct FileProfile;
 
 impl ProfileStore for FileProfile {
     fn save(&self, src: &Path) -> Result<Vec<u8>> {
-        std::fs::read(src)
-            .map_err(|e| AppError::new("io", format!("读取登录票据失败：{}（{e}）", src.display())))
+        std::fs::read(src).map_err(|e| {
+            AppError::new(
+                ErrorKind::Io,
+                format!("读取登录票据失败：{}（{e}）", src.display()),
+            )
+        })
     }
 
     /// 原子写：先写同目录临时文件再替换，客户端不会读到半截 JSON。
     fn restore(&self, blob: &[u8], dst: &Path) -> Result<()> {
         if blob.is_empty() {
-            return Err(AppError::new("invalid", "档案为空，拒绝写回"));
+            return Err(AppError::new(ErrorKind::Invalid, "档案为空，拒绝写回"));
         }
         fsx::write_atomic(dst, blob)
     }

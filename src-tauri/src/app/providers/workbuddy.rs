@@ -15,10 +15,10 @@
 use super::{Provider, ScannedAccount, Sink, SwitchOutcome};
 use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::AccountIdentity;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, paths, process};
-use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult, trim_f64};
+use crate::types::{trim_f64, ActionResult, CreditLot, CreditSnapshot, StatusResult};
 use aes_gcm::aead::consts::U16;
 use aes_gcm::aead::KeyInit;
 use async_trait::async_trait;
@@ -56,9 +56,14 @@ fn wb_decrypt(nonce: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
         16 => WbCipher16::new_from_slice(&wb_key_bytes())
             .expect("32 字节密钥固定合法")
             .decrypt(aes_gcm::Nonce::<U16>::from_slice(nonce), payload),
-        n => return Err(AppError::new("crypto", format!("nonce 长度不支持：{n}"))),
+        n => {
+            return Err(AppError::new(
+                ErrorKind::Crypto,
+                format!("nonce 长度不支持：{n}"),
+            ))
+        }
     };
-    plain.map_err(|_| AppError::new("crypto", "解密登录票据失败（密钥或组帧不匹配）"))
+    plain.map_err(|_| AppError::new(ErrorKind::Crypto, "解密登录票据失败（密钥或组帧不匹配）"))
 }
 
 fn wb_key_id() -> String {
@@ -98,7 +103,7 @@ pub fn open_field(value: &Value) -> Result<String> {
     if let Some(scheme) = obj.get("scheme").and_then(|v| v.as_str()) {
         if scheme != "sym-v1" {
             return Err(AppError::new(
-                "crypto",
+                ErrorKind::Crypto,
                 format!("不支持的加密方案 {scheme}"),
             ));
         }
@@ -107,17 +112,15 @@ pub fn open_field(value: &Value) -> Result<String> {
     let envelope_text = obj
         .get("envelope")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::new("invalid", "加密字段缺 envelope"))?;
-    let envelope: Value = serde_json::from_slice(
-        &engine
-            .decode(envelope_text)
-            .map_err(|e| AppError::new("invalid", format!("envelope 不是合法 base64：{e}")))?,
-    )?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "加密字段缺 envelope"))?;
+    let envelope: Value = serde_json::from_slice(&engine.decode(envelope_text).map_err(|e| {
+        AppError::new(ErrorKind::Invalid, format!("envelope 不是合法 base64：{e}"))
+    })?)?;
 
     let key_id = envelope.get("keyId").and_then(|v| v.as_str()).unwrap_or("");
     if key_id != wb_key_id() {
         return Err(AppError::new(
-            "crypto",
+            ErrorKind::Crypto,
             "密钥不匹配，WorkBuddy 版本可能已更新",
         ));
     }
@@ -126,7 +129,7 @@ pub fn open_field(value: &Value) -> Result<String> {
         let text = envelope.get(key).and_then(|v| v.as_str()).unwrap_or("");
         engine
             .decode(text)
-            .map_err(|e| AppError::new("invalid", format!("{key} 不是合法 base64：{e}")))
+            .map_err(|e| AppError::new(ErrorKind::Invalid, format!("{key} 不是合法 base64：{e}")))
     };
 
     let nonce = decode("nonce")?;
@@ -134,7 +137,8 @@ pub fn open_field(value: &Value) -> Result<String> {
     ciphertext.extend_from_slice(&decode("authTag")?);
 
     let plain = wb_decrypt(&nonce, &ciphertext, &wb_aad(b"WBEV1", 2, key_id, suite))?;
-    String::from_utf8(plain).map_err(|e| AppError::new("invalid", format!("票据不是 UTF-8：{e}")))
+    String::from_utf8(plain)
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("票据不是 UTF-8：{e}")))
 }
 
 pub struct WorkBuddyProvider {
@@ -264,7 +268,10 @@ impl WorkBuddyProvider {
     /// 把**当前**客户端登录态存成 uid 的档案。
     fn save_pack(&self, uid: &str) -> Result<PathBuf> {
         let Some(root) = self.data_root.as_ref().filter(|p| p.exists()) else {
-            return Err(AppError::new("io", "没有找到 WorkBuddy 的客户端数据目录"));
+            return Err(AppError::new(
+                ErrorKind::Io,
+                "没有找到 WorkBuddy 的客户端数据目录",
+            ));
         };
         let dst = self.pack_dir(uid);
         // 先写临时目录再整体换名：拷贝中途失败不会毁掉已有档案
@@ -304,12 +311,15 @@ impl WorkBuddyProvider {
     /// 把某账号的档案恢复到客户端数据目录。
     fn restore_pack(&self, uid: &str, backup_dir: &Path) -> Result<Option<PathBuf>> {
         let Some(root) = self.data_root.as_ref() else {
-            return Err(AppError::new("io", "没有找到 WorkBuddy 的客户端数据目录"));
+            return Err(AppError::new(
+                ErrorKind::Io,
+                "没有找到 WorkBuddy 的客户端数据目录",
+            ));
         };
         let src = self.pack_dir(uid);
         if !self.pack_ready(uid) {
             return Err(AppError::new(
-                "session_state_missing",
+                ErrorKind::SessionStateMissing,
                 "本机没有这个账号完整的登录态档案。请先在客户端里登录一次该账号，\
                  关闭客户端后会自动补存，之后切换就不需要重新登录。",
             ));
@@ -383,7 +393,9 @@ impl Provider for WorkBuddyProvider {
                 .ok()
                 .filter(|s| !s.is_empty())
                 // 按 char 取，不用字节切片：uid 是任意字符串，切在多字节中间会 panic
-                .unwrap_or_else(|| format!("WorkBuddy {}", uid.chars().take(8).collect::<String>()));
+                .unwrap_or_else(|| {
+                    format!("WorkBuddy {}", uid.chars().take(8).collect::<String>())
+                });
             let expires_at = auth
                 .get("expiresAt")
                 .and_then(crate::app::timeutil::parse_ts);
@@ -480,7 +492,7 @@ impl Provider for WorkBuddyProvider {
                 let body = self.post(cred, http, "checkin-status", &json!({})).await?;
                 if body.get("code").and_then(|v| v.as_i64()) != Some(0) {
                     return Err(AppError::new(
-                        "provider",
+                        ErrorKind::Provider,
                         body.get("msg")
                             .and_then(|v| v.as_str())
                             .unwrap_or("状态查询失败"),
@@ -647,10 +659,16 @@ impl WorkBuddyProvider {
             .json_body(body);
         let resp = http.send(req).await?;
         if resp.status == 401 {
-            return Err(AppError::new("provider", "HTTP 401（登录态可能过期）"));
+            return Err(AppError::new(
+                ErrorKind::Provider,
+                "HTTP 401（登录态可能过期）",
+            ));
         }
         if resp.status >= 500 {
-            return Err(AppError::new("provider", format!("HTTP {}", resp.status)));
+            return Err(AppError::new(
+                ErrorKind::Provider,
+                format!("HTTP {}", resp.status),
+            ));
         }
         resp.json()
     }
@@ -663,7 +681,10 @@ impl WorkBuddyProvider {
             .json_body(&json!({}));
         let resp = http.send(req).await?;
         if resp.status == 401 {
-            return Err(AppError::new("provider", "HTTP 401（登录态可能过期）"));
+            return Err(AppError::new(
+                ErrorKind::Provider,
+                "HTTP 401（登录态可能过期）",
+            ));
         }
         if resp.status >= 400 {
             return Ok(None);
@@ -713,11 +734,16 @@ impl WorkBuddyProvider {
                 .iter()
                 .find_map(|key| item.get(*key).and_then(|v| v.as_f64()))
                 .filter(|v| *v > 0.0)?;
-                let expires = item
-                    .get("DeductionEndTime")
-                    .and_then(dt_of)
-                    .or_else(|| item.get("CycleEndTime").and_then(local_text))
-                    .or_else(|| item.get("ExpiredTime").and_then(dt_of));
+                let expires = if self.intl {
+                    // 国际版的资源包字段里没有可靠的「到期」：CycleEndTime 是周期重置时间，
+                    // 拿它当到期会显示一个错的日期。宁可空着，也不猜。
+                    None
+                } else {
+                    item.get("DeductionEndTime")
+                        .and_then(dt_of)
+                        .or_else(|| item.get("CycleEndTime").and_then(local_text))
+                        .or_else(|| item.get("ExpiredTime").and_then(dt_of))
+                };
                 if expires.map(|e| e <= now).unwrap_or(false) {
                     return None;
                 }
@@ -752,7 +778,6 @@ fn local_text(value: &Value) -> Option<chrono::DateTime<chrono::Local>> {
     naive.and_local_timezone(chrono::Local).single()
 }
 
-
 /// 切换登录：存档当前账号 → 换入目标档案。
 pub fn switch_to(
     provider: &WorkBuddyProvider,
@@ -765,7 +790,7 @@ pub fn switch_to(
     if !provider.pack_ready(uid) {
         // 先判档案：没有档案就不要动当前登录态，一个字节都不写
         return Err(AppError::new(
-            "session_state_missing",
+            ErrorKind::SessionStateMissing,
             format!(
                 "本机没有 {name} 完整的登录态档案。请先在客户端里登录一次该账号，\
                  关闭客户端后会自动补存票据，之后再切换就不用重新登录。"
@@ -775,13 +800,13 @@ pub fn switch_to(
 
     if provider.current_uid().as_deref() == Some(uid) {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             "这个账号就是客户端当前登录的账号，不需要切换",
         ));
     }
     if process::process_running(provider.process_names()) {
         return Err(AppError::new(
-            "client_running",
+            ErrorKind::ClientRunning,
             format!("请先关闭 {} 客户端再切换", provider.label()),
         ));
     }
@@ -803,7 +828,7 @@ pub fn switch_to(
     // 3) 验读：客户端认的是 .info 里的 uid，写回来对不上就等于没切
     if provider.current_uid().as_deref() != Some(uid) {
         return Err(AppError::new(
-            "write_failed",
+            ErrorKind::WriteFailed,
             "写入后校验失败：票据里的账号不是目标账号",
         ));
     }

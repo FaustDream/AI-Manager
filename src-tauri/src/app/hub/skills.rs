@@ -4,7 +4,7 @@
 //! 平台目录里有、库里没有的，一律当用户自己加的，不覆盖、不删除。
 //! （设计稿原计划在 `hub_items` 里记 `deployed`，实际不需要——省掉一层同步。）
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::hub::targets;
 use crate::app::hub::{DeployReport, Hub};
 use crate::contracts::TargetKey;
@@ -343,11 +343,11 @@ pub fn states(hub: &Hub, skill: &SkillInfo) -> Vec<(TargetKey, &'static str)> {
 
 /// 部署到指定平台。内容一样的平台直接跳过，内容不同的报冲突（除非 overwrite）。
 pub fn deploy(hub: &Hub, name: &str, keys: &[TargetKey], overwrite: bool) -> Result<DeployReport> {
-    let skill =
-        find(hub, name).ok_or_else(|| AppError::new("invalid", format!("库里没有技能 {name}")))?;
+    let skill = find(hub, name)
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, format!("库里没有技能 {name}")))?;
     if !skill.valid {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             format!("技能 {name} 无效：{}", skill.reason),
         ));
     }
@@ -486,24 +486,58 @@ pub fn import(hub: &Hub, key: TargetKey, name: &str) -> Result<SkillInfo> {
     let source = hub.skill_dir(key).join(name);
     if !source.is_dir() {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             format!("{} 上没有技能 {name}", targets::label(key)),
         ));
     }
     if !source.join("SKILL.md").is_file() {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             format!("{name} 没有 SKILL.md，不像是一个技能"),
         ));
     }
     let dest = library(hub).join(name);
     if dest.exists() {
-        return Err(AppError::new("conflict", format!("库里已经有 {name}")));
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            format!("库里已经有 {name}"),
+        ));
     }
     std::fs::create_dir_all(library(hub))
-        .map_err(|e| AppError::new("io", format!("建技能库失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("建技能库失败：{e}")))?;
     copy_tree(&source, &dest)?;
     Ok(read_skill(&dest))
+}
+
+/// 批量导入结果：成功的名字 + 逐条失败原因。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ImportReport {
+    pub imported: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+impl ImportReport {
+    pub fn summary(&self) -> String {
+        let mut text = format!("已导入 {} 个技能", self.imported.len());
+        if !self.errors.is_empty() {
+            text.push_str(&format!("，{} 个失败", self.errors.len()));
+        }
+        text
+    }
+}
+
+/// 一次导入多个：逐条调 `import`，单条失败不影响其余。
+pub fn import_many(hub: &Hub, key: TargetKey, names: &[String]) -> ImportReport {
+    let mut report = ImportReport::default();
+    for name in names {
+        match import(hub, key, name) {
+            Ok(info) => report.imported.push(info.name),
+            Err(e) => report.errors.push(format!("{name}：{}", e.message)),
+        }
+    }
+    report
 }
 
 /// 各平台 `skills/` 下现有的技能名，供「从平台导入」挑。
@@ -523,17 +557,19 @@ pub fn platform_skills(hub: &Hub) -> Vec<(TargetKey, String)> {
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst).map_err(|e| AppError::new("io", format!("建目录失败：{e}")))?;
-    let entries =
-        std::fs::read_dir(src).map_err(|e| AppError::new("io", format!("读技能目录失败：{e}")))?;
+    std::fs::create_dir_all(dst)
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("建目录失败：{e}")))?;
+    let entries = std::fs::read_dir(src)
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("读技能目录失败：{e}")))?;
     for entry in entries.flatten() {
         let from = entry.path();
         let to = dst.join(entry.file_name());
         if from.is_dir() {
             copy_tree(&from, &to)?;
         } else {
-            std::fs::copy(&from, &to)
-                .map_err(|e| AppError::new("io", format!("复制 {} 失败：{e}", from.display())))?;
+            std::fs::copy(&from, &to).map_err(|e| {
+                AppError::new(ErrorKind::Io, format!("复制 {} 失败：{e}", from.display()))
+            })?;
         }
     }
     Ok(())

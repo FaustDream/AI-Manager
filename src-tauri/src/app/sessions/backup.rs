@@ -7,7 +7,7 @@
 //! 直接 copy 会得到一份半截的库。在线备份走的是读事务，客户端正写着也能拿到一致快照。
 
 use crate::app::clients::Roots;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::sessions::trash;
 use chrono::Local;
 use rusqlite::{Connection, OpenFlags};
@@ -72,12 +72,12 @@ fn candidates(roots: &Roots) -> Vec<(&'static str, PathBuf)> {
 
 pub fn make(roots: &Roots, base: &Path) -> Result<Snapshot> {
     std::fs::create_dir_all(base)
-        .map_err(|e| AppError::new("io", format!("建备份目录失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("建备份目录失败：{e}")))?;
     let tag = trash::new_tag(base);
     let dir = base.join(&tag);
     let db_dir = dir.join("db");
     std::fs::create_dir_all(&db_dir)
-        .map_err(|e| AppError::new("io", format!("建备份目录失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("建备份目录失败：{e}")))?;
 
     let mut sources = Vec::new();
     let mut skipped = Vec::new();
@@ -108,7 +108,7 @@ pub fn make(roots: &Roots, base: &Path) -> Result<Snapshot> {
     if sources.is_empty() {
         let _ = crate::app::fsx::remove_path(&dir);
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             "没有可备份的会话库（客户端可能都没装）",
         ));
     }
@@ -122,7 +122,7 @@ pub fn make(roots: &Roots, base: &Path) -> Result<Snapshot> {
         bytes,
     };
     let text = serde_json::to_string_pretty(&snapshot)
-        .map_err(|e| AppError::new("io", format!("清单序列化失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("清单序列化失败：{e}")))?;
     crate::app::fsx::write_atomic(&dir.join("manifest.json"), text.as_bytes())?;
     prune(base, KEEP);
     Ok(snapshot)
@@ -130,15 +130,23 @@ pub fn make(roots: &Roots, base: &Path) -> Result<Snapshot> {
 
 /// 用 SQLite 在线备份接口复制一份一致的库。
 fn online_backup(src: &Path, dest: &Path) -> Result<()> {
-    let from = Connection::open_with_flags(src, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| AppError::new("sqlite", format!("打开 {} 失败：{e}", src.display())))?;
-    let mut to = Connection::open(dest)
-        .map_err(|e| AppError::new("sqlite", format!("建 {} 失败：{e}", dest.display())))?;
+    let from = Connection::open_with_flags(src, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
+        AppError::new(
+            ErrorKind::Sqlite,
+            format!("打开 {} 失败：{e}", src.display()),
+        )
+    })?;
+    let mut to = Connection::open(dest).map_err(|e| {
+        AppError::new(
+            ErrorKind::Sqlite,
+            format!("建 {} 失败：{e}", dest.display()),
+        )
+    })?;
     let backup = rusqlite::backup::Backup::new(&from, &mut to)
-        .map_err(|e| AppError::new("sqlite", format!("备份初始化失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("备份初始化失败：{e}")))?;
     backup
         .run_to_completion(64, std::time::Duration::from_millis(20), None)
-        .map_err(|e| AppError::new("sqlite", format!("备份失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("备份失败：{e}")))?;
     Ok(())
 }
 

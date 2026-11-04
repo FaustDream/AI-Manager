@@ -12,6 +12,7 @@
 #[allow(unused_imports)]
 pub use ai_manager::app::clock::{Clock, FakeClock};
 use ai_manager::app::error::AppError;
+use ai_manager::app::error::ErrorKind;
 use ai_manager::app::paths;
 use ai_manager::types::*;
 use chrono::{DateTime, Local};
@@ -84,5 +85,8 @@ pub fn render_local(dt: DateTime<Local>) -> String {
 }
 
 pub fn conflict_error(name: &str) -> AppError {
-    AppError::new("conflict", format!("{name} 已存在且不是本工具写入"))
+    AppError::new(
+        ErrorKind::Conflict,
+        format!("{name} 已存在且不是本工具写入"),
+    )
 }

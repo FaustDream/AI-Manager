@@ -1,5 +1,6 @@
 //! tokio 运行时。参数按 `docs/TASK-CONCURRENCY.md` §3 定死，不要凭感觉调。
 
+use crate::app::error::ErrorKind;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -38,7 +39,7 @@ where
     runtime()
         .spawn_blocking(f)
         .await
-        .map_err(|e| crate::app::error::AppError::new("io", format!("后台任务崩溃：{e}")))
+        .map_err(|e| crate::app::error::AppError::new(ErrorKind::Io, format!("后台任务崩溃：{e}")))
 }
 
 #[cfg(test)]

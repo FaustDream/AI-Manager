@@ -9,9 +9,9 @@
 use super::{Provider, ScannedAccount, Sink};
 use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::AccountIdentity;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
-use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult, trim_f64};
+use crate::types::{trim_f64, ActionResult, CreditLot, CreditSnapshot, StatusResult};
 use async_trait::async_trait;
 use base64::Engine;
 use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
@@ -45,9 +45,14 @@ const DRE: [u8; 64] = [
 pub fn decrypt_auth(b64_text: &str) -> Result<Value> {
     let raw = base64::engine::general_purpose::STANDARD
         .decode(b64_text.trim().as_bytes())
-        .map_err(|e| AppError::new("invalid", format!("iCube 登录态不是合法 base64：{e}")))?;
+        .map_err(|e| {
+            AppError::new(
+                ErrorKind::Invalid,
+                format!("iCube 登录态不是合法 base64：{e}"),
+            )
+        })?;
     if raw.len() <= HDR_LEN + KEY_LEN {
-        return Err(AppError::new("invalid", "iCube 登录态长度不足"));
+        return Err(AppError::new(ErrorKind::Invalid, "iCube 登录态长度不足"));
     }
     let key = &raw[HDR_LEN..HDR_LEN + KEY_LEN];
     let mut seed_input = Vec::with_capacity(64 + 64);
@@ -57,14 +62,14 @@ pub fn decrypt_auth(b64_text: &str) -> Result<Value> {
 
     let mut buf = raw[HDR_LEN + KEY_LEN..].to_vec();
     let plain = Decryptor::<aes_gcm::aes::Aes128>::new_from_slices(&seed[..16], &seed[16..32])
-        .map_err(|_| AppError::new("crypto", "iCube 解密参数非法"))?
+        .map_err(|_| AppError::new(ErrorKind::Crypto, "iCube 解密参数非法"))?
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
-        .map_err(|_| AppError::new("crypto", "iCube 解密失败（填充不合法）"))?;
+        .map_err(|_| AppError::new(ErrorKind::Crypto, "iCube 解密失败（填充不合法）"))?;
     if plain.len() <= HMAC_LEN {
-        return Err(AppError::new("invalid", "iCube 明文长度不足"));
+        return Err(AppError::new(ErrorKind::Invalid, "iCube 明文长度不足"));
     }
     serde_json::from_slice(&plain[HMAC_LEN..])
-        .map_err(|e| AppError::new("invalid", format!("iCube 明文不是 JSON：{e}")))
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("iCube 明文不是 JSON：{e}")))
 }
 
 /// JWT 的 `exp`（秒）→ ms。Trae 的 `expiredAt` 有时缺失，只能看 token。
@@ -421,7 +426,7 @@ impl TraeProvider {
         let resp = http.send(self.post(cred, &url, REQ_SOURCE)).await?;
         if resp.status >= 400 {
             return Err(AppError::new(
-                "provider",
+                ErrorKind::Provider,
                 format!("HTTP {}（登录态可能过期）", resp.status),
             ));
         }
@@ -441,7 +446,7 @@ impl TraeProvider {
         if let Some(code) = data.get("code").and_then(|v| v.as_i64()) {
             if code != 0 && data.get("usage_summary").is_none() {
                 return Err(AppError::new(
-                    "provider",
+                    ErrorKind::Provider,
                     data.get("message")
                         .and_then(|v| v.as_str())
                         .unwrap_or("用量接口返回失败"),
@@ -511,7 +516,11 @@ impl TraeProvider {
         };
         if let Some(total) = total {
             if consumed > 0.0 {
-                summary.push_str(&format!("（已用 {}/{}）", trim_f64(consumed), trim_f64(total)));
+                summary.push_str(&format!(
+                    "（已用 {}/{}）",
+                    trim_f64(consumed),
+                    trim_f64(total)
+                ));
             }
         }
         Ok((summary, balance, Some(lots)))
@@ -533,7 +542,6 @@ fn dt_of(value: &Value) -> Option<chrono::DateTime<chrono::Local>> {
         .and_then(chrono::DateTime::from_timestamp_millis)
         .map(|d| d.with_timezone(&chrono::Local))
 }
-
 
 fn truncate(text: &str, n: usize) -> String {
     text.chars().take(n).collect()

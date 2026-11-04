@@ -134,6 +134,10 @@ pub struct SessionRow {
     pub account_label: String,
     pub session_id: String,
     pub title: String,
+    /// 所属项目：优先工作区名（slug），其次 cwd 的最后一段；都没有就是空串
+    pub project: String,
+    /// 项目完整路径（界面放在 title 属性里，不占列宽）
+    pub cwd: String,
     pub last_at: Option<DateTime<Local>>,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub msgs: Option<i64>,

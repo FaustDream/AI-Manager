@@ -6,7 +6,7 @@
 //!   - `fs::remove_dir_all` 遇到只读文件在 Windows 上直接失败（客户端会留下只读的缓存）
 //!   - 复制目录时目标已存在就整体删掉，会把其他账号的 `storage/user-<uid>-personal` 一起删了
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use std::path::{Path, PathBuf};
 
 /// 先写同目录临时文件再 rename：读方永远看到完整内容或旧内容。
@@ -30,7 +30,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     replace_file(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        AppError::new("write_failed", format!("写入 {} 失败：{e}", path.display()))
+        AppError::new(
+            ErrorKind::WriteFailed,
+            format!("写入 {} 失败：{e}", path.display()),
+        )
     })
 }
 
@@ -73,17 +76,21 @@ fn replace_file(tmp: &Path, dst: &Path) -> std::io::Result<()> {
 pub fn backup_to(src: &Path, dir: &Path, tag: &str) -> Result<PathBuf> {
     if !src.exists() {
         return Err(AppError::new(
-            "backup_failed",
+            ErrorKind::BackupFailed,
             format!("待备份文件不存在：{}", src.display()),
         ));
     }
     std::fs::create_dir_all(dir)
-        .map_err(|e| AppError::new("backup_failed", format!("创建备份目录失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::BackupFailed, format!("创建备份目录失败：{e}")))?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let target = dir.join(format!("{tag}-{stamp}-{name}"));
-    std::fs::copy(src, &target)
-        .map_err(|e| AppError::new("backup_failed", format!("备份 {} 失败：{e}", src.display())))?;
+    std::fs::copy(src, &target).map_err(|e| {
+        AppError::new(
+            ErrorKind::BackupFailed,
+            format!("备份 {} 失败：{e}", src.display()),
+        )
+    })?;
     Ok(target)
 }
 
@@ -115,6 +122,24 @@ pub fn replace_dir(src: &Path, dst: &Path) -> Result<()> {
         remove_path(dst)?;
     }
     copy_dir_merge(src, dst)
+}
+
+/// 复制文件或目录（目录递归）。
+///
+/// 存在的理由：`std::fs::rename` **只能同一个盘**。数据目录在 D:、客户端在 C: 时
+/// 它直接报 EXDEV（os error 17），回收站就永远搬不进去——「彻底删除 0 条」就是这么来的。
+pub fn copy_any(src: &Path, dst: &Path) -> Result<()> {
+    if src.is_dir() {
+        return copy_dir_merge(src, dst);
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if dst.exists() {
+        let _ = clear_readonly(dst);
+    }
+    std::fs::copy(src, dst)?;
+    Ok(())
 }
 
 /// 删除文件或目录，先清只读位（Windows 上只读文件会让删除直接失败）。
@@ -167,6 +192,28 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains("tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "原子写不应留下临时文件");
+    }
+
+    /// 跨盘搬移靠它兜底：文件和目录都要能复制。
+    #[test]
+    fn copy_any_handles_files_and_dirs() {
+        let dir = tmp();
+        let file = dir.path().join("a.jsonl");
+        std::fs::write(&file, b"body").unwrap();
+        copy_any(&file, &dir.path().join("out/a.jsonl")).unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("out/a.jsonl")).unwrap(),
+            b"body"
+        );
+
+        let tree = dir.path().join("tree/sub");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("x.log"), b"log").unwrap();
+        copy_any(&dir.path().join("tree"), &dir.path().join("moved")).unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("moved/sub/x.log")).unwrap(),
+            b"log"
+        );
     }
 
     #[test]

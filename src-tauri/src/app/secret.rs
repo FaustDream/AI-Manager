@@ -3,7 +3,7 @@
 //! 为什么改成按账号：读单个账号不必解开全部，且内存里同时存在的明文从
 //! 「所有账号」降到「一个账号」。DPAPI 与当前 Windows 用户绑定，换用户/换机解不开。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use windows::Win32::Foundation::{LocalFree, HLOCAL};
 use windows::Win32::Security::Cryptography::{
     CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
@@ -12,7 +12,7 @@ use windows::Win32::Security::Cryptography::{
 /// 加密。返回可直接存进 BLOB 列的字节。
 pub fn protect(plain: &[u8]) -> Result<Vec<u8>> {
     if plain.is_empty() {
-        return Err(AppError::new("crypto", "待加密内容为空"));
+        return Err(AppError::new(ErrorKind::Crypto, "待加密内容为空"));
     }
     dpapi(plain, true)
 }
@@ -20,7 +20,7 @@ pub fn protect(plain: &[u8]) -> Result<Vec<u8>> {
 /// 解密。传入非本用户/非本机加密的数据会返回明确的 crypto 错误，不 panic。
 pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>> {
     if blob.is_empty() {
-        return Err(AppError::new("crypto", "待解密内容为空"));
+        return Err(AppError::new(ErrorKind::Crypto, "待解密内容为空"));
     }
     dpapi(blob, false)
 }
@@ -60,7 +60,7 @@ fn dpapi(input: &[u8], encrypt: bool) -> Result<Vec<u8>> {
     let _guard = BlobGuard(out_blob);
     ok.map_err(|e| {
         AppError::new(
-            "crypto",
+            ErrorKind::Crypto,
             if encrypt {
                 "加密失败"
             } else {
@@ -101,24 +101,37 @@ impl Drop for BlobGuard {
 /// 而失败信息只会说「参数错误」，看不出是前缀问题。
 pub fn chromium_key(local_state: &std::path::Path) -> Result<aes_gcm::Key<aes_gcm::Aes256Gcm>> {
     let raw = std::fs::read(local_state)
-        .map_err(|e| AppError::new("io", format!("读取 Local State 失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("读取 Local State 失败：{e}")))?;
     let json: serde_json::Value = serde_json::from_slice(&raw)
-        .map_err(|e| AppError::new("invalid", format!("Local State 不是 JSON：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("Local State 不是 JSON：{e}")))?;
     let encoded = json
         .pointer("/os_crypt/encrypted_key")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::new("invalid", "Local State 里没有 os_crypt.encrypted_key"))?;
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::Invalid,
+                "Local State 里没有 os_crypt.encrypted_key",
+            )
+        })?;
     use base64::Engine;
     let blob = base64::engine::general_purpose::STANDARD
         .decode(encoded.trim().as_bytes())
-        .map_err(|e| AppError::new("invalid", format!("encrypted_key 不是合法 base64：{e}")))?;
+        .map_err(|e| {
+            AppError::new(
+                ErrorKind::Invalid,
+                format!("encrypted_key 不是合法 base64：{e}"),
+            )
+        })?;
     if blob.len() < 5 || &blob[..5] != b"DPAPI" {
-        return Err(AppError::new("crypto", "encrypted_key 前缀不是 DPAPI"));
+        return Err(AppError::new(
+            ErrorKind::Crypto,
+            "encrypted_key 前缀不是 DPAPI",
+        ));
     }
     let key = unprotect(&blob[5..])?;
     if key.len() != 32 {
         return Err(AppError::new(
-            "crypto",
+            ErrorKind::Crypto,
             format!("Chromium 主密钥长度异常：{} 字节", key.len()),
         ));
     }
@@ -129,13 +142,16 @@ pub fn chromium_key(local_state: &std::path::Path) -> Result<aes_gcm::Key<aes_gc
 pub fn chromium_open(key: &aes_gcm::Key<aes_gcm::Aes256Gcm>, blob: &[u8]) -> Result<Vec<u8>> {
     use aes_gcm::aead::{Aead, KeyInit};
     if blob.len() < 15 || &blob[..3] != b"v10" {
-        return Err(AppError::new("crypto", "不是 v10 信封"));
+        return Err(AppError::new(ErrorKind::Crypto, "不是 v10 信封"));
     }
     let cipher = aes_gcm::Aes256Gcm::new(key);
     let nonce = aes_gcm::Nonce::from_slice(&blob[3..15]);
-    cipher
-        .decrypt(nonce, &blob[15..])
-        .map_err(|_| AppError::new("crypto", "AES-GCM 解密失败（密钥不匹配或密文被改）"))
+    cipher.decrypt(nonce, &blob[15..]).map_err(|_| {
+        AppError::new(
+            ErrorKind::Crypto,
+            "AES-GCM 解密失败（密钥不匹配或密文被改）",
+        )
+    })
 }
 
 // ---------------------------------------------------------------- 测试

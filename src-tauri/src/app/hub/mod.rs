@@ -74,7 +74,9 @@ pub mod mcp;
 pub mod skills;
 pub mod targets;
 
-use crate::app::error::{AppError, Result};
+pub use skills::{import_many, ImportReport};
+
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::paths;
 use crate::contracts::{HubStore, McpEntry, TargetKey};
 use chrono::Local;
@@ -175,16 +177,16 @@ impl HubStore for Hub {
             .backups_dir()
             .join(Local::now().format("%Y%m%d-%H%M%S").to_string());
         std::fs::create_dir_all(&dir)
-            .map_err(|e| AppError::new("io", format!("建备份目录失败：{e}")))?;
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("建备份目录失败：{e}")))?;
         let dest = dir.join(format!("{}.json", targets::key_name(key)));
         if source.exists() {
             let bytes = std::fs::read(&source)
-                .map_err(|e| AppError::new("io", format!("读配置失败：{e}")))?;
+                .map_err(|e| AppError::new(ErrorKind::Io, format!("读配置失败：{e}")))?;
             std::fs::write(&dest, bytes)
-                .map_err(|e| AppError::new("io", format!("写备份失败：{e}")))?;
+                .map_err(|e| AppError::new(ErrorKind::Io, format!("写备份失败：{e}")))?;
         } else {
             std::fs::write(&dest, b"null")
-                .map_err(|e| AppError::new("io", format!("写备份失败：{e}")))?;
+                .map_err(|e| AppError::new(ErrorKind::Io, format!("写备份失败：{e}")))?;
         }
         Ok(dest)
     }
@@ -195,7 +197,7 @@ impl HubStore for Hub {
         if let Some(body) = mcp::entries_of(&root, key).get(name) {
             if !self.owns_mcp(name, body) {
                 return Err(AppError::new(
-                    "conflict",
+                    ErrorKind::Conflict,
                     format!("{name} 已存在且不是本工具写入"),
                 ));
             }
@@ -232,10 +234,10 @@ pub fn write_entry(hub: &Hub, entry: &McpEntry, key: TargetKey) -> Result<PathBu
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| AppError::new("io", format!("建目录失败：{e}")))?;
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("建目录失败：{e}")))?;
     }
     let text = serde_json::to_string_pretty(&root)
-        .map_err(|e| AppError::new("io", format!("序列化失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("序列化失败：{e}")))?;
     crate::app::fsx::write_atomic(&path, text.as_bytes())?;
     Ok(backup)
 }
@@ -283,7 +285,7 @@ pub fn remove_entry(hub: &Hub, name: &str, key: TargetKey) -> Result<bool> {
         .unwrap_or(false);
     if removed {
         let text = serde_json::to_string_pretty(&root)
-            .map_err(|e| AppError::new("io", format!("序列化失败：{e}")))?;
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("序列化失败：{e}")))?;
         crate::app::fsx::write_atomic(&path, text.as_bytes())?;
     }
     Ok(removed)
@@ -501,7 +503,7 @@ pub fn mcp_remove(hub: &Hub, name: &str, keys: &[TargetKey]) -> DeployReport {
 /// 单个条目（带 name / command），另外也认数组。
 pub fn parse_text(text: &str) -> Result<Vec<McpEntry>> {
     let value: serde_json::Value = serde_json::from_str(text.trim())
-        .map_err(|e| AppError::new("invalid", format!("JSON 解析失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("JSON 解析失败：{e}")))?;
     let mut out = Vec::new();
 
     match &value {
@@ -525,17 +527,17 @@ pub fn parse_text(text: &str) -> Result<Vec<McpEntry>> {
                 let name = map
                     .get("name")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| AppError::new("invalid", "单个条目必须带 name"))?;
+                    .ok_or_else(|| AppError::new(ErrorKind::Invalid, "单个条目必须带 name"))?;
                 out.push(mcp::from_body(name, &value, TargetKey::QoderCn));
             } else {
                 // 也可能是 {名字: 条目} 的裸对象
                 out.extend(from_map(map.clone()));
             }
         }
-        _ => return Err(AppError::new("invalid", "这段文本不是 MCP 配置")),
+        _ => return Err(AppError::new(ErrorKind::Invalid, "这段文本不是 MCP 配置")),
     }
     if out.is_empty() {
-        return Err(AppError::new("invalid", "没有解析出任何 MCP 条目"));
+        return Err(AppError::new(ErrorKind::Invalid, "没有解析出任何 MCP 条目"));
     }
     Ok(out)
 }
@@ -543,7 +545,7 @@ pub fn parse_text(text: &str) -> Result<Vec<McpEntry>> {
 fn entries_of_value(value: &serde_json::Value) -> Result<Vec<McpEntry>> {
     let map = value
         .as_object()
-        .ok_or_else(|| AppError::new("invalid", "配置不是对象"))?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "配置不是对象"))?;
     let entries = map.get("mcpServers").and_then(|v| v.as_object()).cloned();
     let zcode = map
         .get("mcp")
@@ -583,6 +585,32 @@ mod tests {
             command: Some("npx".into()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn import_many_skips_existing_and_keeps_going() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path());
+
+        // 平台侧放两个技能
+        for name in ["alpha", "beta"] {
+            let folder = hub.skill_dir(TargetKey::QoderCn).join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("SKILL.md"), format!("# {name}\n")).unwrap();
+        }
+        // 先导入 alpha，第二次批量导入应当跳过它、只收 beta
+        let first = skills::import_many(&hub, TargetKey::QoderCn, &["alpha".to_string()]);
+        assert_eq!(first.imported, vec!["alpha".to_string()]);
+        assert!(first.errors.is_empty());
+
+        let second = skills::import_many(
+            &hub,
+            TargetKey::QoderCn,
+            &["alpha".to_string(), "beta".to_string()],
+        );
+        assert_eq!(second.imported, vec!["beta".to_string()]);
+        assert_eq!(second.errors.len(), 1, "已存在的同名技能要报冲突而不是覆盖");
+        assert!(second.summary().contains("1 个失败"));
     }
 
     #[test]

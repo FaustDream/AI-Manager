@@ -28,3 +28,36 @@ export function fmtDelta(value: number | null | undefined): string {
   const sign = value > 0 ? '+' : '';
   return `${sign}${fmtAmount(value)}`;
 }
+
+/** 只到日：到期日这类信息看「哪一天」就够，带时分反而占地方。 */
+export function fmtDay(iso: string | number | null | undefined): string {
+  if (iso === null || iso === undefined || iso === '') return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const md = `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return date.getFullYear() === new Date().getFullYear()
+    ? md
+    : `${date.getFullYear()}-${md}`;
+}
+
+/** 完整年月日：凭据到期这类「跨年也要看清」的日期，别省年份。 */
+export function fmtFullDay(iso: string | number | null | undefined): string {
+  if (iso === null || iso === undefined || iso === '') return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** 距今天还有几天（按自然日算，今天到期 = 0，已过期 < 0）。 */
+export function daysUntil(iso: string | number | null | undefined): number | null {
+  if (iso === null || iso === undefined || iso === '') return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(date);
+  end.setHours(0, 0, 0, 0);
+  return Math.round((end.getTime() - start.getTime()) / 86_400_000);
+}

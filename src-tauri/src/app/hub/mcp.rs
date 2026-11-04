@@ -8,7 +8,7 @@
 //! 「这是我们在管的」和「这是用户自己加的」。标记跟着配置走，用户把配置拷到
 //! 另一台机器也认得出，比在本地库里记一份 `deployed` 更可靠。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::hub::targets::{self, McpStyle};
 use crate::contracts::{McpEntry, TargetKey};
 use serde_json::{json, Map, Value};
@@ -124,7 +124,7 @@ pub fn from_platform(raw: &Value, key: TargetKey) -> Result<McpEntry> {
     let (name, body) = entries
         .iter()
         .next()
-        .ok_or_else(|| AppError::new("invalid", "配置里没有条目"))?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "配置里没有条目"))?;
     Ok(from_body(name, body, key))
 }
 

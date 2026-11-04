@@ -1,6 +1,6 @@
 [package]
 name = "ai-manager"
-version = "1.5.0"
+version = "1.8.0"
 edition = "2021"
 description = "AI Manager：签到 / 会话 / 技能分发一体化桌面工作台"
 
@@ -45,6 +45,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Registry",            # 开机自启写 HKCU Run
     "Win32_Storage_FileSystem",         # MoveFileExW：替换登录票据不留中间态
     "Win32_UI_WindowsAndMessaging",     # FindWindowW / SetForegroundWindow：二次启动唤出已有窗口
+    "Win32_UI_Shell",                   # ShellExecuteW：用默认浏览器打开登录页
     "Win32_System_ProcessStatus",       # GetProcessMemoryInfo：内存验收（TASK-CONCURRENCY §9）
 ] }
 # D8 类型同步：仅 ts feature 下编译，默认构建 / release 产物不含它（ARCHITECTURE §6.4）。

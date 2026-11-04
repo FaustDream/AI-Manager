@@ -28,6 +28,31 @@ fn zcode_db(roots: &Roots) -> PathBuf {
     roots.zcode().join("cli").join("db").join("db.sqlite")
 }
 
+/// 一条 ZCode 会话在 `cli/` 下的全部文件。
+///
+/// 库行之外它还拆在四处：`agents/<id>/`、`artifacts/<id>/`、`exec/bash-startup/<id>`
+/// 和 `rollout/model-io-<id>.jsonl`。只删库行的话这些会一直留在盘上，
+/// 「彻底删除」就退化成「只删索引」——用户在资源管理器里一眼就能看见。
+pub fn zcode_artifacts(roots: &Roots, id: &str) -> Vec<PathBuf> {
+    let cli = roots.zcode().join("cli");
+    let mut out = Vec::new();
+    for dir in ["agents", "artifacts", "exec/bash-startup"] {
+        let path = cli.join(dir).join(id);
+        if path.exists() {
+            out.push(path);
+        }
+    }
+    // rollout 的文件名带前缀（model-io-<id>.jsonl），按名字扫一层，别写死前缀
+    if let Ok(entries) = std::fs::read_dir(cli.join("rollout")) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().contains(id) {
+                out.push(entry.path());
+            }
+        }
+    }
+    out
+}
+
 pub fn sources(roots: &Roots) -> Vec<SourceInfo> {
     let mut out = Vec::new();
     for (key, label, intl) in QODER {

@@ -14,7 +14,6 @@ use crate::app::sessions::store::RawRow;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-
 /// 消息条数与体积的缓存：**按会话**而不是按来源。
 ///
 /// 客户端一直在写自己的库，来源级指纹几乎每次都会变；但绝大多数会话的正文文件
@@ -48,9 +47,7 @@ impl MsgCache {
             },
         );
     }
-
 }
-
 
 /// 一个来源的身份与指纹。`present=false` 表示这个客户端没装/没登录过。
 #[derive(Debug, Clone)]

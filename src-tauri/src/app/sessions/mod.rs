@@ -6,8 +6,10 @@
 //!
 //! 增量靠源指纹：`sources()` 只 stat 元数据，指纹没变就整源复用索引。
 
+pub mod backend;
 pub mod backup;
 pub mod delete;
+pub mod marks;
 pub mod preview;
 pub mod restore;
 pub mod sources;
@@ -19,14 +21,15 @@ pub use store::{Facets, Filter, RawRow, SqliteSessions};
 
 use crate::app::clients::Roots;
 use crate::app::db::Db;
-use crate::app::error::Result;
+use crate::app::error::{ErrorKind, Result};
 use crate::app::runtime::blocking;
 use crate::app::sessions::sources::MsgCache;
 use crate::app::task::CancelToken;
 use crate::contracts::{RestoreReport, SessionStore};
-use crate::types::{Page, SessionRow};
+use crate::types::{Page, SessionRow, SessionState};
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -38,6 +41,8 @@ pub struct ScanReport {
     pub skipped: usize,
     /// 写进索引的行数
     pub rows: usize,
+    /// 本轮到点自动归档的条数
+    pub archived: usize,
     /// 客户端没装/没登录过的来源
     pub missing: usize,
     pub ms: u64,
@@ -55,6 +60,9 @@ impl ScanReport {
         );
         if self.missing > 0 {
             text.push_str(&format!("，{} 个来源未安装", self.missing));
+        }
+        if self.archived > 0 {
+            text.push_str(&format!("，自动归档 {}", self.archived));
         }
         if !self.errors.is_empty() {
             text.push_str(&format!("，{} 个来源报错", self.errors.len()));
@@ -129,6 +137,14 @@ impl Service {
                 let _ = db.kv_set("sess_msg_cache", &text);
             }
 
+            // 到点自动归档：索引刚重建完，这时候算「谁过期了」最准。
+            // 归档只写本地标记，不碰客户端库——后台动作不该去关用户的客户端。
+            match marks::auto_archive(&db, marks::retention_days(&db)) {
+                Ok(0) => {}
+                Ok(count) => report.archived = count,
+                Err(e) => report.errors.push(format!("自动归档失败：{}", e.message)),
+            }
+
             report.ms = started.elapsed().as_millis() as u64;
             Ok(report)
         })
@@ -143,6 +159,9 @@ impl Service {
     ) -> Result<Page<SessionRow>> {
         let db = self.db.clone();
         blocking(move || {
+            // 「到时间就归档」不能只在扫描时算：软件可能开着好几天不扫。
+            // 列表是最常走的路，这里顺手检查一次，10 分钟内不重复。
+            maybe_auto_archive(&db);
             let mut page = SqliteSessions::new(&db).page(&filter, cursor.as_deref(), limit)?;
             // 账号列显示昵称（界面不出现 uid）；uid 原文仍留给行 key 与筛选
             let names = account_names(&db);
@@ -159,6 +178,94 @@ impl Service {
         let db = self.db.clone();
         let roots = self.roots.clone();
         blocking(move || delete::delete(&roots, &db, &keys, true)).await?
+    }
+
+    /// 归档 / 取消归档（只写本地标记，不动客户端）。
+    pub async fn archive(&self, keys: Vec<String>, on: bool) -> Result<usize> {
+        let db = self.db.clone();
+        blocking(move || marks::archive(&db, &keys, on)).await?
+    }
+
+    /// 彻底删除：**只放行已归档 / 客户端已删除的会话**，不留回收站副本。
+    ///
+    /// 这是不可逆动作，所以门槛放在后端而不是只靠界面置灰：绕过界面直接调命令
+    /// 也删不掉一条还在用的会话。
+    pub async fn purge(&self, keys: Vec<String>) -> Result<delete::PurgeReport> {
+        self.purge_with(keys, |_, _| {}).await
+    }
+
+    /// 带进度的彻底删除：每删完一条回调 `(已完成, 总数)`，供任务面板画进度条。
+    pub async fn purge_with(
+        &self,
+        keys: Vec<String>,
+        progress: impl Fn(usize, usize) + Send + Sync + 'static,
+    ) -> Result<delete::PurgeReport> {
+        let db = self.db.clone();
+        let roots = self.roots.clone();
+        blocking(move || {
+            let store = SqliteSessions::new(&db);
+            let mut allowed = Vec::new();
+            let mut refused = 0usize;
+            for key in &keys {
+                let target = preview::parse_key(key)?;
+                let state = store.state_of(&target.source_key, &target.session_id)?;
+                match state {
+                    Some(SessionState::Archived) | Some(SessionState::Deleted) => {
+                        allowed.push(key.clone())
+                    }
+                    _ => refused += 1,
+                }
+            }
+            if allowed.is_empty() {
+                return Err(crate::app::error::AppError::new(
+                    ErrorKind::Invalid,
+                    "只能彻底删除「已归档」或「已删除」的会话；其余会话请先归档",
+                ));
+            }
+            let total = allowed.len();
+            let report = delete::delete_with(&roots, &db, &allowed, true, &|done, _| {
+                progress(done, total)
+            })?;
+            // 行已经真删了，归档标记跟着清掉；回收站批次立刻销毁，不留副本
+            let _ = marks::forget(&db, &allowed);
+            if !report.tag.is_empty() {
+                let _ = delete::purge(&report.tag);
+            }
+            Ok(delete::PurgeReport {
+                deleted: report.sessions,
+                files: report.files,
+                bytes: report.bytes,
+                refused,
+                errors: report.errors,
+                warnings: report.warnings,
+            })
+        })
+        .await?
+    }
+
+    /// 当前筛选下的全部行 key（不分页），给「选中全部」用。
+    pub async fn keys(&self, filter: Filter) -> Result<Vec<String>> {
+        let db = self.db.clone();
+        blocking(move || SqliteSessions::new(&db).keys(&filter)).await?
+    }
+
+    /// 自动归档的保留天数（0 = 关闭）。
+    pub async fn retention_days(&self) -> u32 {
+        let db = self.db.clone();
+        blocking(move || marks::retention_days(&db))
+            .await
+            .unwrap_or(0)
+    }
+
+    pub async fn set_retention_days(&self, days: u32) -> Result<u32> {
+        let db = self.db.clone();
+        blocking(move || {
+            marks::set_retention_days(&db, days)?;
+            // 改档位立刻按新档位算一次：用户调成 3 天后马上能看到效果
+            let _ = marks::auto_archive(&db, days);
+            Ok(marks::retention_days(&db))
+        })
+        .await?
     }
 
     /// 整库快照：客户端开着也能备份（走 SQLite 在线备份）。
@@ -210,6 +317,22 @@ impl Service {
         })
         .await?
     }
+}
+
+/// 上次跑自动归档的秒级时间戳。进程内节流：列表翻页很密，不能每页都算一遍。
+static LAST_AUTO_ARCHIVE: AtomicI64 = AtomicI64::new(0);
+const AUTO_ARCHIVE_INTERVAL_SECS: i64 = 600;
+
+/// 到点自动归档的「时间触发器」：只在列表被打开时检查，10 分钟一次。
+/// 归档只写本地标记，不碰客户端库，所以这里可以放心在读写路径上顺手做。
+fn maybe_auto_archive(db: &Db) {
+    let now = chrono::Local::now().timestamp();
+    let last = LAST_AUTO_ARCHIVE.load(Ordering::Relaxed);
+    if now - last < AUTO_ARCHIVE_INTERVAL_SECS {
+        return;
+    }
+    LAST_AUTO_ARCHIVE.store(now, Ordering::Relaxed);
+    let _ = marks::auto_archive(db, marks::retention_days(db));
 }
 
 /// 账号库的 (platform, iid, name) 列表，给账号列昵称映射用。

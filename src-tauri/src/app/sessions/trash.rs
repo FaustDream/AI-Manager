@@ -4,7 +4,7 @@
 //! 「哪一条会话、什么类型、哪些文件、多少字节、库里删掉了哪些行」，
 //! 恢复时照着搬回去——**没有清单就不算删成功**，这是这一层唯一的硬要求。
 
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::paths;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -83,9 +83,9 @@ impl Manifest {
 
 pub fn write_manifest(dir: &Path, manifest: &Manifest) -> Result<()> {
     std::fs::create_dir_all(dir)
-        .map_err(|e| AppError::new("io", format!("建回收站目录失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("建回收站目录失败：{e}")))?;
     let text = serde_json::to_string_pretty(manifest)
-        .map_err(|e| AppError::new("io", format!("清单序列化失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("清单序列化失败：{e}")))?;
     crate::app::fsx::write_atomic(&dir.join("manifest.json"), text.as_bytes())
 }
 
@@ -112,7 +112,10 @@ pub fn list(root: &Path) -> Vec<Manifest> {
 pub fn purge(root: &Path, tag: &str) -> Result<i64> {
     let dir = root.join(tag);
     if !dir.exists() {
-        return Err(AppError::new("invalid", format!("没有这个批次：{tag}")));
+        return Err(AppError::new(
+            ErrorKind::Invalid,
+            format!("没有这个批次：{tag}"),
+        ));
     }
     let size = dir_size(&dir);
     crate::app::fsx::remove_path(&dir)?;
@@ -120,34 +123,66 @@ pub fn purge(root: &Path, tag: &str) -> Result<i64> {
 }
 
 /// 把一个文件/目录搬进批次目录，返回相对路径。
+///
+/// `rename` 只在同一个盘内有效：数据目录在 D:、客户端在 C: 时它报 EXDEV
+/// （os error 17），这时退回「复制 + 删源」——慢一点，但跨盘也能进回收站。
 pub fn move_in(src: &Path, batch: &Path, rel: &str) -> Result<()> {
     let dest = batch.join(rel);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| AppError::new("io", format!("建目录失败：{e}")))?;
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("建目录失败：{e}")))?;
     }
     if dest.exists() {
         let _ = crate::app::fsx::remove_path(&dest);
     }
-    std::fs::rename(src, &dest)
-        .map_err(|e| AppError::new("io", format!("移动 {} 到回收站失败：{e}", src.display())))
+    if std::fs::rename(src, &dest).is_ok() {
+        return Ok(());
+    }
+    crate::app::fsx::copy_any(src, &dest).map_err(|e| {
+        AppError::new(
+            ErrorKind::Io,
+            format!("移动 {} 到回收站失败：{}", src.display(), e.message),
+        )
+    })?;
+    crate::app::fsx::remove_path(src).map_err(|e| {
+        AppError::new(
+            ErrorKind::Io,
+            format!("已复制到回收站，但源文件删不掉：{}", e.message),
+        )
+    })
 }
 
-/// 从批次目录搬回原位。
+/// 从批次目录搬回原位。跨盘时同样退回「复制 + 删源」。
 pub fn move_out(batch: &Path, rel: &str, dest: &Path) -> Result<()> {
     let src = batch.join(rel);
     if !src.exists() {
-        return Err(AppError::new("io", format!("回收站里找不到 {rel}")));
+        return Err(AppError::new(
+            ErrorKind::Io,
+            format!("回收站里找不到 {rel}"),
+        ));
     }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| AppError::new("io", format!("建目录失败：{e}")))?;
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("建目录失败：{e}")))?;
     }
     if dest.exists() {
         let _ = crate::app::fsx::remove_path(dest);
     }
-    std::fs::rename(&src, dest)
-        .map_err(|e| AppError::new("io", format!("恢复 {} 失败：{e}", dest.display())))
+    if std::fs::rename(&src, dest).is_ok() {
+        return Ok(());
+    }
+    crate::app::fsx::copy_any(&src, dest).map_err(|e| {
+        AppError::new(
+            ErrorKind::Io,
+            format!("恢复 {} 失败：{}", dest.display(), e.message),
+        )
+    })?;
+    crate::app::fsx::remove_path(&src).map_err(|e| {
+        AppError::new(
+            ErrorKind::Io,
+            format!("已恢复，但回收站副本删不掉：{}", e.message),
+        )
+    })
 }
 
 pub fn dir_size(path: &Path) -> i64 {

@@ -28,7 +28,7 @@
 //! 会话的稳定身份只有 uuid 本身，edition 只是展示属性。
 
 use crate::app::db::Db;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::secret;
 use base64::Engine;
 use serde::Serialize;
@@ -163,34 +163,34 @@ pub fn archive(db: &Db, data_dir: &Path) -> Result<ArchiveReport> {
     // 已经归档过就直接拒：重复点只会在 data-v1-archive/ 下无限堆目录，
     // 而界面完全看不出「上次已经备过一份」。
     if let Some(message) = archived_before(db)? {
-        return Err(AppError::new("already_archived", message));
+        return Err(AppError::new(ErrorKind::AlreadyArchived, message));
     }
 
     let before = verify(db, data_dir)?;
     if !before.ok {
         return Err(AppError::new(
-            "migration_mismatch",
+            ErrorKind::MigrationMismatch,
             format!("校验未通过，拒绝归档：{}", before.describe()),
         ));
     }
 
     let dest = unique_dir(archive_root(data_dir).join(stamp()));
     std::fs::create_dir_all(&dest)
-        .map_err(|e| AppError::new("io", format!("创建归档目录失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("创建归档目录失败：{e}")))?;
     for name in V1_FILES {
         let src = data_dir.join(name);
         if !src.is_file() {
             continue;
         }
         std::fs::copy(&src, dest.join(name))
-            .map_err(|e| AppError::new("io", format!("复制 {name} 失败：{e}")))?;
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("复制 {name} 失败：{e}")))?;
     }
 
     // 复制期间 v1 侧被别处改过（v1 客户端还在跑）→ 这份归档不可信
     let after = verify(db, data_dir)?;
     if !after.ok {
         return Err(AppError::new(
-            "migration_mismatch",
+            ErrorKind::MigrationMismatch,
             format!("复制后校验失败，未写迁移标记：{}", after.describe()),
         ));
     }
@@ -252,16 +252,25 @@ fn v1_account_iids(dir: &Path) -> Result<Vec<String>> {
     let text = String::from_utf8_lossy(&raw);
     let blob = base64::engine::general_purpose::STANDARD
         .decode(text.trim().as_bytes())
-        .map_err(|e| AppError::new("invalid", format!("accounts.dat 不是合法 base64：{e}")))?;
+        .map_err(|e| {
+            AppError::new(
+                ErrorKind::Invalid,
+                format!("accounts.dat 不是合法 base64：{e}"),
+            )
+        })?;
     // 解不开就不能说「没丢」：换用户/换机时 DPAPI 必然失败，此时必须让校验报错
     let plain = secret::unprotect(&blob).map_err(|e| {
         AppError::new(
-            "crypto",
+            ErrorKind::Crypto,
             format!("accounts.dat 无法解密（DPAPI 与当前 Windows 用户绑定）：{e}"),
         )
     })?;
-    let list: Vec<Value> = serde_json::from_slice(&plain)
-        .map_err(|e| AppError::new("invalid", format!("accounts.dat 内容不是账号数组：{e}")))?;
+    let list: Vec<Value> = serde_json::from_slice(&plain).map_err(|e| {
+        AppError::new(
+            ErrorKind::Invalid,
+            format!("accounts.dat 内容不是账号数组：{e}"),
+        )
+    })?;
 
     // iid 的拼法与 `import_v1` 必须完全一致，否则包含关系会全部落空
     Ok(list
@@ -328,32 +337,18 @@ struct V2Keys {
 }
 
 fn v2_keys(db: &Db) -> Result<V2Keys> {
-    db.read(|conn| {
-        let session_rows: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM session_index WHERE kind = 'workbuddy'",
-            [],
-            |r| r.get(0),
-        )?;
-        Ok(V2Keys {
-            accounts: collect(conn, "SELECT iid FROM accounts")?,
-            sessions: collect(
-                conn,
-                "SELECT session_id FROM session_index WHERE kind = 'workbuddy'",
-            )?,
-            ledger: collect(conn, "SELECT iid || '|' || date FROM credit_snapshots")?,
-            session_rows: session_rows as u32,
-        })
+    // 每张表的 SQL 都在自己的 store 里（C7），这里只消费类型化结果
+    let (session_rows, session_ids) =
+        crate::app::sessions::store::SqliteSessions::new(db).workbuddy_keys()?;
+    Ok(V2Keys {
+        accounts: crate::app::accounts::repo::iids(db)?.into_iter().collect(),
+        sessions: session_ids.into_iter().collect(),
+        ledger: crate::app::checkin::store::SqliteCheckin::new(db)
+            .ledger_keys()?
+            .into_iter()
+            .collect(),
+        session_rows,
     })
-}
-
-fn collect(conn: &rusqlite::Connection, sql: &str) -> Result<HashSet<String>> {
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-    let mut out = HashSet::new();
-    for row in rows {
-        out.insert(row?);
-    }
-    Ok(out)
 }
 
 fn count_missing(v1: &[String], v2: &HashSet<String>) -> u32 {
@@ -369,7 +364,7 @@ fn read_json(dir: &Path, name: &str) -> Result<Option<Value>> {
     }
     let raw = std::fs::read(&path)?;
     let value = serde_json::from_slice(&raw)
-        .map_err(|e| AppError::new("invalid", format!("{name} 解析失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("{name} 解析失败：{e}")))?;
     Ok(Some(value))
 }
 

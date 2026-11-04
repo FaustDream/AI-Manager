@@ -6,11 +6,11 @@
 //! 恢复走同一份清单：文件搬回原位、库行原样插回去。删掉的东西都要能回来，
 //! 这是这一层存在的全部意义。
 
-use crate::app::accounts::add::{client_exe, process_names};
+use crate::app::accounts::add::client_exe;
 use crate::app::clients::Roots;
 use crate::app::db::Db;
-use crate::app::error::{AppError, Result};
-use crate::app::process::{kill_by_name, process_running, start_detached};
+use crate::app::error::{AppError, ErrorKind, Result};
+use crate::app::process::start_detached;
 use crate::app::sessions::preview;
 use crate::app::sessions::sources::wb;
 use crate::app::sessions::store::SqliteSessions;
@@ -59,6 +59,24 @@ impl DeleteReport {
     }
 }
 
+/// 彻底删除的结果。`refused` = 因为「没归档也没删」被挡下的条数。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PurgeReport {
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub deleted: usize,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub files: usize,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub bytes: i64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub refused: usize,
+    pub errors: Vec<String>,
+    /// 关/重启客户端的告警：重启失败必须让用户看见，否则就是「客户端被关了没起来」
+    pub warnings: Vec<String>,
+}
+
 /// 来源 → 需要先关掉的客户端平台键（`accounts::add` 用的是同一套键）。
 fn platform_of(source: &str) -> Option<&'static str> {
     match source {
@@ -73,36 +91,58 @@ fn platform_of(source: &str) -> Option<&'static str> {
 }
 
 /// 关掉这些平台里正在跑的客户端，返回（被关掉的平台键, 关闭告警）。
-/// `restore.rs` 的客户端库写路径共用这道进程闸，所以告警由调用方收编。
+///
+/// 关的是**各版本自己的 exe**（`add::close_client`），不是进程名表里的全部名字：
+/// 表里的 `CodeBuddy*.exe` 是 CodeBuddy IDE，另一个产品，不能跟着一起杀。
 pub fn close_clients(platforms: &[&str]) -> (Vec<String>, Vec<String>) {
     let mut closed = Vec::new();
     let mut warnings = Vec::new();
     for platform in platforms {
-        let names = process_names(platform);
-        if names.is_empty() || !process_running(names) {
-            continue;
+        match crate::app::accounts::add::close_client(platform) {
+            Ok(true) => {
+                crate::app::log::log(
+                    crate::app::log::Level::Info,
+                    "sessions",
+                    format!(
+                        "写客户端库前先关闭 {} 客户端（删完会自动重启）",
+                        super::backend::label(platform)
+                    ),
+                );
+                closed.push((*platform).to_string())
+            }
+            Ok(false) => {}
+            Err(e) => warnings.push(format!(
+                "关闭 {} 失败：{}",
+                super::backend::label(platform),
+                e.message
+            )),
         }
-        for name in names {
-            match kill_by_name(name) {
-                Ok(0) => {}
-                Ok(_) => {
-                    if !closed.iter().any(|p: &String| p == platform) {
-                        closed.push((*platform).to_string());
-                    }
-                }
-                Err(e) => warnings.push(format!("关闭 {name} 失败：{}", e.message)),
+    }
+    (closed, warnings)
+}
+
+/// 这批会话会牵动哪些**正在运行**的客户端（界面在确认框里点名，别偷偷关）。
+pub fn running_clients(keys: &[String]) -> Vec<String> {
+    let mut platforms: Vec<&str> = Vec::new();
+    for key in keys {
+        let Ok(target) = preview::parse_key(key) else {
+            continue;
+        };
+        if let Some(platform) = platform_of(&target.source_key) {
+            if !platforms.contains(&platform) {
+                platforms.push(platform);
             }
         }
     }
-    // 等句柄释放：退出不等于文件立刻可写
-    for _ in 0..20 {
-        let still = platforms.iter().any(|p| process_running(process_names(p)));
-        if !still {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-    (closed, warnings)
+    platforms
+        .into_iter()
+        .filter(|platform| {
+            let names = crate::app::accounts::add::client_process_names(platform);
+            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            crate::app::process::process_running(&refs)
+        })
+        .map(super::backend::label)
+        .collect()
 }
 
 fn close_clients_with_report(platforms: &[&str], report: &mut DeleteReport) -> Vec<String> {
@@ -126,10 +166,54 @@ fn restart_clients(closed: &[String], report: &mut DeleteReport) {
     for platform in closed {
         match client_exe(platform) {
             Some(exe) if exe.exists() => {
-                if let Err(e) = start_detached(&exe) {
-                    report
-                        .warnings
-                        .push(format!("重启客户端失败：{}", e.message));
+                match start_detached(&exe) {
+                    Ok(()) => {
+                        // 起来 ≠ 活着：等进程真的出现在列表里，否则「重启」只是自欺欺人
+                        let names = crate::app::accounts::add::client_process_names(platform);
+                        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                        let mut up = false;
+                        for _ in 0..40 {
+                            if crate::app::process::process_running(&refs) {
+                                up = true;
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        }
+                        if up {
+                            crate::app::log::log(
+                                crate::app::log::Level::Info,
+                                "sessions",
+                                format!("已重新拉起 {} 客户端", super::backend::label(platform)),
+                            );
+                        } else {
+                            crate::app::log::log(
+                                crate::app::log::Level::Warn,
+                                "sessions",
+                                format!(
+                                    "{} 客户端重启后没有出现在进程列表里",
+                                    super::backend::label(platform)
+                                ),
+                            );
+                            report.warnings.push(format!(
+                                "{} 客户端没能自动重启，请手动打开",
+                                super::backend::label(platform)
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        crate::app::log::log(
+                            crate::app::log::Level::Warn,
+                            "sessions",
+                            format!(
+                                "重启 {} 客户端失败：{}",
+                                super::backend::label(platform),
+                                e.message
+                            ),
+                        );
+                        report
+                            .warnings
+                            .push(format!("重启客户端失败：{}", e.message));
+                    }
                 }
             }
             _ => report
@@ -142,7 +226,19 @@ fn restart_clients(closed: &[String], report: &mut DeleteReport) {
 /// 主入口：一批行 key，删完返回统计。任何一条失败都不会影响其他条。
 /// `with_guard=false` 只给测试用：不碰真实客户端进程。
 pub fn delete(roots: &Roots, db: &Db, keys: &[String], with_guard: bool) -> Result<DeleteReport> {
-    delete_into(roots, db, keys, with_guard, &trash::root())
+    delete_into(roots, db, keys, with_guard, &trash::root(), None)
+}
+
+/// 带进度的删除：每处理完一条回调一次 `(已完成, 总数)`。
+/// 大批量删除要几十秒，界面没有进度就只能干等——所以把回调一路透到循环里。
+pub fn delete_with(
+    roots: &Roots,
+    db: &Db,
+    keys: &[String],
+    with_guard: bool,
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> Result<DeleteReport> {
+    delete_into(roots, db, keys, with_guard, &trash::root(), Some(progress))
 }
 
 /// 回收站根目录可注入：测试用临时目录，绝不碰真实 `data/trash`。
@@ -152,6 +248,7 @@ pub fn delete_into(
     keys: &[String],
     with_guard: bool,
     root: &Path,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> Result<DeleteReport> {
     let mut targets = Vec::new();
     for key in keys {
@@ -161,7 +258,7 @@ pub fn delete_into(
         }
     }
     if targets.is_empty() {
-        return Err(AppError::new("invalid", "没有选中会话"));
+        return Err(AppError::new(ErrorKind::Invalid, "没有选中会话"));
     }
 
     // 先按来源分组：同一来源只关一次客户端
@@ -174,7 +271,8 @@ pub fn delete_into(
         }
     }
 
-    std::fs::create_dir_all(root).map_err(|e| AppError::new("io", format!("建回收站失败：{e}")))?;
+    std::fs::create_dir_all(root)
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("建回收站失败：{e}")))?;
     let tag = trash::new_tag(root);
     let batch = root.join(&tag);
 
@@ -188,23 +286,43 @@ pub fn delete_into(
     } else {
         Vec::new()
     };
-    report.closed = closed.iter().map(|p| client_label(p)).collect();
+    report.closed = closed.iter().map(|p| super::backend::label(p)).collect();
 
     let titles = titles_of(db, &targets);
+    let total = targets.len();
+    let mut done = 0usize;
     let mut items: Vec<Item> = Vec::new();
     // 半成品：文件/导出已经进了回收站、库行没删完的条目。也进清单，
     // 否则这些文件成了恢复界面永远看不到的孤儿，purge 时跟着一起蒸发
     let mut partials: Vec<Item> = Vec::new();
+    // 真正处理掉的会话：收尾时只删这几行索引。失败的不能动——它们还在客户端里，
+    // 索引一删下次扫描的指纹没变，这一行就再也不会回来了。
+    let mut handled: Vec<preview::Target> = Vec::new();
     for (key, target) in &targets {
+        done += 1;
+        if let Some(cb) = progress {
+            cb(done, total);
+        }
+        // 云端占位（Trae）：远端删不掉，本地记一条墓碑，重扫时按 hidden 过滤掉。
+        // 它没有正文、也不该进回收站——恢复就是把墓碑删掉，语义上等于「重新显示」。
+        if target.kind == "trae" {
+            match crate::app::sessions::marks::hide(db, std::slice::from_ref(key)) {
+                Ok(_) => {
+                    report.sessions += 1;
+                    handled.push((*target).clone());
+                }
+                Err(e) => report
+                    .errors
+                    .push(format!("{}：{}", target.session_id, e.message)),
+            }
+            continue;
+        }
         let title = titles.get(key).cloned().unwrap_or_default();
-        let result = match target.kind.as_str() {
-            "workbuddy" => delete_workbuddy(roots, target, &batch, &title, &mut partials),
-            "codebuddy" => delete_codebuddy(roots, target, &batch, &title, &mut partials),
-            "qoder" => delete_sqlite(roots, target, &batch, &title, "qoder", &mut partials),
-            "zcode" => delete_sqlite(roots, target, &batch, &title, "zcode", &mut partials),
-            other => Err(AppError::new(
-                "unsupported",
-                format!("{other} 的会话删不了（正文在云端）"),
+        let result = match super::backend::backend_for(&target.kind) {
+            Some(backend) => backend.delete(roots, target, &batch, &title, &mut partials),
+            None => Err(AppError::new(
+                ErrorKind::Unsupported,
+                format!("{} 的会话删不了（正文在云端）", target.kind),
             )),
         };
         match result {
@@ -213,8 +331,11 @@ pub fn delete_into(
                 report.files += item.files.len();
                 report.bytes += item.size;
                 items.push(item);
+                handled.push((*target).clone());
             }
-            Err(e) => report.errors.push(format!("{title}：{}", e.message)),
+            Err(e) => report
+                .errors
+                .push(format!("{}：{}", one_line(&title), e.message)),
         }
     }
     for item in &partials {
@@ -222,79 +343,73 @@ pub fn delete_into(
         report.bytes += item.size;
         report.warnings.push(format!(
             "{} 部分完成：{} 个文件已进回收站，恢复时可原样搬回",
-            item.title,
+            one_line(&item.title),
             item.files.len()
         ));
     }
     items.extend(partials);
 
-    if !items.is_empty() {
-        let manifest = Manifest {
-            tag: tag.clone(),
-            at: chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
-            platforms: closed.clone(),
-            items,
-        };
-        trash::write_manifest(&batch, &manifest)?;
-        // 索引里这几行已经不存在了：整源失效，下次刷新重建
-        let store = SqliteSessions::new(db);
-        for (_, target) in &targets {
-            let _ = store.drop_source(&target.source_key);
-            let _ = db.kv_delete(&format!("sess_fp:{}", target.source_key));
+    // 从这里到 restart 之间任何一步出错（写清单失败、盘满、权限…）都不能让客户端
+    // 一直关着——所以收尾包一层，**无论成败都重启**。这就是「国内版被关了再也没起来」
+    // 的根因：原来写清单失败会 `?` 直接返回，重启被跳过。
+    let cleanup = (|| -> Result<()> {
+        if !items.is_empty() {
+            let manifest = Manifest {
+                tag: tag.clone(),
+                at: chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+                platforms: closed.clone(),
+                items,
+            };
+            trash::write_manifest(&batch, &manifest)?;
+        } else {
+            // 一条文件都没进回收站（客户端早就清过库的那种）：别留一个空批次
+            let _ = std::fs::remove_dir_all(&batch);
         }
-    }
+        // 只摘掉这批的索引行。原来这里是 `drop_source`，会把整个来源的列表清空，
+        // 用户得手动重扫才看得见别的会话——「彻底删除后什么都没了」就是这么来的。
+        let rows: Vec<(String, String, String, String)> = handled
+            .iter()
+            .map(|t| {
+                (
+                    t.kind.clone(),
+                    t.source_key.clone(),
+                    t.account.clone(),
+                    t.session_id.clone(),
+                )
+            })
+            .collect();
+        if !rows.is_empty() {
+            if let Err(e) = SqliteSessions::new(db).forget(&rows) {
+                crate::app::log::log(
+                    crate::app::log::Level::Warn,
+                    "sessions",
+                    format!("清理会话索引失败：{}", e.message),
+                );
+            }
+            // 指纹一并作废：下次扫描重读这一源，索引与客户端库重新对齐
+            for target in &handled {
+                let _ = db.kv_delete(&format!("sess_fp:{}", target.source_key));
+            }
+        }
+        Ok(())
+    })();
 
     if with_guard {
         restart_clients(&closed, &mut report);
     }
+    cleanup?;
     report.message = report.summary();
     Ok(report)
-}
-
-fn client_label(platform: &str) -> String {
-    match platform {
-        "workbuddy" => "WorkBuddy 国内版".into(),
-        "workbuddy_intl" => "WorkBuddy 国际版".into(),
-        "qoder" => "Qoder CN".into(),
-        "qoder_intl" => "Qoder 国际版".into(),
-        "zcode" => "ZCode".into(),
-        other => other.to_string(),
-    }
 }
 
 fn titles_of(
     db: &Db,
     targets: &[(String, preview::Target)],
 ) -> std::collections::HashMap<String, String> {
-    // 一条连接循环查：每个 key 各开一次事务太浪费
-    db.read(|conn| {
-        let mut out = std::collections::HashMap::new();
-        let mut stmt = match conn.prepare(
-            "SELECT title FROM session_index
-             WHERE kind = ?1 AND source_key = ?2 AND account = ?3 AND session_id = ?4",
-        ) {
-            Ok(stmt) => stmt,
-            Err(_) => return Ok(out),
-        };
-        for (key, target) in targets {
-            let title: Option<String> = stmt
-                .query_row(
-                    rusqlite::params![
-                        target.kind,
-                        target.source_key,
-                        target.account,
-                        target.session_id
-                    ],
-                    |row| row.get::<_, String>(0),
-                )
-                .ok();
-            if let Some(title) = title {
-                out.insert(key.clone(), title);
-            }
-        }
-        Ok(out)
-    })
-    .unwrap_or_default()
+    // SQL 已收进 SqliteSessions（C7）；查不到标题时保留空标题的降级行为
+    SqliteSessions::new(db)
+        .titles_of(targets)
+        .unwrap_or_default()
 }
 
 // ------------------------------------------------------------------ WorkBuddy
@@ -328,7 +443,7 @@ fn salvage_workbuddy(
     });
 }
 
-fn delete_workbuddy(
+pub(crate) fn delete_workbuddy(
     roots: &Roots,
     target: &preview::Target,
     batch: &Path,
@@ -338,24 +453,26 @@ fn delete_workbuddy(
     let ep = wb::editions(roots)
         .into_iter()
         .find(|ep| ep.key == target.source_key)
-        .ok_or_else(|| AppError::new("invalid", "客户端目录不存在"))?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "客户端目录不存在"))?;
     let db = ep.db();
     let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|e| AppError::new("sqlite", format!("打开会话库失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("打开会话库失败：{e}")))?;
     checkpoint(&conn)?;
 
     let session = dump_row(&conn, "sessions", "id", &target.session_id)?;
     let usage = dump_rows(&conn, "session_usage", "session_id", &target.session_id)?;
-    if session.is_none() && usage.is_empty() {
-        return Err(AppError::new("invalid", "库里已经找不到这条会话"));
-    }
+    // 客户端把这条会话**硬删**了（先软删、之后清库），索引里却还留着这一行。
+    // 这不是失败：没有库行可删，正文可能还剩孤儿文件——搬走文件、清掉索引即可。
+    // 以前这里直接报错，于是「彻底删除 已删除的会话」永远返回 0 条，
+    // 界面上那 17 行就再也删不掉了。
+    let ghost = session.is_none() && usage.is_empty();
 
     // 文件先搬走：搬不动就不删库行
     let files = wb::project_files(&ep.projects);
-    let owned = files.get(&target.session_id).cloned().unwrap_or_default();
-    let mut moved = Vec::new();
-    let mut size = 0;
-    for path in &owned {
+    let body = files.get(&target.session_id).cloned().unwrap_or_default();
+    // 正文之外的侧车与日志也要一起走，否则删完还留一地按 id 命名的残渣
+    let sidecars = wb::session_sidecars(&ep, &target.session_id);
+    let rel_of = |path: &Path| -> String {
         let rel = path
             .strip_prefix(&ep.root)
             .map(|p| p.to_string_lossy().to_string())
@@ -365,16 +482,47 @@ fn delete_workbuddy(
                     .to_string_lossy()
                     .to_string()
             });
-        let rel = format!("{}/{}", ep.key, rel);
+        // 清单里的相对路径统一用 `/`：恢复时要按分隔符切段，混着 `\` 会切不开
+        format!("{}/{}", ep.key, rel.replace('\\', "/"))
+    };
+    let mut moved = Vec::new();
+    let mut size = 0;
+    for path in &body {
+        let rel = rel_of(path);
         size += trash::dir_size(path);
         match trash::move_in(path, batch, &rel) {
             Ok(()) => moved.push(rel),
             Err(e) => {
                 return Err(AppError::new(
-                    "io",
+                    ErrorKind::Io,
                     format!("正文没能移进回收站：{}", e.message),
                 ))
             }
+        }
+    }
+    for path in &sidecars {
+        let rel = rel_of(path);
+        let bytes = trash::dir_size(path);
+        match trash::move_in(path, batch, &rel) {
+            Ok(()) => {
+                size += bytes;
+                moved.push(rel);
+            }
+            // 侧车被客户端占着（日志最常见）：不值得为它整条失败。
+            // 进不了回收站就直删——它只是会话的派生数据，留着才是真的没删干净。
+            Err(move_err) => match crate::app::fsx::remove_path(path) {
+                Ok(()) => size += bytes,
+                Err(remove_err) => crate::app::log::log(
+                    crate::app::log::Level::Warn,
+                    "sessions",
+                    format!(
+                        "侧车没能删除（{}）：{} / {}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        move_err.message,
+                        remove_err.message
+                    ),
+                ),
+            },
         }
     }
 
@@ -382,7 +530,7 @@ fn delete_workbuddy(
         conn.execute("DELETE FROM sessions WHERE id = ?1", [&target.session_id])
             .map_err(|e| {
                 salvage_workbuddy(partial, target, title, &moved, size, &session, &usage);
-                AppError::new("sqlite", format!("删除会话行失败：{e}"))
+                AppError::new(ErrorKind::Sqlite, format!("删除会话行失败：{e}"))
             })?;
     }
     if !usage.is_empty() {
@@ -392,15 +540,22 @@ fn delete_workbuddy(
         )
         .map_err(|e| {
             salvage_workbuddy(partial, target, title, &moved, size, &session, &usage);
-            AppError::new("sqlite", format!("删除用量行失败：{e}"))
+            AppError::new(ErrorKind::Sqlite, format!("删除用量行失败：{e}"))
         })?;
     }
-    if let Err(e) = checkpoint(&conn) {
-        salvage_workbuddy(partial, target, title, &moved, size, &session, &usage);
-        return Err(e);
+    if !ghost {
+        if let Err(e) = checkpoint(&conn) {
+            salvage_workbuddy(partial, target, title, &moved, size, &session, &usage);
+            return Err(e);
+        }
     }
 
-    let rows = serde_json::json!({ "sessions": session, "session_usage": usage });
+    let rows = if ghost {
+        // 没有库行可留：恢复这条会话本来就是不可能的，别在清单里塞一条空记录
+        None
+    } else {
+        Some(serde_json::json!({ "sessions": session, "session_usage": usage }))
+    };
     Ok(Item {
         kind: "workbuddy".into(),
         source: target.source_key.clone(),
@@ -408,14 +563,14 @@ fn delete_workbuddy(
         title: title.to_string(),
         files: moved,
         size,
-        rows: Some(rows),
+        rows,
         account: target.account.clone(),
     })
 }
 
 // ------------------------------------------------------------------ CodeBuddy
 
-fn delete_codebuddy(
+pub(crate) fn delete_codebuddy(
     roots: &Roots,
     target: &preview::Target,
     batch: &Path,
@@ -439,7 +594,18 @@ fn delete_codebuddy(
         }
     }
     let Some((ws_dir, session_dir)) = found else {
-        return Err(AppError::new("invalid", "会话目录已经不在了"));
+        // 目录已经不在了：和上面两种「客户端清过库」一样，索引残留而已。
+        // 报错只会让这一行永远删不掉，所以按「已清空」收下。
+        return Ok(Item {
+            kind: "codebuddy".into(),
+            source: target.source_key.clone(),
+            session_id: target.session_id.clone(),
+            title: title.to_string(),
+            files: Vec::new(),
+            size: 0,
+            rows: None,
+            account: target.account.clone(),
+        });
     };
 
     let index_path = ws_dir.join("index.json");
@@ -495,8 +661,7 @@ fn delete_codebuddy(
                 item.get("id").and_then(|v| v.as_str()) != Some(target.session_id.as_str())
             });
         }
-        write_json(&index_path, &value)
-            .map_err(|e| salvage(partial, e))?;
+        write_json(&index_path, &value).map_err(|e| salvage(partial, e))?;
     }
     let recent_path = ws_dir.join("recent.json");
     if let Some(Value::Array(mut list)) = read_json(&recent_path) {
@@ -505,8 +670,7 @@ fn delete_codebuddy(
             item.get("id").and_then(|v| v.as_str()) != Some(target.session_id.as_str())
         });
         if list.len() != before {
-            write_json(&recent_path, &Value::Array(list))
-                .map_err(|e| salvage(partial, e))?;
+            write_json(&recent_path, &Value::Array(list)).map_err(|e| salvage(partial, e))?;
         }
     }
 
@@ -528,7 +692,7 @@ fn delete_codebuddy(
 // ------------------------------------------------------------------ Qoder / ZCode
 
 /// 把会话相关的所有行（带 session_id 的表）导出成 JSON，然后删掉。
-fn delete_sqlite(
+pub(crate) fn delete_sqlite(
     roots: &Roots,
     target: &preview::Target,
     batch: &Path,
@@ -544,7 +708,7 @@ fn delete_sqlite(
         roots.zcode().join("cli").join("db").join("db.sqlite")
     };
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|e| AppError::new("sqlite", format!("打开会话库失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("打开会话库失败：{e}")))?;
     checkpoint(&conn)?;
 
     let tables = tables_with_column(&conn, "session_id");
@@ -571,35 +735,64 @@ fn delete_sqlite(
             dumped.insert(table.clone(), Value::Array(rows));
         }
     }
-    if parts.is_empty() && dumped.is_empty() {
-        return Err(AppError::new("invalid", "库里已经找不到这条会话"));
-    }
+    // 客户端已经清过库：索引里还留着这一行，但没有库行可删。和 workbuddy 一样，
+    // 这不是失败——清掉索引即可，否则「彻底删除」永远返回 0 条。
+    let ghost = parts.is_empty() && dumped.is_empty();
     if !parts.is_empty() {
         dumped.insert("part".into(), Value::Array(parts.clone()));
     }
 
     // 没有正文文件可搬，把这段 JSON 写进批次目录，恢复时读它
     let rel = format!("{}/{}/{}.json", kind, target.source_key, target.session_id);
-    let text = serde_json::to_string_pretty(&Value::Object(dumped.clone()))
-        .map_err(|e| AppError::new("io", format!("导出失败：{e}")))?;
-    let dest = batch.join(&rel);
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| AppError::new("io", format!("建目录失败：{e}")))?;
+    let mut size = 0i64;
+    let mut moved: Vec<String> = Vec::new();
+    if !ghost {
+        let text = serde_json::to_string_pretty(&Value::Object(dumped.clone()))
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("导出失败：{e}")))?;
+        let dest = batch.join(&rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| AppError::new(ErrorKind::Io, format!("建目录失败：{e}")))?;
+        }
+        std::fs::write(&dest, text.as_bytes())
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("写回收站失败：{e}")))?;
+        size = dest.metadata().map(|m| m.len() as i64).unwrap_or(0);
+        moved.push(rel.clone());
     }
-    std::fs::write(&dest, text.as_bytes())
-        .map_err(|e| AppError::new("io", format!("写回收站失败：{e}")))?;
-    let size = dest.metadata().map(|m| m.len() as i64).unwrap_or(0);
+    // ZCode 的会话还散落在 `cli/` 下（agents / artifacts / bash-startup / rollout），
+    // 光删库行它们会一直留在盘上——一并搬进批次，恢复时原样搬回
+    if kind == "zcode" {
+        for path in
+            crate::app::sessions::sources::others::zcode_artifacts(roots, &target.session_id)
+        {
+            let rest = path
+                .strip_prefix(roots.zcode())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if rest.is_empty() {
+                continue;
+            }
+            let art_rel = format!("{}/{}/{}", kind, target.source_key, rest);
+            size += trash::dir_size(&path);
+            trash::move_in(&path, batch, &art_rel).map_err(|e| {
+                AppError::new(
+                    ErrorKind::Io,
+                    format!("会话文件没能移进回收站：{}", e.message),
+                )
+            })?;
+            moved.push(art_rel);
+        }
+    }
 
-    // 导出 JSON 已落进批次目录：从这里开始任何一步失败都要把它记进清单，
-    // 否则它成了恢复界面看不到的孤儿
+    // 文件已落进批次目录：从这里开始任何一步失败都要把它们记进清单，
+    // 否则它们成了恢复界面看不到的孤儿
     let salvage = |partial: &mut Vec<Item>, e: AppError| {
         partial.push(Item {
             kind: kind.into(),
             source: target.source_key.clone(),
             session_id: target.session_id.clone(),
             title: title.to_string(),
-            files: vec![rel.clone()],
+            files: moved.clone(),
             size,
             rows: Some(Value::Object(dumped.clone())),
             account: target.account.clone(),
@@ -609,23 +802,40 @@ fn delete_sqlite(
     for part in &parts {
         if let Some(id) = part.get("id").and_then(|v| v.as_str()) {
             conn.execute("DELETE FROM part WHERE id = ?1", [id])
-                .map_err(|e| salvage(partial, AppError::new("sqlite", format!("删除消息片段失败：{e}"))))?;
+                .map_err(|e| {
+                    salvage(
+                        partial,
+                        AppError::new(ErrorKind::Sqlite, format!("删除消息片段失败：{e}")),
+                    )
+                })?;
         }
     }
-    for table in &tables {
+    if !ghost {
+        for table in &tables {
+            conn.execute(
+                &format!("DELETE FROM \"{table}\" WHERE session_id = ?1"),
+                [&target.session_id],
+            )
+            .map_err(|e| {
+                salvage(
+                    partial,
+                    AppError::new(ErrorKind::Sqlite, format!("删除 {table} 失败：{e}")),
+                )
+            })?;
+        }
         conn.execute(
-            &format!("DELETE FROM \"{table}\" WHERE session_id = ?1"),
+            &format!("DELETE FROM \"{main_table}\" WHERE {main_key} = ?1"),
             [&target.session_id],
         )
-        .map_err(|e| salvage(partial, AppError::new("sqlite", format!("删除 {table} 失败：{e}"))))?;
-    }
-    conn.execute(
-        &format!("DELETE FROM \"{main_table}\" WHERE {main_key} = ?1"),
-        [&target.session_id],
-    )
-    .map_err(|e| salvage(partial, AppError::new("sqlite", format!("删除会话行失败：{e}"))))?;
-    if let Err(e) = checkpoint(&conn) {
-        return Err(salvage(partial, e));
+        .map_err(|e| {
+            salvage(
+                partial,
+                AppError::new(ErrorKind::Sqlite, format!("删除会话行失败：{e}")),
+            )
+        })?;
+        if let Err(e) = checkpoint(&conn) {
+            return Err(salvage(partial, e));
+        }
     }
 
     Ok(Item {
@@ -633,20 +843,30 @@ fn delete_sqlite(
         source: target.source_key.clone(),
         session_id: target.session_id.clone(),
         title: title.to_string(),
-        files: vec![rel],
+        files: moved,
         size,
-        rows: Some(Value::Object(dumped)),
+        rows: if ghost {
+            None
+        } else {
+            Some(Value::Object(dumped))
+        },
         account: target.account.clone(),
     })
 }
 
 // ------------------------------------------------------------------ 恢复 / 清空
 
+/// 会话标题是用户输入，可能带换行：进日志 / 提示前压成一行，否则一条错误能把
+/// 日志撑成好几行，看起来像另一个问题。
+fn one_line(text: &str) -> String {
+    text.replace(['\r', '\n'], " ")
+}
+
 /// 清单是本地文件，但一份被截断/手改过的 manifest 不该能把文件写穿客户端目录：
 /// 相对路径里出现 `..` 直接拒绝。
 fn check_rel(rel: &str) -> Result<()> {
     if rel.split('/').any(|seg| seg == "..") {
-        return Err(AppError::new("invalid", "清单里的路径不合法"));
+        return Err(AppError::new(ErrorKind::Invalid, "清单里的路径不合法"));
     }
     Ok(())
 }
@@ -673,7 +893,7 @@ pub fn restore_from(
 ) -> Result<RestoreReport> {
     let dir = root.join(tag);
     let manifest = trash::read_manifest(&dir)
-        .ok_or_else(|| AppError::new("invalid", format!("找不到批次 {tag} 的清单")))?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, format!("找不到批次 {tag} 的清单")))?;
 
     let mut report = RestoreReport::default();
     let mut delete_report = DeleteReport::default();
@@ -686,14 +906,11 @@ pub fn restore_from(
     report.warnings.append(&mut delete_report.warnings);
 
     for item in &manifest.items {
-        let result = match item.kind.as_str() {
-            "workbuddy" => restore_workbuddy(roots, &dir, item),
-            "codebuddy" => restore_codebuddy(roots, &dir, item),
-            "qoder" => restore_sqlite(roots, item, "qoder"),
-            "zcode" => restore_sqlite(roots, item, "zcode"),
-            other => Err(AppError::new(
-                "unsupported",
-                format!("不认识的类型：{other}"),
+        let result = match super::backend::backend_for(&item.kind) {
+            Some(backend) => backend.restore(roots, &dir, item),
+            None => Err(AppError::new(
+                ErrorKind::Unsupported,
+                format!("不认识的类型：{}", item.kind),
             )),
         };
         match result {
@@ -713,13 +930,13 @@ pub fn restore_from(
     Ok(report)
 }
 
-fn restore_workbuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
+pub(crate) fn restore_workbuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
     let ep = wb::editions(roots)
         .into_iter()
         .find(|ep| ep.key == item.source)
-        .ok_or_else(|| AppError::new("invalid", "客户端目录不存在"))?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "客户端目录不存在"))?;
     let conn = Connection::open_with_flags(ep.db(), OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|e| AppError::new("sqlite", format!("打开会话库失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("打开会话库失败：{e}")))?;
     checkpoint(&conn)?;
 
     if let Some(rows) = item.rows.as_ref() {
@@ -740,14 +957,14 @@ fn restore_workbuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
         let dest = rel
             .split_once('/')
             .map(|(_, rest)| ep.root.join(rest))
-            .ok_or_else(|| AppError::new("invalid", "清单里的路径不对"))?;
+            .ok_or_else(|| AppError::new(ErrorKind::Invalid, "清单里的路径不对"))?;
         trash::move_out(dir, rel, &dest)?;
     }
     checkpoint(&conn)?;
     Ok(())
 }
 
-fn restore_codebuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
+pub(crate) fn restore_codebuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
     check_rel(&item.session_id)?;
     let workspace = item
         .rows
@@ -766,7 +983,7 @@ fn restore_codebuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
     let rel = item
         .files
         .first()
-        .ok_or_else(|| AppError::new("invalid", "清单里没有文件"))?;
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "清单里没有文件"))?;
     let dest = base.join(&item.session_id);
     trash::move_out(dir, rel, &dest)?;
 
@@ -796,18 +1013,18 @@ fn restore_codebuddy(roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
     Ok(())
 }
 
-fn restore_sqlite(roots: &Roots, item: &Item, kind: &str) -> Result<()> {
+pub(crate) fn restore_sqlite(roots: &Roots, dir: &Path, item: &Item, kind: &str) -> Result<()> {
     let path = if kind == "qoder" {
         roots.qoder(item.source == "qoder_intl").join("main.sqlite")
     } else {
         roots.zcode().join("cli").join("db").join("db.sqlite")
     };
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|e| AppError::new("sqlite", format!("打开会话库失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("打开会话库失败：{e}")))?;
     checkpoint(&conn)?;
 
     let Some(Value::Object(tables)) = item.rows.as_ref() else {
-        return Err(AppError::new("invalid", "清单里没有导出的行"));
+        return Err(AppError::new(ErrorKind::Invalid, "清单里没有导出的行"));
     };
     // 主表先插，其余表后面跟着
     let mut order: Vec<&String> = tables.keys().collect();
@@ -829,11 +1046,34 @@ fn restore_sqlite(roots: &Roots, item: &Item, kind: &str) -> Result<()> {
         }
     }
     checkpoint(&conn)?;
+
+    // 库行之外还有落盘的会话文件（ZCode 的 cli/agents、rollout 等）：
+    // 清单里的相对路径形如 `zcode/zcode/cli/agents/<id>`，导出用的 `<id>.json` 不在此列
+    for rel in &item.files {
+        check_rel(rel)?;
+        let Some(rest) = rel.splitn(3, '/').nth(2) else {
+            continue;
+        };
+        if !rest.starts_with("cli/") {
+            continue;
+        }
+        let dest = if kind == "qoder" {
+            roots.qoder(item.source == "qoder_intl").join(rest)
+        } else {
+            roots.zcode().join(rest)
+        };
+        trash::move_out(dir, rel, &dest)?;
+    }
     Ok(())
 }
 
 pub fn purge(tag: &str) -> Result<i64> {
-    trash::purge(&trash::root(), tag)
+    purge_into(&trash::root(), tag)
+}
+
+/// 回收站根可注入（测试用临时目录，别碰真实 `data/trash`）。
+pub fn purge_into(root: &Path, tag: &str) -> Result<i64> {
+    trash::purge(root, tag)
 }
 
 pub fn list() -> Vec<Manifest> {
@@ -852,7 +1092,7 @@ pub fn checkpoint(conn: &Connection) -> Result<()> {
         .or_else(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => Ok(()),
             other => Err(AppError::new(
-                "sqlite",
+                ErrorKind::Sqlite,
                 format!("wal_checkpoint 失败：{other}"),
             )),
         })
@@ -872,11 +1112,11 @@ fn dump_rows(conn: &Connection, table: &str, key: &str, value: &str) -> Result<V
     let names: Vec<String> = stmt.column_names().iter().map(|n| n.to_string()).collect();
     let mut rows = stmt
         .query([value])
-        .map_err(|e| AppError::new("sqlite", format!("查询 {table} 失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("查询 {table} 失败：{e}")))?;
     let mut out = Vec::new();
     while let Some(row) = rows
         .next()
-        .map_err(|e| AppError::new("sqlite", format!("读 {table} 失败：{e}")))?
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("读 {table} 失败：{e}")))?
     {
         let mut map = Map::new();
         for (index, name) in names.iter().enumerate() {
@@ -917,11 +1157,11 @@ fn dump_parts(conn: &Connection, session_id: &str) -> Result<Vec<Value>> {
     let names: Vec<String> = stmt.column_names().iter().map(|n| n.to_string()).collect();
     let mut rows = stmt
         .query([session_id])
-        .map_err(|e| AppError::new("sqlite", format!("查询 part 失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("查询 part 失败：{e}")))?;
     let mut out = Vec::new();
     while let Some(row) = rows
         .next()
-        .map_err(|e| AppError::new("sqlite", format!("读 part 失败：{e}")))?
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("读 part 失败：{e}")))?
     {
         let mut map = Map::new();
         for (index, name) in names.iter().enumerate() {
@@ -963,7 +1203,7 @@ fn tables_with_column(conn: &Connection, column: &str) -> Vec<String> {
 fn insert_json_row(conn: &Connection, table: &str, row: &Map<String, Value>) -> Result<()> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info(\"{table}\")"))
-        .map_err(|e| AppError::new("sqlite", format!("读 {table} 结构失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("读 {table} 结构失败：{e}")))?;
     let columns: Vec<String> = stmt
         .query_map([], |r| r.get::<_, String>(1))
         .map(|rows| rows.flatten().collect())
@@ -993,7 +1233,7 @@ fn insert_json_row(conn: &Connection, table: &str, row: &Map<String, Value>) -> 
         .map(|name| json_to_sql(&row[*name]))
         .collect::<Result<Vec<_>>>()?;
     conn.execute(&sql, rusqlite::params_from_iter(values))
-        .map_err(|e| AppError::new("sqlite", format!("恢复 {table} 行失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("恢复 {table} 行失败：{e}")))?;
     Ok(())
 }
 
@@ -1018,7 +1258,10 @@ fn json_to_sql(value: &Value) -> Result<rusqlite::types::Value> {
                     base64::engine::general_purpose::STANDARD
                         .decode(text)
                         .map_err(|e| {
-                            AppError::new("invalid", format!("清单里的 BLOB 不是合法 base64：{e}"))
+                            AppError::new(
+                                ErrorKind::Invalid,
+                                format!("清单里的 BLOB 不是合法 base64：{e}"),
+                            )
                         })?,
                 ),
                 None => Sql::Text(value.to_string()),
@@ -1035,6 +1278,6 @@ fn read_json(path: &Path) -> Option<Value> {
 
 fn write_json(path: &Path, value: &Value) -> Result<()> {
     let text = serde_json::to_string_pretty(value)
-        .map_err(|e| AppError::new("io", format!("序列化失败：{e}")))?;
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("序列化失败：{e}")))?;
     crate::app::fsx::write_atomic(path, text.as_bytes())
 }

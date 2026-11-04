@@ -14,10 +14,10 @@
 use super::{Provider, ScannedAccount, Sink, SwitchOutcome};
 use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::AccountIdentity;
-use crate::app::error::{AppError, Result};
+use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, process, secret};
-use crate::types::{ActionResult, CreditLot, CreditSnapshot, StatusResult, trim_f64};
+use crate::types::{trim_f64, ActionResult, CreditLot, CreditSnapshot, StatusResult};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key};
 use async_trait::async_trait;
@@ -97,7 +97,7 @@ impl QoderProvider {
         let blob = std::fs::read(&auth_file)?;
         let plain = secret::chromium_open(&key, &blob)?;
         let auth: Value = serde_json::from_slice(&plain)
-            .map_err(|e| AppError::new("invalid", format!("登录态不是 JSON：{e}")))?;
+            .map_err(|e| AppError::new(ErrorKind::Invalid, format!("登录态不是 JSON：{e}")))?;
         Ok(Some((auth, key)))
     }
 
@@ -105,10 +105,10 @@ impl QoderProvider {
     fn seal(key: &Key<Aes256Gcm>, plain: &[u8]) -> Result<Vec<u8>> {
         let mut nonce = [0u8; 12];
         getrandom::getrandom(&mut nonce)
-            .map_err(|e| AppError::new("crypto", format!("取随机数失败：{e}")))?;
+            .map_err(|e| AppError::new(ErrorKind::Crypto, format!("取随机数失败：{e}")))?;
         let ciphertext = Aes256Gcm::new(key)
             .encrypt(aes_gcm::Nonce::from_slice(&nonce), plain)
-            .map_err(|_| AppError::new("crypto", "AES-GCM 加密失败"))?;
+            .map_err(|_| AppError::new(ErrorKind::Crypto, "AES-GCM 加密失败"))?;
         let mut blob = b"v10".to_vec();
         blob.extend_from_slice(&nonce);
         blob.extend_from_slice(&ciphertext);
@@ -190,21 +190,21 @@ pub fn switch_to(
     backup_dir: &Path,
 ) -> Result<SwitchOutcome> {
     let Some(profile) = provider.profile_dir() else {
-        return Err(AppError::new("io", "没有找到 Qoder 的客户端目录"));
+        return Err(AppError::new(ErrorKind::Io, "没有找到 Qoder 的客户端目录"));
     };
     if !profile.exists() {
-        return Err(AppError::new("io", "没有找到 Qoder 的客户端目录"));
+        return Err(AppError::new(ErrorKind::Io, "没有找到 Qoder 的客户端目录"));
     }
     // 先判凭据：缺 refresh token 时写回去只会立刻被登出，不必让用户关客户端
     if cred.refresh().is_empty() {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             "这个账号没有 refresh token，写回去会被立刻登出",
         ));
     }
     if provider.client_running() {
         return Err(AppError::new(
-            "client_running",
+            ErrorKind::ClientRunning,
             "请先关闭 Qoder 客户端再切换",
         ));
     }
@@ -212,7 +212,7 @@ pub fn switch_to(
     let path = profile.join("auth.v1.dat");
     let local_state = profile.join("Local State");
     if !path.exists() || !local_state.exists() {
-        return Err(AppError::new("io", "没有找到 Qoder 的登录态文件"));
+        return Err(AppError::new(ErrorKind::Io, "没有找到 Qoder 的登录态文件"));
     }
 
     // 先解出当前内容：既是模板，也是回滚依据
@@ -231,7 +231,7 @@ pub fn switch_to(
         == Some(account_id)
     {
         return Err(AppError::new(
-            "invalid",
+            ErrorKind::Invalid,
             "这个账号就是客户端当前登录的账号，不需要切换",
         ));
     }
@@ -253,7 +253,7 @@ pub fn switch_to(
     if !ok {
         std::fs::copy(&backup, &path)?;
         return Err(AppError::new(
-            "write_failed",
+            ErrorKind::WriteFailed,
             "写入后校验失败，已回滚到切换前的登录态",
         ));
     }
@@ -290,7 +290,7 @@ impl Provider for QoderProvider {
         let token = auth
             .get("token")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::new("invalid", "登录态里没有 token"))?;
+            .ok_or_else(|| AppError::new(ErrorKind::Invalid, "登录态里没有 token"))?;
         let user = auth.get("user").cloned().unwrap_or_default();
         let name = user
             .get("name")
@@ -582,10 +582,16 @@ impl QoderProvider {
             .send(HttpRequest::get(url).headers(&self.headers(cred).await))
             .await?;
         if resp.status == 401 {
-            return Err(AppError::new("provider", "HTTP 401（登录态可能过期）"));
+            return Err(AppError::new(
+                ErrorKind::Provider,
+                "HTTP 401（登录态可能过期）",
+            ));
         }
         if !resp.is_ok() {
-            return Err(AppError::new("provider", format!("HTTP {}", resp.status)));
+            return Err(AppError::new(
+                ErrorKind::Provider,
+                format!("HTTP {}", resp.status),
+            ));
         }
         resp.json()
     }
@@ -779,7 +785,6 @@ fn value_text(value: &Value) -> String {
         other => other.to_string(),
     }
 }
-
 
 /// 设备风控头。签到活动接口从 2026-09-26 起要求携带 `Cosy-Machine*`，
 /// 否则服务端不下发每日活动。设备标识不伪造，直接跑客户端自带的
