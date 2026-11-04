@@ -121,6 +121,38 @@ pub fn switch(db: &Db, roots: &Roots, iid: &str) -> Result<SwitchResult> {
     })
 }
 
+/// 用 WorkBuddy 国内版账号的档案切换 CodeBuddy 家族客户端（软件 / IDEA 插件）的登录。
+///
+/// 三端同号、但切换分开做：这个入口只动目标客户端的凭证落点，不碰 WorkBuddy
+/// 自己的登录态（那走上面的 `switch`）。只支持国内版——国际版账号没有对应档案形态。
+pub fn switch_codebuddy(db: &Db, roots: &Roots, iid: &str, target: &str) -> Result<SwitchResult> {
+    let identity = repo::identity(db, iid)?
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "账号不存在，可能已被删除"))?;
+    if identity.platform != "workbuddy" || identity.account_id.ends_with("@intl") {
+        return Err(AppError::new(
+            ErrorKind::Invalid,
+            "只有 WorkBuddy 国内版账号支持切换 CodeBuddy 系客户端",
+        ));
+    }
+    let target = providers::codebuddy::Target::parse(target)?;
+    let uid = identity.account_id.trim_end_matches("@intl");
+    let backup_dir = paths::data_dir().join("backups").join("switch");
+    let outcome =
+        providers::codebuddy::switch_target(roots, uid, &identity.name, target, &backup_dir)?;
+    crate::app::log::log(
+        crate::app::log::Level::Info,
+        "accounts",
+        format!(
+            "切换 CodeBuddy 系登录：{} → {}",
+            identity.name, outcome.message
+        ),
+    );
+    Ok(SwitchResult {
+        message: outcome.message,
+        backup: outcome.backup.map(|p| p.display().to_string()),
+    })
+}
+
 /// 拉起客户端（切换前关过、或切换完该以新账号进入）。
 /// 找不到 exe 或启动失败都只落日志，不影响「登录态已经切好」这个结论。
 fn start_client(key: &str) -> bool {

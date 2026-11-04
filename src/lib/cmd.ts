@@ -57,6 +57,7 @@ export interface CmdArgs {
   account_scan: void;
   account_login_start: { platform: string };
   account_switch: { iid: string };
+  account_switch_codebuddy: { iid: string; target: 'software' | 'idea' };
   account_restore_sessions: { iid: string };
   account_uid: { iid: string };
   account_current: void;
@@ -128,6 +129,7 @@ export interface CmdReturn {
   account_scan: ScanReport;
   account_login_start: LoginStart;
   account_switch: SwitchResult;
+  account_switch_codebuddy: SwitchResult;
   account_restore_sessions: RestoreOutcome;
   account_uid: string;
   account_current: string[];

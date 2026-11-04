@@ -17,6 +17,7 @@ use crate::app::net::Http;
 use crate::types::{ActionResult, CreditSnapshot, StatusResult};
 use async_trait::async_trait;
 
+pub mod codebuddy;
 pub mod qoder;
 pub mod trae;
 pub mod workbuddy;

@@ -154,6 +154,21 @@ pub fn chromium_open(key: &aes_gcm::Key<aes_gcm::Aes256Gcm>, blob: &[u8]) -> Res
     })
 }
 
+/// 把明文重新封成 `v10` 信封（与 `chromium_open` 对称）。nonce 用系统 CSPRNG。
+pub fn chromium_seal(key: &aes_gcm::Key<aes_gcm::Aes256Gcm>, plain: &[u8]) -> Result<Vec<u8>> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    let mut nonce = [0u8; 12];
+    getrandom::getrandom(&mut nonce)
+        .map_err(|e| AppError::new(ErrorKind::Crypto, format!("取随机数失败：{e}")))?;
+    let ciphertext = aes_gcm::Aes256Gcm::new(key)
+        .encrypt(aes_gcm::Nonce::from_slice(&nonce), plain)
+        .map_err(|_| AppError::new(ErrorKind::Crypto, "AES-GCM 加密失败"))?;
+    let mut blob = b"v10".to_vec();
+    blob.extend_from_slice(&nonce);
+    blob.extend_from_slice(&ciphertext);
+    Ok(blob)
+}
+
 // ---------------------------------------------------------------- 测试
 
 #[cfg(test)]

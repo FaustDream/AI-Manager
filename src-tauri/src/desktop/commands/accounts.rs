@@ -160,6 +160,26 @@ pub async fn account_switch(
         .map_err(err_text)
 }
 
+/// 用 WorkBuddy 国内版档案切换 CodeBuddy 软件 / IDEA 插件的登录。
+/// `target`：`"software"`（CodeBuddy 软件）或 `"idea"`（IDEA 插件）。
+/// 与 `account_switch` 分开：三端同号但一端一按钮，切谁只动谁。
+#[tauri::command]
+
+pub async fn account_switch_codebuddy(
+    state: State<'_, AppState>,
+    iid: String,
+    target: String,
+) -> std::result::Result<crate::app::accounts::SwitchResult, String> {
+    let db = state.db.clone();
+    let roots = state.sessions.roots().clone();
+    crate::app::runtime::blocking(move || {
+        crate::app::accounts::switch_codebuddy(&db, &roots, &iid, &target)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)
+}
+
 /// 把已有会话按引用关联到当前登录账号（只有 WorkBuddy 有本机会话库）。
 /// 会写客户端库：写前自动备份，客户端没关就拒绝执行。
 #[tauri::command]
