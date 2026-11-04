@@ -1,77 +1,20 @@
 // 技能与 MCP 分发：技能库部署/移除/导入、MCP 粘贴导入/移除、平台目标一览。
 // 冲突不静默覆盖：deploy 需要 overwrite 确认，后端已兜底，前端给「覆盖」入口。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { SubTabs, TargetPicker } from './parts';
+import { ImportDialog } from './import-dialog';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { errText } from '@/lib/ipc';
 import { fmtSize } from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
-import { Checkbox, Select, SkeletonRows, StateBlock } from '@/components/ui/form';
+import { SkeletonRows, StateBlock } from '@/components/ui/form';
 import { DataTable } from '@/components/ui/table';
 import { Notice, Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import type { HubSnapshot, Step } from '@/lib/types';
-
-function TargetPicker({
-  targets,
-  picked,
-  onToggle,
-  onAll,
-  locked,
-  lockedLabel,
-  hints,
-}: {
-  targets: HubSnapshot['targets'];
-  picked: Set<string>;
-  onToggle: (key: string) => void;
-  /** 只回传可选项的 key：已部署的平台不参与全选 */
-  onAll: (keys: string[]) => void;
-  /** 已部署的平台：显示为已勾选且不可再选，避免重复部署 */
-  locked?: Set<string>;
-  /** 锁定项的角标文案（技能用「已部署」、MCP 用「已存在」） */
-  lockedLabel?: string;
-  /** 未锁定但需要提示的平台（例如「待更新」） */
-  hints?: Record<string, string>;
-}) {
-  const selectable = targets.filter((t) => !locked?.has(t.key));
-  const pickedCount = selectable.filter((t) => picked.has(t.key)).length;
-  const all = selectable.length > 0 && pickedCount === selectable.length;
-  return (
-    <div>
-      {/* 全选属于对话框里的平台选择，不是技能表的行选择 */}
-      <label className="flex items-center gap-1.5 text-xs text-muted">
-        <Checkbox checked={all} onChange={() => onAll(all ? [] : selectable.map((t) => t.key))} />
-        全选（{pickedCount}/{selectable.length}）
-      </label>
-      {/* 双列选项卡：点击面大、选中态描边，比一排小 checkbox 好点也好扫 */}
-      <div className="mt-2 grid grid-cols-2 gap-2">
-        {targets.map((t) => {
-          const isLocked = locked?.has(t.key) ?? false;
-          const checked = isLocked || picked.has(t.key);
-          return (
-            <label
-              key={t.key}
-              className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
-                isLocked
-                  ? 'cursor-not-allowed border-line opacity-70'
-                  : `cursor-pointer ${checked ? 'border-accent bg-hover font-medium' : 'border-line hover:bg-hover'}`
-              }`}
-            >
-              <Checkbox checked={checked} disabled={isLocked} onChange={() => onToggle(t.key)} />
-              <span className="min-w-0 flex-1 truncate">{t.label}</span>
-              {isLocked && <span className="shrink-0 text-[10px] text-muted">{lockedLabel ?? '已部署'}</span>}
-              {!isLocked && hints?.[t.key] && (
-                <span className="shrink-0 text-[10px] text-warn">{hints[t.key]}</span>
-              )}
-            </label>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 function reportText(steps: Step[]): string {
   return steps
@@ -92,32 +35,6 @@ const CODE: Record<string, string> = {
 };
 
 /** 子标签（技能 / MCP）：与顶部主标签同款式，但更小一档。 */
-function SubTabs({
-  value,
-  onChange,
-  items,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  items: { key: string; label: string }[];
-}) {
-  return (
-    <div className="flex items-center gap-1">
-      {items.map((it) => (
-        <button
-          key={it.key}
-          className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
-            value === it.key ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
-          }`}
-          onClick={() => onChange(it.key)}
-        >
-          {it.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export default function HubPage() {
   const qc = useQueryClient();
   const hub = useQuery<HubSnapshot>({
@@ -808,153 +725,3 @@ export default function HubPage() {
   );
 }
 
-function ImportDialog({
-  open,
-  onClose,
-  targets,
-}: {
-  open: boolean;
-  onClose: () => void;
-  targets: HubSnapshot['targets'];
-}) {
-  const qc = useQueryClient();
-  const [source, setSource] = useState('');
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [importing, setImporting] = useState(false);
-
-  // 打开时自动落到「有可导入技能」的那个平台，并默认勾上全部
-  useEffect(() => {
-    if (!open) return;
-    const first =
-      targets.find((t) => t.installed.some((s) => !s.in_library)) ?? targets[0];
-    setSource(first?.key ?? '');
-    setPicked(new Set(first?.installed.filter((s) => !s.in_library).map((s) => s.name) ?? []));
-  }, [open, targets]);
-
-  const current = targets.find((t) => t.key === source);
-  const skills = current?.installed ?? [];
-  const importable = skills.filter((s) => !s.in_library);
-  const allPicked = importable.length > 0 && importable.every((s) => picked.has(s.name));
-
-  const switchTarget = (key: string) => {
-    setSource(key);
-    const next = targets.find((t) => t.key === key);
-    setPicked(new Set(next?.installed.filter((s) => !s.in_library).map((s) => s.name) ?? []));
-  };
-
-  const toggle = (name: string) => {
-    setPicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  };
-
-  const runImport = async () => {
-    setImporting(true);
-    try {
-      const report = await runCmd('hub_skill_import_many', {
-        target: source,
-        names: [...picked],
-      });
-      if (report === undefined) return;
-      toast(
-        report.errors.length
-          ? `${report.imported.length} 个已入库，${report.errors.length} 个失败：${report.errors[0]}`
-          : `已导入技能库：${report.imported.join('、')}`,
-      );
-      qc.invalidateQueries({ queryKey: ['hub'] });
-      onClose();
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  return (
-    <Dialog
-      open={open}
-      title="从软件收进技能库"
-      subtitle="把各软件里已有、但库里没有的技能收进来，之后就能统一分发"
-      onClose={onClose}
-      wide
-      footer={
-        <>
-          <Button onClick={onClose}>取消</Button>
-          <Button
-            variant="primary"
-            loading={importing}
-            disabled={picked.size === 0 || importing}
-            onClick={() => void runImport()}
-          >
-            导入 {picked.size} 个
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3 text-sm">
-        <label className="flex items-center gap-2">
-          来源软件
-          <Select value={source} onChange={(e) => switchTarget(e.target.value)}>
-            {targets.map((t) => {
-              const count = t.installed.filter((s) => !s.in_library).length;
-              return (
-                <option key={t.key} value={t.key}>
-                  {t.label}
-                  {count > 0 ? `（${count} 个可导入）` : '（无可导入）'}
-                </option>
-              );
-            })}
-          </Select>
-        </label>
-
-        {skills.length === 0 ? (
-          <StateBlock
-            kind="empty"
-            title="这个软件没有技能目录"
-            detail="它可能还没装过技能，或者路径不存在。"
-          />
-        ) : (
-          <>
-            <div className="flex items-center justify-between text-xs text-muted">
-              <span>
-                {importable.length} 个可导入，{skills.length - importable.length} 个已在库里
-              </span>
-              <button
-                type="button"
-                className="cursor-pointer text-accent hover:underline disabled:text-muted disabled:no-underline"
-                disabled={importable.length === 0}
-                onClick={() =>
-                  setPicked(allPicked ? new Set() : new Set(importable.map((s) => s.name)))
-                }
-              >
-                {allPicked ? '全不选' : '全选'}
-              </button>
-            </div>
-            <div className="max-h-64 overflow-auto rounded-md border border-line">
-              {skills.map((skill) => (
-                <label
-                  key={skill.name}
-                  className={`flex items-center gap-2 border-b border-line px-2.5 py-1.5 last:border-b-0 ${
-                    skill.in_library ? 'opacity-55' : 'cursor-pointer hover:bg-hover'
-                  }`}
-                >
-                  <Checkbox
-                    checked={skill.in_library || picked.has(skill.name)}
-                    disabled={skill.in_library}
-                    onChange={() => toggle(skill.name)}
-                  />
-                  <span className="min-w-0 flex-1 truncate">{skill.name}</span>
-                  {skill.in_library && <Tag tone="muted">已在库</Tag>}
-                </label>
-              ))}
-            </div>
-            <p className="text-xs text-muted">
-              已在库的同名技能会被跳过，不会覆盖库里现有版本。
-            </p>
-          </>
-        )}
-      </div>
-    </Dialog>
-  );
-}
