@@ -1,0 +1,65 @@
+# v2 的发布流水线：推 v* 标签即构建 1.8 起的双产物并挂到 GitHub Release。
+#
+# 产物：
+#   AI-Manager-<ver>-windows-x64-setup.exe   per-user 安装包（免管理员，卸载保留 data\）
+#   AI-Manager-<ver>-windows-x64-portable.zip 免安装 zip（解压即用）
+#
+# 版本号以 packaging/nsis/ai-manager.nsi 的 PRODUCT_VERSION 为准（与 Cargo.toml /
+# tauri.conf.json / package.json 四处一致），打 tag 前先改齐再推。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建前端（dist 是 tauri build 的 frontendDist）
+        run: npm run build
+
+      # custom-protocol 必须显式带上：否则 release exe 去连 devUrl，用户看到白屏
+      - name: 构建 release 可执行
+        run: cargo build --release --features custom-protocol
+        working-directory: src-tauri
+
+      - name: 打 per-user 安装包
+        run: |
+          choco install nsis -y --no-progress
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /INPUTCHARSET UTF8 packaging\nsis\ai-manager.nsi
+
+      - name: 打免安装 zip
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          $stage = Join-Path $env:RUNNER_TEMP "stage-$ver"
+          New-Item -ItemType Directory $stage | Out-Null
+          Copy-Item src-tauri\target\release\ai-manager.exe $stage
+          Copy-Item packaging\nsis\README.txt $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath "release\AI-Manager-$ver-windows-x64-portable.zip" -Force
+
+      - name: 挂到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.exe
+            release/*.zip

@@ -14,6 +14,7 @@ use ai_manager::app::clients::ClientConn;
 use ai_manager::app::db::Db;
 use ai_manager::contracts::*;
 use ai_manager::types::*;
+use chrono::TimeZone;
 use support::*;
 
 // ---------------------------------------------------------------- 契约 1
@@ -443,13 +444,43 @@ fn contract_17_display_output_masks_phone_and_never_shows_iid() {
 
 // ---------------------------------------------------------------- 契约 18
 #[test]
-fn contract_18_time_rendered_in_local_zone() {
-    let dt = chrono::DateTime::parse_from_rfc3339("2026-10-30T14:00:00Z")
-        .unwrap()
-        .with_timezone(&chrono::Local);
-    let rendered = render_local(dt);
-    // +08:00 下应为 22:00；若仍是 14:00 说明没转本地时区
-    assert_ne!(rendered, "10-30 14:00", "时间必须按本地时区显示");
+fn contract_18_time_crosses_ipc_as_machine_readable() {
+    // 「按本地时区显示」是 UI 层的事：前端 src/lib/format.ts 的 fmtTime 由 vitest
+    // 固定时区验证（node 侧可用 TZ 环境变量，结果与 runner 时区无关）。
+    // 后端这条契约的是边界：载荷里只准出现带偏移的 RFC3339，不准出现展示文本。
+    let row = SessionRow {
+        kind: "workbuddy".into(),
+        source_key: "cn".into(),
+        source_label: "WorkBuddy CN".into(),
+        account: "u1".into(),
+        account_label: "测试账号".into(),
+        session_id: "s1".into(),
+        title: "标题".into(),
+        project: "项目".into(),
+        cwd: "C:/project".into(),
+        last_at: Some(
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, 30, 22, 0, 0)
+                .single()
+                .unwrap(),
+        ),
+        msgs: Some(3),
+        size: Some(1024),
+        state: SessionState::Visible,
+        has_body: true,
+    };
+    let value = serde_json::to_value(&row).unwrap();
+    let last_at = value["last_at"]
+        .as_str()
+        .expect("last_at 必须序列化成时间戳字符串");
+    assert!(
+        last_at.contains('T') && (last_at.contains('+') || last_at.ends_with('Z')),
+        "必须是带时区偏移的 RFC3339，而不是展示文本：{last_at}"
+    );
+    assert!(
+        !last_at.contains("-30 22:00"),
+        "后端不得预格式化时间（展示归 UI 的 fmtTime）：{last_at}"
+    );
 }
 
 // ---------------------------------------------------------------- 契约 19

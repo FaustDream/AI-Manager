@@ -19,33 +19,55 @@ function TargetPicker({
   picked,
   onToggle,
   onAll,
+  locked,
+  lockedLabel,
+  hints,
 }: {
   targets: HubSnapshot['targets'];
   picked: Set<string>;
   onToggle: (key: string) => void;
-  onAll: (all: boolean) => void;
+  /** 只回传可选项的 key：已部署的平台不参与全选 */
+  onAll: (keys: string[]) => void;
+  /** 已部署的平台：显示为已勾选且不可再选，避免重复部署 */
+  locked?: Set<string>;
+  /** 锁定项的角标文案（技能用「已部署」、MCP 用「已存在」） */
+  lockedLabel?: string;
+  /** 未锁定但需要提示的平台（例如「待更新」） */
+  hints?: Record<string, string>;
 }) {
-  const all = targets.length > 0 && picked.size === targets.length;
+  const selectable = targets.filter((t) => !locked?.has(t.key));
+  const pickedCount = selectable.filter((t) => picked.has(t.key)).length;
+  const all = selectable.length > 0 && pickedCount === selectable.length;
   return (
     <div>
       {/* 全选属于对话框里的平台选择，不是技能表的行选择 */}
       <label className="flex items-center gap-1.5 text-xs text-muted">
-        <Checkbox checked={all} onChange={() => onAll(!all)} />
-        全选（{picked.size}/{targets.length}）
+        <Checkbox checked={all} onChange={() => onAll(all ? [] : selectable.map((t) => t.key))} />
+        全选（{pickedCount}/{selectable.length}）
       </label>
       {/* 双列选项卡：点击面大、选中态描边，比一排小 checkbox 好点也好扫 */}
       <div className="mt-2 grid grid-cols-2 gap-2">
-        {targets.map((t) => (
-          <label
-            key={t.key}
-            className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
-              picked.has(t.key) ? 'border-accent bg-hover font-medium' : 'border-line hover:bg-hover'
-            }`}
-          >
-            <Checkbox checked={picked.has(t.key)} onChange={() => onToggle(t.key)} />
-            {t.label}
-          </label>
-        ))}
+        {targets.map((t) => {
+          const isLocked = locked?.has(t.key) ?? false;
+          const checked = isLocked || picked.has(t.key);
+          return (
+            <label
+              key={t.key}
+              className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
+                isLocked
+                  ? 'cursor-not-allowed border-line opacity-70'
+                  : `cursor-pointer ${checked ? 'border-accent bg-hover font-medium' : 'border-line hover:bg-hover'}`
+              }`}
+            >
+              <Checkbox checked={checked} disabled={isLocked} onChange={() => onToggle(t.key)} />
+              <span className="min-w-0 flex-1 truncate">{t.label}</span>
+              {isLocked && <span className="shrink-0 text-[10px] text-muted">{lockedLabel ?? '已部署'}</span>}
+              {!isLocked && hints?.[t.key] && (
+                <span className="shrink-0 text-[10px] text-warn">{hints[t.key]}</span>
+              )}
+            </label>
+          );
+        })}
       </div>
     </div>
   );
@@ -162,21 +184,6 @@ export default function HubPage() {
       
     });
 
-  const removeSkill = () =>
-    runBusy('remove', async () => {
-      if (!deployName) return;
-        const report = await runCmd('hub_skill_remove', {
-          name: deployName,
-          targets: [...picked],
-        });
-
-        if (report === undefined) return;
-        toast(reportText(report.steps));
-        setDeployName(null);
-        refresh();
-      
-    });
-
   const removeMcp = (name: string, keys: string[]) =>
     runBusy(`mcp-remove:${name}`, async () => {
       
@@ -278,7 +285,10 @@ export default function HubPage() {
 
           <div className={pane === 'skills' ? 'rounded-lg border border-line bg-card p-3' : 'hidden'}>
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-semibold">技能库（{snap.skills.length}）</h2>
+              <h2 className="text-sm font-semibold">
+                技能库（{snap.skills.length}）
+                <span className="ml-2 text-xs font-normal text-muted">移除请到对应平台页</span>
+              </h2>
               <span className="flex items-center gap-3">
                 {/* 图例：点阵颜色不单独表意（悬停有完整文字提示） */}
                 <span className="flex items-center gap-3 text-xs text-muted">
@@ -379,7 +389,10 @@ export default function HubPage() {
           </div>
 
           <div className={pane === 'mcp' ? 'rounded-lg border border-line bg-card p-3' : 'hidden'}>
-            <h2 className="mb-2 text-sm font-semibold">MCP（{snap.mcp.length}）</h2>
+            <h2 className="mb-2 text-sm font-semibold">
+              MCP（{snap.mcp.length}）
+              <span className="ml-2 text-xs font-normal text-muted">移除请到对应平台页</span>
+            </h2>
             <DataTable
               dense
               columns={[
@@ -427,18 +440,6 @@ export default function HubPage() {
                       >
                         部署
                       </Button>
-                      {!row.foreign && (
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          onClick={() => removeMcp(row.name, [...picked])}
-                          loading={busy === `mcp-remove:${row.name}`}
-                          disabled={!!busy || picked.size === 0}
-                          title="先在上方平台标签里选中要移除的平台"
-                        >
-                          移除
-                        </Button>
-                      )}
                     </span>
                   ),
                 },
@@ -668,7 +669,9 @@ export default function HubPage() {
         </>
       )}
 
-      {/* 部署对话框：选平台 → 无冲突直接写；冲突时给「覆盖」确认（契约 16） */}
+      {/* 部署对话框：选平台 → 无冲突直接写；冲突时给「覆盖」确认（契约 16）。
+          已部署（synced）的平台锁成「已勾选且不可改」，避免重复部署；
+          移除不放在这里——到对应平台页的行内按钮做，部署与移除不再混在一起。 */}
       <Dialog
         open={deployName !== null}
         title={`部署「${deployName ?? ''}」到平台`}
@@ -693,38 +696,36 @@ export default function HubPage() {
           targets={snap.targets}
           picked={picked}
           onToggle={(key) => toggle(picked, key, setPicked)}
-          onAll={(all) =>
-            setPicked(all ? new Set(snap.targets.map((t) => t.key)) : new Set())
+          onAll={(keys) => setPicked(new Set(keys))}
+          locked={
+            new Set(
+              (snap.skills.find((s) => s.name === deployName)?.states ?? [])
+                .filter(([, st]) => st === 'synced')
+                .map(([k]) => k),
+            )
           }
+          hints={Object.fromEntries(
+            (snap.skills.find((s) => s.name === deployName)?.states ?? [])
+              .filter(([, st]) => st === 'stale')
+              .map(([k]) => [k, '待更新']),
+          )}
         />
         <p className="mt-3 text-xs text-muted">
-          部署会把库里的技能目录复制到各平台的技能目录；目标已有同名但内容不同的副本时报冲突，需在结果里确认覆盖。
+          已部署的平台已勾选且不可重复选择；部署会把库里的技能目录复制到其余平台，目标已有同名但内容不同的副本时报冲突。
         </p>
 
-        {/* 次级动作与主路径分层：覆盖/移除是例外操作，收进分隔线下的次级区 */}
+        {/* 覆盖是例外操作，收进分隔线下的次级区 */}
         <div className="mt-4 border-t border-line pt-3">
-          <p className="mb-2 text-xs font-medium text-muted">选中平台的其他操作</p>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="danger"
-              onClick={() => deploy(true)}
-              disabled={picked.size === 0 || !!busy}
-              loading={busy === 'deploy'}
-            >
-              强制覆盖部署
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={picked.size === 0 || !!busy}
-              loading={busy === 'remove'}
-              onClick={removeSkill}
-            >
-              从选中平台移除
-            </Button>
-          </div>
-          <p className="mt-1.5 text-xs text-muted">移除的副本先进回收站，可在会话页的回收站找回。</p>
+          <p className="mb-2 text-xs text-muted">目标已有同名但内容不同的副本时，可强制覆盖：</p>
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() => deploy(true)}
+            disabled={picked.size === 0 || !!busy}
+            loading={busy === 'deploy'}
+          >
+            强制覆盖部署
+          </Button>
         </div>
       </Dialog>
 
@@ -765,9 +766,7 @@ export default function HubPage() {
             targets={snap.targets}
             picked={mcpTargets}
             onToggle={(key) => toggle(mcpTargets, key, setMcpTargets)}
-            onAll={(all) =>
-              setMcpTargets(all ? new Set(snap.targets.map((t) => t.key)) : new Set())
-            }
+            onAll={(keys) => setMcpTargets(new Set(keys))}
           />
         </div>
       </Dialog>
@@ -797,12 +796,12 @@ export default function HubPage() {
           targets={snap.targets}
           picked={mcpPicked}
           onToggle={(key) => toggle(mcpPicked, key, setMcpPicked)}
-          onAll={(all) =>
-            setMcpPicked(all ? new Set(snap.targets.map((t) => t.key)) : new Set())
-          }
+          onAll={(keys) => setMcpPicked(new Set(keys))}
+          locked={new Set(snap.mcp.find((m) => m.name === mcpDeployName)?.present ?? [])}
+          lockedLabel="已存在"
         />
         <p className="mt-3 text-xs text-muted">
-          条目内容从它当前所在的平台读回，按各平台格式写入；目标已有同名但内容不同的条目时报冲突，不会静默覆盖。
+          已存在的平台已勾选且不可改；条目内容从它当前所在的平台读回，按各平台格式写入，目标已有同名但内容不同的条目时报冲突，不会静默覆盖。
         </p>
       </Dialog>
     </div>
