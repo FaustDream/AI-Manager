@@ -5,45 +5,35 @@ use crate::app::error::ErrorKind;
 
 // ------------------------------------------------------------ 会话
 
-/// 增量扫描会话索引：任务化，扫完 emit `session:scan`。
+/// 增量扫描会话索引：扫完 emit `session:scan` 并返回报告。
 #[tauri::command]
 pub async fn session_scan(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
-) -> std::result::Result<u64, String> {
-    use crate::app::task::CapabilityId;
+) -> std::result::Result<crate::app::sessions::ScanReport, String> {
     use tauri::Emitter;
 
     let service = state.sessions.clone();
-    let emitter = app.clone();
-    let task_id = state.tasks.spawn_managed(
-        CapabilityId::Sessions,
-        "扫描会话索引",
-        move |handle| async move {
-            match service.scan(handle.cancel.clone()).await {
-                Ok(report) => {
-                    log::log(
-                        Level::Info,
-                        "sessions",
-                        format!("会话扫描：{}", report.summary()),
-                    );
-                    handle.message(report.summary());
-                    let _ = emitter.emit("session:scan", &report);
-                    Ok(())
-                }
-                Err(e) => {
-                    log::log(
-                        Level::Warn,
-                        "sessions",
-                        format!("会话扫描失败：{}", e.message),
-                    );
-                    let _ = emitter.emit("session:scan", &e);
-                    Err(e)
-                }
-            }
-        },
-    );
-    Ok(task_id)
+    let report = match service.scan().await {
+        Ok(report) => {
+            log::log(
+                Level::Info,
+                "sessions",
+                format!("会话扫描：{}", report.summary()),
+            );
+            let _ = app.emit("session:scan", &report);
+            report
+        }
+        Err(e) => {
+            log::log(
+                Level::Warn,
+                "sessions",
+                format!("会话扫描失败：{}", e.message),
+            );
+            return Err(err_text(e));
+        }
+    };
+    Ok(report)
 }
 
 /// 列表页：只读 app.db，客户端正在写也不影响。
@@ -85,42 +75,48 @@ pub async fn session_running_clients(
 }
 
 /// 删除会话：进回收站，可恢复。会临时关掉正在运行的客户端。
-///
-/// **走任务系统**：关客户端 + 搬文件动辄几十秒，同步命令会让按钮一直转圈且看不到进度。
-/// 这里只返回任务 id，进度由 `task:progress` 推给界面，结果由 `session:delete` 事件带回。
+/// 关客户端 + 搬文件动辄几十秒，同步等它跑完，结果直接返回并 emit `session:delete`。
 #[tauri::command]
 
 pub async fn session_delete(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     keys: Vec<String>,
-) -> std::result::Result<u64, String> {
-    use crate::app::task::CapabilityId;
+) -> std::result::Result<crate::app::sessions::delete::DeleteReport, String> {
     use tauri::Emitter;
 
-    let count = keys.len();
     let service = state.sessions.clone();
-    let emitter = app.clone();
-    let task_id = state.tasks.spawn_managed(
-        CapabilityId::Sessions,
-        format!("删除 {count} 条会话"),
-        move |handle| async move {
-            let report = service.remove(keys).await?;
-            log::log(
-                if report.errors.is_empty() {
-                    Level::Info
-                } else {
-                    Level::Warn
-                },
-                "sessions",
-                format!("删除会话：{}", report.summary()),
-            );
-            handle.message(report.summary());
-            let _ = emitter.emit("session:delete", &report);
-            Ok(())
-        },
+    let report = service.remove(keys).await.map_err(err_text)?;
+    // 一条没删掉且全是错误 → error；部分失败 → warn。以前只要 errors 非空就是 warn，
+    // 「全部失败」和「删掉 9 条挂 1 条」在级别上分不开。
+    let level = if report.errors.is_empty() {
+        Level::Info
+    } else if report.sessions == 0 {
+        Level::Error
+    } else {
+        Level::Warn
+    };
+    let detail = if report.errors.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " · 失败明细={}",
+            report
+                .errors
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("；")
+        )
+    };
+    log::log(
+        level,
+        "sessions",
+        format!("删除会话：{}{detail}", report.summary()),
     );
-    Ok(task_id)
+    let _ = app.emit("session:delete", &report);
+    Ok(report)
 }
 
 /// 整库快照（备份与清理页也会用）。
@@ -220,69 +216,76 @@ pub async fn session_archive(
 }
 
 /// 彻底删除：只放行已归档 / 已删除的会话，不留回收站副本。
-/// 同样走任务系统：每条删完推一次进度，界面有进度条可看。
+///
+/// 这是不可逆动作，门槛放在后端而不是只靠界面置灰：绕过界面直接调命令也删不掉
+/// 一条还在用的会话。删完返回报告并 emit `session:purge`。
 #[tauri::command]
 
 pub async fn session_purge(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     keys: Vec<String>,
-) -> std::result::Result<u64, String> {
-    use crate::app::task::CapabilityId;
+) -> std::result::Result<crate::app::sessions::delete::PurgeReport, String> {
     use tauri::Emitter;
 
-    let count = keys.len();
     let service = state.sessions.clone();
-    let emitter = app.clone();
-    let task_id = state.tasks.spawn_managed(
-        CapabilityId::Sessions,
-        format!("彻底删除 {count} 条会话"),
-        move |handle| async move {
-            let progress_handle = handle.clone();
-            let report = service
-                .purge_with(keys, move |done, total| {
-                    progress_handle
-                        .progress(done as f32 / total.max(1) as f32, format!("{done}/{total}"));
-                })
-                .await?;
-            log::log(
-                Level::Info,
-                "sessions",
-                format!(
-                    "彻底删除 {} 条会话（{} 个文件）{}{}",
-                    report.deleted,
-                    report.files,
-                    if report.refused > 0 {
-                        format!("，{} 条未归档已跳过", report.refused)
-                    } else {
-                        String::new()
-                    },
-                    // 失败原因必须落日志：以前只报「0 条」，用户和开发者都看不出为什么
-                    if report.errors.is_empty() {
-                        String::new()
-                    } else {
-                        format!("，{} 条失败（{}）", report.errors.len(), report.errors[0])
-                    }
-                ),
-            );
-            handle.message(if report.errors.is_empty() {
-                format!(
-                    "已彻底删除 {} 条（{} 个文件）",
-                    report.deleted, report.files
-                )
-            } else {
-                format!(
-                    "已彻底删除 {} 条，{} 条失败：{}",
-                    report.deleted,
-                    report.errors.len(),
-                    report.errors[0]
-                )
-            });
-            let _ = emitter.emit("session:purge", &report);
-            Ok(())
+    let report = service.purge(keys).await.map_err(err_text)?;
+    // 一条都没删掉就是彻底失败：以前这里固定 Info，「135 条全部失败」在日志页
+    // 按「只看错误」筛不出来，用户只能看到一句「删除完成」。
+    let errors = report.errors.len();
+    let level = if errors == 0 && report.refused == 0 {
+        Level::Info
+    } else if report.deleted == 0 && errors > 0 {
+        Level::Error
+    } else {
+        Level::Warn
+    };
+    let detail = if errors == 0 {
+        String::new()
+    } else {
+        // 前三条足够定位共性问题（多半是同一个跨盘 / 占用原因），全量在 jsonl 里
+        format!(
+            " · 失败明细={}",
+            report
+                .errors
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("；")
+        )
+    };
+    let summary = format!(
+        "彻底删除 {} 条会话（{} 个文件）{}{}{}",
+        report.deleted,
+        report.files,
+        if report.refused > 0 {
+            format!("，{} 条未归档已跳过", report.refused)
+        } else {
+            String::new()
         },
+        if errors == 0 {
+            String::new()
+        } else {
+            format!("，{errors} 条失败")
+        },
+        detail
     );
-    Ok(task_id)
+    if level == Level::Error {
+        log::fail(
+            "sessions",
+            "session_purge",
+            &summary,
+            format!(
+                "删除={} 文件={} 失败={errors}",
+                report.deleted, report.files
+            ),
+        );
+    } else {
+        log::log(level, "sessions", summary);
+    }
+    let _ = app.emit("session:purge", &report);
+    Ok(report)
 }
 
 /// 自动归档的保留天数（0 = 关闭）。

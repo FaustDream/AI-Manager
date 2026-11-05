@@ -4,8 +4,9 @@
 #   AI-Manager-<ver>-windows-x64-setup.exe   per-user 安装包（免管理员，卸载保留 data\）
 #   AI-Manager-<ver>-windows-x64-portable.zip 免安装 zip（解压即用）
 #
-# 版本号以 packaging/nsis/ai-manager.nsi 的 PRODUCT_VERSION 为准（与 Cargo.toml /
-# tauri.conf.json / package.json 四处一致），打 tag 前先改齐再推。
+# 版本号以 packaging/nsis/ai-manager.nsi 的 PRODUCT_VERSION 为准。发版前须同步五处
+#（见 AGENTS.md §6.1）：Cargo.toml、tauri.conf.json、package.json + package-lock.json、
+# ai-manager.nsi、README.txt；打 tag 前先改齐再推。
 name: release
 
 on:

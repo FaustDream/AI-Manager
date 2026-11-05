@@ -5,10 +5,6 @@
  */
 export type RestoreOutcome = { changed_rows: number, 
 /**
- * 写客户端库之前的整库备份，界面只用来提示「后悔了去哪找」
- */
-backup: string | null, 
-/**
  * `cn` / `intl`
  */
 edition: string, };

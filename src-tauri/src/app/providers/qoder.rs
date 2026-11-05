@@ -187,7 +187,6 @@ pub fn switch_to(
     account_id: &str,
     name: &str,
     cred: &Credential,
-    backup_dir: &Path,
 ) -> Result<SwitchOutcome> {
     let Some(profile) = provider.profile_dir() else {
         return Err(AppError::new(ErrorKind::Io, "没有找到 Qoder 的客户端目录"));
@@ -240,7 +239,9 @@ pub fn switch_to(
     let key = secret::chromium_key(&local_state)?;
     let sealed = QoderProvider::seal(&key, &serde_json::to_vec(&auth)?)?;
 
-    let backup = fsx::backup_to(&path, backup_dir, provider.platform_key())?;
+    // 原文件读进内存再写：写后验读失败要能原样盖回去。
+    // 这是**本次写入**的回滚依据，不落盘——切号不再留历史备份。
+    let before = std::fs::read(&path).ok();
     fsx::write_atomic(&path, &sealed)?;
 
     // 写后验读：能解回、且 user.id 是目标账号，才算真的写成功
@@ -251,7 +252,12 @@ pub fn switch_to(
         .map(|v| v.pointer("/user/id").and_then(|x| x.as_str()) == Some(account_id))
         .unwrap_or(false);
     if !ok {
-        std::fs::copy(&backup, &path)?;
+        match before {
+            Some(bytes) => fsx::write_atomic(&path, &bytes)?,
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
         return Err(AppError::new(
             ErrorKind::WriteFailed,
             "写入后校验失败，已回滚到切换前的登录态",
@@ -260,7 +266,6 @@ pub fn switch_to(
 
     Ok(SwitchOutcome {
         message: format!("{} 已切换到 {name}", provider.label()),
-        backup: Some(backup),
     })
 }
 
@@ -408,6 +413,7 @@ impl Provider for QoderProvider {
         let (summary, balance, lots) = self.quota(cred, http).await?;
         Ok(CreditSnapshot {
             summary,
+            error: None,
             balance,
             lots: Some(lots),
             quota: None,
@@ -1011,16 +1017,8 @@ mod tests {
         };
         cred.put("email", json!("new@b.c"));
 
-        let out = switch_to(
-            &provider,
-            "u2",
-            "新账号",
-            &cred,
-            &dir.path().join("backups"),
-        )
-        .unwrap();
+        switch_to(&provider, "u2", "新账号", &cred).unwrap();
 
-        assert!(out.backup.is_some(), "写前必须备份");
         let raw = std::fs::read(dir.path().join("auth.v1.dat")).unwrap();
         assert_eq!(&raw[..3], b"v10");
         let plain: Value =
@@ -1040,14 +1038,7 @@ mod tests {
         fake_profile(dir.path());
         let provider = QoderProvider::at(false, dir.path().to_path_buf()).assume_alive(false);
         let cred = sample_cred();
-        let err = switch_to(
-            &provider,
-            "old",
-            "旧账号",
-            &cred,
-            &dir.path().join("backups"),
-        )
-        .unwrap_err();
+        let err = switch_to(&provider, "old", "旧账号", &cred).unwrap_err();
         assert!(err.message.contains("不需要切换"));
     }
 
@@ -1058,14 +1049,7 @@ mod tests {
         fake_profile(dir.path());
         let provider = QoderProvider::at(false, dir.path().to_path_buf()).assume_alive(true);
 
-        let err = switch_to(
-            &provider,
-            "u2",
-            "新账号",
-            &sample_cred(),
-            &dir.path().join("bk"),
-        )
-        .unwrap_err();
+        let err = switch_to(&provider, "u2", "新账号", &sample_cred()).unwrap_err();
         assert_eq!(err.kind, crate::app::error::ErrorKind::ClientRunning);
     }
 
@@ -1074,8 +1058,7 @@ mod tests {
         // 客户端没开，但目录里没有登录态文件：报 io，不是 client_running
         let dir = tempfile::TempDir::new().unwrap();
         let provider = QoderProvider::at(false, dir.path().to_path_buf()).assume_alive(false);
-        let err =
-            switch_to(&provider, "u1", "n", &sample_cred(), &dir.path().join("bk")).unwrap_err();
+        let err = switch_to(&provider, "u1", "n", &sample_cred()).unwrap_err();
         assert!(matches!(err.kind, crate::app::error::ErrorKind::Io));
     }
 

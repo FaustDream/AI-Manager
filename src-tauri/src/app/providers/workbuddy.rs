@@ -14,7 +14,7 @@
 
 use super::{Provider, ScannedAccount, Sink, SwitchOutcome};
 use crate::app::accounts::credential::{iso_from_ms, Credential};
-use crate::app::accounts::AccountIdentity;
+use crate::app::accounts::{uid_of, AccountIdentity};
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, paths, process};
@@ -279,11 +279,14 @@ impl WorkBuddyProvider {
         fsx::remove_path(&tmp)?;
         std::fs::create_dir_all(&tmp)?;
 
-        for rel in ["app/session", "storage"] {
-            let src = root.join(rel);
-            if src.exists() {
-                fsx::copy_dir_merge(&src, &tmp.join(rel))?;
-            }
+        let session = root.join("app/session");
+        if session.exists() {
+            fsx::copy_profile_skipping_caches(&session, &tmp.join("app/session"))?;
+        }
+        // storage 下每个账号各有一份 user-<uid>-personal，仍是登录态相关，保持全量拷贝
+        let storage = root.join("storage");
+        if storage.exists() {
+            fsx::copy_dir_merge(&storage, &tmp.join("storage"))?;
         }
         // 票据只在这个账号**自己**登录时才存：拿别人的票据存档，以后恢复就是「档案 A、票据 B」
         let ticket = self.live_ticket();
@@ -309,7 +312,7 @@ impl WorkBuddyProvider {
     }
 
     /// 把某账号的档案恢复到客户端数据目录。
-    fn restore_pack(&self, uid: &str, backup_dir: &Path) -> Result<Option<PathBuf>> {
+    fn restore_pack(&self, uid: &str) -> Result<()> {
         let Some(root) = self.data_root.as_ref() else {
             return Err(AppError::new(
                 ErrorKind::Io,
@@ -325,22 +328,20 @@ impl WorkBuddyProvider {
             ));
         }
         // 登录态是全局的，必须整体替换；storage 里有每个账号自己的 user-<uid>-personal，
-        // 只能合并——整体替换会把其他账号的本地数据一起删掉
+        // 只能合并——整体替换会把其他账号的本地数据一起删掉。
+        // 档案不含 Chromium 缓存，整体替换会顺带清掉上一个账号留下的缓存，客户端自己重建；
+        // 留着反而可能把上个账号的私有 HTTP 响应带给新账号。
         fsx::replace_dir(&src.join("app/session"), &root.join("app/session"))?;
         if src.join("storage").is_dir() {
             fsx::copy_dir_merge(&src.join("storage"), &root.join("storage"))?;
         }
         // 票据按字节原样写回：sessionState 是服务端签发的，重建一个随机值客户端不认
         let ticket = self.live_ticket();
-        let mut backup = None;
         if let Some(ticket) = ticket {
-            if ticket.exists() {
-                backup = Some(fsx::backup_to(&ticket, backup_dir, self.edition())?);
-            }
             let bytes = std::fs::read(src.join("auth.info"))?;
             fsx::write_atomic(&ticket, &bytes)?;
         }
-        Ok(backup)
+        Ok(())
     }
 }
 
@@ -555,6 +556,7 @@ impl Provider for WorkBuddyProvider {
         let total: f64 = lots.iter().map(|l| l.amount).sum();
         Ok(CreditSnapshot {
             summary: format!("剩余 {} 积分", trim_f64(total)),
+            error: None,
             balance: Some(total),
             lots: Some(lots),
             quota: None,
@@ -783,9 +785,8 @@ pub fn switch_to(
     provider: &WorkBuddyProvider,
     account_id: &str,
     name: &str,
-    backup_dir: &Path,
 ) -> Result<SwitchOutcome> {
-    let uid = account_id.trim_end_matches("@intl");
+    let uid = uid_of(account_id);
     // 先判档案：缺档案时连客户端都不用关，直接告诉用户去登录一次
     if !provider.pack_ready(uid) {
         // 先判档案：没有档案就不要动当前登录态，一个字节都不写
@@ -817,13 +818,25 @@ pub fn switch_to(
     if let Some(current) = current.as_ref().filter(|c| *c != uid) {
         match provider.save_pack(current) {
             Ok(_) => notes.push("已存档当前账号的登录态，随时可以切回来".to_string()),
-            // 存档失败不阻断切换：目标档案是完整的，用户的诉求是「切到目标账号」
-            Err(e) => notes.push(format!("存档当前账号失败（切换继续）：{}", e.message)),
+            // 存档失败不阻断切换：目标档案是完整的，用户的诉求是「切到目标账号」。
+            // 但它是**部分失败**，必须按 Warn 落日志——以前跟着切换的成功一起记成
+            // info，事后翻日志只会看到「切换成功」，看不出旧账号已经存不回来了。
+            Err(e) => {
+                crate::app::log::log(
+                    crate::app::log::Level::Warn,
+                    "providers",
+                    format!(
+                        "切换前存档当前账号 {current} 失败（切换继续）：{}",
+                        e.message
+                    ),
+                );
+                notes.push(format!("存档当前账号失败（切换继续）：{}", e.message));
+            }
         }
     }
 
     // 2) 换入目标档案
-    let backup = provider.restore_pack(uid, backup_dir)?;
+    provider.restore_pack(uid)?;
 
     // 3) 验读：客户端认的是 .info 里的 uid，写回来对不上就等于没切
     if provider.current_uid().as_deref() != Some(uid) {
@@ -837,7 +850,7 @@ pub fn switch_to(
     if !notes.is_empty() {
         message.push_str(&format!("（{}）", notes.join("；")));
     }
-    Ok(SwitchOutcome { message, backup })
+    Ok(SwitchOutcome { message })
 }
 
 fn default_auth_dir() -> Option<PathBuf> {
@@ -1044,6 +1057,104 @@ mod tests {
         assert_eq!(provider(dir.path()).scan(&mut |_| Ok(())).unwrap(), 0);
     }
 
+    /// Chromium 的纯缓存不参与登录判定，却会被整目录拷进每个账号档案，
+    /// 再被退出登录备份、手工快照各复制一遍。先固定「档案里只留登录相关文件」。
+    #[test]
+    fn save_pack_does_not_archive_chromium_caches() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path());
+        let client = dir.path().join("client");
+        let session = client.join("app/session");
+        std::fs::create_dir_all(session.join("Cache")).unwrap();
+        std::fs::create_dir_all(session.join("Code Cache")).unwrap();
+        std::fs::create_dir_all(session.join("Local Storage")).unwrap();
+        std::fs::write(session.join("Cache/data_1"), vec![0u8; 4096]).unwrap();
+        std::fs::write(session.join("Code Cache/js"), b"compiled").unwrap();
+        std::fs::write(session.join("Cookies"), b"session-cookie").unwrap();
+        std::fs::write(session.join("Local Storage/leveldb"), b"tokens").unwrap();
+        std::fs::create_dir_all(client.join("storage/skeleton")).unwrap();
+        std::fs::write(
+            client.join("storage/skeleton/account-snapshot.json"),
+            b"{\"primary\":{}}",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("auth")).unwrap();
+        std::fs::write(
+            dir.path().join("auth/workbuddy-desktop.info"),
+            ticket("u1", "tk", "n"),
+        )
+        .unwrap();
+
+        p.save_pack("u1").unwrap();
+        let pack = p.pack_dir("u1");
+        assert!(
+            !pack.join("app/session/Cache").exists(),
+            "纯缓存不该进账号档案"
+        );
+        assert!(
+            !pack.join("app/session/Code Cache").exists(),
+            "纯缓存不该进账号档案"
+        );
+        assert_eq!(
+            std::fs::read(pack.join("app/session/Cookies")).unwrap(),
+            b"session-cookie"
+        );
+        assert_eq!(
+            std::fs::read(pack.join("app/session/Local Storage/leveldb")).unwrap(),
+            b"tokens"
+        );
+        assert!(p.pack_ready("u1"));
+    }
+
+    /// 精简档案（不含缓存）仍要能完整换回登录态，票据按字节写回。
+    #[test]
+    fn restore_from_slim_pack_swaps_login_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path());
+        let client = dir.path().join("client");
+        let auth = dir.path().join("auth");
+        std::fs::create_dir_all(&auth).unwrap();
+
+        let pack = p.pack_dir("u1");
+        std::fs::create_dir_all(pack.join("app/session/Local Storage")).unwrap();
+        std::fs::create_dir_all(pack.join("storage/skeleton")).unwrap();
+        std::fs::write(pack.join("app/session/Cookies"), b"B").unwrap();
+        std::fs::write(pack.join("app/session/Local Storage/leveldb"), b"B-tokens").unwrap();
+        std::fs::write(pack.join("storage/skeleton/account-snapshot.json"), b"{}").unwrap();
+        let saved = ticket("u1", "tk", "n");
+        std::fs::write(pack.join("auth.info"), &saved).unwrap();
+
+        // 客户端当前是别的账号，还带着自己的缓存
+        std::fs::create_dir_all(client.join("app/session/Cache")).unwrap();
+        std::fs::write(client.join("app/session/Cache/data"), b"old").unwrap();
+        std::fs::write(client.join("app/session/Cookies"), b"A").unwrap();
+        std::fs::create_dir_all(client.join("storage/skeleton")).unwrap();
+        std::fs::write(
+            auth.join("workbuddy-desktop.info"),
+            b"{\"account\":{\"uid\":\"u2\"}}",
+        )
+        .unwrap();
+
+        p.restore_pack("u1").unwrap();
+        assert_eq!(
+            std::fs::read(auth.join("workbuddy-desktop.info")).unwrap(),
+            saved,
+            "契约 8a：票据按字节写回"
+        );
+        assert_eq!(
+            std::fs::read(client.join("app/session/Cookies")).unwrap(),
+            b"B"
+        );
+        assert_eq!(
+            std::fs::read(client.join("app/session/Local Storage/leveldb")).unwrap(),
+            b"B-tokens"
+        );
+        assert!(
+            !client.join("app/session/Cache").exists(),
+            "旧账号缓存不能串到新账号"
+        );
+    }
+
     #[test]
     fn save_and_restore_pack_roundtrip() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1076,8 +1187,7 @@ mod tests {
         )
         .unwrap();
 
-        let backup = p.restore_pack("u1", &dir.path().join("backups")).unwrap();
-        assert!(backup.is_some(), "写前必须留一份旧票据");
+        p.restore_pack("u1").unwrap();
         assert_eq!(
             std::fs::read(dir.path().join("auth/workbuddy-desktop.info")).unwrap(),
             saved_ticket,
@@ -1126,7 +1236,7 @@ mod tests {
         let ticket_b = ticket("u2", "tk-b", "B");
         std::fs::write(pack_b.join("auth.info"), &ticket_b).unwrap();
 
-        let out = switch_to(&p, "u2", "B", &dir.path().join("backups")).unwrap();
+        let out = switch_to(&p, "u2", "B").unwrap();
 
         assert_eq!(
             p.current_uid().as_deref(),
@@ -1158,7 +1268,7 @@ mod tests {
         .unwrap();
         let before = std::fs::read(dir.path().join("auth/workbuddy-desktop.info")).unwrap();
 
-        let err = switch_to(&p, "u9", "目标", &dir.path().join("backups")).unwrap_err();
+        let err = switch_to(&p, "u9", "目标").unwrap_err();
         assert!(matches!(
             err.kind,
             crate::app::error::ErrorKind::SessionStateMissing

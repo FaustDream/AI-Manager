@@ -7,11 +7,7 @@ export type AddOutcome = { platform: string, label: string,
 /**
  * 真正启动的可执行文件（手动打开时用户要照着点）
  */
-exe: string, 
-/**
- * 旧登录态的备份目录（后悔了去哪找）
- */
-backup: string, restarted: boolean, 
+exe: string, restarted: boolean, 
 /**
  * 主窗口是否已经叫到前台；false = 进程起来了但没窗口（多半在托盘）
  */

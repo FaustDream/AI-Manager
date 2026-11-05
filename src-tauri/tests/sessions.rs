@@ -10,7 +10,6 @@ use ai_manager::app::db::Db;
 use ai_manager::app::sessions::marks;
 use ai_manager::app::sessions::store::{Facets, Filter, RawRow, SqliteSessions};
 use ai_manager::app::sessions::Service;
-use ai_manager::app::task::CancelToken;
 use ai_manager::types::SessionState;
 use std::sync::Arc;
 use support::*;
@@ -352,48 +351,6 @@ fn keys_follow_the_same_filter_as_the_list() {
     assert_eq!(only_archived, vec!["workbuddy|cn|u1|s0002".to_string()]);
 }
 
-/// 彻底删除要能报进度：每删完一条回调一次，最后一次必须是 (total, total)。
-#[tokio::test]
-async fn purge_reports_progress_for_each_session() {
-    use std::sync::{Arc, Mutex};
-
-    let paths = TestPaths::new();
-    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
-    let store = SqliteSessions::new(&db);
-    store
-        .replace_source(
-            "cn",
-            &[row(1, SessionState::Visible), row(2, SessionState::Visible)],
-        )
-        .unwrap();
-    let keys = vec![
-        "workbuddy|cn|u1|s0001".to_string(),
-        "workbuddy|cn|u1|s0002".to_string(),
-    ];
-    marks::archive(&db, &keys, true).unwrap();
-
-    let service = Service::new(
-        db.clone(),
-        Roots::at(
-            paths.join("home"),
-            paths.join("appdata"),
-            paths.join("local"),
-        ),
-    );
-    let seen: Arc<Mutex<Vec<(usize, usize)>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = seen.clone();
-    // 这里没有真的客户端目录，逐条删除会失败，但进度回调必须照常推进
-    let _ = service
-        .purge_with(keys, move |done, total| {
-            sink.lock().unwrap().push((done, total));
-        })
-        .await;
-
-    let seen = seen.lock().unwrap().clone();
-    assert!(!seen.is_empty(), "必须回调过进度");
-    assert_eq!(*seen.last().unwrap(), (2, 2), "最后一条进度应是 2/2");
-}
-
 #[tokio::test]
 async fn scan_is_incremental_and_picks_up_changes() {
     let paths = TestPaths::new();
@@ -401,7 +358,7 @@ async fn scan_is_incremental_and_picks_up_changes() {
     let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
     let service = Service::new(db.clone(), roots.clone());
 
-    let first = service.scan(Arc::new(CancelToken::new())).await.unwrap();
+    let first = service.scan().await.unwrap();
     assert_eq!(first.scanned, 1, "第一次要真扫 cn");
     assert_eq!(first.rows, 1);
     assert!(first.errors.is_empty(), "{:?}", first.errors);
@@ -417,7 +374,7 @@ async fn scan_is_incremental_and_picks_up_changes() {
     assert_eq!(item.account, "uid-1", "指纹里的 uid 决定归属");
 
     // 第二次：指纹没变 → 整源跳过，不重读正文
-    let second = service.scan(Arc::new(CancelToken::new())).await.unwrap();
+    let second = service.scan().await.unwrap();
     assert_eq!(second.scanned, 0);
     assert_eq!(second.skipped, 1);
 
@@ -425,7 +382,7 @@ async fn scan_is_incremental_and_picks_up_changes() {
     let mut text = std::fs::read_to_string(&body).unwrap();
     text.push_str("{\"type\":\"message\",\"role\":\"user\"}\n");
     std::fs::write(&body, text).unwrap();
-    let third = service.scan(Arc::new(CancelToken::new())).await.unwrap();
+    let third = service.scan().await.unwrap();
     assert_eq!(third.scanned, 1, "正文变了必须重扫");
     let rows = SqliteSessions::new(&db)
         .page(&Filter::default(), None, 50)

@@ -18,7 +18,7 @@ const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   'account-center': Users,
   sessions: MessagesSquare,
   hub: Blocks,
-  tasks: ListChecks,
+  executions: ListChecks,
   logs: ScrollText,
   settings: Settings,
 };

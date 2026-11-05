@@ -82,6 +82,18 @@ impl Roots {
     }
 }
 
+/// 写客户端库前清 WAL：客户端读不到未 checkpoint 的改动。
+pub fn checkpoint(conn: &Connection) -> Result<()> {
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(()),
+            other => Err(AppError::new(
+                ErrorKind::Sqlite,
+                format!("wal_checkpoint 失败：{other}"),
+            )),
+        })
+}
+
 /// 一个客户端库连接。读用只读 flag，写先 checkpoint。
 pub struct ClientConn {
     conn: Mutex<Option<Connection>>,
@@ -140,20 +152,7 @@ impl ClientConn {
     /// 契约 9b：写路径在事务之前调用。`TRUNCATE` 会把 WAL 清空并重置，
     /// 比 `PASSIVE` 多一步截断，写完之后客户端重新打开不会读到半截状态。
     pub fn checkpoint(&self) -> Result<()> {
-        self.with(|conn| {
-            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-                .or_else(|e| {
-                    // 非 WAL 模式的库执行这条会报「database is locked」或空结果，
-                    // 那种情况下本来就没有 WAL 要落盘，不算失败
-                    match e {
-                        rusqlite::Error::QueryReturnedNoRows => Ok(()),
-                        other => Err(AppError::new(
-                            ErrorKind::Sqlite,
-                            format!("wal_checkpoint 失败：{other}"),
-                        )),
-                    }
-                })
-        })
+        self.with(crate::app::clients::checkpoint)
     }
 
     /// 只读连接上执行写语句，供契约 9a 的断言使用。

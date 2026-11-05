@@ -9,11 +9,9 @@
 use crate::app::clients::Roots;
 use crate::app::db::Db;
 use crate::app::error::{AppError, ErrorKind, Result};
-use crate::app::fsx;
-use crate::app::paths;
+use crate::app::log;
 use crate::app::sessions::sources::wb;
 use crate::contracts::RestoreReport;
-use chrono::Local;
 use rusqlite::OpenFlags;
 
 /// 界面「恢复会话」的结果：比契约报告少几个内部字段，只留用户看得懂的。
@@ -23,8 +21,6 @@ use rusqlite::OpenFlags;
 pub struct RestoreOutcome {
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub changed_rows: usize,
-    /// 写客户端库之前的整库备份，界面只用来提示「后悔了去哪找」
-    pub backup: Option<String>,
     /// `cn` / `intl`
     pub edition: String,
 }
@@ -47,22 +43,23 @@ pub fn for_account(db: &Db, roots: &Roots, iid: &str) -> Result<RestoreOutcome> 
             "只能恢复当前登录账号的会话：先切换到该账号，再点恢复",
         ));
     }
-    let edition = edition_of(account_id);
-    let report = account(roots, edition, account_id.trim_end_matches("@intl"))?;
+    let edition = crate::app::accounts::edition_of(account_id);
+    // 主体名：库里查得到就用昵称，查不到退回 uid
+    let subject = crate::app::accounts::repo::identity(db, iid)
+        .ok()
+        .flatten()
+        .map(|identity| identity.name)
+        .unwrap_or_else(|| iid.to_string());
+    let report = account(
+        roots,
+        edition,
+        crate::app::accounts::uid_of(account_id),
+        &subject,
+    )?;
     Ok(RestoreOutcome {
         changed_rows: report.changed_rows,
-        backup: Some(report.backup.display().to_string()),
         edition: edition.to_string(),
     })
-}
-
-/// WorkBuddy 两版共用 `workbuddy` 平台键，靠 `@intl` 后缀区分版本。
-fn edition_of(account_id: &str) -> &'static str {
-    if account_id.ends_with("@intl") {
-        "intl"
-    } else {
-        "cn"
-    }
 }
 
 /// 版本 → 客户端平台键（`accounts::add` 的进程名/安装路径用的是这套键）。
@@ -75,9 +72,9 @@ fn client_key(edition: &str) -> &'static str {
     }
 }
 
-/// `edition` 取 `cn` / `intl`。`uid` 是目标账号的 uid。
-pub fn account(roots: &Roots, edition: &str, uid: &str) -> Result<RestoreReport> {
-    run(roots, edition, uid, None)
+/// `edition` 取 `cn` / `intl`。`uid` 是目标账号的 uid，`subject` 是执行记录里的主体名。
+pub fn account(roots: &Roots, edition: &str, uid: &str, subject: &str) -> Result<RestoreReport> {
+    run(roots, edition, uid, None, subject)
 }
 
 /// 账号切换专用：只搬「切换前那个账号」名下的会话，别把同一版本里
@@ -87,24 +84,61 @@ pub fn from_account(
     edition: &str,
     uid: &str,
     source: &str,
+    subject: &str,
 ) -> Result<RestoreReport> {
-    run(roots, edition, uid, Some(source))
+    run(roots, edition, uid, Some(source), subject)
 }
 
-fn run(roots: &Roots, edition: &str, uid: &str, from: Option<&str>) -> Result<RestoreReport> {
+fn run(
+    roots: &Roots,
+    edition: &str,
+    uid: &str,
+    from: Option<&str>,
+    subject: &str,
+) -> Result<RestoreReport> {
+    let started = std::time::Instant::now();
+    // 失败一律走这里：环节 + 根因 + 处置，缺一个用户就得自己猜
+    let fail = |step: &str, cause: &str, action: &str, e: &AppError| {
+        log::item(
+            log::Item::new("恢复会话", subject, log::Outcome::Fail)
+                .step(step)
+                .reason(e.message.clone())
+                .evidence(format!("根因={cause} | 处置={action} | 版本={edition}"))
+                .ms(started.elapsed().as_millis() as u64),
+        );
+    };
+
+    log::item(log::Item::marker("恢复会话", subject).note(format!(
+        "开始 | 版本={edition} | 来源={}",
+        from.unwrap_or("全量对齐")
+    )));
+
     if edition != "cn" && edition != "intl" {
-        return Err(AppError::new(
-            ErrorKind::Invalid,
-            format!("未知版本：{edition}"),
-        ));
+        let e = AppError::new(ErrorKind::Invalid, format!("未知版本：{edition}"));
+        fail("校验版本", "版本参数不合法", "无需处置", &e);
+        return Err(e);
     }
     if uid.trim().is_empty() {
-        return Err(AppError::new(ErrorKind::Invalid, "目标账号为空"));
+        let e = AppError::new(ErrorKind::Invalid, "目标账号为空");
+        fail("校验账号", "目标账号为空", "重新选择账号", &e);
+        return Err(e);
     }
-    let ep = wb::editions(roots)
+    let ep = match wb::editions(roots)
         .into_iter()
         .find(|item| item.key == edition)
-        .ok_or_else(|| AppError::new(ErrorKind::Invalid, format!("{edition} 的会话库不存在")))?;
+    {
+        Some(ep) => ep,
+        None => {
+            let e = AppError::new(ErrorKind::Invalid, format!("{edition} 的会话库不存在"));
+            fail(
+                "查找会话库",
+                "该版本没有会话库（客户端未安装或从未登录）",
+                "先在客户端登录一次",
+                &e,
+            );
+            return Err(e);
+        }
+    };
 
     let files_before = wb::project_files(&ep.projects)
         .values()
@@ -115,24 +149,56 @@ fn run(roots: &Roots, edition: &str, uid: &str, from: Option<&str>) -> Result<Re
     // 抢回去比不做更糟。**按版本关**：写的是哪个版本的库就只关哪个版本的客户端，
     // 而且只关它自己的 exe（国内/国际是两个进程，CodeBuddy IDE 是另一个产品）。
     let key = client_key(edition);
-    let closed = crate::app::accounts::add::close_client(key)?;
+    let closed = match crate::app::accounts::add::close_client(key) {
+        Ok(closed) => closed,
+        Err(e) => {
+            fail(
+                "关闭客户端",
+                "客户端未能退出（可能在托盘）",
+                "从托盘退出后重试",
+                &e,
+            );
+            return Err(e);
+        }
+    };
+    log::item(
+        log::Item::new("恢复会话", subject, log::Outcome::Ok)
+            .step("关闭客户端")
+            .reason(if closed {
+                "客户端已退出"
+            } else {
+                "客户端本来就没开"
+            })
+            .evidence(format!("进程={key}"))
+            .ms(started.elapsed().as_millis() as u64),
+    );
 
-    // 写前备份：整份库文件复制出去，回滚就是把它盖回来
-    let tag = Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let backup = fsx::backup_to(
-        &ep.db(),
-        &paths::data_dir().join("backups").join("session-restore"),
-        &tag,
-    )?;
-
-    let conn = rusqlite::Connection::open_with_flags(ep.db(), OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|e| {
-            AppError::new(
-                ErrorKind::Sqlite,
-                format!("打开 {} 失败：{e}", ep.db().display()),
-            )
-        })?;
-    crate::app::sessions::delete::checkpoint(&conn)?;
+    let conn =
+        match rusqlite::Connection::open_with_flags(ep.db(), OpenFlags::SQLITE_OPEN_READ_WRITE) {
+            Ok(conn) => conn,
+            Err(e) => {
+                let err = AppError::new(
+                    ErrorKind::Sqlite,
+                    format!("打开 {} 失败：{e}", ep.db().display()),
+                );
+                fail(
+                    "打开会话库",
+                    "会话库被占用或已损坏",
+                    "关闭客户端后重试",
+                    &err,
+                );
+                return Err(err);
+            }
+        };
+    if let Err(e) = crate::app::sessions::delete::checkpoint(&conn) {
+        fail(
+            "落盘预检",
+            "checkpoint 失败（库被占用）",
+            "关闭客户端后重试",
+            &e,
+        );
+        return Err(e);
+    }
 
     let changed = match from {
         // 来源就是目标：没有可搬的，别退化成「全量对齐」把别人的会话也划过来
@@ -149,9 +215,20 @@ fn run(roots: &Roots, edition: &str, uid: &str, from: Option<&str>) -> Result<Re
             [uid],
         ),
     }
-    .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("改归属失败：{e}")))?;
+    .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("改归属失败：{e}")));
 
-    crate::app::sessions::delete::checkpoint(&conn)?;
+    let changed = match changed {
+        Ok(changed) => changed,
+        Err(e) => {
+            fail("改写归属", "写会话库失败", "重新登录该账号后可重试", &e);
+            return Err(e);
+        }
+    };
+
+    if let Err(e) = crate::app::sessions::delete::checkpoint(&conn) {
+        fail("落盘", "checkpoint 失败", "重试一次", &e);
+        return Err(e);
+    }
 
     let files_after = wb::project_files(&ep.projects)
         .values()
@@ -161,11 +238,34 @@ fn run(roots: &Roots, edition: &str, uid: &str, from: Option<&str>) -> Result<Re
     if closed {
         let _ = crate::app::sessions::delete::restart(&[key.to_string()]);
     }
+
+    // 收尾交代「改了多少、正文有没有被动过、下一步要不要人工」：
+    // 正文文件数不变才说明只是改了归属引用，没碰内容
+    log::item(
+        log::Item::new(
+            "恢复会话",
+            subject,
+            if files_before == files_after {
+                log::Outcome::Ok
+            } else {
+                log::Outcome::Partial
+            },
+        )
+        .step("改写归属")
+        .reason(format!("关联 {changed} 条会话"))
+        .evidence(format!(
+            "正文文件 {}→{} | 版本={edition} | 客户端={}",
+            files_before,
+            files_after,
+            if closed { "已重新打开" } else { "未动" }
+        ))
+        .ms(started.elapsed().as_millis() as u64),
+    );
+
     Ok(RestoreReport {
         changed_rows: changed,
         body_files_before: files_before,
         body_files_after: files_after,
-        backup,
     })
 }
 
@@ -186,8 +286,9 @@ mod tests {
     /// 国际版靠 `@intl` 后缀选版本，uid 要还原成库里的原值。
     #[test]
     fn intl_suffix_selects_intl_edition() {
+        use crate::app::accounts::{edition_of, uid_of};
         assert_eq!(edition_of("u1@intl"), "intl");
         assert_eq!(edition_of("u1"), "cn");
-        assert_eq!("u1@intl".trim_end_matches("@intl"), "u1");
+        assert_eq!(uid_of("u1@intl"), "u1");
     }
 }

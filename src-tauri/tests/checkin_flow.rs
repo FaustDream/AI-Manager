@@ -209,3 +209,105 @@ async fn status_records_negative_checkin_so_list_is_not_unknown() {
         "要说「未签」，不是「待查询」"
     );
 }
+
+const ZCODE_LIMIT_URL: &str = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
+const ZCODE_SUBSCRIPTION_URL: &str = "https://open.bigmodel.cn/api/biz/subscription/list";
+const QUOTA_20: &str = r#"{"code":200,"data":{"limits":[{"type":"TOKENS_LIMIT","unit":3,"number":1,"usage":100,"currentValue":20}]}}"#;
+const QUOTA_80: &str = r#"{"code":200,"data":{"limits":[{"type":"TOKENS_LIMIT","unit":3,"number":1,"usage":100,"currentValue":80}]}}"#;
+
+fn seed_zcode_account(db: &Db) -> String {
+    let iid = "zcode:u1".to_string();
+    let identity = AccountIdentity {
+        iid: iid.clone(),
+        platform: "zcode".into(),
+        platform_label: "ZCode".into(),
+        account_id: "u1".into(),
+        name: "测试账号".into(),
+        expires_at: None,
+        source: "credentials.json".into(),
+        requires_checkin: false,
+        has_secret: true,
+    };
+    repo::upsert_identity(db, &identity, 0).unwrap();
+    // config.provider 里的明文 apiKey 是 candidate_tokens 唯一不走 DPAPI 的通道
+    let secret = br#"{"token":"","meta":{"config":{"provider":{"p1":{"name":"coding-plan","options":{"apiKey":"plain-test-api-key-0123456789"}}}}}}"#;
+    repo::set_secret(db, &iid, secret, None).unwrap();
+    iid
+}
+
+/// 免签到平台走 status() 时，新额度也必须落库：列表数值只认 credit_view，
+/// 缓存停在旧百分比就等于这次刷新白做了。
+#[tokio::test]
+async fn status_refreshes_quota_cache_for_quota_only_platform() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_zcode_account(&db);
+    let http = Arc::new(MockHttp::new());
+    http.on_sequence(ZCODE_LIMIT_URL, vec![(200, QUOTA_20), (200, QUOTA_80)]);
+    http.on(ZCODE_SUBSCRIPTION_URL, 200, r#"{"code":200,"data":[]}"#);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+    let store = ai_manager::app::checkin::SqliteCheckin::new(&db);
+
+    let snap = service.credits(&iid).await.unwrap();
+    assert!(snap.quota.is_some(), "额度型账号应拿到 quota");
+    assert_eq!(
+        store.view_of(&iid).unwrap().quota.values().next(),
+        Some(&20.0)
+    );
+
+    // 平台侧额度已变成 80%，这一发不能把新值丢掉
+    service.status(&iid).await.unwrap();
+    assert_eq!(
+        store.view_of(&iid).unwrap().quota.values().next(),
+        Some(&80.0),
+        "status 也必须把新额度写进 credit_view 缓存"
+    );
+
+    // 契约 21：列表数值从库里读，不从返回值里攒
+    let mut rows = repo::list(&db).unwrap();
+    ai_manager::app::checkin::store::hydrate(&db, &mut rows, clock.as_ref());
+    assert_eq!(rows[0].quota.values().next(), Some(&80.0));
+    assert_eq!(http.call_count(ZCODE_LIMIT_URL), 2, "不能为刷新多打接口");
+}
+
+/// 「成功但没拿到数值」和「查询失败」必须能区分，界面只认 error 字段。
+#[tokio::test]
+async fn credits_batch_marks_only_real_failures() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let ok_iid = seed_trae_account(&db);
+    let bad_iid = "trae:u2".to_string();
+    repo::upsert_identity(
+        &db,
+        &AccountIdentity {
+            iid: bad_iid.clone(),
+            platform: "trae".into(),
+            platform_label: "Trae CN".into(),
+            account_id: "u2".into(),
+            name: "无凭据账号".into(),
+            expires_at: None,
+            source: "storage.json".into(),
+            requires_checkin: true,
+            has_secret: true,
+        },
+        0,
+    )
+    .unwrap();
+    // 故意不写 secret_blob：load() 会明确报「没有保存凭据」
+
+    let http = mock_http(200, r#"{"code":0}"#);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    let out = service
+        .credits_batch(&[ok_iid.clone(), bad_iid.clone()])
+        .await;
+    assert_eq!(out.len(), 2);
+    let ok = out.iter().find(|(iid, _)| iid == &ok_iid).unwrap();
+    let bad = out.iter().find(|(iid, _)| iid == &bad_iid).unwrap();
+    assert!(ok.1.error.is_none(), "查询成功不能标成失败");
+    assert_eq!(ok.1.balance, Some(60.0));
+    assert!(bad.1.error.is_some(), "真正的错误要有显式标记");
+    assert!(bad.1.error.as_ref().unwrap().contains("没有保存凭据"));
+}

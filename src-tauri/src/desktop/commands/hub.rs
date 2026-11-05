@@ -43,14 +43,24 @@ pub async fn hub_skill_import_many(
         crate::app::runtime::blocking(move || crate::app::hub::import_many(&hub, key, &names))
             .await
             .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
+    // 一条都没导进来就是失败：以前只要 errors 非空就一律 Warn，
+    // 「10 个全失败」和「9 成功 1 失败」在级别上分不开
+    let level = if report.errors.is_empty() {
+        Level::Info
+    } else if report.imported.is_empty() {
+        Level::Error
+    } else {
+        Level::Warn
+    };
+    let detail = if report.errors.is_empty() {
+        String::new()
+    } else {
+        format!(" · 失败明细={}", report.errors.join("；"))
+    };
     log::log(
-        if report.errors.is_empty() {
-            Level::Info
-        } else {
-            Level::Warn
-        },
+        level,
         "hub",
-        format!("从平台导入技能：{}", report.summary()),
+        format!("从平台导入技能：{}{detail}", report.summary()),
     );
     Ok(report)
 }
@@ -73,10 +83,22 @@ pub async fn hub_skill_deploy(
     .await
     .map_err(err_text)?
     .map_err(err_text)?;
+    // 部署全失败必须是 error：界面只会说一句「部署失败」，日志里得有原因
+    let level = if report.failed() == 0 {
+        Level::Info
+    } else if report.done() == 0 {
+        Level::Error
+    } else {
+        Level::Warn
+    };
+    let detail = report
+        .first_error()
+        .map(|e| format!(" · 首个失败={e}"))
+        .unwrap_or_default();
     log::log(
-        Level::Info,
+        level,
         "hub",
-        format!("部署技能：{}", report.summary()),
+        format!("部署技能：{}{detail}", report.summary()),
     );
     Ok(report)
 }
@@ -95,10 +117,21 @@ pub async fn hub_skill_remove(
         crate::app::runtime::blocking(move || crate::app::hub::skills::remove(&hub, &name, &keys))
             .await
             .map_err(err_text)?;
+    let level = if report.failed() == 0 {
+        Level::Info
+    } else if report.done() == 0 {
+        Level::Error
+    } else {
+        Level::Warn
+    };
+    let detail = report
+        .first_error()
+        .map(|e| format!(" · 首个失败={e}"))
+        .unwrap_or_default();
     log::log(
-        Level::Info,
+        level,
         "hub",
-        format!("移除技能：{}", report.summary()),
+        format!("移除技能：{}{detail}", report.summary()),
     );
     Ok(report)
 }

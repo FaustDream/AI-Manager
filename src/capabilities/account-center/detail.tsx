@@ -16,7 +16,12 @@ import { confirmAction } from '@/components/ui/confirm';
 import { Dialog } from '@/components/ui/dialog';
 import { Notice, Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
-import type { AccountDetail, AccountView, ClaimPlan } from '@/lib/types';
+import type {
+  AccountDetail,
+  AccountView,
+  ClaimPlan,
+  CodebuddyTargetStatus,
+} from '@/lib/types';
 
 function Stat({
   label,
@@ -81,6 +86,14 @@ export function DetailPanel({
     enabled: !!account,
   });
 
+  // CodeBuddy 软件 / IDEA 插件现在登的是谁——切换前后都给个明确状态。
+  // 这两个客户端只服务国内版：国际版账号连状态都不查（查了也没有可切的东西）。
+  const codebuddyTargets = useQuery<CodebuddyTargetStatus[]>({
+    queryKey: ['codebuddy-targets'],
+    queryFn: () => queryCmd('account_codebuddy_targets'),
+    enabled: !!account && account.platform === 'workbuddy' && !account.iid.endsWith('@intl'),
+  });
+
   if (!account) {
     return (
       <div className="rounded-lg border border-dashed border-line px-4 py-5 text-sm text-muted">
@@ -129,20 +142,25 @@ export function DetailPanel({
     });
 
   // 三端同号、分开切换：这两个按钮只动 CodeBuddy 软件 / IDEA 插件的登录，
-  // 用这个账号的 WorkBuddy 档案写入（列表上的「切换登录」只切 WorkBuddy 本体）
+  // 用这个账号的 WorkBuddy 档案写入（列表上的「切换登录」只切 WorkBuddy 本体）。
+  // 只对国内版开放：CodeBuddy 系客户端没有国际版授权域，切过去也登不上。
+  const canSwitchCodebuddy =
+    account.platform === 'workbuddy' && !account.iid.endsWith('@intl');
   const switchCodebuddy = (target: 'software' | 'idea') =>
     runBusy(`switch-${target}`, async () => {
       const label = target === 'software' ? 'CodeBuddy 软件' : 'IDEA 插件';
       const ok = await confirmAction({
         title: `切换 ${label} 登录`,
         message:
-          `把 ${label} 的登录切成「${account.name}」？\n\n` +
-          `用这个账号的 WorkBuddy 档案写入，写前自动备份；需要先关闭 ${label}。`,
+          `把 ${label} 的登录切成国内版账号「${account.name}」？\n\n` +
+          `用这个账号的 WorkBuddy 档案写入，写前自动备份；需要先关闭 ${label}。\n` +
+          '切换后会清掉该端的账号缓存，模型与权限按新账号重新拉取。',
       });
       if (!ok) return;
       const r = await runCmd('account_switch_codebuddy', { iid: account.iid, target });
       if (r === undefined) return;
-      toast(r.backup ? `${r.message}\n备份：${r.backup}` : r.message);
+      toast(r.message);
+      qc.invalidateQueries({ queryKey: ['codebuddy-targets'] });
     });
 
   const d = detail.data;
@@ -193,7 +211,7 @@ export function DetailPanel({
             签到
           </Button>
         )}
-        {account.platform === 'workbuddy' && !account.iid.endsWith('@intl') && (
+        {canSwitchCodebuddy && (
           <>
             <Button
               size="sm"
@@ -216,6 +234,29 @@ export function DetailPanel({
           </>
         )}
       </div>
+
+      {/* 切换状态行：两个客户端现在登的是谁 / 有没有装，一眼看清 */}
+      {canSwitchCodebuddy && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-3 py-1.5 text-xs text-muted">
+          <span className="font-medium">CodeBuddy 系登录</span>
+          {codebuddyTargets.isLoading && <span>读取中…</span>}
+          {(codebuddyTargets.data ?? []).map((t) => (
+            <span key={t.key}>
+              {t.label}：
+              {!t.installed ? (
+                <span className="text-muted">未安装</span>
+              ) : t.current_name ? (
+                <span className="font-medium text-fg">
+                  {t.current_name}
+                  {t.edition === 'intl' ? '（国际版）' : t.edition === 'cn' ? '（国内版）' : ''}
+                </span>
+              ) : (
+                <span className="text-muted">未登录</span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* 结论层：只留「现在还剩多少」和「什么快过期」，数字最大，异常才上色 */}
       <div className="grid grid-cols-2 gap-px bg-line">

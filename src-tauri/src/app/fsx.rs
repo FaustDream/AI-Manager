@@ -72,26 +72,87 @@ fn replace_file(tmp: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::rename(tmp, dst)
 }
 
-/// 备份到指定目录，保留原文件名 + 时间戳；返回备份路径。
-pub fn backup_to(src: &Path, dir: &Path, tag: &str) -> Result<PathBuf> {
-    if !src.exists() {
-        return Err(AppError::new(
-            ErrorKind::BackupFailed,
-            format!("待备份文件不存在：{}", src.display()),
-        ));
+/// 文件或目录的占用字节数。目录递归累加，读不到的部分按 0 计。
+pub fn dir_size(path: &Path) -> i64 {
+    let Ok(stat) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if stat.is_file() {
+        return stat.len() as i64;
     }
-    std::fs::create_dir_all(dir)
-        .map_err(|e| AppError::new(ErrorKind::BackupFailed, format!("创建备份目录失败：{e}")))?;
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let target = dir.join(format!("{tag}-{stamp}-{name}"));
-    std::fs::copy(src, &target).map_err(|e| {
-        AppError::new(
-            ErrorKind::BackupFailed,
-            format!("备份 {} 失败：{e}", src.display()),
-        )
-    })?;
-    Ok(target)
+    if !stat.is_dir() {
+        return 0;
+    }
+    let mut total = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            total += dir_size(&entry.path());
+        }
+    }
+    total
+}
+
+/// Chromium profile 里按定义可重建的纯缓存目录。
+/// 登录判定只认 Cookies / Local Storage / 票据，缓存不参与；但整目录拷进每个账号档案、
+/// 每份退出登录备份后，几百 MB 会被复制到多处，客户端启动时自己就会重建。
+pub const CHROMIUM_CACHE_DIRS: &[&str] = &[
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnWebGPUCache",
+    "DawnGraphiteCache",
+    "GrShaderCache",
+    "ShaderCache",
+];
+
+/// 备份批次保留份数：写前备份是唯一回退依据，但不能无限堆积。
+pub const BACKUP_KEEP: usize = 10;
+
+/// 复制登录态目录，跳过纯缓存；其余语义与 `copy_dir_merge` 一致。
+/// 嵌套在 `Partitions/` 下的同名缓存目录也跳过。
+pub fn copy_profile_skipping_caches(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if from.is_dir() && CHROMIUM_CACHE_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_profile_skipping_caches(&from, &to)?;
+        } else {
+            if to.exists() {
+                let _ = clear_readonly(&to);
+            }
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// 备份目录只留最近 keep 个条目，按修改时间从旧到新删。
+///
+/// 只允许传「条目全部由本工具按批次新建」的目录：`session-restore/` 混有 v1 遗留、
+/// `manual-*` / `switch-exp-*` 是人工快照，按 CORE-01 一律不传进来。
+pub fn prune_children(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut items: Vec<(Option<std::time::SystemTime>, PathBuf)> = entries
+        .flatten()
+        .map(|e| {
+            let at = e.metadata().and_then(|m| m.modified()).ok();
+            (at, e.path())
+        })
+        .collect();
+    // 最新在前；同一时刻创建的按名字兜底，保证删除顺序稳定
+    items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    for (_, path) in items.iter().skip(keep) {
+        // 新备份已经落盘才走到这里，旧批次清不掉不该让业务失败，下次再试
+        let _ = remove_path(path);
+    }
 }
 
 /// 合并复制目录：目标中已有的文件被覆盖，**目标里多出来的文件保留**。
@@ -266,17 +327,60 @@ mod tests {
     }
 
     #[test]
-    fn backup_lands_in_given_dir_with_tag() {
+    fn profile_copy_skips_only_chromium_caches() {
         let dir = tmp();
-        let src = dir.path().join("auth.v1.dat");
-        std::fs::write(&src, b"ticket").unwrap();
-        let backup = backup_to(&src, &dir.path().join("backups"), "qoder").unwrap();
-        assert!(backup.to_string_lossy().contains("backups"));
-        assert!(backup
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("qoder-"));
-        assert_eq!(std::fs::read(&backup).unwrap(), b"ticket");
+        let src = dir.path().join("session");
+        let dst = dir.path().join("pack");
+        std::fs::create_dir_all(src.join("Cache")).unwrap();
+        std::fs::create_dir_all(src.join("Code Cache")).unwrap();
+        std::fs::create_dir_all(src.join("GPUCache")).unwrap();
+        std::fs::create_dir_all(src.join("Partitions/sub/Cache")).unwrap();
+        std::fs::create_dir_all(src.join("Local Storage")).unwrap();
+        std::fs::write(src.join("Cache/data_1"), vec![0u8; 2048]).unwrap();
+        std::fs::write(src.join("Code Cache/js"), b"js").unwrap();
+        std::fs::write(src.join("GPUCache/gpu"), b"gpu").unwrap();
+        std::fs::write(src.join("Partitions/sub/Cache/blob"), b"blob").unwrap();
+        std::fs::write(src.join("Partitions/sub/Preferences"), b"prefs").unwrap();
+        std::fs::write(src.join("Cookies"), b"cookies").unwrap();
+        std::fs::write(src.join("Local Storage/leveldb"), b"tokens").unwrap();
+        std::fs::write(src.join("Local State"), b"state").unwrap();
+
+        copy_profile_skipping_caches(&src, &dst).unwrap();
+
+        assert!(!dst.join("Cache").exists());
+        assert!(!dst.join("Code Cache").exists());
+        assert!(!dst.join("GPUCache").exists());
+        assert!(
+            !dst.join("Partitions/sub/Cache").exists(),
+            "嵌套缓存也要跳过"
+        );
+        assert_eq!(std::fs::read(dst.join("Cookies")).unwrap(), b"cookies");
+        assert_eq!(
+            std::fs::read(dst.join("Local Storage/leveldb")).unwrap(),
+            b"tokens"
+        );
+        assert_eq!(std::fs::read(dst.join("Local State")).unwrap(), b"state");
+        assert_eq!(
+            std::fs::read(dst.join("Partitions/sub/Preferences")).unwrap(),
+            b"prefs"
+        );
+    }
+
+    #[test]
+    fn prune_children_keeps_only_latest_batches() {
+        let dir = tmp();
+        let base = dir.path().join("backups");
+        std::fs::create_dir_all(&base).unwrap();
+        for index in 0..12 {
+            let batch = base.join(format!("202601{:03}", index));
+            std::fs::create_dir_all(&batch).unwrap();
+            std::fs::write(batch.join("f.bin"), b"x").unwrap();
+        }
+
+        prune_children(&base, BACKUP_KEEP);
+
+        assert_eq!(std::fs::read_dir(&base).unwrap().count(), BACKUP_KEEP);
+        assert!(!base.join("202601000").exists(), "最旧的批次要被回收");
+        assert!(base.join("202601011").exists(), "最新的批次必须留着");
     }
 }

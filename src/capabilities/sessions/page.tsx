@@ -5,7 +5,6 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { BackupsDrawer, TrashDrawer } from './dialogs';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { findActiveTask, useTasks } from '@/lib/use-tasks';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { errText } from '@/lib/ipc';
 import { fmtSize, fmtTime } from '@/lib/format';
@@ -75,10 +74,6 @@ export default function SessionsPage() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [trashOpen, setTrashOpen] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
-
-  // 任务表：删除/彻底删除都在后台跑，这里取「本页正在跑的任务」画进度条
-  const tasks = useTasks({ refetchInterval: 1000 });
-  const job = findActiveTask(tasks.data, 'sessions');
 
   const facets = useQuery<Facets>({
     queryKey: ['facets'],
@@ -399,21 +394,6 @@ export default function SessionsPage() {
           归档与删除各只留一个按钮——当前选中状态决定它显示成哪个动作。 */}
       <div className="flex flex-wrap items-center gap-2 text-sm">
         {checked.size > 0 && <span className="text-xs text-muted">已选 {checked.size} 条</span>}
-        {job && (
-          <span className="flex items-center gap-2 text-xs text-muted">
-            {job.name}
-            {/* 有进度才画条：扫描这类任务不上报进度，画个 0% 的空条反而像卡住 */}
-            {job.progress != null && (
-              <span className="inline-block h-1.5 w-24 overflow-hidden rounded-full bg-hover">
-                <span
-                  className="block h-full bg-accent transition-[width] duration-300"
-                  style={{ width: `${Math.round(job.progress * 100)}%` }}
-                />
-              </span>
-            )}
-            <span className="tabular-nums">{job.message || '进行中…'}</span>
-          </span>
-        )}
         {allOnPage && total > items.length && checked.size < total && (
           <button
             type="button"

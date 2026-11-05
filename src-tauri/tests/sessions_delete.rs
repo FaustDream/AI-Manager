@@ -8,7 +8,6 @@ mod support;
 use ai_manager::app::clients::Roots;
 use ai_manager::app::db::Db;
 use ai_manager::app::sessions::{delete, preview, sources::wb, SqliteSessions};
-use ai_manager::app::task::CancelToken;
 use std::sync::Arc;
 use support::*;
 
@@ -25,7 +24,7 @@ async fn delete_moves_to_trash_and_restore_brings_it_back() {
 
     // ---- 扫描进索引（删除要用行 key，key 来自索引） ----
     let service = ai_manager::app::sessions::Service::new(db.clone(), roots.clone());
-    service.scan(Arc::new(CancelToken::new())).await.unwrap();
+    service.scan().await.unwrap();
     let page = service.page(Default::default(), None, 50).await.unwrap();
     assert_eq!(page.items.len(), 2, "两个来源各一条");
 
@@ -115,11 +114,11 @@ async fn rescan_after_delete_has_no_ghosts() {
     let sid = seed_workbuddy(&roots);
 
     let service = ai_manager::app::sessions::Service::new(db.clone(), roots.clone());
-    service.scan(Arc::new(CancelToken::new())).await.unwrap();
+    service.scan().await.unwrap();
     let key = format!("workbuddy|cn|uid-1|{sid}");
     delete::delete_into(&roots, &db, &[key], false, &trash_root, None).unwrap();
     // 删除时已经让来源失效，这里再扫一遍确认真没了
-    service.scan(Arc::new(CancelToken::new())).await.unwrap();
+    service.scan().await.unwrap();
     let page = service.page(Default::default(), None, 50).await.unwrap();
     assert!(page.items.is_empty(), "删掉的会话不该被重新扫回来");
 }
@@ -223,7 +222,7 @@ async fn zcode_delete_and_restore_keeps_parts() {
     let artifacts = seed_zcode_artifacts(&roots, sid);
 
     let service = ai_manager::app::sessions::Service::new(db.clone(), roots.clone());
-    service.scan(Arc::new(CancelToken::new())).await.unwrap();
+    service.scan().await.unwrap();
     let page = service.page(Default::default(), None, 50).await.unwrap();
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].msgs, Some(2), "两条消息");
@@ -353,7 +352,7 @@ async fn purge_clears_rows_the_client_already_forgot() {
     }
 
     let service = ai_manager::app::sessions::Service::new(db.clone(), roots.clone());
-    service.scan(Arc::new(CancelToken::new())).await.unwrap();
+    service.scan().await.unwrap();
     assert_eq!(
         service
             .page(Default::default(), None, 50)
@@ -448,7 +447,7 @@ async fn delete_works_when_trash_lives_on_another_drive() {
     let _ = std::fs::remove_dir_all(&trash_root);
 
     let service = ai_manager::app::sessions::Service::new(db.clone(), roots.clone());
-    service.scan(Arc::new(CancelToken::new())).await.unwrap();
+    service.scan().await.unwrap();
 
     let key = format!("workbuddy|cn|uid-1|{sid}");
     let report = delete::delete_into(&roots, &db, &[key], false, &trash_root, None).unwrap();

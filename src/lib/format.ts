@@ -61,3 +61,9 @@ export function daysUntil(iso: string | number | null | undefined): number | nul
   end.setHours(0, 0, 0, 0);
   return Math.round((end.getTime() - start.getTime()) / 86_400_000);
 }
+
+/** 耗时：低于 1 秒给毫秒，超过给秒。日志与执行记录共用一套口径。 */
+export function fmtMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return '—';
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
+}

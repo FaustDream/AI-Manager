@@ -22,9 +22,6 @@ use base64::Engine;
 use serde_json::Value;
 use std::path::Path;
 
-/// 迁移收尾（P7）：计数校验与归档。与导入器分开，因为归档要「先校验后写」。
-pub mod verify;
-
 #[derive(Debug, Default, Clone)]
 pub struct ImportReport {
     pub accounts: usize,

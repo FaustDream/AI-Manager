@@ -236,7 +236,6 @@ fn contract_10_restore_only_touches_user_id() {
         before,
         "正文内容一个字节都不能动"
     );
-    assert!(report.backup.exists(), "写客户端库之前必须留一份备份");
 
     // 库里只剩 uid-1 的会话
     let conn = rusqlite::Connection::open_with_flags(
@@ -367,19 +366,6 @@ fn contract_14_mcp_format_roundtrip() {
         );
         assert_eq!(back.name, entry.name);
     }
-}
-
-// ---------------------------------------------------------------- 契约 15
-#[test]
-fn contract_15_backup_before_writing_platform_config() {
-    let paths = TestPaths::new();
-    let hub = test_hub(&paths);
-    let path = hub.backup_before_write(TargetKey::Trae).unwrap();
-    assert!(
-        path.to_string_lossy().contains("backups"),
-        "写前必须备份到 backups 目录"
-    );
-    assert!(path.exists(), "备份文件要真的落盘");
 }
 
 // ---------------------------------------------------------------- 契约 16

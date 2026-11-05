@@ -393,6 +393,7 @@ impl Provider for ZCodeProvider {
         let quota = self.quota(cred, http).await?;
         Ok(CreditSnapshot {
             summary: quota.summary,
+            error: None,
             balance: None,
             lots: None,
             quota: Some(quota.windows),
@@ -867,7 +868,6 @@ pub fn switch_to(
     account_id: &str,
     name: &str,
     cred: &Credential,
-    backup_dir: &Path,
 ) -> Result<SwitchOutcome> {
     let Some(creds) = cred.meta_json("credentials").filter(|v| v.is_object()) else {
         return Err(AppError::new(
@@ -895,25 +895,11 @@ pub fn switch_to(
     }
 
     let target = provider.credentials_path();
-    let mut backup = None;
-    if target.exists() {
-        backup = Some(fsx::backup_to(&target, backup_dir, "zcode")?);
-    }
     // 写的是原始密文，不是解密后的明文：密钥由机器推导，重新加密反而可能与客户端不一致
     fsx::write_atomic(&target, &serde_json::to_vec_pretty(creds)?)?;
 
     if let Some(config) = cred.meta_json("config").filter(|v| v.is_object()) {
         let path = provider.config_path();
-        if path.exists() {
-            // 备份失败还照写，出问题就没有退路了
-            if let Err(e) = fsx::backup_to(&path, backup_dir, "zcode-config") {
-                crate::app::log::log(
-                    crate::app::log::Level::Warn,
-                    "zcode",
-                    format!("config 备份失败：{}", e.message),
-                );
-            }
-        }
         fsx::write_atomic(&path, &serde_json::to_vec_pretty(config)?)?;
     }
 
@@ -944,7 +930,6 @@ pub fn switch_to(
 
     Ok(SwitchOutcome {
         message: format!("ZCode 已切换到 {name}"),
-        backup,
     })
 }
 
@@ -1138,8 +1123,7 @@ mod tests {
         cred.put("credentials", creds("42"));
         cred.put("config", json!({"theme": "dark"}));
 
-        let out = switch_to(&provider, "42", "慎静", &cred, &dir.path().join("bk")).unwrap();
-        assert!(out.backup.is_some());
+        switch_to(&provider, "42", "慎静", &cred).unwrap();
         let written: Value = serde_json::from_slice(
             &std::fs::read(dir.path().join(".zcode/v2/credentials.json")).unwrap(),
         )
@@ -1162,7 +1146,7 @@ mod tests {
         let mut cred = Credential::default();
         cred.put("credentials", creds("42"));
 
-        let err = switch_to(&provider, "42", "慎静", &cred, &dir.path().join("bk")).unwrap_err();
+        let err = switch_to(&provider, "42", "慎静", &cred).unwrap_err();
         assert_eq!(err.kind, crate::app::error::ErrorKind::ClientRunning);
         // 客户端在跑时一个字节都不能写
         let kept = std::fs::read(dir.path().join(".zcode/v2/credentials.json")).unwrap();
@@ -1173,7 +1157,7 @@ mod tests {
     fn switch_refuses_without_credentials() {
         let dir = tempfile::TempDir::new().unwrap();
         let provider = ZCodeProvider::at(dir.path().to_path_buf(), None);
-        let err = switch_to(&provider, "1", "n", &Credential::default(), dir.path()).unwrap_err();
+        let err = switch_to(&provider, "1", "n", &Credential::default()).unwrap_err();
         assert!(matches!(err.kind, crate::app::error::ErrorKind::Invalid));
     }
 }

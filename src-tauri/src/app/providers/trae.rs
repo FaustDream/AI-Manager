@@ -340,6 +340,7 @@ impl Provider for TraeProvider {
         let (summary, balance, lots) = self.usage(cred, http).await?;
         Ok(CreditSnapshot {
             summary,
+            error: None,
             balance,
             lots,
             quota: None,
