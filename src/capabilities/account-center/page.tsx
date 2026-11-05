@@ -3,7 +3,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { findActiveTask, useTasks } from '@/lib/use-tasks';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { errKind, errText } from '@/lib/ipc';
 import { SkeletonRows, StateBlock } from '@/components/ui/form';
@@ -119,10 +118,6 @@ export default function AccountCenterPage() {
     
   });
 
-  // 拖拽进行中暂停轮询：每次返回新数组引用都会整页 re-render，打断拖影
-  const tasks = useTasks({ refetchInterval: dragging ? false : 2000 });
-  const batchTask = findActiveTask(tasks.data, 'account_center', '批量签到');
-
   const widthOf = (key: string, fallback: number) => widths[key] ?? fallback;
 
   // 表格最小宽度 = 拖动列 + 各列实际宽度 + 操作列。跟着列宽/删列自动变，
@@ -194,12 +189,12 @@ export default function AccountCenterPage() {
         const out = await runCmd('checkin_credits', { iids });
 
         if (out === undefined) return;
-        // 失败账号的余额与配额都是 null，summary 里是原因：标到「状态」列上，
-        // 下次刷新成功会自动消失（运行时状态，不进库）
+        // 只有后端标了 error 才算失败：成功但没拿到数值不能标红。
+        // 运行时状态，下次刷新成功自动消失，不进库。
         const errors: Record<string, string> = {};
         for (const [iid, snapshot] of out) {
-          if (snapshot.balance === null && snapshot.quota === null) {
-            errors[iid] = snapshot.summary || '查询失败';
+          if (snapshot.error) {
+            errors[iid] = snapshot.error;
           }
         }
         setQueryErrors(errors);
@@ -247,7 +242,7 @@ export default function AccountCenterPage() {
     void runBusy(`switch:${target.iid}`, async () => {
       try {
         const r = await queryCmd('account_switch', { iid: target.iid });
-        toast(r.message + (r.backup ? `\n备份：${r.backup}` : ''));
+        toast(r.message);
         // 切换会改写客户端登录态，也会把旧账号的会话关联过来：列表、当前账号、会话页都要刷
         qc.invalidateQueries({ queryKey: ['current'] });
         qc.invalidateQueries({ queryKey: ['accounts'] });
@@ -276,8 +271,7 @@ export default function AccountCenterPage() {
         const r = await queryCmd('account_restore_sessions', { iid: target.iid });
         toast(
           r.changed_rows > 0
-            ? `已把 ${r.changed_rows} 条历史会话关联到「${target.name}」` +
-                (r.backup ? `\n写前备份：${r.backup}` : '')
+            ? `已把 ${r.changed_rows} 条历史会话关联到「${target.name}」`
             : '没有需要关联的会话（当前账号已经能看到全部历史）',
         );
         qc.invalidateQueries({ queryKey: ['sessions'] });
@@ -318,7 +312,6 @@ export default function AccountCenterPage() {
     <div className="flex flex-col gap-2.5">
       <AccountToolbar
         busy={busy}
-        batchTask={batchTask}
         onScan={scanAndRefresh}
         onAdd={() => setAddOpen(true)}
         onRefresh={refreshCredits}

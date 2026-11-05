@@ -70,6 +70,113 @@ impl Target {
             Self::IdeaPlugin => "JetBrains",
         }
     }
+
+    /// 读取目标客户端当前会话文件（软件走 state.vscdb，插件走 secret-storage.xml）。
+    fn read_session(self, roots: &Roots) -> Option<Value> {
+        match self {
+            Self::Software => read_software_session(roots),
+            Self::IdeaPlugin => read_idea_session(roots),
+        }
+    }
+}
+
+/// 账号作用域的产品/模型缓存键：切号后必须清掉，否则客户端仍拿着旧账号的
+/// 模型清单与能力（权限），要等自然过期才刷新。两端用同一组键名（实机取证）。
+const ACCOUNT_CACHE_KEYS: [&str; 6] = [
+    "CodeBuddy-Product-Cache",
+    "ACC_SHARE_CACHE_PRODUCT_MODELS",
+    "ACC_SHARE_CACHE_PRODUCT_REMOTE_AGENTS",
+    "cloud_product_config_cache",
+    "CodeBuddy-Endpoint-Cache",
+    "CodeBuddy-LLMDataReportCACHE-llm-data",
+];
+
+/// 目标客户端的现状（详情页状态展示用）。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CodebuddyTargetStatus {
+    /// `software` / `idea`（与切换命令的 target 参数同值）
+    pub key: String,
+    pub label: String,
+    /// 本机是否装了/登录过（数据目录存在）
+    pub installed: bool,
+    pub current_name: Option<String>,
+    pub current_uid: Option<String>,
+    /// `cn` / `intl`：从会话的授权域判断（www.workbuddy.cn / www.workbuddy.ai）
+    pub edition: Option<String>,
+}
+
+/// 两个目标客户端的当前登录状态。读不到会话就是「未登录」，不报错。
+pub fn statuses(roots: &Roots) -> Vec<CodebuddyTargetStatus> {
+    [Target::Software, Target::IdeaPlugin]
+        .iter()
+        .map(|&target| {
+            let session = target.read_session(roots);
+            let installed = match target {
+                Target::Software => software_vscdb(roots).is_file(),
+                Target::IdeaPlugin => !idea_stores(roots).is_empty(),
+            };
+            let account = session.as_ref().and_then(|s| s.get("account"));
+            let name = account
+                .and_then(|a| a.get("label").or_else(|| a.get("nickname")))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let uid = account
+                .and_then(|a| a.get("uid"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let edition = session
+                .as_ref()
+                .and_then(|s| s.pointer("/auth/domain"))
+                .and_then(|v| v.as_str())
+                .and_then(edition_of_domain);
+            CodebuddyTargetStatus {
+                key: match target {
+                    Target::Software => "software".into(),
+                    Target::IdeaPlugin => "idea".into(),
+                },
+                label: target.label().to_string(),
+                installed: installed || session.is_some(),
+                current_name: name,
+                current_uid: uid,
+                edition,
+            }
+        })
+        .collect()
+}
+
+/// 授权域 → 版本：`www.workbuddy.cn` 是国内版、`www.workbuddy.ai` 是国际版。
+fn edition_of_domain(domain: &str) -> Option<String> {
+    if domain.ends_with("workbuddy.cn") {
+        Some("cn".into())
+    } else if domain.ends_with("workbuddy.ai") {
+        Some("intl".into())
+    } else {
+        None
+    }
+}
+
+fn software_vscdb(roots: &Roots) -> PathBuf {
+    roots
+        .appdata
+        .join("CodeBuddy CN/User/globalStorage/state.vscdb")
+}
+
+/// 本机所有 IDE 的 secret-storage.xml（装了插件才有）。
+fn idea_stores(roots: &Roots) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(dirs) = std::fs::read_dir(roots.appdata.join("JetBrains")) else {
+        return out;
+    };
+    for dir in dirs.flatten() {
+        let xml = dir.path().join("options").join("secret-storage.xml");
+        if xml.is_file() {
+            out.push(xml);
+        }
+    }
+    out
 }
 
 /// 目标客户端**当前**登录账号的 uid（会话保留的来源）。读不到返回 None。
@@ -200,7 +307,7 @@ fn decrypt_tree(node: &Value) -> Result<Value> {
 fn write_software(roots: &Roots, session: &Value) -> Result<PathBuf> {
     let base = roots.appdata.join("CodeBuddy CN");
     let local_state = base.join("Local State");
-    let vscdb = base.join("User").join("globalStorage").join("state.vscdb");
+    let vscdb = software_vscdb(roots);
     if !vscdb.exists() {
         return Err(AppError::new(
             ErrorKind::Io,
@@ -214,7 +321,7 @@ fn write_software(roots: &Roots, session: &Value) -> Result<PathBuf> {
 
     let conn = rusqlite::Connection::open(&vscdb)
         .map_err(|e| AppError::new(ErrorKind::Io, format!("打开 state.vscdb 失败：{e}")))?;
-    let key_text = r#"secret://{"extensionId":"tencent-cloud.coding-copilot","key":"planning-genie.new.accessTokencn"}"#;
+    let key_text = software_secret_key("planning-genie.new.accessTokencn");
     let rows = conn
         .execute(
             "UPDATE ItemTable SET value = ?1 WHERE key = ?2",
@@ -235,19 +342,15 @@ fn write_software(roots: &Roots, session: &Value) -> Result<PathBuf> {
 fn write_idea(roots: &Roots, session: &Value) -> Result<Vec<PathBuf>> {
     let entry_key = "Tencent-Cloud.coding-copilot.new.accessToken";
     let value = xml_escape(&serde_json::to_string(session)?);
-    let jb = roots.appdata.join("JetBrains");
-    let mut written = Vec::new();
-    let Ok(dirs) = std::fs::read_dir(&jb) else {
+    let stores = idea_stores(roots);
+    if stores.is_empty() {
         return Err(AppError::new(
             ErrorKind::Io,
-            "没有找到 JetBrains 配置目录（IDEA 可能没安装）",
+            "没有找到 IDEA 的 secret-storage.xml（插件可能没安装/没登录过）",
         ));
-    };
-    for dir in dirs.flatten() {
-        let xml = dir.path().join("options").join("secret-storage.xml");
-        if !xml.is_file() {
-            continue;
-        }
+    }
+    let mut written = Vec::new();
+    for xml in stores {
         let text = std::fs::read_to_string(&xml).map_err(|e| {
             AppError::new(ErrorKind::Io, format!("读 secret-storage.xml 失败：{e}"))
         })?;
@@ -258,13 +361,76 @@ fn write_idea(roots: &Roots, session: &Value) -> Result<Vec<PathBuf>> {
         fsx::write_atomic(&xml, next.as_bytes())?;
         written.push(xml);
     }
-    if written.is_empty() {
-        return Err(AppError::new(
-            ErrorKind::Io,
-            "没有找到 IDEA 的 secret-storage.xml（插件可能没安装/没登录过）",
-        ));
-    }
     Ok(written)
+}
+
+/// 软件的 secret 键名（VSCode SecretStorage 的 `secret://` 命名）。
+fn software_secret_key(key: &str) -> String {
+    format!(r#"secret://{{"extensionId":"tencent-cloud.coding-copilot","key":"{key}"}}"#)
+}
+
+/// 账号信息与权限同步：清掉账号作用域的产品/模型缓存，逼客户端按新账号重新拉取。
+///
+/// 不清的后果：切完账号，模型清单、可用能力（权限）还是旧账号缓存里的，
+/// 要等 TTL 过期才刷新——用户看到的就是「号切了，但权限没跟着变」。
+/// 返回清掉的条数；读不到存储不算错误（没装/没登录过）。
+fn prune_account_caches(roots: &Roots, target: Target) -> Result<u32> {
+    let mut removed = 0u32;
+    match target {
+        Target::Software => {
+            let vscdb = software_vscdb(roots);
+            if !vscdb.is_file() {
+                return Ok(0);
+            }
+            let conn = rusqlite::Connection::open(&vscdb)
+                .map_err(|e| AppError::new(ErrorKind::Io, format!("打开 state.vscdb 失败：{e}")))?;
+            for key in ACCOUNT_CACHE_KEYS {
+                let rows = conn
+                    .execute(
+                        "DELETE FROM ItemTable WHERE key = ?1",
+                        rusqlite::params![software_secret_key(key)],
+                    )
+                    .map_err(|e| AppError::new(ErrorKind::Io, format!("清理账号缓存失败：{e}")))?;
+                removed += rows as u32;
+            }
+        }
+        Target::IdeaPlugin => {
+            for xml in idea_stores(roots) {
+                let text = std::fs::read_to_string(&xml).map_err(|e| {
+                    AppError::new(ErrorKind::Io, format!("读 secret-storage.xml 失败：{e}"))
+                })?;
+                let mut next = text.clone();
+                for key in ACCOUNT_CACHE_KEYS {
+                    if let Some(pruned) = remove_entry(&next, key) {
+                        next = pruned;
+                        removed += 1;
+                    }
+                }
+                if next != text {
+                    fsx::write_atomic(&xml, next.as_bytes())?;
+                }
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// 删掉一条 `<Entry key="…" … />`；没有就返回 None。
+fn remove_entry(xml: &str, key: &str) -> Option<String> {
+    let marker = format!("key=\"{key}\"");
+    let at = xml.find(&marker)?;
+    let start = xml[..at].rfind("<Entry")?;
+    let end = xml[at..].find("/>").map(|i| at + i + 2)?;
+    Some(format!("{}{}", &xml[..start], &xml[end..]))
+}
+
+/// 目标客户端当前会话里的 auth 配置 id（切号时沿用，保证旧格式字段与客户端一致）。
+fn existing_auth_id(roots: &Roots, target: Target) -> Option<String> {
+    target
+        .read_session(roots)?
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 /// 把 `<Entry key=… value=… />` 整条换掉；没有就插到 `<Scores>` 之后。
@@ -386,7 +552,7 @@ fn count_files(dir: &Path) -> u64 {
 
 // ---------------------------------------------------------------- 编排
 
-/// 用 WorkBuddy 国内版账号的档案把目标客户端切成这个账号。
+/// 用 WorkBuddy 账号的档案把目标客户端切成这个账号（`edition`: `cn` / `intl`）。
 ///
 /// 只动目标客户端的凭证落点，不碰 WorkBuddy 自己的登录态（那走 `accounts::switch`）。
 /// `processes` 是测试注入口：测试里给空列表跳过进程检查。
@@ -394,24 +560,24 @@ pub fn switch_target(
     roots: &Roots,
     uid: &str,
     name: &str,
+    edition: &str,
     target: Target,
-    backup_dir: &Path,
 ) -> Result<SwitchOutcome> {
-    switch_target_with(roots, uid, name, target, backup_dir, target.processes())
+    switch_target_with(roots, uid, name, edition, target, target.processes())
 }
 
 fn switch_target_with(
     roots: &Roots,
     uid: &str,
     name: &str,
+    edition: &str,
     target: Target,
-    backup_dir: &Path,
     processes: &[&str],
 ) -> Result<SwitchOutcome> {
-    // 档案在 <data>/profiles/cn/<uid>/auth.info（与 WorkBuddyProvider 的 pack_dir 同构）
+    // 档案在 <data>/profiles/<cn|intl>/<uid>/auth.info（与 WorkBuddyProvider 的 pack_dir 同构）
     let pack = crate::app::paths::data_dir()
         .join("profiles")
-        .join("cn")
+        .join(edition)
         .join(uid)
         .join("auth.info");
     if !pack.is_file() {
@@ -435,39 +601,13 @@ fn switch_target_with(
             .map_err(|e| AppError::new(ErrorKind::Io, format!("读档案失败：{e}")))?,
     )
     .map_err(|e| AppError::new(ErrorKind::Invalid, format!("档案不是合法票据：{e}")))?;
-    let session = build_session(&ticket, target.auth_config_id())?;
+    // auth 配置 id 优先沿用目标客户端当前会话里的值（国内/国际版可能不同），
+    // 客户端从没登录过才退回实机取证的缺省值
+    let auth_id =
+        existing_auth_id(roots, target).unwrap_or_else(|| target.auth_config_id().to_string());
+    let session = build_session(&ticket, &auth_id)?;
     // 会话保留的来源：目标客户端当前登录的账号（写盘前读，之后就是新账号了）
     let from_uid = read_current_uid(roots, target);
-
-    // 写前备份：后悔了去 backup 里找
-    let backup = match target {
-        Target::Software => {
-            let file = roots
-                .appdata
-                .join("CodeBuddy CN")
-                .join("User")
-                .join("globalStorage")
-                .join("state.vscdb");
-            if file.is_file() {
-                Some(fsx::backup_to(&file, backup_dir, "codebuddy-software")?)
-            } else {
-                None
-            }
-        }
-        Target::IdeaPlugin => {
-            let xml = roots
-                .appdata
-                .join("JetBrains")
-                .join("IntelliJIdea2026.2")
-                .join("options")
-                .join("secret-storage.xml");
-            if xml.is_file() {
-                Some(fsx::backup_to(&xml, backup_dir, "codebuddy-idea")?)
-            } else {
-                None
-            }
-        }
-    };
 
     match target {
         Target::Software => {
@@ -478,11 +618,31 @@ fn switch_target_with(
         }
     };
 
+    // 账号信息与权限同步：清账号作用域的模型/产品缓存，切完立刻按新账号拉取
+    let pruned = prune_account_caches(roots, target).unwrap_or_else(|e| {
+        crate::app::log::log(
+            crate::app::log::Level::Warn,
+            "accounts",
+            format!("清理账号缓存失败：{}", e.message),
+        );
+        0
+    });
+
+    let tag = if edition == "intl" {
+        "国际版"
+    } else {
+        "国内版"
+    };
     let mut message = format!(
-        "{}已切换到「{name}」，重启 {} 后生效",
+        "{}已切换到{tag}「{name}」，重启 {} 后生效",
         target.label(),
         target.label()
     );
+    if pruned > 0 {
+        message.push_str(&format!(
+            "，已清理 {pruned} 项账号缓存（模型与权限将按新账号刷新）"
+        ));
+    }
     // 切换后会话不能消失：把原账号的会话树挪到新账号名下（与契约 10 同语义）。
     // 保留失败不影响登录态已切好——落日志、提示用户可在会话页找回。
     if let Some(from) = from_uid.filter(|f| f != uid) {
@@ -499,10 +659,7 @@ fn switch_target_with(
             }
         }
     }
-    if backup.is_none() {
-        message.push_str("（本次没有可备份的旧登录态）");
-    }
-    Ok(SwitchOutcome { message, backup })
+    Ok(SwitchOutcome { message })
 }
 
 // ---------------------------------------------------------------- 测试
@@ -709,8 +866,8 @@ mod tests {
             &roots(&dir),
             uid,
             "测试",
+            "cn",
             Target::Software,
-            &dir.path().join("bk"),
             &["this-process-does-not-exist.exe"],
         )
         .unwrap_err();
@@ -757,6 +914,119 @@ mod tests {
         assert!(dst.join("history/ws1/conv1/messages/2.json").is_file());
         // 源侧清空：会话「跟着账号走」，不在两边重复
         assert!(!src.exists(), "源会话树应已并走");
+    }
+
+    /// 账号信息与权限同步：缓存行被清掉，登录会话本身不能动。
+    #[test]
+    fn prune_caches_keeps_the_session_row() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fake_local_state(dir.path());
+        fake_vscdb(dir.path());
+        let conn = rusqlite::Connection::open(
+            dir.path()
+                .join("CodeBuddy CN/User/globalStorage/state.vscdb"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+            rusqlite::params![software_secret_key("CodeBuddy-Product-Cache"), &b"x"[..]],
+        )
+        .unwrap();
+        drop(conn);
+
+        let removed = prune_account_caches(&roots(&dir), Target::Software).unwrap();
+        assert_eq!(removed, 1);
+
+        let conn = rusqlite::Connection::open(
+            dir.path()
+                .join("CodeBuddy CN/User/globalStorage/state.vscdb"),
+        )
+        .unwrap();
+        let caches: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ItemTable WHERE key LIKE '%CodeBuddy-Product-Cache%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let session: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ItemTable WHERE key LIKE '%planning-genie%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(caches, 0);
+        assert_eq!(session, 1, "登录凭据不能被当成缓存清掉");
+    }
+
+    /// IDEA 端同样：只清缓存 Entry，会话 Entry 留着。
+    #[test]
+    fn prune_caches_keeps_the_idea_session_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let xml = dir
+            .path()
+            .join("JetBrains/IntelliJIdea2026.2/options/secret-storage.xml");
+        std::fs::create_dir_all(xml.parent().unwrap()).unwrap();
+        std::fs::write(
+            &xml,
+            r#"<application>
+    <component name="SecretStorage">
+      <Scores>
+        <Entry key="Tencent-Cloud.coding-copilot.new.accessToken" value="{}" />
+        <Entry key="CodeBuddy-Product-Cache" value="1" />
+        <Entry key="ACC_SHARE_CACHE_PRODUCT_MODELS" value="2" />
+      </Scores>
+    </component>
+  </application>"#,
+        )
+        .unwrap();
+
+        let removed = prune_account_caches(&roots(&dir), Target::IdeaPlugin).unwrap();
+        assert_eq!(removed, 2);
+
+        let text = std::fs::read_to_string(&xml).unwrap();
+        assert!(!text.contains("CodeBuddy-Product-Cache"));
+        assert!(!text.contains("ACC_SHARE_CACHE_PRODUCT_MODELS"));
+        assert!(text.contains("Tencent-Cloud.coding-copilot.new.accessToken"));
+    }
+
+    /// 状态展示：未登录 → installed=false / 无昵称；有会话 → 昵称 + 版本。
+    #[test]
+    fn statuses_read_current_account_and_edition() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let roots = roots(&dir);
+        let before = statuses(&roots);
+        assert_eq!(before.len(), 2);
+        assert!(before
+            .iter()
+            .all(|s| s.current_name.is_none() && !s.installed));
+
+        let xml = dir
+            .path()
+            .join("JetBrains/IntelliJIdea2026.2/options/secret-storage.xml");
+        std::fs::create_dir_all(xml.parent().unwrap()).unwrap();
+        let session = json!({
+            "account": {"uid": "u-9", "label": "凌致", "nickname": "凌致"},
+            "auth": {"domain": "www.workbuddy.ai"},
+        });
+        let value = xml_escape(&serde_json::to_string(&session).unwrap());
+        std::fs::write(
+            &xml,
+            format!(
+                r#"<application><component name="SecretStorage"><Scores>
+        <Entry key="Tencent-Cloud.coding-copilot.new.accessToken" value="{value}" />
+      </Scores></component></application>"#
+            ),
+        )
+        .unwrap();
+
+        let after = statuses(&roots);
+        let idea = after.iter().find(|s| s.key == "idea").unwrap();
+        assert!(idea.installed);
+        assert_eq!(idea.current_name.as_deref(), Some("凌致"));
+        assert_eq!(idea.current_uid.as_deref(), Some("u-9"));
+        assert_eq!(idea.edition.as_deref(), Some("intl"), "授权域决定版本");
     }
 
     /// 另一个平台的会话不受影响：切软件只动 CodeBuddyIDE。

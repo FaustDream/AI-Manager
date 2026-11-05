@@ -11,7 +11,7 @@
 
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::providers::{WorkBuddyProvider, ZCodeProvider};
-use crate::app::{fsx, paths, process};
+use crate::app::{fsx, process};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -24,8 +24,6 @@ pub struct AddOutcome {
     pub label: String,
     /// 真正启动的可执行文件（手动打开时用户要照着点）
     pub exe: String,
-    /// 旧登录态的备份目录（后悔了去哪找）
-    pub backup: String,
     pub restarted: bool,
     /// 主窗口是否已经叫到前台；false = 进程起来了但没窗口（多半在托盘）
     pub window: bool,
@@ -81,22 +79,16 @@ pub fn prepare(platform: &str) -> Result<AddOutcome> {
         ));
     }
 
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let keep = paths::data_dir()
-        .join("backups")
-        .join("logout")
-        .join(format!("{platform}-{stamp}"));
-
-    // 2) 把登录态挪到 backups/logout（不是删）
+    // 2) 退出当前登录态（不保留副本：当前账号的档案已经在 profiles/ 里存好了）
     crate::app::log::log(
         crate::app::log::Level::Info,
         "accounts",
-        format!("添加账号：备份 {label} 当前登录态到 {}", keep.display()),
+        format!("添加账号：退出 {label} 当前登录态"),
     );
     match platform {
-        "qoder" | "qoder_intl" => logout_qoder(platform, &keep)?,
-        "workbuddy" | "workbuddy_intl" => logout_workbuddy(platform, &keep)?,
-        "zcode" => logout_zcode(&keep)?,
+        "qoder" | "qoder_intl" => logout_qoder(platform)?,
+        "workbuddy" | "workbuddy_intl" => logout_workbuddy(platform)?,
+        "zcode" => logout_zcode()?,
         _ => unreachable!(),
     }
 
@@ -139,20 +131,17 @@ pub fn prepare(platform: &str) -> Result<AddOutcome> {
             platform: platform.to_string(),
             label,
             exe: exe.display().to_string(),
-            backup: keep.display().to_string(),
             restarted: true,
             window,
         });
     }
 
-    // 登录态已经挪走了，客户端却没起来：至少把路径给用户，让他手动双击
+    // 登录态已经清掉，客户端却没起来：至少把路径给用户，让他手动双击
     Err(AppError::new(
         ErrorKind::Io,
         format!(
             "{label} 没能自动打开：{last_error}\n\
-             登录态已备份到 {}\n\
              请手动双击 {} 打开客户端完成登录。",
-            keep.display(),
             exe.display()
         ),
     ))
@@ -220,18 +209,17 @@ fn window_title(platform: &str) -> Option<&'static str> {
     }
 }
 
-fn logout_qoder(platform: &str, keep: &Path) -> Result<()> {
+fn logout_qoder(platform: &str) -> Result<()> {
     let profile = profiles::qoder(platform)
         .ok_or_else(|| AppError::new(ErrorKind::Io, "没有找到 Qoder 的客户端数据目录"))?;
     let auth = profile.join("auth.v1.dat");
     if !auth.exists() {
         return Ok(()); // 本来就没登录，直接开客户端即可
     }
-    fsx::backup_to(&auth, keep, platform)?;
     fsx::remove_path(&auth)
 }
 
-fn logout_workbuddy(platform: &str, keep: &Path) -> Result<()> {
+fn logout_workbuddy(platform: &str) -> Result<()> {
     let intl = platform.ends_with("_intl");
     let provider = WorkBuddyProvider::new(intl);
     let root = profiles::workbuddy(intl)
@@ -244,57 +232,40 @@ fn logout_workbuddy(platform: &str, keep: &Path) -> Result<()> {
         provider.save_current_as_pack(&uid)?;
     }
 
-    // **客户端真正认的是 auth 目录下的 .info 令牌**：只挪 Chromium 会话是不够的，
+    // **客户端真正认的是 auth 目录下的 .info 令牌**：只清 Chromium 会话是不够的，
     // 令牌还在的话重启会静默自动登录，用户看不到登录页——表现就是「点了添加账号，
-    // 软件关了又起来，但什么都没发生」。这里连令牌一起挪进备份。
+    // 软件关了又起来，但什么都没发生」。
     if let Some(ticket) = provider.live_ticket() {
         if ticket.exists() {
-            let target = keep.join("auth").join(
-                ticket
-                    .file_name()
-                    .map(|n| n.to_os_string())
-                    .unwrap_or_else(|| "auth.info".into()),
-            );
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| AppError::new(ErrorKind::Io, format!("建备份目录失败：{e}")))?;
-            }
-            std::fs::copy(&ticket, &target)
-                .map_err(|e| AppError::new(ErrorKind::Io, format!("备份登录令牌失败：{e}")))?;
             fsx::remove_path(&ticket)?;
             crate::app::log::log(
                 crate::app::log::Level::Info,
                 "accounts",
-                format!("添加账号：已移走登录令牌 {}", ticket.display()),
+                format!("添加账号：已清掉登录令牌 {}", ticket.display()),
             );
         }
     }
 
+    clear_session_dirs(&root)
+}
+
+/// 清掉客户端登录态目录，逼它回登录页。缓存不单独保留：客户端自己会重建。
+fn clear_session_dirs(root: &Path) -> Result<()> {
     for rel in ["app/session", "storage/skeleton/account-snapshot.json"] {
         let path = root.join(rel);
-        if !path.exists() {
-            continue;
-        }
-        let target = keep.join(rel);
-        if path.is_dir() {
-            fsx::copy_dir_merge(&path, &target)?;
-            fsx::remove_path(&path)?;
-        } else {
-            std::fs::create_dir_all(target.parent().unwrap_or(keep))?;
-            std::fs::copy(&path, &target)?;
+        if path.exists() {
             fsx::remove_path(&path)?;
         }
     }
     Ok(())
 }
 
-fn logout_zcode(keep: &Path) -> Result<()> {
+fn logout_zcode() -> Result<()> {
     let provider = ZCodeProvider::new();
     let creds = provider.credentials_path();
     if !creds.exists() {
         return Ok(());
     }
-    fsx::backup_to(&creds, keep, "zcode")?;
     fsx::remove_path(&creds)
 }
 
@@ -448,6 +419,26 @@ mod profiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logout_clears_the_client_session_without_a_copy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("client");
+        let session = root.join("app/session");
+        std::fs::create_dir_all(session.join("Cache")).unwrap();
+        std::fs::write(session.join("Cache/data_1"), vec![0u8; 2048]).unwrap();
+        std::fs::write(session.join("Cookies"), b"cookies").unwrap();
+        std::fs::create_dir_all(root.join("storage/skeleton")).unwrap();
+        std::fs::write(root.join("storage/skeleton/account-snapshot.json"), b"{}").unwrap();
+
+        clear_session_dirs(&root).unwrap();
+
+        assert!(!session.exists(), "登录态目录要整体清掉，逼客户端回登录页");
+        assert!(
+            !root.join("storage/skeleton/account-snapshot.json").exists(),
+            "账号快照也要清掉，否则客户端会带着旧账号进主界面"
+        );
+    }
 
     #[test]
     fn unsupported_platform_is_refused() {

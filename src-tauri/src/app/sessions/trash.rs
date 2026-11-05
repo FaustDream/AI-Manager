@@ -5,6 +5,7 @@
 //! 恢复时照着搬回去——**没有清单就不算删成功**，这是这一层唯一的硬要求。
 
 use crate::app::error::{AppError, ErrorKind, Result};
+pub use crate::app::fsx::dir_size;
 use crate::app::paths;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -183,25 +184,6 @@ pub fn move_out(batch: &Path, rel: &str, dest: &Path) -> Result<()> {
             format!("已恢复，但回收站副本删不掉：{}", e.message),
         )
     })
-}
-
-pub fn dir_size(path: &Path) -> i64 {
-    let Ok(stat) = std::fs::symlink_metadata(path) else {
-        return 0;
-    };
-    if stat.is_file() {
-        return stat.len() as i64;
-    }
-    if !stat.is_dir() {
-        return 0;
-    }
-    let mut total = 0;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            total += dir_size(&entry.path());
-        }
-    }
-    total
 }
 
 #[cfg(test)]

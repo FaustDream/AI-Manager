@@ -16,23 +16,17 @@ pub enum ErrorKind {
     ClientRunning,
     /// 用户主动取消——不能被记成失败
     Cancelled,
-    // —— 以下四种是「切换登录」专用的失败态（P2 §5.1）——
+    // —— 以下三种是「切换登录」专用的失败态（P2 §5.1）——
     // 切换写的是客户端自己的登录态文件，写坏的代价是「客户端跳登录页」，
     // 所以失败必须能区分「没动过」和「动了但回滚了」，界面才能给出可操作的话术。
-    /// 写前备份失败：此时**一个字节都没写**，取消即可
-    BackupFailed,
     /// 档案与目标账号对不上：拿 A 的票据恢复 B 的登录态比不恢复更糟
     ProfileMismatch,
-    /// 写回失败，已按备份回滚
+    /// 写回失败，已按内存里的原文回滚
     WriteFailed,
     /// 票据里缺 `sessionState` 之类的服务端签发字段，写回去会停在登录页
     SessionStateMissing,
     /// 该平台的登录态无法写回（Trae 是设备绑定加密）
     Unsupported,
-    /// 迁移计数与 v1 对不上：此时什么都不写（P7 迁移收尾）
-    MigrationMismatch,
-    /// 已经归档过 v1 数据：重复归档只会无限堆目录（P7）
-    AlreadyArchived,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,6 +35,42 @@ pub struct AppError {
     pub message: String,
     /// 只用于日志，不展示到界面
     pub detail: Option<String>,
+}
+
+impl ErrorKind {
+    /// 日志里的稳定标识：与序列化到前端的名字一致（snake_case），
+    /// 这样日志里搜 `client_running` 和界面 toast 的 kind 是同一个词。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Io => "io",
+            Self::Sqlite => "sqlite",
+            Self::Provider => "provider",
+            Self::Crypto => "crypto",
+            Self::Invalid => "invalid",
+            Self::Conflict => "conflict",
+            Self::ClientRunning => "client_running",
+            Self::Cancelled => "cancelled",
+            Self::ProfileMismatch => "profile_mismatch",
+            Self::WriteFailed => "write_failed",
+            Self::SessionStateMissing => "session_state_missing",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+impl AppError {
+    /// 日志用的完整证据：类别 + 原文 + `detail`（detail 本来就只给日志看，
+    /// 不写进日志等于白收集）。
+    pub fn evidence(&self) -> String {
+        match self.detail.as_deref().filter(|d| !d.is_empty()) {
+            Some(detail) => format!(
+                "kind={} · 原文={} · 详情={detail}",
+                self.kind.as_str(),
+                self.message
+            ),
+            None => format!("kind={} · 原文={}", self.kind.as_str(), self.message),
+        }
+    }
 }
 
 impl AppError {

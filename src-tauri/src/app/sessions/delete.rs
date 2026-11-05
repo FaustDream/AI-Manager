@@ -7,6 +7,7 @@
 //! 这是这一层存在的全部意义。
 
 use crate::app::accounts::add::client_exe;
+pub use crate::app::clients::checkpoint;
 use crate::app::clients::Roots;
 use crate::app::db::Db;
 use crate::app::error::{AppError, ErrorKind, Result};
@@ -145,20 +146,14 @@ pub fn running_clients(keys: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn close_clients_with_report(platforms: &[&str], report: &mut DeleteReport) -> Vec<String> {
-    let (closed, warnings) = close_clients(platforms);
-    report.warnings.extend(warnings);
-    closed
-}
-
 /// 让被关掉的客户端重新拉起（删除与恢复共用），返回告警。
 pub fn restart(closed: &[String]) -> Vec<String> {
-    let mut report = DeleteReport::default();
-    restart_clients(closed, &mut report);
-    report.warnings
+    let mut warnings = Vec::new();
+    restart_clients(closed, &mut warnings);
+    warnings
 }
 
-fn restart_clients(closed: &[String], report: &mut DeleteReport) {
+fn restart_clients(closed: &[String], warnings: &mut Vec<String>) {
     if closed.is_empty() {
         return;
     }
@@ -194,7 +189,7 @@ fn restart_clients(closed: &[String], report: &mut DeleteReport) {
                                     super::backend::label(platform)
                                 ),
                             );
-                            report.warnings.push(format!(
+                            warnings.push(format!(
                                 "{} 客户端没能自动重启，请手动打开",
                                 super::backend::label(platform)
                             ));
@@ -210,15 +205,11 @@ fn restart_clients(closed: &[String], report: &mut DeleteReport) {
                                 e.message
                             ),
                         );
-                        report
-                            .warnings
-                            .push(format!("重启客户端失败：{}", e.message));
+                        warnings.push(format!("重启客户端失败：{}", e.message));
                     }
                 }
             }
-            _ => report
-                .warnings
-                .push(format!("找不到 {platform} 的安装路径，请手动打开客户端")),
+            _ => warnings.push(format!("找不到 {platform} 的安装路径，请手动打开客户端")),
         }
     }
 }
@@ -282,7 +273,9 @@ pub fn delete_into(
         ..Default::default()
     };
     let closed = if with_guard {
-        close_clients_with_report(&platforms, &mut report)
+        let (closed, warnings) = close_clients(&platforms);
+        report.warnings.extend(warnings);
+        closed
     } else {
         Vec::new()
     };
@@ -395,7 +388,7 @@ pub fn delete_into(
     })();
 
     if with_guard {
-        restart_clients(&closed, &mut report);
+        restart_clients(&closed, &mut report.warnings);
     }
     cleanup?;
     report.message = report.summary();
@@ -896,14 +889,14 @@ pub fn restore_from(
         .ok_or_else(|| AppError::new(ErrorKind::Invalid, format!("找不到批次 {tag} 的清单")))?;
 
     let mut report = RestoreReport::default();
-    let mut delete_report = DeleteReport::default();
     let platforms: Vec<&str> = manifest.platforms.iter().map(|p| p.as_str()).collect();
     let closed = if with_guard {
-        close_clients_with_report(&platforms, &mut delete_report)
+        let (closed, warnings) = close_clients(&platforms);
+        report.warnings.extend(warnings);
+        closed
     } else {
         Vec::new()
     };
-    report.warnings.append(&mut delete_report.warnings);
 
     for item in &manifest.items {
         let result = match super::backend::backend_for(&item.kind) {
@@ -920,9 +913,8 @@ pub fn restore_from(
     }
 
     if with_guard {
-        restart_clients(&closed, &mut delete_report);
+        restart_clients(&closed, &mut report.warnings);
     }
-    report.warnings.append(&mut delete_report.warnings);
     // 全部恢复成功就把批次目录清掉，免得再点一次重复插行
     if report.errors.is_empty() {
         let _ = crate::app::fsx::remove_path(&dir);
@@ -1085,18 +1077,6 @@ pub fn list_in(root: &Path) -> Vec<Manifest> {
 }
 
 // ------------------------------------------------------------------ SQL 小工具
-
-/// 写前清 WAL：客户端读不到没 checkpoint 的改动，这条在四条写路径上都要走。
-pub fn checkpoint(conn: &Connection) -> Result<()> {
-    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(()),
-            other => Err(AppError::new(
-                ErrorKind::Sqlite,
-                format!("wal_checkpoint 失败：{other}"),
-            )),
-        })
-}
 
 fn dump_row(conn: &Connection, table: &str, key: &str, value: &str) -> Result<Option<Value>> {
     Ok(dump_rows(conn, table, key, value)?.into_iter().next())

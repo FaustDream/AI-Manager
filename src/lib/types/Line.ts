@@ -3,5 +3,50 @@ import type { Level } from "./Level";
 
 /**
  * 一行结构化日志，直接对应 app.jsonl 的一行。
+ *
+ * 「执行记录」与普通业务日志共用这一份文件：带 `action` 的行表示**一次动作的完整交代**
+ * （谁触发、成没成、花了多久），执行记录页只筛这一类。老 jsonl 行没有这些字段，
+ * 靠 `serde(default)` 兼容——日志是历史资产，不能因为加字段就读不出来。
  */
-export type Line = { ts: string, level: Level, module: string, message: string, task: string | null, };
+export type Line = { ts: string, level: Level, module: string, message: string, 
+/**
+ * 动作键：`account_switch` / `schedule.daily_round` …；普通日志为 None
+ */
+action: string | null, 
+/**
+ * 谁触发的：`user`（界面点击）/ `schedule`（定时）/ `startup`（启动自检）
+ */
+trigger: string | null, 
+/**
+ * 动作结果。读操作的「失败」和写操作一样要能一眼看出来
+ */
+ok: boolean | null, 
+/**
+ * 耗时毫秒：慢在哪一步，事后只有这个数说得清
+ */
+ms: number | null, 
+/**
+ * 主体：哪个账号（`凌致`）或哪个批次（`batch-20261104-1032`）。
+ * 逐账号记录必须能一眼看出「这一行说的是谁」。
+ */
+subject: string | null, 
+/**
+ * 环节：失败发生在哪一步（`登录态校验` / `提交签到` / `写客户端`…）
+ */
+step: string | null, 
+/**
+ * 证据：可回查的原始信息（接口、状态码、业务 code、错误串）
+ */
+evidence: string | null, 
+/**
+ * `ok` / `skip` / `fail` / `partial`。跳过不算失败，必须分开记
+ */
+outcome: string | null, 
+/**
+ * 重试进度 `1/3`
+ */
+attempts: string | null, 
+/**
+ * 批次号：批量动作的逐条记录都挂在同一个批次下
+ */
+batch: string | null, };

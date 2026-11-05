@@ -21,7 +21,7 @@ pub mod platform;
 pub mod process;
 pub mod providers;
 pub mod runtime;
+pub mod schedule;
 pub mod secret;
 pub mod sessions;
-pub mod task;
 pub mod timeutil;

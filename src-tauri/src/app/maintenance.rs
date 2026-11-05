@@ -3,6 +3,7 @@
 //! 只做「量得出来、删得掉」两件事，不引入新的业务逻辑。
 
 use crate::app::error::{AppError, ErrorKind, Result};
+use crate::app::fsx::dir_size;
 use crate::app::paths;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -71,25 +72,6 @@ fn space_in(root: &Path) -> SpaceReport {
     }
     entries.sort_by_key(|e| std::cmp::Reverse(e.size));
     SpaceReport { entries, total }
-}
-
-pub fn dir_size(path: &Path) -> i64 {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return 0;
-    };
-    if meta.is_file() {
-        return meta.len() as i64;
-    }
-    if !meta.is_dir() {
-        return 0;
-    }
-    let mut total = 0;
-    if let Ok(items) = std::fs::read_dir(path) {
-        for item in items.flatten() {
-            total += dir_size(&item.path());
-        }
-    }
-    total
 }
 
 /// 回收站里的批次：所有 `data/trash/**/<目录名>` 的一级子目录。

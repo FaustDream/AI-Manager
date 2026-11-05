@@ -107,6 +107,8 @@ pub async fn account_login_start(
     let db = state.db.clone();
     let login_state = pending.ticket.clone();
     let platform_key = platform.clone();
+    // 日志要用平台名，但 platform_key 会被 move 进阻塞闭包，先留一份
+    let log_platform = platform_key.clone();
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let result = crate::app::runtime::blocking(move || {
@@ -115,29 +117,29 @@ pub async fn account_login_start(
         .await;
         let outcome = match result {
             Ok(Ok(outcome)) => outcome,
-            Ok(Err(e)) => crate::app::accounts::login::LoginOutcome {
-                ok: false,
-                message: e.message,
-                iid: String::new(),
-            },
-            Err(e) => crate::app::accounts::login::LoginOutcome {
-                ok: false,
-                message: e.message,
-                iid: String::new(),
-            },
-        };
-        log::log(
-            if outcome.ok { Level::Info } else { Level::Warn },
-            "accounts",
-            format!(
-                "浏览器登录：{}",
-                if outcome.ok {
-                    outcome.message.clone()
-                } else {
-                    format!("失败（{}）", outcome.message)
+            Ok(Err(e)) | Err(e) => {
+                // 失败原因必须带 kind 与 detail：以前只留一句「登录超时」，
+                // 分不清是网络、平台拒绝还是用户没操作
+                log::fail(
+                    "accounts",
+                    "account_login",
+                    format!("浏览器登录失败：{}", e.message),
+                    format!("{} · 平台={log_platform}", e.evidence()),
+                );
+                crate::app::accounts::login::LoginOutcome {
+                    ok: false,
+                    message: e.message,
+                    iid: String::new(),
                 }
-            ),
-        );
+            }
+        };
+        if outcome.ok {
+            log::log(
+                Level::Info,
+                "accounts",
+                format!("浏览器登录：{}", outcome.message),
+            );
+        }
         let _ = handle.emit("account:login", &outcome);
     });
 
@@ -178,6 +180,19 @@ pub async fn account_switch_codebuddy(
     .await
     .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
     .map_err(err_text)
+}
+
+/// CodeBuddy 系两个客户端（软件 / IDEA 插件）的当前登录状态。
+/// 详情页用它把「现在登的是谁 / 有没有装」显示清楚，切换后刷新。
+#[tauri::command]
+
+pub async fn account_codebuddy_targets(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<crate::app::providers::codebuddy::CodebuddyTargetStatus>, String> {
+    let roots = state.sessions.roots().clone();
+    crate::app::runtime::blocking(move || crate::app::providers::codebuddy::statuses(&roots))
+        .await
+        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))
 }
 
 /// 把已有会话按引用关联到当前登录账号（只有 WorkBuddy 有本机会话库）。

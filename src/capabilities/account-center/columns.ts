@@ -70,27 +70,36 @@ const loginCell = (a: AccountView): Cell => {
 /** 积分与配额共用一列：额度型账号没有「积分」，显示最紧窗口的剩余百分比。 */
 const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
   const error = errors[a.iid];
-  if (error) return { text: '查询失败', tone: 'bad', title: error };
-
   const balance = fmtAmount(a.balance);
   const quota = Object.entries(a.quota ?? {});
+
+  let cell: Cell;
   if (quota.length === 0) {
-    return {
+    cell = {
       text: balance,
       title: a.balance === null ? '还没查到余额，点「刷新积分」' : '平台实时返回的可用积分 / 额度余额',
     };
+  } else {
+    const [name, used] = quota.reduce((worst, item) => (item[1] > worst[1] ? item : worst));
+    const left = Math.max(0, 100 - used);
+    cell = {
+      text: a.balance === null ? `剩 ${Math.round(left)}%` : `${balance} · 剩 ${Math.round(left)}%`,
+      tone: left <= 10 ? 'bad' : left <= 30 ? 'warn' : 'muted',
+      title: [
+        a.balance === null ? '额度型账号，没有积分余额' : `积分余额 ${balance}`,
+        ...quota.map(([key, value]) => `${key}：已用 ${value.toFixed(0)}%，剩 ${Math.max(0, 100 - value).toFixed(0)}%`),
+        `最紧的是「${name}」`,
+      ].join('\n'),
+    };
   }
 
-  const [name, used] = quota.reduce((worst, item) => (item[1] > worst[1] ? item : worst));
-  const left = Math.max(0, 100 - used);
+  // 一次查询失败不该把库里已有的数值抹掉：主行照旧，另用第二行与 title 说明原因。
+  if (!error) return cell;
   return {
-    text: a.balance === null ? `剩 ${Math.round(left)}%` : `${balance} · 剩 ${Math.round(left)}%`,
-    tone: left <= 10 ? 'bad' : left <= 30 ? 'warn' : 'muted',
-    title: [
-      a.balance === null ? '额度型账号，没有积分余额' : `积分余额 ${balance}`,
-      ...quota.map(([key, value]) => `${key}：已用 ${value.toFixed(0)}%，剩 ${Math.max(0, 100 - value).toFixed(0)}%`),
-      `最紧的是「${name}」`,
-    ].join('\n'),
+    ...cell,
+    sub: '本次查询失败',
+    tone: 'bad',
+    title: [error, cell.title].filter(Boolean).join('\n'),
   };
 };
 

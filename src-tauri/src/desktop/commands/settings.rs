@@ -34,25 +34,6 @@ pub async fn settings_set(
 
 #[tauri::command]
 
-pub fn task_list(state: State<'_, AppState>) -> Vec<TaskView> {
-    state.tasks.list()
-}
-
-#[tauri::command]
-
-pub fn task_cancel(state: State<'_, AppState>, task_id: u64) -> bool {
-    state.tasks.cancel_task(task_id)
-}
-
-/// 清掉已完成 / 失败 / 取消的任务，返回清掉几条。
-#[tauri::command]
-
-pub fn task_clear_finished(state: State<'_, AppState>) -> usize {
-    state.tasks.clear_finished()
-}
-
-#[tauri::command]
-
 pub fn autostart_get() -> bool {
     crate::app::process::autostart_enabled()
 }

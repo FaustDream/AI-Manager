@@ -102,15 +102,11 @@ fn money(value: Option<f64>) -> String {
 async fn probe_sessions() {
     use ai_manager::app::clients::Roots;
     use ai_manager::app::sessions::Service;
-    use ai_manager::app::task::CancelToken;
 
     let db = Arc::new(Db::open().expect("打开真实库"));
     let service = Service::new(db.clone(), Roots::system());
     let started = std::time::Instant::now();
-    let report = service
-        .scan(Arc::new(CancelToken::new()))
-        .await
-        .expect("扫描会话");
+    let report = service.scan().await.expect("扫描会话");
     println!(
         "\n{}（{:.1}s）",
         report.summary(),

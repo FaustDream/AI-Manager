@@ -48,6 +48,18 @@ impl DeployReport {
         self.steps.iter().filter(|s| s.ok).count()
     }
 
+    pub fn failed(&self) -> usize {
+        self.steps.iter().filter(|s| !s.ok).count()
+    }
+
+    /// 第一条失败原因：日志里必须带得出「为什么」，否则「3 个失败」等于没说。
+    pub fn first_error(&self) -> Option<String> {
+        self.steps
+            .iter()
+            .find(|s| !s.ok)
+            .map(|s| format!("{}：{}", s.target, s.message))
+    }
+
     pub fn conflicts(&self) -> Vec<&str> {
         self.steps
             .iter()
@@ -58,6 +70,10 @@ impl DeployReport {
 
     pub fn summary(&self) -> String {
         let mut text = format!("{} 个平台成功", self.done());
+        let failed = self.failed();
+        if failed > 0 {
+            text.push_str(&format!("，{failed} 个失败"));
+        }
         let conflicts = self.conflicts();
         if !conflicts.is_empty() {
             text.push_str(&format!(
@@ -79,7 +95,6 @@ pub use skills::{import_many, ImportReport};
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::paths;
 use crate::contracts::{HubStore, McpEntry, TargetKey};
-use chrono::Local;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -118,10 +133,6 @@ impl Hub {
 
     pub fn mcp_path(&self, key: TargetKey) -> PathBuf {
         targets::mcp_file(&self.home, &self.appdata, key)
-    }
-
-    pub fn backups_dir(&self) -> PathBuf {
-        self.data.join("backups").join("hub")
     }
 
     /// 数据目录（技能库与回收站都在它下面）。
@@ -169,28 +180,6 @@ impl HubStore for Hub {
         mcp::from_platform(raw, key)
     }
 
-    /// 契约 15：每次写都备份，不判断「值不值得」——丢配置的代价远大于这一行的成本。
-    /// 原文件不存在时写一个 `null` 占位，恢复时表示「本来就没有，删掉即可」。
-    fn backup_before_write(&self, key: TargetKey) -> Result<PathBuf> {
-        let source = self.mcp_path(key);
-        let dir = self
-            .backups_dir()
-            .join(Local::now().format("%Y%m%d-%H%M%S").to_string());
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| AppError::new(ErrorKind::Io, format!("建备份目录失败：{e}")))?;
-        let dest = dir.join(format!("{}.json", targets::key_name(key)));
-        if source.exists() {
-            let bytes = std::fs::read(&source)
-                .map_err(|e| AppError::new(ErrorKind::Io, format!("读配置失败：{e}")))?;
-            std::fs::write(&dest, bytes)
-                .map_err(|e| AppError::new(ErrorKind::Io, format!("写备份失败：{e}")))?;
-        } else {
-            std::fs::write(&dest, b"null")
-                .map_err(|e| AppError::new(ErrorKind::Io, format!("写备份失败：{e}")))?;
-        }
-        Ok(dest)
-    }
-
     /// 契约 16：同名条目存在且没有我们的标记 → 冲突，绝不覆盖。
     fn check_conflict(&self, name: &str, key: TargetKey) -> Result<()> {
         let root = mcp::read_config(&self.mcp_path(key));
@@ -211,11 +200,8 @@ pub fn key_name(key: TargetKey) -> &'static str {
     targets::key_name(key)
 }
 
-/// 把一条 MCP 写进某个平台的配置文件：备份 → 冲突检测 → 读 → 改 → 写。
-///
-/// 顺序是有意的：**先备份再冲突检测**，冲突时用户手上也有一份刚才的配置。
-pub fn write_entry(hub: &Hub, entry: &McpEntry, key: TargetKey) -> Result<PathBuf> {
-    let backup = hub.backup_before_write(key)?;
+/// 把一条 MCP 写进某个平台的配置文件：冲突检测 → 读 → 改 → 写。
+pub fn write_entry(hub: &Hub, entry: &McpEntry, key: TargetKey) -> Result<()> {
     hub.check_conflict(&entry.name, key)?;
 
     let path = hub.mcp_path(key);
@@ -239,7 +225,7 @@ pub fn write_entry(hub: &Hub, entry: &McpEntry, key: TargetKey) -> Result<PathBu
     let text = serde_json::to_string_pretty(&root)
         .map_err(|e| AppError::new(ErrorKind::Io, format!("序列化失败：{e}")))?;
     crate::app::fsx::write_atomic(&path, text.as_bytes())?;
-    Ok(backup)
+    Ok(())
 }
 
 fn insert(root: &mut serde_json::Value, container: &[&str], name: &str, body: serde_json::Value) {
@@ -269,7 +255,6 @@ pub fn remove_entry(hub: &Hub, name: &str, key: TargetKey) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
-    hub.backup_before_write(key)?;
     let mut root = mcp::read_config(&path);
     let container = mcp::container(key);
     let mut node = &mut root;
@@ -614,16 +599,10 @@ mod tests {
     }
 
     #[test]
-    fn write_creates_config_and_backup() {
+    fn write_creates_config_file() {
         let dir = tempfile::tempdir().unwrap();
         let hub = hub(dir.path());
-        let backup = write_entry(&hub, &entry("github"), TargetKey::QoderCn).unwrap();
-        assert!(backup.exists());
-        assert_eq!(
-            std::fs::read_to_string(&backup).unwrap(),
-            "null",
-            "原来没有配置文件就写占位"
-        );
+        write_entry(&hub, &entry("github"), TargetKey::QoderCn).unwrap();
 
         let path = hub.mcp_path(TargetKey::QoderCn);
         let text = std::fs::read_to_string(&path).unwrap();

@@ -301,15 +301,8 @@ impl<'a> SqliteSessions<'a> {
              FROM (
                  SELECT s.kind, s.source_key, s.source_label, s.account, s.session_id, s.title,
                         s.last_at, s.msgs, s.size, s.has_body, s.slug, s.cwd,
-                        CASE
-                            WHEN COALESCE(s.state, 'visible') = 'deleted' THEN 'deleted'
-                            WHEN m.archived_at IS NOT NULL THEN 'archived'
-                            ELSE COALESCE(s.state, 'visible')
-                        END AS state
-                 FROM session_index s
-                 LEFT JOIN session_marks m
-                   ON m.source_key = s.source_key AND m.session_id = s.session_id
-                 WHERE m.hidden_at IS NULL
+                        {} AS state
+                 {}
              )
              WHERE (?1 IS NULL OR source_key = ?1)
                AND (?2 IS NULL OR account = ?2)
@@ -317,7 +310,8 @@ impl<'a> SqliteSessions<'a> {
                AND (?7 = 1 OR ?3 IS NOT NULL OR state <> 'archived')
                AND (?4 IS NULL OR {col} < ?4 OR ({col} = ?4 AND session_id < ?5))
              ORDER BY {col} DESC, session_id DESC
-             LIMIT ?6"
+             LIMIT ?6",
+            EFFECTIVE_STATE_CASE, EFFECTIVE_STATE_FROM
         );
 
         self.db.read(|conn| {
@@ -426,7 +420,10 @@ impl<'a> SqliteSessions<'a> {
             }
 
             // 状态计数必须与列表同一口径（含归档与已删除的合并规则）
-            let sql = format!("SELECT state, COUNT(*) FROM ({EFFECTIVE_STATE_SQL}) GROUP BY state");
+            let sql = format!(
+                "SELECT state, COUNT(*) FROM ({}) GROUP BY state",
+                effective_state_sql()
+            );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map([], |row| {
                 let value: String = row.get(0)?;
@@ -457,8 +454,9 @@ impl<'a> SqliteSessions<'a> {
     /// 彻底删除前用它判断「这条能不能删」，与列表显示的口径完全一致。
     pub fn state_of(&self, source_key: &str, session_id: &str) -> Result<Option<SessionState>> {
         let sql = format!(
-            "SELECT state FROM ({EFFECTIVE_STATE_SQL})
-             WHERE source_key = ?1 AND session_id = ?2"
+            "SELECT state FROM ({})
+             WHERE source_key = ?1 AND session_id = ?2",
+            effective_state_sql()
         );
         self.db.read(|conn| {
             let text: Option<String> = conn
@@ -477,11 +475,12 @@ impl<'a> SqliteSessions<'a> {
         let account = Filter::clean(&filter.account);
         let state = Filter::clean(&filter.state);
         let sql = format!(
-            "SELECT kind, source_key, account, session_id FROM ({EFFECTIVE_STATE_SQL})
+            "SELECT kind, source_key, account, session_id FROM ({})
              WHERE (?1 IS NULL OR source_key = ?1)
                AND (?2 IS NULL OR account = ?2)
                AND (?3 IS NULL OR state = ?3)
-               AND (?4 = 1 OR ?3 IS NOT NULL OR state <> 'archived')"
+               AND (?4 = 1 OR ?3 IS NOT NULL OR state <> 'archived')",
+            effective_state_sql()
         );
         self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql)?;
@@ -549,18 +548,28 @@ fn is_scratch_workspace(path: &str, last: &str) -> bool {
     timestamp_like && path.contains("WorkBuddy")
 }
 
-/// 与 `page` 共用同一套「生效状态」口径，否则列表条数和筛选下拉的计数会对不上。
-const EFFECTIVE_STATE_SQL: &str = "
-    SELECT s.kind, s.source_key, s.session_id, s.account, s.last_at,
-           CASE
-               WHEN COALESCE(s.state, 'visible') = 'deleted' THEN 'deleted'
-               WHEN m.archived_at IS NOT NULL THEN 'archived'
-               ELSE COALESCE(s.state, 'visible')
-           END AS state
-    FROM session_index s
+/// 「生效状态」只有一份口径：已删除优先，其次本地归档，最后沿用客户端状态。
+const EFFECTIVE_STATE_CASE: &str = "CASE
+        WHEN COALESCE(s.state, 'visible') = 'deleted' THEN 'deleted'
+        WHEN m.archived_at IS NOT NULL THEN 'archived'
+        ELSE COALESCE(s.state, 'visible')
+    END";
+
+/// 本地隐藏的行整行不出现。
+const EFFECTIVE_STATE_FROM: &str = "FROM session_index s
     LEFT JOIN session_marks m
       ON m.source_key = s.source_key AND m.session_id = s.session_id
     WHERE m.hidden_at IS NULL";
+
+/// 计数 / 筛选 / 单行状态共用同一份生效状态结果集，口径与 `page` 完全一致。
+fn effective_state_sql() -> String {
+    format!(
+        "SELECT s.kind, s.source_key, s.session_id, s.account, s.last_at,
+                {} AS state
+         {}",
+        EFFECTIVE_STATE_CASE, EFFECTIVE_STATE_FROM
+    )
+}
 
 fn count_with(
     conn: &rusqlite::Connection,
@@ -570,11 +579,12 @@ fn count_with(
     show_archived: bool,
 ) -> Result<usize> {
     let sql = format!(
-        "SELECT COUNT(*) FROM ({EFFECTIVE_STATE_SQL})
+        "SELECT COUNT(*) FROM ({})
          WHERE (?1 IS NULL OR source_key = ?1)
            AND (?2 IS NULL OR account = ?2)
            AND (?3 IS NULL OR state = ?3)
-           AND (?4 = 1 OR ?3 IS NOT NULL OR state <> 'archived')"
+           AND (?4 = 1 OR ?3 IS NOT NULL OR state <> 'archived')",
+        effective_state_sql()
     );
     let total: i64 = conn.query_row(
         &sql,

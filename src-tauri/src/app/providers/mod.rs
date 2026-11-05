@@ -11,7 +11,7 @@
 //! 所以扫描改成回调式，签名在这里重定；`status` / `checkin` 留给 P3 在同一个模块里定。
 
 use crate::app::accounts::credential::Credential;
-use crate::app::accounts::AccountIdentity;
+use crate::app::accounts::{is_intl_account, AccountIdentity};
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::Http;
 use crate::types::{ActionResult, CreditSnapshot, StatusResult};
@@ -33,7 +33,6 @@ pub use zcode::ZCodeProvider;
 /// 切换登录的结果。`backup` 是写前备份的位置，界面要能告诉用户「后悔了去哪找」。
 pub struct SwitchOutcome {
     pub message: String,
-    pub backup: Option<std::path::PathBuf>,
 }
 
 /// 扫描产物：身份信息 + 已序列化的凭据包。
@@ -155,7 +154,7 @@ pub fn platform_of(iid: &str) -> Option<&str> {
 /// `@intl` 后缀区分。直接拿前缀去关/启客户端会落到国内版——关错版本、启动错版本。
 pub fn client_key_of(iid: &str) -> &str {
     match platform_of(iid) {
-        Some("workbuddy") if iid.ends_with("@intl") => "workbuddy_intl",
+        Some("workbuddy") if is_intl_account(iid) => "workbuddy_intl",
         Some(key) => key,
         None => "",
     }
@@ -168,32 +167,16 @@ pub fn switch(
     account_id: &str,
     name: &str,
     cred: &crate::app::accounts::credential::Credential,
-    backup_dir: &std::path::Path,
 ) -> Result<SwitchOutcome> {
     match platform_of(iid) {
-        Some("qoder") => qoder::switch_to(
-            &QoderProvider::new(false),
-            account_id,
-            name,
-            cred,
-            backup_dir,
-        ),
-        Some("qoder_intl") => qoder::switch_to(
-            &QoderProvider::new(true),
-            account_id,
-            name,
-            cred,
-            backup_dir,
-        ),
+        Some("qoder") => qoder::switch_to(&QoderProvider::new(false), account_id, name, cred),
+        Some("qoder_intl") => qoder::switch_to(&QoderProvider::new(true), account_id, name, cred),
         Some("workbuddy") => workbuddy::switch_to(
-            &WorkBuddyProvider::new(iid.ends_with("@intl")),
+            &WorkBuddyProvider::new(is_intl_account(iid)),
             account_id,
             name,
-            backup_dir,
         ),
-        Some("zcode") => {
-            zcode::switch_to(&ZCodeProvider::new(), account_id, name, cred, backup_dir)
-        }
+        Some("zcode") => zcode::switch_to(&ZCodeProvider::new(), account_id, name, cred),
         Some("trae") => Err(crate::app::error::AppError::new(
             ErrorKind::Unsupported,
             "Trae 的登录态是设备绑定的加密格式，无法安全写回。请在 Trae 客户端里手动切换账号。",
@@ -235,7 +218,7 @@ mod tests {
     #[test]
     fn trae_refuses_to_switch() {
         let cred = crate::app::accounts::credential::Credential::default();
-        let err = switch("trae:u1", "u1", "n", &cred, std::path::Path::new(".")).unwrap_err();
+        let err = switch("trae:u1", "u1", "n", &cred).unwrap_err();
         assert!(matches!(
             err.kind,
             crate::app::error::ErrorKind::Unsupported

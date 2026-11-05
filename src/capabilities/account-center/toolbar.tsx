@@ -5,68 +5,36 @@
 //
 // 「添加账号」统一走浏览器登录（v1 的做法）：选平台 → 开官方登录页 → 轮询入库。
 // 客户端全程不参与，所以弹窗只留一个下拉框 + 一个按钮；借客户端那条路退成失败时的兜底。
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { listen } from '@tauri-apps/api/event';
-import { Copy, ExternalLink, Link } from 'lucide-react';
+import { Check, Copy, ExternalLink, Link } from 'lucide-react';
 import { Button, cn } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Select } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { errText } from '@/lib/ipc';
-import type { AddOutcome, LoginOutcome, TaskView } from '@/lib/types';
+import type { AddOutcome, LoginOutcome } from '@/lib/types';
 
-/** 可添加的平台。顺序 = 下拉框顺序；`hint` 是登录面板里的那句话。 */
-const PLATFORMS: {
-  key: string;
-  label: string;
-  mark: string;
-  hint: string;
-}[] = [
-  {
-    key: 'workbuddy',
-    label: 'WorkBuddy 国内版',
-    mark: 'W',
-    hint: '点开链接，或用微信 / QQ 扫码在浏览器里完成授权；页面也支持手机号登录。',
-  },
-  {
-    key: 'workbuddy_intl',
-    label: 'WorkBuddy 国际版',
-    mark: 'W',
-    hint: '点开链接，或用手机扫码在浏览器里完成授权；页面也支持手机号登录。',
-  },
-  {
-    key: 'qoder',
-    label: 'Qoder CN',
-    mark: 'Q',
-    hint: '点开链接，或用 Qoder App 扫码授权；页面也支持手机号登录。',
-  },
-  {
-    key: 'qoder_intl',
-    label: 'Qoder 国际版',
-    mark: 'Q',
-    hint: '点开链接，或用 Qoder App 扫码授权；页面也支持邮箱登录。',
-  },
-  {
-    key: 'zcode',
-    label: 'ZCode',
-    mark: 'Z',
-    hint: '点开链接，用 BigModel（智谱）或 z.ai 账号登录授权。',
-  },
+/** 可添加的平台。顺序 = 下拉框顺序。 */
+const PLATFORMS: { key: string; label: string }[] = [
+  { key: 'workbuddy', label: 'WorkBuddy 国内版' },
+  { key: 'workbuddy_intl', label: 'WorkBuddy 国际版' },
+  { key: 'qoder', label: 'Qoder CN' },
+  { key: 'qoder_intl', label: 'Qoder 国际版' },
+  { key: 'zcode', label: 'ZCode' },
 ];
 
 const platformOf = (key: string) => PLATFORMS.find((p) => p.key === key) ?? PLATFORMS[0];
 
 export function AccountToolbar({
   busy,
-  batchTask,
   onScan,
   onAdd,
   onRefresh,
   onCheckin,
 }: {
   busy: string | null;
-  batchTask?: TaskView;
   onScan: () => void;
   onAdd: () => void;
   onRefresh: () => void;
@@ -85,20 +53,9 @@ export function AccountToolbar({
       <Button onClick={onRefresh} loading={busy === 'credits'} disabled={!!busy}>
         刷新积分
       </Button>
-      <Button onClick={onCheckin} disabled={!!batchTask}>
+      <Button onClick={onCheckin} disabled={!!busy}>
         批量签到
       </Button>
-      {batchTask && (
-        <span className="flex items-center gap-2 text-xs text-muted">
-          批量签到中…
-          <span className="inline-block h-1.5 w-24 overflow-hidden rounded-full bg-hover">
-            <span
-              className="block h-full bg-accent transition-all"
-              style={{ width: `${Math.round((batchTask.progress ?? 0) * 100)}%` }}
-            />
-          </span>
-        </span>
-      )}
     </div>
   );
 }
@@ -106,6 +63,12 @@ export function AccountToolbar({
 /** 弹窗状态：正在取链接 → 等浏览器授权 / 启动客户端 → 已就绪 → 失败。
  *  没有「选平台」这一态：打开就是链接页，换平台自动重取。 */
 type Stage = 'working' | 'waiting' | 'ready' | 'failed';
+
+// 弹窗视觉约束（refactoring-ui brief）：
+//   分级：平台下拉 = 上下文；登录链接 = 待办对象；「在浏览器打开」= 唯一主操作，
+//         「复制链接」= 次级。两者等宽、同高成对出现，避免一高一矮的拼贴感。
+//   令牌：text-xs 12 / text-sm 13、radius-md、组内 gap-2 组间 gap-4、accent 只留给主按钮。
+//   开网页是用户的选择：这里不自动调用 open_external，只把链接摆出来等那一次点击。
 
 export function AddAccountDialog({
   open,
@@ -126,12 +89,23 @@ export function AddAccountDialog({
   const [loginUrl, setLoginUrl] = useState('');
   const [error, setError] = useState('');
   const [scanning, setScanning] = useState(false);
+  // 复制反馈：剪贴板写入没有任何系统提示，按钮自己「已复制」一秒半才算闭环
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copyTimer.current) window.clearTimeout(copyTimer.current);
+    },
+    [],
+  );
 
   // 打开弹窗、或换平台，就立刻要一条新的登录链接——用户不需要再点一次「登录」
   const loadLink = useCallback(async () => {
     setStage('working');
     setError('');
     setLoginUrl('');
+    setCopied(false);
     try {
       const info = await queryCmd('account_login_start', { platform });
       setLoginUrl(info.url);
@@ -139,7 +113,6 @@ export function AddAccountDialog({
         platform,
         label: info.label,
         exe: '',
-        backup: '（没有改动客户端登录态）',
         restarted: false,
         window: true,
       });
@@ -219,7 +192,6 @@ export function AddAccountDialog({
         platform,
         label: platformOf(platform).label,
         exe: '',
-        backup: '（本次没有改动登录态）',
         restarted: true,
         window: focused,
       });
@@ -229,8 +201,15 @@ export function AddAccountDialog({
   const picked = platformOf(platform);
 
   const copyUrl = async () => {
-    await navigator.clipboard.writeText(loginUrl).catch(() => {});
-    toast('登录链接已复制');
+    try {
+      await navigator.clipboard.writeText(loginUrl);
+    } catch {
+      toast('复制失败，请手动选中链接复制');
+      return;
+    }
+    setCopied(true);
+    if (copyTimer.current) window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopied(false), 1600);
   };
 
   const openInBrowser = () => {
@@ -241,7 +220,6 @@ export function AddAccountDialog({
     <Dialog
       open={open}
       title={`添加账号 · ${picked.label}`}
-      subtitle={picked.hint}
       onClose={onClose}
       footer={
         stage === 'failed' ? (
@@ -249,29 +227,34 @@ export function AddAccountDialog({
             <Button variant="ghost" onClick={startViaClient}>
               改用客户端登录
             </Button>
-            <Button variant="ghost" onClick={() => void loadLink()}>
+            <Button variant="ghost" onClick={onClose}>
+              关闭
+            </Button>
+            <Button variant="primary" onClick={() => void loadLink()}>
               重试
             </Button>
-            <Button onClick={onClose}>关闭</Button>
           </>
         ) : stage === 'ready' ? (
           <>
             <Button variant="ghost" onClick={openManually}>
               只打开客户端
             </Button>
+            <Button variant="ghost" onClick={onClose}>
+              关闭
+            </Button>
             <Button variant="primary" onClick={scanNow} loading={scanning}>
               我已登录，扫描客户端
             </Button>
-            <Button onClick={onClose}>关闭</Button>
           </>
         ) : (
-          <Button className="w-full" onClick={onClose}>
+          // 等待态的主操作在正文里（打开网页），页脚只留一个退出口
+          <Button variant="ghost" onClick={onClose}>
             取消
           </Button>
         )
       }
     >
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-4">
         <label className="flex flex-col gap-1.5">
           <span className="text-xs text-muted">平台</span>
           <Select
@@ -292,37 +275,37 @@ export function AddAccountDialog({
         </label>
 
         {stage === 'working' && (
-          <p className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-3 text-xs text-muted">
+          <p className="flex items-center gap-2 text-xs text-muted">
             <Spinner />
             正在生成 {picked.label} 的登录链接…
           </p>
         )}
 
         {stage === 'waiting' && (
-          <>
-            <div className="flex w-full items-start gap-1.5 rounded-md bg-hover px-2.5 py-2 text-xs text-muted">
-              <Link size={12} className="mt-0.5 shrink-0" />
-              <span className="line-clamp-2 break-all">{loginUrl}</span>
+          <div className="flex flex-col gap-2">
+            {/* 链接是一条一等公民的「值」：单行截断 + 可整段选中，悬停给全文 */}
+            <div className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-2">
+              <Link size={13} className="shrink-0 text-muted" />
+              <span className="min-w-0 flex-1 truncate text-xs text-fg2 select-all" title={loginUrl}>
+                {loginUrl}
+              </span>
             </div>
-            <div className="flex gap-2">
-              <Button variant="primary" size="sm" onClick={openInBrowser}>
-                <ExternalLink size={13} />
+            {/* 两个快捷动作等宽同高：主次靠底色区分，不靠大小差 */}
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="primary" className="w-full py-2" onClick={openInBrowser}>
+                <ExternalLink size={14} />
                 在浏览器打开
               </Button>
-              <Button size="sm" onClick={copyUrl}>
-                <Copy size={13} />
-                复制链接
+              <Button className="w-full py-2" onClick={copyUrl}>
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+                {copied ? '已复制' : '复制链接'}
               </Button>
             </div>
-            <p className="flex items-center gap-1.5 text-xs text-muted">
-              <Spinner />
-              等待授权完成：在浏览器里登录后，这里会自动收尾
-            </p>
-          </>
+          </div>
         )}
 
         {stage === 'failed' && (
-          <p className="whitespace-pre-wrap rounded-md border border-line border-l-[3px] border-l-bad bg-card p-2 text-sm text-fg2">
+          <p className="whitespace-pre-wrap rounded-md border border-line border-l-[3px] border-l-bad bg-card px-3 py-2 text-sm text-fg2">
             {error}
           </p>
         )}
@@ -330,15 +313,15 @@ export function AddAccountDialog({
         {stage === 'ready' && (
           <ol className="flex flex-col gap-1.5 text-sm text-fg2">
             {outcome?.window === false && (
-              <li className="rounded-md border border-line border-l-[3px] border-l-warn bg-card p-2 text-xs">
+              <li className="rounded-md border border-line border-l-[3px] border-l-warn bg-card px-3 py-2 text-xs">
                 客户端进程已经起来了，但主窗口没有到前台——多半收进了系统托盘。
                 点任务栏右下角的 {outcome?.label ?? '客户端'} 图标就能打开登录页。
               </li>
             )}
             <li>1. 在客户端窗口里用要添加的账号登录。</li>
             <li>2. 登录完成后回到这里点「我已登录，扫描客户端」。</li>
-            <li className="break-all text-xs text-muted">
-              旧登录态已备份到 {outcome?.backup ?? '—'}，想切回去随时可以在账号上点「切换登录」。
+            <li className="text-xs text-muted">
+              想切回原来的账号，随时可以在账号列表上点「切换登录」。
             </li>
           </ol>
         )}

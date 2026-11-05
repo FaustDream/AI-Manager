@@ -91,8 +91,15 @@ export function Button({
       {...props}
     >
       {loading && <Spinner />}
-      {/* 文字包一层：加载中只降一档不透明度，宽度与文案都不变 */}
-      <span className={cn('inline-block transition-opacity duration-150', loading && 'opacity-70')}>
+      {/* 文字包一层：加载中只降一档不透明度，宽度与文案都不变。
+          必须是 inline-flex：preflight 把 svg 设成了块级，用 inline-block 包的话
+          「图标 + 文字」会被拆成上下两行——按钮看着像一张小卡片。 */}
+      <span
+        className={cn(
+          'inline-flex items-center gap-1.5 transition-opacity duration-150',
+          loading && 'opacity-70',
+        )}
+      >
         {children}
       </span>
     </button>

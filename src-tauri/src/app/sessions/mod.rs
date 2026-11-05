@@ -19,12 +19,12 @@ pub mod trash;
 pub use preview::Preview;
 pub use store::{Facets, Filter, RawRow, SqliteSessions};
 
+use crate::app::accounts::{is_intl_account, uid_of};
 use crate::app::clients::Roots;
 use crate::app::db::Db;
 use crate::app::error::{ErrorKind, Result};
 use crate::app::runtime::blocking;
 use crate::app::sessions::sources::MsgCache;
-use crate::app::task::CancelToken;
 use crate::contracts::{RestoreReport, SessionStore};
 use crate::types::{Page, SessionRow, SessionState};
 use serde::Serialize;
@@ -87,8 +87,7 @@ impl Service {
     }
 
     /// 增量扫描：指纹没变的来源整源跳过，变了的重扫并整源替换。
-    /// 取消在来源边界生效：一条客户端库扫完才可能停。
-    pub async fn scan(&self, cancel: Arc<CancelToken>) -> Result<ScanReport> {
+    pub async fn scan(&self) -> Result<ScanReport> {
         let db = self.db.clone();
         let roots = self.roots.clone();
         blocking(move || {
@@ -106,7 +105,6 @@ impl Service {
                 .unwrap_or_default();
 
             for info in &infos {
-                cancel.checkpoint()?;
                 seen.insert(info.key.clone());
                 if !info.present {
                     report.missing += 1;
@@ -125,7 +123,6 @@ impl Service {
             }
 
             // 客户端卸载了：索引里留着的行会让页面出现点不动的幽灵行
-            cancel.checkpoint()?;
             for facet in store.facets()?.sources {
                 if !seen.contains(&facet.value) {
                     store.drop_source(&facet.value)?;
@@ -191,15 +188,6 @@ impl Service {
     /// 这是不可逆动作，所以门槛放在后端而不是只靠界面置灰：绕过界面直接调命令
     /// 也删不掉一条还在用的会话。
     pub async fn purge(&self, keys: Vec<String>) -> Result<delete::PurgeReport> {
-        self.purge_with(keys, |_, _| {}).await
-    }
-
-    /// 带进度的彻底删除：每删完一条回调 `(已完成, 总数)`，供任务面板画进度条。
-    pub async fn purge_with(
-        &self,
-        keys: Vec<String>,
-        progress: impl Fn(usize, usize) + Send + Sync + 'static,
-    ) -> Result<delete::PurgeReport> {
         let db = self.db.clone();
         let roots = self.roots.clone();
         blocking(move || {
@@ -222,10 +210,7 @@ impl Service {
                     "只能彻底删除「已归档」或「已删除」的会话；其余会话请先归档",
                 ));
             }
-            let total = allowed.len();
-            let report = delete::delete_with(&roots, &db, &allowed, true, &|done, _| {
-                progress(done, total)
-            })?;
+            let report = delete::delete_with(&roots, &db, &allowed, true, &|_, _| {})?;
             // 行已经真删了，归档标记跟着清掉；回收站批次立刻销毁，不留副本
             let _ = marks::forget(&db, &allowed);
             if !report.tag.is_empty() {
@@ -356,8 +341,8 @@ fn account_label(uid: &str, names: &[(String, String, String)]) -> String {
         let Some((_, account_id)) = iid.split_once(':') else {
             continue;
         };
-        if account_id == uid || account_id.trim_end_matches("@intl") == uid {
-            let tag = if account_id.ends_with("@intl") {
+        if account_id == uid || uid_of(account_id) == uid {
+            let tag = if is_intl_account(account_id) {
                 "国际版"
             } else {
                 ""
@@ -405,7 +390,16 @@ impl SessionStore for Store {
     }
 
     fn restore_account(&self, edition: &str, uid: &str) -> Result<RestoreReport> {
-        restore::account(&self.roots, edition, uid)
+        // 主体名：库里查得到就用昵称，查不到退回 uid（执行记录要能看出是谁）
+        let subject = crate::app::accounts::repo::list(&self.db)
+            .ok()
+            .and_then(|list| {
+                list.into_iter()
+                    .find(|a| crate::app::accounts::uid_of(&a.iid) == uid)
+            })
+            .map(|a| a.name)
+            .unwrap_or_else(|| uid.to_string());
+        restore::account(&self.roots, edition, uid, &subject)
     }
 }
 

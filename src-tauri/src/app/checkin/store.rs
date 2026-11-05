@@ -6,6 +6,7 @@
 //! **`next_at` 不落表**：它是状态而不是历史，落在 `kv` 里（键 `next_at:<iid>`），
 //! 契约 22 要求重启后还能还原。
 
+use crate::app::accounts::is_intl_account;
 use crate::app::clock::Clock;
 use crate::app::db::Db;
 use crate::app::error::{ErrorKind, Result};
@@ -292,7 +293,7 @@ pub fn lots_for_display(
     iid: &str,
     lots: Vec<crate::types::CreditLot>,
 ) -> Vec<crate::types::CreditLot> {
-    if iid.ends_with("@intl") {
+    if is_intl_account(iid) {
         lots.into_iter()
             .map(|mut lot| {
                 lot.expires_at = None;
@@ -360,7 +361,7 @@ pub fn hydrate(db: &Db, rows: &mut [crate::app::accounts::AccountView], clock: &
             (row.lot_expires_at, row.lot_amount) =
                 nearest_lot(&lots_for_display(&row.iid, view.lots), now);
         }
-        if row.lot_expires_at.is_none() && !row.iid.ends_with("@intl") {
+        if row.lot_expires_at.is_none() && !is_intl_account(&row.iid) {
             // 没有实时批次（免签到平台 / 还没刷过）：退回本工具发放台账。
             // 国际版不参与：它的批次到期本身不可信，台账里的旧日期也不该翻出来。
             (row.lot_expires_at, row.lot_amount) = nearest_lot(&lots_of(db, &row.iid, 30), now);

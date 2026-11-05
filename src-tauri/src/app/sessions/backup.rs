@@ -16,8 +16,6 @@ use std::path::{Path, PathBuf};
 
 /// 超过这个大小的库不进快照：ZCode 的库几百 MB，每次备份一份不现实。
 const MAX_DB_BYTES: u64 = 256 * 1024 * 1024;
-/// 只留最近这么多份快照。
-pub const KEEP: usize = 10;
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
@@ -124,7 +122,7 @@ pub fn make(roots: &Roots, base: &Path) -> Result<Snapshot> {
     let text = serde_json::to_string_pretty(&snapshot)
         .map_err(|e| AppError::new(ErrorKind::Io, format!("清单序列化失败：{e}")))?;
     crate::app::fsx::write_atomic(&dir.join("manifest.json"), text.as_bytes())?;
-    prune(base, KEEP);
+    crate::app::fsx::prune_children(base, crate::app::fsx::BACKUP_KEEP);
     Ok(snapshot)
 }
 
@@ -167,25 +165,6 @@ pub fn list(base: &Path) -> Vec<Snapshot> {
     out
 }
 
-/// 只留最近 `keep` 份。
-pub fn prune(base: &Path, keep: usize) {
-    let mut dirs: Vec<PathBuf> = match std::fs::read_dir(base) {
-        Ok(entries) => entries
-            .flatten()
-            .filter(|e| e.path().is_dir())
-            .map(|e| e.path())
-            .collect(),
-        Err(_) => return,
-    };
-    dirs.sort();
-    if dirs.len() <= keep {
-        return;
-    }
-    for old in dirs.iter().take(dirs.len() - keep) {
-        let _ = crate::app::fsx::remove_path(old);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,7 +199,7 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 2, "备份出来的库要能读，且行数一致");
         }
-        prune(&base, 2);
+        crate::app::fsx::prune_children(&base, 2);
         let left = std::fs::read_dir(&base).unwrap().count();
         assert_eq!(left, 2, "只留最近 2 份");
     }

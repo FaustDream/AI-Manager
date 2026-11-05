@@ -3,12 +3,6 @@
 use super::*;
 use crate::app::error::ErrorKind;
 
-#[tauri::command]
-
-pub fn app_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
-}
-
 /// 前端挂载完成后回调一次。
 /// 意义不在于「打个招呼」，而在于让 Rust 侧能确认 IPC 通道真的通了——
 /// 窗口能开但 `__TAURI__` 没注进来的情况，只看窗口是看不出来的。
@@ -23,38 +17,6 @@ pub fn ui_ready(state: State<'_, AppState>) -> String {
 
 pub fn app_quit(app: tauri::AppHandle) {
     app.exit(0);
-}
-
-#[tauri::command]
-
-pub fn window_show(app: tauri::AppHandle) -> std::result::Result<(), String> {
-    let Some(w) = app.get_webview_window("main") else {
-        return Err(err_text(AppError::new(ErrorKind::Invalid, "主窗口不存在")));
-    };
-    w.show()
-        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
-    w.set_focus()
-        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
-    Ok(())
-}
-
-#[tauri::command]
-
-pub fn window_hide(app: tauri::AppHandle) -> std::result::Result<(), String> {
-    let Some(w) = app.get_webview_window("main") else {
-        return Err(err_text(AppError::new(ErrorKind::Invalid, "主窗口不存在")));
-    };
-    w.hide()
-        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
-    Ok(())
-}
-
-#[tauri::command]
-
-pub fn tray_set_autostart(enabled: bool) -> std::result::Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
-    process::set_autostart(enabled, &exe).map_err(err_text)
 }
 
 /// 用系统默认浏览器打开一个链接（登录页的「在浏览器打开」）。

@@ -8,10 +8,9 @@
 //!   - 数据库调用一律 `spawn_blocking`，否则界面会在等结果期间变灰
 
 use crate::app::db::Db;
-use crate::app::error::{AppError, ErrorKind};
+use crate::app::error::AppError;
 use crate::app::log::{self, Level};
 use crate::app::process;
-use crate::app::task::{TaskState, TaskStore};
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -19,7 +18,6 @@ use tauri::{Manager, WindowEvent};
 
 pub struct AppState {
     pub db: Arc<Db>,
-    pub tasks: Arc<TaskStore>,
     /// 签到编排。持有网络与时钟，命令层只转接
     pub checkin: Arc<crate::app::checkin::Service>,
     /// 会话索引。只读写 app.db，客户端库由扫描任务自己碰
@@ -109,7 +107,7 @@ pub fn run() -> tauri::Result<()> {
             let hub = state.hub.clone();
             let sync_db = state.db.clone();
             let claim_db = state.db.clone();
-            let state_tasks = state.tasks.clone();
+            let sched_db = state.db.clone();
             app.manage(state);
 
             build_tray(app)?;
@@ -126,34 +124,30 @@ pub fn run() -> tauri::Result<()> {
                     }
                 });
             }
-            spawn_daily_round(service.clone(), state_tasks.clone(), app.handle().clone());
-            spawn_credits_round(service.clone(), state_tasks.clone(), app.handle().clone());
+            spawn_scheduler(sched_db, service.clone(), app.handle().clone());
             spawn_hub_auto_sync(sync_db, hub);
             spawn_zcode_auto_claim(claim_db, service, app.handle().clone());
-            spawn_event_bridges(app.handle().clone(), state_tasks);
+            spawn_event_bridges(app.handle().clone());
 
+            // 启动本身也是一次「动作」：执行记录里能看到每次重启的时间点
+            log::action("app.startup", "startup", true, 0, "外壳启动完成");
             log::log(Level::Info, "app", "P1 外壳启动完成");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::shell::app_version,
             commands::shell::ui_ready,
             commands::shell::app_quit,
-            commands::shell::window_show,
-            commands::shell::window_hide,
-            commands::shell::tray_set_autostart,
             commands::settings::settings_get,
             commands::settings::settings_set,
-            commands::settings::task_list,
             commands::shell::app_show_window,
             commands::shell::open_external,
-            commands::settings::task_cancel,
             commands::accounts::account_list,
             commands::accounts::account_reorder,
             commands::accounts::account_delete,
             commands::accounts::account_scan,
             commands::accounts::account_switch,
             commands::accounts::account_switch_codebuddy,
+            commands::accounts::account_codebuddy_targets,
             commands::accounts::account_restore_sessions,
             commands::accounts::account_uid,
             commands::accounts::account_current,
@@ -190,18 +184,21 @@ pub fn run() -> tauri::Result<()> {
             commands::checkin::checkin_batch,
             commands::checkin::daily_state,
             commands::checkin::daily_run_now,
+            commands::schedule::schedule_list,
+            commands::schedule::schedule_save,
+            commands::schedule::schedule_delete,
+            commands::schedule::schedule_run,
             commands::checkin::zcode_claim_plans,
             commands::checkin::zcode_claim_run,
             commands::logs::log_query,
             commands::logs::log_export,
+            commands::logs::log_action,
+            commands::logs::log_ui,
             commands::settings::log_level,
-            commands::settings::task_clear_finished,
             commands::maintenance::maintenance_space,
             commands::maintenance::maintenance_trash,
             commands::maintenance::maintenance_purge_trash,
             commands::maintenance::maintenance_open_data,
-            commands::maintenance::migrate_verify,
-            commands::maintenance::migrate_archive,
             commands::settings::autostart_get,
             commands::settings::autostart_set
         ])
@@ -213,7 +210,6 @@ fn init_state(
 ) -> std::result::Result<AppState, Box<dyn std::error::Error>> {
     log::init(Level::Info)?;
     let db = Arc::new(Db::open()?);
-    let tasks = TaskStore::new();
 
     log::log(
         Level::Info,
@@ -276,7 +272,6 @@ fn init_state(
 
     Ok(AppState {
         db,
-        tasks,
         checkin,
         sessions,
         hub: Arc::new(crate::app::hub::Hub::system()),
@@ -284,94 +279,114 @@ fn init_state(
     })
 }
 
-/// 每日轮询：启动后跑一轮，之后每 6 小时一轮。
+/// 定时任务调度器：30 秒一跳，谁到点跑谁。
 ///
 /// **定时器必须在 Rust 侧**：前端 `setInterval` 在窗口隐藏/被挂起时就停了，
 /// 而后台常驻正是这个工具的主场景。
-fn spawn_daily_round(
-    service: Arc<crate::app::checkin::Service>,
-    tasks: Arc<crate::app::task::TaskStore>,
-    app: tauri::AppHandle,
-) {
-    use crate::app::task::CapabilityId;
-    use tauri::Emitter;
+///
+/// 规则本身是用户配的（`app::schedule`，存 kv），这里只负责「到点了就叫起来」，
+/// 并且每次触发都落一条 `trigger=schedule` 的执行记录——用户事后能看到
+/// 「它自己跑过什么、成没成、花了多久」。
+fn spawn_scheduler(db: Arc<Db>, service: Arc<crate::app::checkin::Service>, app: tauri::AppHandle) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
 
     tauri::async_runtime::spawn(async move {
-        // 等首屏稳定再跑，别和账号列表抢 SQLite 的读连接
-        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        // 等首屏稳定再开始判点，别和账号列表抢 SQLite 的读连接
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        // 正在跑的 id：一轮签到几十秒，期间不能被下一跳重复捞起来
+        let running: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+
         loop {
-            // 定时轮询也走任务表：设置页的任务列表能看到它跑过、跑了什么
-            tasks.spawn_managed(CapabilityId::AccountCenter, "每日轮询（定时）", {
-                let service = service.clone();
-                let app = app.clone();
-                move |handle| async move {
-                    let round = service.run_round(&handle.cancel).await;
-                    log::log(
-                        if round.failed > 0 {
-                            Level::Warn
-                        } else {
-                            Level::Info
-                        },
-                        "checkin",
-                        format!("每日轮询：{}", round.message),
-                    );
-                    // 界面收到就更新底部那一行；收不到也不影响结算
-                    let _ = app.emit("checkin:round", &round);
-                    handle.message(round.message.clone());
-                    if handle.cancel.is_cancelled() {
-                        Err(crate::app::error::AppError::new(
-                            ErrorKind::Cancelled,
-                            round.message,
-                        ))
-                    } else {
-                        Ok(())
+            let now = chrono::Local::now();
+            let list = crate::app::runtime::blocking({
+                let db = db.clone();
+                move || crate::app::schedule::list(&db)
+            })
+            .await
+            .ok()
+            .and_then(|result| result.ok())
+            .unwrap_or_default();
+
+            for item in list {
+                if !item.due(now) {
+                    continue;
+                }
+                {
+                    let mut guard = running.lock().unwrap_or_else(|e| e.into_inner());
+                    if !guard.insert(item.id.clone()) {
+                        continue;
                     }
                 }
-            });
-            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+                // 先落 last_run 再执行：执行期间下一跳再判 due 也不会重复触发
+                let _ = crate::app::runtime::blocking({
+                    let db = db.clone();
+                    let id = item.id.clone();
+                    move || crate::app::schedule::mark_ran(&db, &id)
+                })
+                .await;
+
+                let service = service.clone();
+                let app = app.clone();
+                let running = running.clone();
+                tauri::async_runtime::spawn(async move {
+                    run_schedule(&service, &app, &item).await;
+                    running
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&item.id);
+                });
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
     });
 }
 
-/// 积分定时刷新：每小时一轮。签到轮询一天只有 4 次带余额，
-/// 界面上的余额要更跟手；失败逐条进错误快照，不打断整轮。
-fn spawn_credits_round(
-    service: Arc<crate::app::checkin::Service>,
-    tasks: Arc<crate::app::task::TaskStore>,
-    app: tauri::AppHandle,
-) {
-    use crate::app::task::CapabilityId;
+/// 执行一条定时任务的动作本体：返回 (是否成功, 结果文案)，**不写日志**。
+///
+/// 定时触发和「立即执行」都走这里，只是外面各自记一条 trigger 不同的执行记录——
+/// 两条链路各写一遍动作分支，早晚会漂。
+pub(crate) async fn execute_schedule(
+    service: &Arc<crate::app::checkin::Service>,
+    app: &tauri::AppHandle,
+    item: &crate::app::schedule::Schedule,
+) -> (bool, String) {
+    use crate::app::schedule::ScheduleAction::*;
     use tauri::Emitter;
 
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            tasks.spawn_managed(CapabilityId::AccountCenter, "积分定时刷新", {
-                let service = service.clone();
-                let app = app.clone();
-                move |handle| async move {
-                    let (total, failed) = service.credits_round().await;
-                    if total > 0 {
-                        log::log(
-                            if failed > 0 { Level::Warn } else { Level::Info },
-                            "checkin",
-                            format!("积分刷新：{total} 个账号，失败 {failed}"),
-                        );
-                        let _ = app.emit("credits:round", total);
-                    }
-                    handle.message(format!("{total} 个账号，失败 {failed}"));
-                    if failed > 0 && failed == total {
-                        Err(crate::app::error::AppError::new(
-                            ErrorKind::Io,
-                            format!("全部 {total} 个账号都刷新失败"),
-                        ))
-                    } else {
-                        Ok(())
-                    }
-                }
-            });
+    match item.action {
+        CheckinRound => {
+            let round = service.run_round("schedule").await;
+            // 界面收到就更新底部那一行；收不到也不影响结算
+            let _ = app.emit("checkin:round", &round);
+            (round.failed == 0, round.detail())
         }
-    });
+        CreditsRound => {
+            let (total, failed) = service.credits_round().await;
+            if total > 0 {
+                let _ = app.emit("credits:round", total);
+            }
+            (failed == 0, format!("{total} 个账号，失败 {failed}"))
+        }
+    }
+}
+
+/// 定时触发：执行 + 写 `trigger=schedule` 的执行记录。
+async fn run_schedule(
+    service: &Arc<crate::app::checkin::Service>,
+    app: &tauri::AppHandle,
+    item: &crate::app::schedule::Schedule,
+) {
+    let started = std::time::Instant::now();
+    let (ok, detail) = execute_schedule(service, app, item).await;
+    log::action(
+        &format!("schedule.{}", item.id),
+        "schedule",
+        ok,
+        started.elapsed().as_millis() as u64,
+        format!("定时「{}」（{}）：{detail}", item.name, item.rule_text()),
+    );
 }
 
 /// ZCode 活动自动领取（v1 行为，开关 kv `zcode_auto_claim` **默认关**）：
@@ -402,43 +417,31 @@ fn spawn_zcode_auto_claim(
             if !enabled.unwrap_or(false) {
                 continue;
             }
+            let started = std::time::Instant::now();
             if let Some(line) = service.zcode_auto_claim_round().await {
-                log::log(Level::Info, "checkin", format!("ZCode 自动领取：{line}"));
+                log::action(
+                    "schedule.zcode_claim",
+                    "schedule",
+                    true,
+                    started.elapsed().as_millis() as u64,
+                    format!("ZCode 自动领取：{line}"),
+                );
                 let _ = app.emit("zcode:claim", &line);
             }
         }
     });
 }
 
-/// 任务与日志的事件桥（§6.3）：TaskStore 的广播 → `task:state` / `task:progress`，
-/// log 的实时行 → `log:line`。进度单独成一个事件，界面的进度条只订阅它，
-/// 状态变化不会把进度条重画一遍。
-fn spawn_event_bridges(app: tauri::AppHandle, tasks: Arc<TaskStore>) {
-    use std::collections::HashMap;
+/// 日志的事件桥：log 的实时行 → `log:line`，执行记录页与日志页共用这一条通道。
+fn spawn_event_bridges(app: tauri::AppHandle) {
     use tauri::Emitter;
-
-    let log_app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut rx = tasks.subscribe();
-        let mut last: HashMap<u64, (TaskState, Option<f32>)> = HashMap::new();
-        loop {
-            let Ok(view) = rx.recv().await else { break };
-            let prev = last.insert(view.id, (view.state, view.progress));
-            let state_changed = prev.map(|(s, _)| s != view.state).unwrap_or(true);
-            if state_changed {
-                let _ = app.emit("task:state", &view);
-            } else if prev.map(|(_, p)| p != view.progress).unwrap_or(false) {
-                let _ = app.emit("task:progress", &view);
-            }
-        }
-    });
 
     tauri::async_runtime::spawn(async move {
         let mut rx = log::subscribe_live();
         loop {
             match rx.recv().await {
                 Ok(line) => {
-                    let _ = log_app.emit("log:line", &line);
+                    let _ = app.emit("log:line", &line);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break,

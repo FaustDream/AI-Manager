@@ -88,6 +88,9 @@ pub struct StatusResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreditSnapshot {
     pub summary: String,
+    /// 本次查询失败的原因；None = 查询成功，可能只是没拿到数值。
+    /// 界面不能靠「余额与配额都为空」反推失败：额度型平台成功时也可能两者都为空。
+    pub error: Option<String>,
     pub balance: Option<f64>,
     pub lots: Option<Vec<CreditLot>>,
     /// 额度型平台：窗口名 → 已用百分比

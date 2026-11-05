@@ -81,7 +81,6 @@ pub struct RestoreReport {
     pub changed_rows: usize,
     pub body_files_before: usize,
     pub body_files_after: usize,
-    pub backup: PathBuf,
 }
 
 /// 会话（P4 实现）。契约 9、10、11。
@@ -108,8 +107,6 @@ pub trait HubStore {
     // 上下文所以带 &self，不是 FromStr 那一族
     #[allow(clippy::wrong_self_convention)]
     fn from_platform(&self, raw: &serde_json::Value, key: TargetKey) -> Result<McpEntry>;
-    /// 契约 15：写前备份。
-    fn backup_before_write(&self, key: TargetKey) -> Result<PathBuf>;
     /// 契约 16：同名但非本工具写入 → 报冲突，不覆盖。
     fn check_conflict(&self, name: &str, key: TargetKey) -> Result<()>;
 }

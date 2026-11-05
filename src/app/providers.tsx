@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/components/ui/toast';
-import type { LoginOutcome, RoundResult, TaskView } from '@/lib/types';
+import type { LoginOutcome, RoundResult } from '@/lib/types';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -12,27 +12,12 @@ const queryClient = new QueryClient({
   },
 });
 
-/** 事件桥：后端推 task:state / task:progress / log:line / session:scan / checkin:round / zcode:claim，
+/** 事件桥：后端推 log:line / session:scan / checkin:round / zcode:claim / account:login，
  *  前端在这里统一接住，按能力失效对应查询——页面不用自己 listen。 */
 function EventBridges() {
   const qc = useQueryClient();
   useEffect(() => {
     const unbinds = [
-      listen<TaskView>('task:state', (e) => {
-        qc.setQueryData<TaskView[]>(['tasks'], (old) => {
-          const rows = (old ?? []).filter((t) => t.id !== e.payload.id);
-          return [e.payload, ...rows];
-        });
-        if (e.payload.state === 'done' || e.payload.state === 'failed') {
-          qc.invalidateQueries({ queryKey: ['accounts'] });
-        }
-      }),
-      listen<TaskView>('task:progress', (e) => {
-        qc.setQueryData<TaskView[]>(['tasks'], (old) => {
-          const rows = (old ?? []).filter((t) => t.id !== e.payload.id);
-          return [e.payload, ...rows];
-        });
-      }),
       listen<RoundResult>('checkin:round', (e) => {
         qc.setQueryData(['daily'], e.payload);
         qc.invalidateQueries({ queryKey: ['accounts'] });
