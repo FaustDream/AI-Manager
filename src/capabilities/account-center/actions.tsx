@@ -10,8 +10,8 @@ import { Dialog } from '@/components/ui/dialog';
 import { Tag } from '@/components/ui';
 import type { AccountView } from '@/lib/types';
 
-/** 五个槽位的固定宽度（px）：当前标签 / 切换 / 恢复对话 / UID / 删除。 */
-export const ACTION_SLOTS = [46, 40, 64, 32, 36] as const;
+/** 六个槽位的固定宽度（px）：当前标签 / 切换 / 恢复对话 / UID / 启用 / 删除。 */
+export const ACTION_SLOTS = [46, 40, 64, 32, 36, 36] as const;
 /** 槽位间距（gap-1）与单元格左右内边距，算操作列总宽时要用。 */
 export const ACTION_GAPS = 4;
 export const ACTION_PAD = 16;
@@ -58,6 +58,7 @@ export function RowActions({
   onRestore,
   onDelete,
   onCopyUid,
+  onToggleEnabled,
 }: {
   row: AccountView;
   isCurrent: boolean;
@@ -66,6 +67,7 @@ export function RowActions({
   onRestore: () => void;
   onDelete: () => void;
   onCopyUid: () => void;
+  onToggleEnabled: () => void;
 }) {
   const canRestore = row.platform === 'workbuddy';
   return (
@@ -110,6 +112,17 @@ export function RowActions({
         </RowAction>
         <RowAction onClick={onCopyUid} title="点击复制 UID">
           UID
+        </RowAction>
+        <RowAction
+          onClick={onToggleEnabled}
+          disabled={busy}
+          title={
+            row.enabled
+              ? '停用后不参与自动签到、自动轮询与积分刷新；手动单账号操作仍可执行'
+              : '重新启用，参与自动签到与积分轮询'
+          }
+        >
+          {row.enabled ? '停用' : '启用'}
         </RowAction>
         <RowAction danger onClick={onDelete} disabled={busy} title="只从本机账号库移除，不动客户端登录态">
           删除

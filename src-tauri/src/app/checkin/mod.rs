@@ -14,7 +14,7 @@ use crate::app::accounts::{self, AccountView};
 use crate::app::clock::Clock;
 use crate::app::db::Db;
 use crate::app::error::{AppError, ErrorKind, Result};
-use crate::app::log::{self, Item, Outcome};
+use crate::app::log::{self, Item, Level, Outcome};
 use crate::app::net::Http;
 use crate::app::providers;
 use crate::app::runtime::blocking;
@@ -55,6 +55,7 @@ fn record(
 /// 批次收尾：`成功 + 跳过 + 失败` 必须等于 `总计`，所以跳过用减法算——
 /// 三个数字对不上就说明有账号既没成功也没被计进失败，那是记录漏了。
 fn finish_batch(
+    action: &str,
     batch_id: &str,
     total: usize,
     round: &RoundResult,
@@ -69,7 +70,7 @@ fn finish_batch(
         format!(" | 失败明细: {}", failures.join("；"))
     };
     log::action(
-        "checkin_batch",
+        action,
         trigger,
         round.failed == 0,
         started.elapsed().as_millis() as u64,
@@ -93,6 +94,24 @@ fn log_write_failure(what: &str, scope: &str, e: AppError) {
 /// 日志里只留平台前缀，不出现完整 iid。
 fn platform_scope(iid: &str) -> String {
     iid.split(':').next().unwrap_or(iid).to_string()
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 只读诊断结果：给界面看的归一化状态，不含原始凭据或敏感字段。
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnoseReport {
+    pub platform: String,
+    pub platform_label: String,
+    pub requires_checkin: bool,
+    pub checked_in: Option<bool>,
+    pub summary: String,
+    pub balance: Option<f64>,
+    pub quota: Option<std::collections::HashMap<String, f64>>,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub next_at: Option<i64>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub ms: u64,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -122,6 +141,95 @@ pub struct RoundResult {
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 跨账号的一条领取记录（仪表盘「最近领取」用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct RecentClaim {
+    pub iid: String,
+    /// 展示名（已脱敏/别名）
+    pub name: String,
+    pub source: String,
+    pub amount: Option<f64>,
+    pub description: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub claimed_at: i64,
+}
+
+/// 把「(date, iid, balance)」明细聚合成按天的收支。
+///
+/// 先按账号分组再算相邻两天的差值：跨账号直接求和会互相抵消。
+fn aggregate_flow(rows: Vec<(String, String, f64)>) -> Vec<CreditFlowPoint> {
+    let mut per_account: std::collections::BTreeMap<String, Vec<(String, f64)>> =
+        Default::default();
+    for (date, iid, balance) in rows {
+        per_account.entry(iid).or_default().push((date, balance));
+    }
+
+    let mut by_date: std::collections::BTreeMap<String, CreditFlowPoint> = Default::default();
+    for (_, series) in per_account {
+        for (date, balance) in &series {
+            by_date
+                .entry(date.clone())
+                .or_insert_with(|| CreditFlowPoint {
+                    date: date.clone(),
+                    earned: 0.0,
+                    spent: 0.0,
+                    net: 0.0,
+                    balance: 0.0,
+                })
+                .balance += balance;
+        }
+        for pair in series.windows(2) {
+            let delta = pair[1].1 - pair[0].1;
+            // 浮点噪声（1e-12 级）不算变动
+            if delta.abs() < 0.005 {
+                continue;
+            }
+            if let Some(point) = by_date.get_mut(&pair[1].0) {
+                if delta > 0.0 {
+                    point.earned += delta;
+                } else {
+                    point.spent += -delta;
+                }
+            }
+        }
+    }
+
+    by_date
+        .into_values()
+        .map(|mut point| {
+            point.net = point.earned - point.spent;
+            point
+        })
+        .collect()
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 一天的积分收支：由「按账号的日余额增量」汇总而来。
+///
+/// 正增量记 `earned`（签到/活动/旅行到账），负增量记 `spent`（平台侧消耗）。
+/// 平台不提供消费流水，这是**唯一能观测到消耗的途径**，所以只做汇总、不做明细归因。
+#[derive(Debug, Clone, Serialize)]
+pub struct CreditFlowPoint {
+    pub date: String,
+    pub earned: f64,
+    pub spent: f64,
+    pub net: f64,
+    /// 当日末全部账号余额合计
+    pub balance: f64,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 积分趋势的一天。`date` 是本地自然日 `YYYY-MM-DD`。
+#[derive(Debug, Clone, Serialize)]
+pub struct TrendPoint {
+    pub date: String,
+    pub balance: f64,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 /// 详情面板要的数据。**全部来自本地库**，点开一行才查，不打接口。
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountDetail {
@@ -129,6 +237,7 @@ pub struct AccountDetail {
     /// 契约 6：今天与上一次有记录那天的差值
     pub today_delta: Option<f64>,
     pub lots: Vec<crate::types::CreditLot>,
+    pub claims: Vec<store::CreditClaim>,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub next_at: Option<i64>,
     pub checked_in: bool,
@@ -163,22 +272,7 @@ impl Service {
 
     /// 取账号视图与凭据包。凭据只在这一次调用里存在，不往外传。
     async fn load(&self, iid: &str) -> Result<(AccountView, accounts::credential::Credential)> {
-        let db = self.db.clone();
-        let wanted = iid.to_string();
-        blocking(move || {
-            let view = accounts::repo::list(&db)?
-                .into_iter()
-                .find(|v| v.iid == wanted)
-                .ok_or_else(|| AppError::new(ErrorKind::Invalid, "账号不存在，可能已被删除"))?;
-            let bytes = accounts::repo::secret_of(&db, &wanted)?.ok_or_else(|| {
-                AppError::new(
-                    ErrorKind::Invalid,
-                    "这个账号没有保存凭据，请重新点「扫描客户端」",
-                )
-            })?;
-            Ok((view, accounts::credential::Credential::parse(&bytes)?))
-        })
-        .await?
+        accounts::load_credential(self.db.clone(), iid).await
     }
 
     fn provider_of(iid: &str) -> Result<Box<dyn providers::Provider>> {
@@ -221,7 +315,24 @@ impl Service {
                     log_write_failure("写入去重标记失败", &platform_scope(iid), e);
                 }
             }
-            Some(false) => self.note_unchecked(iid).await,
+            Some(false) => {
+                if cooldown > 0 {
+                    let db = self.db.clone();
+                    let clock = self.clock.clone();
+                    let key = iid.to_string();
+                    match blocking(move || {
+                        SqliteCheckin::new(&db).clear_today_mark(&key, clock.as_ref())
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) | Err(e) => {
+                            log_write_failure("校正签到标记失败", &platform_scope(iid), e)
+                        }
+                    }
+                }
+                self.note_unchecked(iid).await;
+            }
             None => {}
         }
         if requires && result.next_at.is_none() {
@@ -253,26 +364,141 @@ impl Service {
         Ok(snapshot)
     }
 
+    /// 只读诊断：只调用平台的查询接口，**不写库、不写客户端、不触发签到**。
+    /// 结果同时落 `diagnose` 日志模块，查询入口与普通日志共用一份 `app.jsonl`。
+    pub async fn diagnose(&self, iid: &str) -> Result<DiagnoseReport> {
+        let started = std::time::Instant::now();
+        let (view, cred) = match self.load(iid).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                log::fail("diagnose", "checkin_diagnose", "读取凭据失败", e.evidence());
+                return Err(e);
+            }
+        };
+        let provider = match Self::provider_of(iid) {
+            Ok(provider) => provider,
+            Err(e) => {
+                log::fail(
+                    "diagnose",
+                    "checkin_diagnose",
+                    "平台不支持诊断",
+                    e.evidence(),
+                );
+                return Err(e);
+            }
+        };
+
+        let mut report = DiagnoseReport {
+            platform: view.platform.clone(),
+            platform_label: view.platform_label.clone(),
+            requires_checkin: provider.requires_checkin(),
+            checked_in: None,
+            summary: String::new(),
+            balance: None,
+            quota: None,
+            next_at: None,
+            ms: 0,
+        };
+
+        if provider.requires_checkin() {
+            let status = match provider.status(&cred, self.http.as_ref()).await {
+                Ok(value) => value,
+                Err(e) => {
+                    log::fail(
+                        "diagnose",
+                        "checkin_diagnose",
+                        format!("诊断失败：{}", view.display_name()),
+                        e.evidence(),
+                    );
+                    return Err(e);
+                }
+            };
+            report.checked_in = status.checked_in;
+            report.summary = status.summary;
+            report.balance = status.balance;
+            report.next_at = status.next_at.map(|at| at.timestamp_millis());
+        } else {
+            let snapshot = match provider.credits(&cred, self.http.as_ref()).await {
+                Ok(value) => value,
+                Err(e) => {
+                    log::fail(
+                        "diagnose",
+                        "checkin_diagnose",
+                        format!("诊断失败：{}", view.display_name()),
+                        e.evidence(),
+                    );
+                    return Err(e);
+                }
+            };
+            report.summary = snapshot.summary;
+            report.balance = snapshot.balance;
+            report.quota = snapshot.quota;
+        }
+        report.ms = started.elapsed().as_millis() as u64;
+        log::log(
+            Level::Info,
+            "diagnose",
+            format!(
+                "诊断 {}（{}）· {} · {}ms",
+                view.display_name(),
+                view.platform_label,
+                report.summary,
+                report.ms
+            ),
+        );
+        Ok(report)
+    }
+
     /// 批量刷积分：并发 3（与状态查询同口径），单账号失败不拖垮整批。
     /// 失败账号在 `error` 里带原因，界面只认这个字段，不靠数值是否为空反推。
-    pub async fn credits_batch(&self, iids: &[String]) -> Vec<(String, CreditSnapshot)> {
+    ///
+    /// 失败必须逐条落日志：界面只会说「N 个查询失败」，不写后端就查不出
+    /// 是哪几个账号、卡在哪一步、原文是什么。
+    pub async fn credits_batch(
+        &self,
+        iids: &[String],
+        trigger: &str,
+    ) -> Vec<(String, CreditSnapshot)> {
+        let total = iids.len();
+        let batch_id = batch_id();
+        let started = std::time::Instant::now();
+        // 失败行要显示账号名而不是 uid：先取一次名字表，查不到就退回平台前缀
+        let names = self.account_names().await;
+
         let semaphore = Arc::new(Semaphore::new(3));
         let mut tasks = tokio::task::JoinSet::new();
         for iid in iids {
             let service = self.clone();
             let permit = semaphore.clone();
             let iid = iid.clone();
+            let batch = batch_id.clone();
+            let name = names.get(iid.as_str()).cloned();
             tasks.spawn(async move {
                 let _permit = permit.acquire_owned().await.ok();
+                let account_started = std::time::Instant::now();
                 let snapshot = match service.refresh_snapshot(&iid).await {
-                    Ok(snapshot) => snapshot,
-                    Err(e) => CreditSnapshot {
-                        summary: e.message.clone(),
-                        error: Some(e.message),
-                        balance: None,
-                        lots: None,
-                        quota: None,
-                    },
+                    Ok(snapshot) => {
+                        service.health_ok(&iid).await;
+                        snapshot
+                    }
+                    Err(e) => {
+                        service.health_fail(&iid, e.kind).await;
+                        let subject = name.unwrap_or_else(|| platform_scope(&iid));
+                        log::item(
+                            Item::new("刷新积分", &subject, Outcome::Fail)
+                                .step("查询积分")
+                                .evidence(e.evidence())
+                                .batch(&batch)
+                                .ms(account_started.elapsed().as_millis() as u64),
+                        );
+                        CreditSnapshot {
+                            summary: e.message.clone(),
+                            error: Some(e.message),
+                            balance: None,
+                            lots: None,
+                            quota: None,
+                        }
+                    }
                 };
                 (iid, snapshot)
             });
@@ -283,7 +509,115 @@ impl Service {
                 out.push(pair);
             }
         }
+
+        // 失败明细：界面上的「N 个查询失败」必须能和日志对上账
+        let failures: Vec<String> = out
+            .iter()
+            .filter_map(|(iid, snapshot)| {
+                snapshot.error.as_ref().map(|error| {
+                    let subject = names
+                        .get(iid.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| platform_scope(iid));
+                    format!("{subject} → {error}")
+                })
+            })
+            .collect();
+        let failed = failures.len();
+        let detail = if failures.is_empty() {
+            String::new()
+        } else {
+            format!(" | 失败明细: {}", failures.join("；"))
+        };
+        // 批次收尾：界面上的「N 个查询失败」必须能和日志对上账。
+        // 定时触发且全绿时不记：每小时一条「N 个账号全部成功」只是心跳，
+        // 由调度器按「有没有失败」决定是否落记录。
+        if trigger != "schedule" || failed > 0 {
+            log::action(
+                "checkin_credits",
+                trigger,
+                failed == 0,
+                started.elapsed().as_millis() as u64,
+                format!(
+                    "批次 {batch_id} 结束 | 总计={total} | 成功={} | 失败={failed}{detail}",
+                    total.saturating_sub(failed)
+                ),
+            );
+        }
         out
+    }
+
+    /// 托盘「立即签到」用：所有启用、有凭据、需要签到的账号。
+    pub async fn enabled_checkin_iids(&self) -> Vec<String> {
+        self.accounts()
+            .await
+            .map(|list| {
+                list.into_iter()
+                    .filter(|a| a.requires_checkin && a.has_secret && a.enabled)
+                    .map(|a| a.iid)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 批量签到的节奏：并发上限 + 账号间隔。默认 3/0，与旧行为完全一致。
+    async fn checkin_limits(&self) -> (usize, u64) {
+        let db = self.db.clone();
+        blocking(move || {
+            let concurrent = db
+                .kv_get("checkin.max_concurrent")
+                .ok()
+                .flatten()
+                .and_then(|text| text.trim().parse::<usize>().ok())
+                .unwrap_or(3)
+                .clamp(1, 6);
+            let gap_ms = db
+                .kv_get("checkin.gap_ms")
+                .ok()
+                .flatten()
+                .and_then(|text| text.trim().parse::<u64>().ok())
+                .unwrap_or(0)
+                .min(60_000);
+            (concurrent, gap_ms)
+        })
+        .await
+        .unwrap_or((3, 0))
+    }
+
+    /// 测试用：读取批量节奏配置。
+    #[doc(hidden)]
+    pub async fn batch_limits_for_test(&self) -> (usize, u64) {
+        self.checkin_limits().await
+    }
+
+    async fn health_ok(&self, iid: &str) {
+        let db = self.db.clone();
+        let key = iid.to_string();
+        let now = self.clock.now().timestamp_millis();
+        let _ = blocking(move || accounts::repo::note_health_ok(&db, &key, now)).await;
+    }
+
+    async fn health_fail(&self, iid: &str, kind: ErrorKind) {
+        let db = self.db.clone();
+        let key = iid.to_string();
+        let now = self.clock.now().timestamp_millis();
+        let kind = kind.as_str().to_string();
+        let _ = blocking(move || accounts::repo::note_health_fail(&db, &key, &kind, now)).await;
+    }
+
+    /// iid → 账号名。只为日志服务，读不到就退化成平台前缀。
+    async fn account_names(&self) -> std::collections::HashMap<String, String> {
+        self.accounts()
+            .await
+            .map(|list| {
+                list.into_iter()
+                    .map(|account| {
+                        let name = account.display_name();
+                        (account.iid, name)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 「刷新积分」实际打的那一发：需要签到的平台走**状态查询**，顺带把签到结论落库。
@@ -315,7 +649,7 @@ impl Service {
         let iids: Vec<String> = match self.accounts().await {
             Ok(list) => list
                 .into_iter()
-                .filter(|a| a.has_secret)
+                .filter(|a| a.has_secret && a.enabled)
                 .map(|a| a.iid)
                 .collect(),
             Err(_) => return (0, 0),
@@ -324,7 +658,7 @@ impl Service {
         if total == 0 {
             return (0, 0);
         }
-        let out = self.credits_batch(&iids).await;
+        let out = self.credits_batch(&iids, "schedule").await;
         // 只认显式错误标记：成功但没拿到数值的账号不算失败
         let failed = out.iter().filter(|(_, s)| s.error.is_some()).count();
         (total, failed)
@@ -363,7 +697,22 @@ impl Service {
         })
         .await
         .unwrap_or((None, None, Vec::new(), None, None, Default::default(), None));
+        let db = self.db.clone();
+        let key = iid.to_string();
+        let claims = match blocking(move || SqliteCheckin::new(&db).claims(&key)).await {
+            Ok(Ok(claims)) => claims,
+            Ok(Err(e)) | Err(e) => {
+                log::fail(
+                    "checkin",
+                    "credit_claim_read",
+                    "读取积分领取记录失败",
+                    e.evidence(),
+                );
+                Vec::new()
+            }
+        };
         AccountDetail {
+            claims,
             balance,
             today_delta: delta,
             lots,
@@ -375,11 +724,83 @@ impl Service {
         }
     }
 
+    /// 积分收支（按天）：由 `credit_snapshots` 的**账号级日增量**汇总。
+    ///
+    /// 平台只给余额，不给消费明细；把每个账号相邻两天的余额差相加，
+    /// 正数是到账、负数是消耗。缺数据的日子不补零，避免把「没记录」画成「没变化」。
+    pub async fn credit_flow(&self, days: i64) -> Vec<CreditFlowPoint> {
+        let days = days.clamp(7, 60);
+        let since = (self.clock.today() - chrono::Duration::days(days - 1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let db = self.db.clone();
+        let rows = match blocking(move || SqliteCheckin::new(&db).balance_rows(&since)).await {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(e)) | Err(e) => {
+                log::fail("checkin", "credit_flow", "读取积分收支失败", e.evidence());
+                return Vec::new();
+            }
+        };
+
+        aggregate_flow(rows)
+    }
+
+    /// 跨账号最近领取：仪表盘用，最多 100 条。
+    pub async fn recent_claims(&self, limit: usize) -> Vec<RecentClaim> {
+        let names = self.account_names().await;
+        let db = self.db.clone();
+        match blocking(move || SqliteCheckin::new(&db).recent_claims(limit)).await {
+            Ok(Ok(rows)) => rows
+                .into_iter()
+                .map(|(iid, claim)| RecentClaim {
+                    name: names
+                        .get(&iid)
+                        .cloned()
+                        .unwrap_or_else(|| platform_scope(&iid)),
+                    iid,
+                    source: claim.source,
+                    amount: claim.amount,
+                    description: claim.description,
+                    claimed_at: claim.claimed_at,
+                })
+                .collect(),
+            Ok(Err(e)) | Err(e) => {
+                log::fail(
+                    "checkin",
+                    "credit_claim_read",
+                    "读取最近领取失败",
+                    e.evidence(),
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// 积分趋势：读每日余额快照，最多 60 天。`iid` 为空时汇总全部账号。
+    pub async fn credit_trend(&self, iid: Option<String>, days: i64) -> Vec<TrendPoint> {
+        let days = days.clamp(7, 60);
+        let since = (self.clock.today() - chrono::Duration::days(days - 1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let db = self.db.clone();
+        match blocking(move || SqliteCheckin::new(&db).snapshot_series(iid.as_deref(), &since))
+            .await
+        {
+            Ok(Ok(rows)) => rows
+                .into_iter()
+                .map(|(date, balance)| TrendPoint { date, balance })
+                .collect(),
+            Ok(Err(e)) | Err(e) => {
+                log::fail("checkin", "credit_trend", "读取积分趋势失败", e.evidence());
+                Vec::new()
+            }
+        }
+    }
+
     /// 单账号签到。**幂等在这**：当日已签直接返回，绝不调接口。
     pub async fn checkin(&self, iid: &str) -> Result<ActionResult> {
         self.checkin_traced(iid, None).await.1
     }
-
     /// 带执行记录的单账号签到，返回 (账号名, 结果)。`batch` 有值时挂在批次下。
     ///
     /// 记录写在这一层而不是 `batch` 里：只有这里知道失败卡在哪一步
@@ -395,7 +816,7 @@ impl Service {
 
         let (view, cred) = match self.load(iid).await {
             Ok(pair) => {
-                subject = pair.0.name.clone();
+                subject = pair.0.display_name();
                 pair
             }
             Err(e) => {
@@ -446,7 +867,8 @@ impl Service {
             );
             return (subject, Ok(result));
         }
-        if self.marked_today(iid).await {
+        // 活动窗口不等于本地自然日，旧领取标记不能拦住新窗口。
+        if provider.cooldown_hours() == 0 && self.marked_today(iid).await {
             let result = ActionResult {
                 ok: true,
                 message: "今日已签到（本工具的记录）".into(),
@@ -466,35 +888,101 @@ impl Service {
             return (subject, Ok(result));
         }
 
-        let result = match provider.checkin(&cred, self.http.as_ref()).await {
-            Ok(result) => result,
-            Err(e) => {
+        // 失败重试：只重试可恢复错误；重试前先复查状态，避免「平台已成功但响应丢失」重复提交
+        let mut result = None;
+        let mut last_error = None;
+        let mut attempts = 0u32;
+        for attempt in 1..=3u32 {
+            attempts = attempt;
+            match provider.checkin(&cred, self.http.as_ref()).await {
+                Ok(value) => {
+                    result = Some(value);
+                    break;
+                }
+                Err(e) => {
+                    let retryable = matches!(
+                        e.kind,
+                        ErrorKind::Provider | ErrorKind::Io | ErrorKind::RateLimited
+                    );
+                    if retryable && attempt < 3 {
+                        if let Ok(status) = provider.status(&cred, self.http.as_ref()).await {
+                            if status.checked_in == Some(true) {
+                                result = Some(ActionResult {
+                                    ok: true,
+                                    message: "平台已记录今日签到（重试前复查）".into(),
+                                    granted: None,
+                                    validity_days: None,
+                                    already: true,
+                                });
+                                break;
+                            }
+                        }
+                        let wait_secs = if matches!(e.kind, ErrorKind::RateLimited) {
+                            5 * u64::from(attempt)
+                        } else {
+                            u64::from(attempt)
+                        };
+                        tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                        continue;
+                    }
+                    last_error = Some(e);
+                    break;
+                }
+            }
+        }
+        let result = match result {
+            Some(value) => value,
+            None => {
+                let e =
+                    last_error.unwrap_or_else(|| AppError::new(ErrorKind::Provider, "签到失败"));
+                self.health_fail(iid, e.kind).await;
                 record(
                     &subject,
                     "提交签到",
                     Outcome::Fail,
                     &e.message,
-                    &format!("平台={} 账号={iid}", view.platform_label),
+                    &format!(
+                        "平台={} 账号={iid} 重试={attempts}/3 · {}",
+                        view.platform_label,
+                        e.evidence()
+                    ),
                     started,
                     batch,
                 );
                 return (subject, Err(e));
             }
         };
+        if result.ok {
+            self.health_ok(iid).await;
+        } else {
+            self.health_fail(iid, ErrorKind::Provider).await;
+        }
 
         // 「本轮早领过」没有新发放，不能记成今天签过，留给下一轮再试
         if result.ok && !result.already {
+            let claimed_at = self.clock.now().timestamp_millis();
+            store::record_claim(
+                self.db.clone(),
+                iid,
+                store::CreditClaim {
+                    event_key: format!("checkin:{claimed_at}"),
+                    source: "checkin".into(),
+                    amount: result.granted,
+                    description: "签到领取".into(),
+                    claimed_at,
+                },
+            )
+            .await;
             if let Err(e) = self.mark_today(iid).await {
                 record(
                     &subject,
                     "记录签到结果",
                     Outcome::Fail,
                     &e.message,
-                    "写 daily_marks 失败",
+                    &e.evidence(),
                     started,
                     batch,
                 );
-                return (subject, Err(e));
             }
             if let Some(granted) = result.granted.filter(|g| *g > 0.0) {
                 self.record_grant(iid, granted, result.validity_days, provider.live_credit())
@@ -548,22 +1036,34 @@ impl Service {
     /// 记录分三层：批次开始 → 每个账号一条（在 `checkin_traced` 里）→ 批次结束。
     /// 结束行的 `成功 + 跳过 + 失败` 恒等于 `总计`（跳过用减法算），对不上就是有漏。
     pub async fn batch(&self, iids: &[String], trigger: &str) -> RoundResult {
-        let total = iids.len();
+        // 停用账号不参与自动批次：前端可能已经过滤，但后端必须再守一次
+        let accounts = self.accounts().await.unwrap_or_default();
+        let enabled: std::collections::HashSet<&str> = accounts
+            .iter()
+            .filter(|a| a.enabled)
+            .map(|a| a.iid.as_str())
+            .collect();
+        let wanted: Vec<String> = iids
+            .iter()
+            .filter(|iid| enabled.contains(iid.as_str()))
+            .cloned()
+            .collect();
+        let total = wanted.len();
         let batch_id = batch_id();
         let started = std::time::Instant::now();
-        log::item(
-            log::Item::marker("批次", &batch_id)
-                .note(format!("开始 | 动作=批量签到 | 账号数={total} | 并发=3")),
-        );
+        let (max_concurrent, gap_ms) = self.checkin_limits().await;
+        log::item(log::Item::marker("批次", &batch_id).note(format!(
+            "开始 | 动作=批量签到 | 账号数={total} | 并发={max_concurrent} | 间隔={gap_ms}ms"
+        )));
 
         let mut round = RoundResult {
             scanned: total,
             ..Default::default()
         };
-        let semaphore = Arc::new(Semaphore::new(3));
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
         let mut tasks = tokio::task::JoinSet::new();
 
-        for iid in iids.iter() {
+        for (index, iid) in wanted.iter().enumerate() {
             let service = self.clone();
             let permit_sem = semaphore.clone();
             let batch = batch_id.clone();
@@ -572,6 +1072,10 @@ impl Service {
                 let _permit = permit_sem.acquire_owned().await.ok();
                 service.checkin_traced(&iid, Some(&batch)).await
             });
+            // 账号间隔控制「开始时间」，并发上限仍由 Semaphore 管；两者独立可配
+            if gap_ms > 0 && index + 1 < wanted.len() {
+                tokio::time::sleep(std::time::Duration::from_millis(gap_ms)).await;
+            }
         }
 
         let mut failures: Vec<String> = Vec::new();
@@ -597,7 +1101,15 @@ impl Service {
         }
         round.at = self.now_text();
         round.message = round.summary();
-        finish_batch(&batch_id, total, &round, &failures, trigger, started);
+        finish_batch(
+            "checkin_batch",
+            &batch_id,
+            total,
+            &round,
+            &failures,
+            trigger,
+            started,
+        );
         round
     }
 
@@ -632,14 +1144,8 @@ impl Service {
         round.scanned = accounts.len();
         let targets: Vec<AccountView> = accounts
             .into_iter()
-            .filter(|a| a.requires_checkin && a.has_secret)
+            .filter(|a| a.requires_checkin && a.has_secret && a.enabled)
             .collect();
-
-        log::item(log::Item::marker("批次", &batch_id).note(format!(
-            "开始 | 动作=签到轮询 | 账号总数={} | 参与签到={} | 新的一天={new_day}",
-            round.scanned,
-            targets.len()
-        )));
 
         // 第二步：逐个查接口状态（并发 3）
         let statuses = self.statuses_of(&targets).await;
@@ -648,11 +1154,14 @@ impl Service {
         for account in &targets {
             let status = statuses.get(&account.iid);
             let remote = status.and_then(|s| s.checked_in);
+            let local_day = Self::provider_of(&account.iid)
+                .map(|provider| provider.cooldown_hours() == 0)
+                .unwrap_or(true);
             // 契约 1（resolve_checked）的生产接线：接口说了算，
             // 接口没给值（查询失败也在内）才看本地兜底
             let checked = match remote {
                 Some(checked) => checked,
-                None => self.marked_today(&account.iid).await,
+                None => local_day && self.marked_today(&account.iid).await,
             };
             if checked {
                 // 接口说今天已签：写进去重表，后面就不必再问
@@ -663,7 +1172,7 @@ impl Service {
                 continue;
             }
             // 契约 2：当日已签成功的不重复调用——接口偶发说没签也不信
-            if self.marked_today(&account.iid).await {
+            if local_day && self.marked_today(&account.iid).await {
                 round.skipped += 1;
                 continue;
             }
@@ -679,6 +1188,15 @@ impl Service {
 
         // 第三步：只对「今天还没签成功 + 现在确实可签」的账号调接口
         round.due = due.len();
+        // 批次标记只在真的要调接口时写：同日轮询「无需签到」是正常心跳，
+        // 每轮都留一条开始行只会把真正的签到记录淹掉。
+        if !due.is_empty() {
+            log::item(log::Item::marker("批次", &batch_id).note(format!(
+                "开始 | 动作=签到轮询 | 账号总数={} | 参与签到={} | 新的一天={new_day}",
+                round.scanned,
+                targets.len()
+            )));
+        }
         let mut failures: Vec<String> = Vec::new();
         for iid in &due {
             let (subject, outcome) = self.checkin_traced(iid, Some(&batch_id)).await;
@@ -698,14 +1216,19 @@ impl Service {
 
         round.at = self.now_text();
         round.message = round.summary();
-        finish_batch(
-            &batch_id,
-            round.scanned,
-            &round,
-            &failures,
-            trigger,
-            started,
-        );
+        // 定时触发的汇总由调度器统一记一条（带规则文案），这里不再重复记；
+        // 手动/托盘触发仍由这里落一条执行记录。
+        if trigger != "schedule" {
+            finish_batch(
+                "checkin_round",
+                &batch_id,
+                round.scanned,
+                &round,
+                &failures,
+                trigger,
+                started,
+            );
+        }
         self.save_daily_state(&today, &round);
         round
     }
@@ -713,6 +1236,27 @@ impl Service {
     // ---------------------------------------------------------------- ZCode 活动领取
     // v1 的「领取」按钮：不是签到轮询的一部分（ZCode requires_checkin=false），
     // 是界面上单独的动作；领取会开浏览器过验证码。
+
+    /// 平台奖励积分明细（WorkBuddy 个人中心「套餐与积分」那一页的口径）。
+    ///
+    /// 与积分余额的区别：余额只回答「现在有多少」，这里回答「哪几批、各剩多少、
+    /// 什么时候到期」——正是网页上那张明细表的内容。
+    pub async fn reward_credits(
+        &self,
+        iid: &str,
+    ) -> Result<crate::app::providers::workbuddy::RewardCredits> {
+        let (view, cred) = self.load(iid).await?;
+        if view.platform != "workbuddy" {
+            return Err(AppError::new(
+                ErrorKind::Unsupported,
+                "平台奖励积分明细只支持 WorkBuddy",
+            ));
+        }
+        let intl = crate::app::accounts::is_intl_account(iid);
+        crate::app::providers::workbuddy::WorkBuddyProvider::new(intl)
+            .reward_credits(&cred, self.http.as_ref())
+            .await
+    }
 
     /// 可领取的活动套餐列表（preview 为主、marketing 补充）。
     pub async fn zcode_claimable(
@@ -737,10 +1281,25 @@ impl Service {
         } else {
             &outcome.name
         };
+        store::record_claim(
+            self.db.clone(),
+            iid,
+            store::CreditClaim {
+                event_key: format!(
+                    "activity:{plan_id}:{}:{}",
+                    outcome.effective_at, outcome.ends_at
+                ),
+                source: "activity".into(),
+                amount: None,
+                description: name.to_string(),
+                claimed_at: self.clock.now().timestamp_millis(),
+            },
+        )
+        .await;
         crate::app::log::log(
             crate::app::log::Level::Info,
             "checkin",
-            format!("ZCode 活动领取成功：{} · {name}", view.name),
+            format!("ZCode 活动领取成功：{} · {name}", view.display_name()),
         );
         Ok(outcome)
     }
@@ -761,14 +1320,14 @@ impl Service {
             let line = match self.zcode_claim(&account.iid, &plan.plan_id).await {
                 Ok(outcome) => format!(
                     "{}：已领取 {}",
-                    account.name,
+                    account.display_name(),
                     if outcome.name.is_empty() {
                         label
                     } else {
                         outcome.name
                     }
                 ),
-                Err(e) => format!("{}：领取失败（{}）", account.name, e.message),
+                Err(e) => format!("{}：领取失败（{}）", account.display_name(), e.message),
             };
             return Some(line);
         }
@@ -794,11 +1353,15 @@ impl Service {
             let service = self.clone();
             let permit = semaphore.clone();
             let iid = account.iid.clone();
-            let name = account.name.clone();
+            let name = account.display_name();
             let platform = account.platform.clone();
             tasks.spawn(async move {
                 let _permit = permit.acquire_owned().await.ok();
                 let result = service.status(&iid).await;
+                match &result {
+                    Ok(_) => service.health_ok(&iid).await,
+                    Err(e) => service.health_fail(&iid, e.kind).await,
+                }
                 (iid, name, platform, result)
             });
         }
@@ -810,13 +1373,11 @@ impl Service {
                 }
                 // 查询失败必须留痕：以前这里是空的，结果是「接口挂了」和
                 // 「今天已签」在日志里长得一样，用户只会看到「无需签到」
-                Ok((iid, name, platform, Err(e))) => crate::app::log::log(
-                    crate::app::log::Level::Warn,
-                    "checkin",
-                    format!(
-                        "状态查询失败：{name} · 平台={platform} · {} · 账号={iid}",
-                        e.message
-                    ),
+                Ok((_, name, platform, Err(e))) => log::item(
+                    Item::new("签到状态", &name, Outcome::Fail)
+                        .step("查询状态")
+                        .evidence(e.evidence())
+                        .note(format!("平台={platform}")),
                 ),
                 Err(e) => crate::app::log::log(
                     crate::app::log::Level::Warn,
@@ -1073,5 +1634,45 @@ impl RoundResult {
             parts.push("无需签到".into());
         }
         parts.join(" · ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(date: &str, iid: &str, balance: f64) -> (String, String, f64) {
+        (date.into(), iid.into(), balance)
+    }
+
+    #[test]
+    fn flow_aggregates_per_account_deltas() {
+        let points = aggregate_flow(vec![
+            row("2026-11-01", "a", 100.0),
+            row("2026-11-02", "a", 150.0),
+            row("2026-11-03", "a", 120.0),
+            row("2026-11-01", "b", 0.0),
+            row("2026-11-02", "b", 0.0),
+            row("2026-11-03", "b", 80.0),
+        ]);
+        assert_eq!(points.len(), 3);
+        // 第二天：a 到账 50，b 没有变化
+        assert_eq!(points[1].earned, 50.0);
+        assert_eq!(points[1].spent, 0.0);
+        // 第三天：a 消耗 30、b 到账 80 —— 跨账号求和会互相抵消，必须分开算
+        assert_eq!(points[2].earned, 80.0);
+        assert_eq!(points[2].spent, 30.0);
+        assert_eq!(points[2].net, 50.0);
+        assert_eq!(points[2].balance, 200.0);
+    }
+
+    #[test]
+    fn flow_ignores_first_day_and_float_noise() {
+        let points = aggregate_flow(vec![
+            row("2026-11-01", "a", 100.0),
+            row("2026-11-02", "a", 100.0000000001),
+        ]);
+        assert_eq!(points[0].earned, 0.0, "首日没有前一天，不算收支");
+        assert_eq!(points[1].earned, 0.0, "浮点噪声不算变动");
     }
 }

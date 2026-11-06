@@ -5,16 +5,19 @@
 //! 产生 0 增减」这类边界根本无法构造。
 
 pub mod accounts;
+pub mod activity;
+pub mod browser;
 pub mod checkin;
 pub mod clients;
 pub mod clock;
+pub mod config_history;
 pub mod db;
 pub mod error;
 pub mod fsx;
+pub mod health;
 pub mod hub;
 pub mod log;
 pub mod maintenance;
-pub mod migrate;
 pub mod net;
 pub mod paths;
 pub mod platform;
@@ -25,3 +28,5 @@ pub mod schedule;
 pub mod secret;
 pub mod sessions;
 pub mod timeutil;
+pub mod update;
+pub mod usage;

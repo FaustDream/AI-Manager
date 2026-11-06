@@ -340,6 +340,8 @@ impl Provider for ZCodeProvider {
         cred.put("name", json!(name));
         cred.put("provider", json!(provider));
         cred.put("email", json!(email));
+        // 账号自己的 UA：以后换客户端版本只改这里，不必重扫账号
+        cred.put("ua", json!(format!("ZCode/{APP_VERSION}")));
         if let Some(mid) = self.device_mid() {
             cred.put("device_mid", json!(mid));
         }
@@ -465,7 +467,10 @@ impl ZCodeProvider {
         mid: Option<&str>,
     ) -> Vec<(String, String)> {
         let mut headers = vec![
-            ("User-Agent".to_string(), format!("ZCode/{APP_VERSION}")),
+            (
+                "User-Agent".to_string(),
+                cred.user_agent(&format!("ZCode/{APP_VERSION}")),
+            ),
             ("HTTP-Referer".into(), "https://zcode.z.ai".into()),
             ("X-Title".into(), "Z Code@electron".into()),
             ("X-ZCode-App-Version".into(), APP_VERSION.into()),
@@ -486,10 +491,13 @@ impl ZCodeProvider {
         headers
     }
 
-    fn bigmodel_headers(token: &str) -> Vec<(String, String)> {
+    fn bigmodel_headers(cred: &Credential, token: &str) -> Vec<(String, String)> {
         vec![
             ("Authorization".into(), format!("Bearer {token}")),
-            ("User-Agent".into(), format!("ZCode/{APP_VERSION}")),
+            (
+                "User-Agent".into(),
+                cred.user_agent(&format!("ZCode/{APP_VERSION}")),
+            ),
             ("x-request-id".into(), request_id()),
         ]
     }
@@ -543,12 +551,12 @@ impl ZCodeProvider {
 
         for token in &tokens {
             match self
-                .get(http, LIMIT_URL, &Self::bigmodel_headers(token))
+                .get(http, LIMIT_URL, &Self::bigmodel_headers(cred, token))
                 .await
             {
                 Ok(data) if business_ok(&data) => {
                     let subscription = self
-                        .get(http, SUBSCRIPTION_URL, &Self::bigmodel_headers(token))
+                        .get(http, SUBSCRIPTION_URL, &Self::bigmodel_headers(cred, token))
                         .await
                         .ok();
                     return Ok(quota_from_limit(&data, subscription.as_ref()));
@@ -570,10 +578,14 @@ impl ZCodeProvider {
                         no_plan = true;
                         continue;
                     }
+                    let code_value = code.unwrap_or(-1);
                     errors.push(if message.is_empty() {
-                        format!("接口返回 code={}", code.unwrap_or(-1))
+                        crate::app::providers::hints::with_hint(
+                            format!("接口返回 code={code_value}"),
+                            code_value,
+                        )
                     } else {
-                        message
+                        crate::app::providers::hints::with_hint(message, code_value)
                     });
                 }
                 Err(e) => {

@@ -75,15 +75,45 @@ pub async fn claimable(
     Ok(plans)
 }
 
+fn preview_url(version: &str) -> String {
+    format!("{API_BASE}/api/v1/zcode-plan/billing/preview?app_version={version}&platform=win32-x64")
+}
+
+/// 诊断入口：原样返回 `billing/preview` 的 JSON。
+///
+/// 平台换字段时，「列表突然变空」和「真没活动」在解析后长得一模一样。
+/// 真机探针（`tests/live_probe.rs`）用这个直接看原始结构，比猜字段名快。
+pub async fn preview_payload(
+    cred: &crate::app::accounts::credential::Credential,
+    http: &dyn Http,
+    mid: Option<&str>,
+) -> Result<Value> {
+    preview_payload_with(cred, http, mid, APP_VERSION).await
+}
+
+/// 同上，但可指定 `app_version`：活动下发是按客户端版本分级的，
+/// 排查「官方能领、这里没有」时需要换版本试。
+pub async fn preview_payload_with(
+    cred: &crate::app::accounts::credential::Credential,
+    http: &dyn Http,
+    mid: Option<&str>,
+    version: &str,
+) -> Result<Value> {
+    get_ok(cred, http, mid, &preview_url(version), "活动预览").await
+}
+
 async fn preview(
     cred: &crate::app::accounts::credential::Credential,
     http: &dyn Http,
     mid: Option<&str>,
 ) -> Result<Vec<ClaimPlan>> {
-    let url = format!(
-        "{API_BASE}/api/v1/zcode-plan/billing/preview?app_version={APP_VERSION}&platform=win32-x64"
-    );
-    let data = get_ok(cred, http, mid, &url, "活动预览").await?;
+    let data = preview_payload(cred, http, mid).await?;
+    // 平台没下发活动时只回 {"code":0,"msg":""}，没有 data 节点——这不是解析失败
+    let data = if data.get("data").is_some() {
+        data
+    } else {
+        return Ok(Vec::new());
+    };
     let mut plans: Vec<ClaimPlan> = plans_of(&data).into_iter().filter_map(parse_plan).collect();
     plans.sort_by(|a, b| {
         b.priority
@@ -93,14 +123,24 @@ async fn preview(
     Ok(plans)
 }
 
+/// 诊断入口：原样返回 `marketing/touch` 的 JSON（真机探针用）。
+pub async fn marketing_payload(
+    cred: &crate::app::accounts::credential::Credential,
+    http: &dyn Http,
+    mid: Option<&str>,
+    seq: u32,
+) -> Result<Value> {
+    let url = format!("{API_BASE}/api/v1/marketing/touch?seq={seq}");
+    get_ok(cred, http, mid, &url, "活动下发").await
+}
+
 /// 活动弹窗通道：失败一律当没有活动，不影响 preview。
 async fn marketing_plans(
     cred: &crate::app::accounts::credential::Credential,
     http: &dyn Http,
     mid: Option<&str>,
 ) -> Vec<ClaimPlan> {
-    let url = format!("{API_BASE}/api/v1/marketing/touch?seq=0");
-    let Ok(data) = get_ok(cred, http, mid, &url, "活动下发").await else {
+    let Ok(data) = marketing_payload(cred, http, mid, 0).await else {
         return Vec::new();
     };
     let deliveries = data

@@ -1,5 +1,5 @@
 import { cn } from './button';
-import type { InputHTMLAttributes, SelectHTMLAttributes } from 'react';
+import type { InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
 
 export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
@@ -17,6 +17,18 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return (
     <input
       className={cn('rounded-sm border border-line bg-bg px-2 py-1 text-sm', className)}
+      {...props}
+    />
+  );
+}
+
+export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      className={cn(
+        'min-h-[72px] w-full resize-y rounded-sm border border-line bg-bg px-2 py-1 text-sm',
+        className,
+      )}
       {...props}
     />
   );

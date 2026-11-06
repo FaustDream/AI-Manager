@@ -35,11 +35,26 @@ pub struct AccountView {
     pub platform_label: String,
     /// 原始昵称。**不要直接显示**——用 `display_name()`，有些平台的昵称就是手机号。
     pub name: String,
+    /// 用户手工设置的别名。重扫只覆盖身份字段，别名单独存 kv，不会被平台昵称冲掉。
+    pub alias: Option<String>,
+    /// 用户标签：筛选与批量操作用（工作号 / 私人号 / 待处理…）
+    pub tags: Vec<String>,
+    /// 备注：写「为什么停用」「绑定在哪台机器」这类上下文
+    pub note: Option<String>,
     pub source: String,
     pub requires_checkin: bool,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub expires_at: Option<i64>,
     pub has_secret: bool,
+    /// 是否参与自动签到/积分轮询。手动单账号操作仍可执行。
+    pub enabled: bool,
+    /// 最近一次成功拉取状态/积分的时刻
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub last_ok_at: Option<i64>,
+    /// 最近一次失败的时刻与类别（`kind` 与日志里的 ErrorKind 一致）
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub last_fail_at: Option<i64>,
+    pub last_fail_kind: Option<String>,
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub sort_order: i64,
 
@@ -67,8 +82,18 @@ impl AccountView {
     /// 展示用昵称。**某些平台的昵称本身就是完整手机号**（实测 ZCode 有账号如此），
     /// 而 AGENTS §6 只写了「界面显示昵称、不显示 uid」——没人想到昵称可能就是 uid。
     /// 这里只改展示，不动库里的原值：脱敏是显示规则，不是数据规则。
+    ///
+    /// 用户设置的别名优先：手工名字是他自己的叫法，不该被平台昵称或脱敏规则改写。
     pub fn display_name(&self) -> String {
-        mask_phone(&self.name)
+        match self
+            .alias
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(alias) => alias.to_string(),
+            None => mask_phone(&self.name),
+        }
     }
 
     pub fn new(identity: AccountIdentity, sort_order: i64) -> Self {
@@ -77,10 +102,17 @@ impl AccountView {
             platform: identity.platform,
             platform_label: identity.platform_label,
             name: identity.name,
+            alias: None,
             source: identity.source,
             requires_checkin: identity.requires_checkin,
             expires_at: identity.expires_at,
             has_secret: identity.has_secret,
+            enabled: true,
+            tags: Vec::new(),
+            note: None,
+            last_ok_at: None,
+            last_fail_at: None,
+            last_fail_kind: None,
             sort_order,
             checked_in: None,
             checked_at: None,
@@ -199,6 +231,24 @@ mod tests {
         assert_eq!(row.balance, Some(12.5), "契约 21：重扫不得清空余额");
         assert_eq!(row.checked_in, Some(true), "契约 21：重扫不得清空签到态");
         assert_eq!(row.quota.get("daily"), Some(&80.0));
+    }
+
+    #[test]
+    fn alias_wins_over_platform_name_but_identity_updates_do_not_clear_it() {
+        let mut table = AccountTable::default();
+        table.merge_scan(vec![identity("zcode:1", "17679130626")]);
+        let row = table.find_mut("zcode:1").unwrap();
+        row.alias = Some("工作号".into());
+        assert_eq!(row.display_name(), "工作号", "别名优先于脱敏昵称");
+
+        table.merge_scan(vec![identity("zcode:1", "新昵称")]);
+        let row = &table.rows()[0];
+        assert_eq!(row.name, "新昵称", "平台昵称照常更新");
+        assert_eq!(row.display_name(), "工作号", "重扫不能清掉手工别名");
+
+        let row = table.find_mut("zcode:1").unwrap();
+        row.alias = None;
+        assert_eq!(row.display_name(), "新昵称");
     }
 
     #[test]

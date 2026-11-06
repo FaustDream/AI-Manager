@@ -1,4 +1,4 @@
-# v2（Rust + Tauri 2）的持续集成：架构文档 §10 承诺的三件套。
+# v2（Rust + Tauri 2）的最小门禁：格式、Lint、契约与单测、类型生成物一致性（D8）。
 # 发布流水线在 release.yml（v* 标签触发，产出安装包与免安装 zip）。
 name: ci
 
@@ -28,7 +28,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy（警告即失败）
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --features ts -- -D warnings
 
       - name: 测试（含 ts-rs 类型生成）
         run: cargo test --lib --tests --features ts

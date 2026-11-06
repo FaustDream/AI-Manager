@@ -15,6 +15,7 @@
 use super::{Provider, ScannedAccount, Sink, SwitchOutcome};
 use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::{uid_of, AccountIdentity};
+use crate::app::activity::{TravelConfig, TravelLocation, TravelRecord, TravelState, TravelStatus};
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, paths, process};
@@ -23,6 +24,7 @@ use aes_gcm::aead::consts::U16;
 use aes_gcm::aead::KeyInit;
 use async_trait::async_trait;
 use base64::Engine;
+use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -254,10 +256,31 @@ impl WorkBuddyProvider {
         self.pack_root.join(self.edition()).join(uid)
     }
 
-    /// 档案是否完整（登录态 + 票据）。缺票据的档案切过去一定会停在登录页。
+    /// 档案是否可用（登录态 + 票据）。缺票据的档案切过去一定会停在登录页。
     pub fn pack_ready(&self, uid: &str) -> bool {
-        let dir = self.pack_dir(uid);
-        dir.join("app/session").is_dir() && dir.join("auth.info").is_file()
+        self.pack_source(uid).is_some()
+    }
+
+    /// 可用的档案目录：正式目录优先；只剩 `.tmp` 时先把它认领回来。
+    ///
+    /// `.tmp` 是 `save_pack` 的中间产物。旧实现是「删掉正式目录 → rename tmp」，
+    /// rename 一旦失败（客户端句柄未释放 / 杀软扫描），正式档案就消失了，
+    /// 只留下一个内容完整的 tmp，而 `pack_ready` 只认正式目录——账号从此切不过去。
+    /// 把 tmp 认领回来，是唯一既不丢数据、又能让这些账号恢复切换的办法。
+    fn pack_source(&self, uid: &str) -> Option<PathBuf> {
+        let dst = self.pack_dir(uid);
+        if is_pack_complete(&dst) {
+            return Some(dst);
+        }
+        let tmp = dst.with_extension("tmp");
+        if !is_pack_complete(&tmp) {
+            return None;
+        }
+        // 提升成正式目录；仍被占用就继续读 tmp，至少这一次切换能做
+        if fsx::remove_path(&dst).is_ok() && std::fs::rename(&tmp, &dst).is_ok() {
+            return Some(dst);
+        }
+        Some(tmp)
     }
 
     /// 把**当前**客户端登录态存成 uid 的档案（添加账号前调用，避免退出登录后档案丢失）。
@@ -279,6 +302,42 @@ impl WorkBuddyProvider {
         fsx::remove_path(&tmp)?;
         std::fs::create_dir_all(&tmp)?;
 
+        // 拷贝失败必须清掉半截 tmp：留着它下一次会被当成「完整档案」认领
+        if let Err(e) = self.copy_pack_contents(root, &tmp, uid) {
+            let _ = fsx::remove_path(&tmp);
+            return Err(e);
+        }
+
+        // 三段式换名：dst → old，tmp → dst，成功再删 old。
+        // 旧实现「先删 dst 再 rename」在任何一步失败时都会同时丢掉新旧两份档案。
+        let old = dst.with_extension("old");
+        let _ = fsx::remove_path(&old);
+        let had_old = dst.exists();
+        if had_old {
+            if let Err(e) = std::fs::rename(&dst, &old) {
+                let _ = fsx::remove_path(&tmp);
+                return Err(AppError::new(
+                    ErrorKind::Io,
+                    format!("替换登录态档案失败（旧档案保留）：{e}"),
+                ));
+            }
+        }
+        if let Err(e) = std::fs::rename(&tmp, &dst) {
+            let _ = fsx::remove_path(&tmp);
+            if had_old {
+                let _ = std::fs::rename(&old, &dst);
+            }
+            return Err(AppError::new(
+                ErrorKind::Io,
+                format!("替换登录态档案失败（已回滚到旧档案）：{e}"),
+            ));
+        }
+        let _ = fsx::remove_path(&old);
+        Ok(dst)
+    }
+
+    /// 拷贝会话 + storage + 票据到 `tmp`。抽出来是为了让调用方统一清掉半截目录。
+    fn copy_pack_contents(&self, root: &Path, tmp: &Path, uid: &str) -> Result<()> {
         let session = root.join("app/session");
         if session.exists() {
             fsx::copy_profile_skipping_caches(&session, &tmp.join("app/session"))?;
@@ -293,7 +352,7 @@ impl WorkBuddyProvider {
         let mut has_auth = false;
         if let Some(ticket) = ticket.as_ref().filter(|p| p.exists()) {
             if read_ticket_uid(ticket).as_deref() == Some(uid) {
-                std::fs::create_dir_all(&tmp)?;
+                std::fs::create_dir_all(tmp)?;
                 std::fs::copy(ticket, tmp.join("auth.info"))?;
                 has_auth = true;
             }
@@ -305,10 +364,7 @@ impl WorkBuddyProvider {
             "has_auth": has_auth,
         });
         std::fs::write(tmp.join("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
-
-        fsx::remove_path(&dst)?;
-        std::fs::rename(&tmp, &dst)?;
-        Ok(dst)
+        Ok(())
     }
 
     /// 把某账号的档案恢复到客户端数据目录。
@@ -319,14 +375,13 @@ impl WorkBuddyProvider {
                 "没有找到 WorkBuddy 的客户端数据目录",
             ));
         };
-        let src = self.pack_dir(uid);
-        if !self.pack_ready(uid) {
-            return Err(AppError::new(
+        let src = self.pack_source(uid).ok_or_else(|| {
+            AppError::new(
                 ErrorKind::SessionStateMissing,
                 "本机没有这个账号完整的登录态档案。请先在客户端里登录一次该账号，\
                  关闭客户端后会自动补存，之后切换就不需要重新登录。",
-            ));
-        }
+            )
+        })?;
         // 登录态是全局的，必须整体替换；storage 里有每个账号自己的 user-<uid>-personal，
         // 只能合并——整体替换会把其他账号的本地数据一起删掉。
         // 档案不含 Chromium 缓存，整体替换会顺带清掉上一个账号留下的缓存，客户端自己重建；
@@ -343,6 +398,11 @@ impl WorkBuddyProvider {
         }
         Ok(())
     }
+}
+
+/// 档案可用 = 会话目录 + 票据文件都在。目录名对不对由调用方负责。
+fn is_pack_complete(dir: &Path) -> bool {
+    dir.join("app/session").is_dir() && dir.join("auth.info").is_file()
 }
 
 fn read_ticket_uid(path: &Path) -> Option<String> {
@@ -419,6 +479,8 @@ impl Provider for WorkBuddyProvider {
                 cred.put("domain", domain.clone());
             }
             cred.put("edition", json!(self.edition()));
+            // 账号自己的 UA：以后平台按客户端版本区分接口时，不用再改常量重扫
+            cred.put("ua", json!(USER_AGENT));
             // 票据原文（含 sessionState）整份存进密文：切换时按字节写回，这是契约 8a 的由来
             cred.put(
                 "ticket",
@@ -602,14 +664,15 @@ impl Provider for WorkBuddyProvider {
                 already: true,
             }),
             other => {
+                let code = other.unwrap_or(-1);
                 let message = body
                     .get("msg")
                     .and_then(|v| v.as_str())
                     .map(str::to_string)
-                    .unwrap_or_else(|| format!("失败 code={}", other.unwrap_or(-1)));
+                    .unwrap_or_else(|| format!("失败 code={code}"));
                 Ok(ActionResult {
                     ok: false,
-                    message,
+                    message: crate::app::providers::hints::with_hint(message, code),
                     granted: None,
                     validity_days: None,
                     already: false,
@@ -617,11 +680,176 @@ impl Provider for WorkBuddyProvider {
             }
         }
     }
+
+    // ------------------------------------------------------------ 猫猫旅行
+
+    fn travel_supported(&self) -> bool {
+        // 国际版没有这个活动；调用方在详情页据此隐藏卡片
+        !self.intl
+    }
+
+    async fn travel_status(&self, cred: &Credential, http: &dyn Http) -> Result<TravelStatus> {
+        let body = self.travel_call(cred, http, TRAVEL_STATUS, None).await?;
+        Ok(normalize_travel_status(
+            body.get("data").unwrap_or(&Value::Null),
+        ))
+    }
+
+    async fn travel_config(&self, cred: &Credential, http: &dyn Http) -> Result<TravelConfig> {
+        let body = self.travel_call(cred, http, TRAVEL_CONFIG, None).await?;
+        let data = body.get("data").unwrap_or(&Value::Null);
+        let locations = data
+            .get("locations")
+            .and_then(|v| v.as_array())
+            .map(|items| items.iter().filter_map(travel_location).collect())
+            .unwrap_or_default();
+        // Buddy 名字在另一个接口；读不到不影响地点列表
+        let buddy_name = match self.travel_call(cred, http, TRAVEL_INFO, None).await {
+            Ok(info) => info
+                .pointer("/data/buddy/name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            Err(_) => None,
+        };
+        Ok(TravelConfig {
+            buddy_name,
+            locations,
+        })
+    }
+
+    async fn travel_records(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+    ) -> Result<Vec<TravelRecord>> {
+        let body = self.travel_call(cred, http, TRAVEL_RECORDS, None).await?;
+        Ok(body
+            .pointer("/data/records")
+            .and_then(|v| v.as_array())
+            .map(|items| items.iter().map(normalize_travel_record).collect())
+            .unwrap_or_default())
+    }
+
+    async fn travel_claim(&self, cred: &Credential, http: &dyn Http) -> Result<ActionResult> {
+        let body = self
+            .travel_call(cred, http, TRAVEL_CLAIM, Some(&json!({})))
+            .await?;
+        let data = body.get("data").unwrap_or(&Value::Null);
+        let message = body
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("领取成功")
+            .to_string();
+        let reward = data
+            .get("reward_credit")
+            .or_else(|| data.get("credit"))
+            .or_else(|| data.get("amount"))
+            .and_then(|v| v.as_f64());
+        let already = data
+            .get("already")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || message.contains("已领取")
+            || message.contains("重复");
+        Ok(ActionResult {
+            ok: true,
+            message: match reward {
+                Some(value) => format!("领取成功，+{} 积分", trim_f64(value)),
+                None => message,
+            },
+            granted: reward,
+            validity_days: None,
+            already,
+        })
+    }
+
+    async fn travel_depart(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+        location_id: i64,
+    ) -> Result<ActionResult> {
+        let body = self
+            .travel_call(
+                cred,
+                http,
+                TRAVEL_DEPART,
+                Some(&json!({ "location_id": location_id })),
+            )
+            .await?;
+        let data = body.get("data").unwrap_or(&Value::Null);
+        let name = data
+            .pointer("/location/name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let arrive_at = data.get("arrive_at").and_then(positive_ts);
+        let message = match (name.is_empty(), arrive_at) {
+            (false, Some(at)) => format!("已派出到「{name}」，预计 {} 回来", local_hhmm(at)),
+            (false, None) => format!("已派出到「{name}」"),
+            (true, Some(at)) => format!("已派出，预计 {} 回来", local_hhmm(at)),
+            (true, None) => "已派出".to_string(),
+        };
+        Ok(ActionResult {
+            ok: true,
+            message,
+            granted: None,
+            validity_days: None,
+            already: false,
+        })
+    }
 }
 
 const API_CN: &str = "https://copilot.tencent.com/v2/billing/meter";
 const API_INTL: &str = "https://www.workbuddy.ai/v2/billing/meter";
 const USER_AGENT: &str = "Mozilla/5.0 CodeBuddy/5.6.0";
+
+/// 猫猫旅行走 Web 域名：实测 `www.workbuddy.cn` 与 `copilot.tencent.com`
+/// 都接受同一份 Bearer 令牌，这里固定用文档里的 Web 域名，减少一处漂移。
+const TRAVEL_BASE: &str = "https://www.workbuddy.cn";
+const TRAVEL_INFO: &str = "/activity/growth/buddy/info";
+const TRAVEL_CONFIG: &str = "/activity/growth/buddy/travel/config";
+const TRAVEL_STATUS: &str = "/activity/growth/buddy/travel/status";
+const TRAVEL_RECORDS: &str = "/activity/growth/buddy/travel/records";
+const TRAVEL_CLAIM: &str = "/activity/growth/buddy/travel/claim";
+const TRAVEL_DEPART: &str = "/activity/growth/buddy/travel/depart";
+
+/// 成长中心（个人中心 /profile/growth-center 背后的接口）。
+/// 任务列表在 `/v2` 下，其余在 `/activity/growth` 下 —— 以 Web 端 bundle 里的
+/// 实际路径为准，不要「统一加前缀」。
+const CORE_BASE: &str = "https://copilot.tencent.com";
+
+/// 平台奖励积分汇总（个人中心「套餐与积分」的明细）。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RewardCredits {
+    /// 服务端口径的总积分（`TotalDosage`）
+    pub total: f64,
+    /// 按包名聚合：还剩多少、一共发过多少、几批、最晚什么时候到期
+    pub packages: Vec<RewardPackage>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub refreshed_at: i64,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RewardPackage {
+    pub name: String,
+    /// 本包剩余
+    pub remain: f64,
+    /// 本包总量（发放时的容量）
+    pub size: f64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub count: i64,
+    /// 最晚一批的到期时刻（毫秒）；国际版字段不可靠时为 null
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub expires_at: Option<i64>,
+}
+
+const GROWTH_TASKS: &str = "/v2/activity/growth/tasks";
+const GROWTH_HEATMAP: &str = "/activity/growth/heatmap";
+const GROWTH_STREAK: &str = "/activity/growth/streak";
 
 impl WorkBuddyProvider {
     fn api_base(&self) -> &'static str {
@@ -644,8 +872,150 @@ impl WorkBuddyProvider {
                 cred.meta_str("domain").unwrap_or("").to_string(),
             ),
             ("Content-Type".into(), "application/json".into()),
-            ("User-Agent".into(), USER_AGENT.into()),
+            ("User-Agent".into(), cred.user_agent(USER_AGENT)),
         ]
+    }
+
+    // ------------------------------------------------------------ 成长中心
+
+    /// 成长任务列表（只读）：每条任务的领取条件与完成状态都由服务端判定。
+    pub async fn growth_tasks(&self, cred: &Credential, http: &dyn Http) -> Result<Value> {
+        self.travel_call(cred, http, GROWTH_TASKS, None).await
+    }
+
+    /// 活跃地图（只读）：`month` 形如 `2026-11`，返回该月每天的活跃标记。
+    pub async fn growth_heatmap(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+        month: &str,
+    ) -> Result<Value> {
+        let path = format!("{GROWTH_HEATMAP}?month={month}");
+        self.travel_call(cred, http, &path, None).await
+    }
+
+    /// 连续活跃天数（只读）。
+    pub async fn growth_streak(&self, cred: &Credential, http: &dyn Http) -> Result<Value> {
+        self.travel_call(cred, http, GROWTH_STREAK, None).await
+    }
+
+    /// 核心 API（`copilot.tencent.com`）调用：客户端 bundle 里 routeId=`core-api`，
+    /// 与 `www.workbuddy.cn` 的活动域名不同，鉴权头是同一套。
+    pub async fn core_call(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value> {
+        let text = self.core_text(cred, http, path, body).await?;
+        serde_json::from_str(&text).map_err(|_| {
+            AppError::new(
+                ErrorKind::Provider,
+                format!(
+                    "{path} 返回的不是 JSON：{}",
+                    text.chars().take(120).collect::<String>()
+                ),
+            )
+        })
+    }
+
+    /// 同 `core_call`，但返回原始文本（对话接口只支持 SSE 流，不能当 JSON 解析）。
+    pub async fn core_text(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<String> {
+        let url = format!("{CORE_BASE}{path}");
+        let mut req = match body {
+            Some(_) => HttpRequest::post(url.as_str()),
+            None => HttpRequest::get(url.as_str()),
+        };
+        req.headers = self.headers(cred);
+        if let Some(body) = body {
+            req.body = Some(body.to_string());
+        }
+        let resp = http.send(req).await?;
+        if resp.status == 401 || resp.status == 403 {
+            return Err(AppError::new(
+                ErrorKind::AuthExpired,
+                "HTTP 401/403（登录态可能过期）",
+            ));
+        }
+        if resp.status >= 400 {
+            // 带上服务端原话：这条路是逆向出来的，400/422 的具体原因比状态码有用得多
+            let hint: String = resp.body.chars().take(200).collect();
+            return Err(AppError::new(
+                ErrorKind::Provider,
+                format!("HTTP {}（{path}）：{hint}", resp.status),
+            ));
+        }
+        Ok(resp.body)
+    }
+
+    /// 旅行接口统一入口：GET/POST + 鉴权头 + 业务码归一化。
+    /// 写操作（claim/depart）也只经过这里，避免再写一套状态码判断。
+    async fn travel_call(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value> {
+        let url = format!("{TRAVEL_BASE}{path}");
+        let mut req = match body {
+            Some(_) => HttpRequest::post(url.as_str()),
+            None => HttpRequest::get(url.as_str()),
+        };
+        req.headers = self.headers(cred);
+        if let Some(body) = body {
+            req.body = Some(body.to_string());
+        }
+        let resp = http.send(req).await?;
+        match resp.status {
+            401 | 403 => {
+                return Err(AppError::new(
+                    ErrorKind::AuthExpired,
+                    "HTTP 401/403（登录态可能过期）",
+                ))
+            }
+            429 => {
+                return Err(AppError::new(
+                    ErrorKind::RateLimited,
+                    "平台限流（HTTP 429）",
+                ))
+            }
+            status if status >= 500 => {
+                return Err(AppError::new(ErrorKind::Provider, format!("HTTP {status}")))
+            }
+            status if status >= 400 => {
+                return Err(AppError::new(ErrorKind::Provider, format!("HTTP {status}")))
+            }
+            _ => {}
+        }
+        let body = resp.json()?;
+        let code = body.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
+        if code != 0 {
+            let message = body
+                .get("msg")
+                .and_then(|v| v.as_str())
+                .unwrap_or("请求失败");
+            let kind = if message.contains("未解锁")
+                || message.contains("未开放")
+                || message.contains("已结束")
+            {
+                ErrorKind::ActivityClosed
+            } else {
+                ErrorKind::Provider
+            };
+            return Err(AppError::new(
+                kind,
+                crate::app::providers::hints::with_hint(format!("{message}（code={code}）"), code),
+            ));
+        }
+        Ok(body)
     }
 
     async fn post(
@@ -662,7 +1032,7 @@ impl WorkBuddyProvider {
         let resp = http.send(req).await?;
         if resp.status == 401 {
             return Err(AppError::new(
-                ErrorKind::Provider,
+                ErrorKind::AuthExpired,
                 "HTTP 401（登录态可能过期）",
             ));
         }
@@ -684,7 +1054,7 @@ impl WorkBuddyProvider {
         let resp = http.send(req).await?;
         if resp.status == 401 {
             return Err(AppError::new(
-                ErrorKind::Provider,
+                ErrorKind::AuthExpired,
                 "HTTP 401（登录态可能过期）",
             ));
         }
@@ -698,6 +1068,103 @@ impl WorkBuddyProvider {
             return Ok(body.get("data").filter(|v| v.is_object()).cloned());
         }
         Ok(None)
+    }
+
+    /// 平台奖励积分明细（个人中心「套餐与积分」那一页的数据）。
+    ///
+    /// 与 `resource_lots` 的分工：那个只给「还能用的批次」用于算余额，
+    /// 这个按包名聚合，回答「这些积分是哪来的、还剩多少、什么时候到期」。
+    pub async fn reward_credits(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+    ) -> Result<RewardCredits> {
+        let body = json!({
+            "PageNumber": 1,
+            "PageSize": 200,
+            "ProductCode": "p_tcaca",
+            "Status": [0, 3],
+        });
+        let payload = self.post(cred, http, "get-user-resource", &body).await?;
+        let data = payload
+            .pointer("/data/Response/Data")
+            .or_else(|| payload.pointer("/data/Data"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let items = data
+            .get("Accounts")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut grouped: std::collections::BTreeMap<String, RewardPackage> =
+            std::collections::BTreeMap::new();
+        for item in &items {
+            let remain = [
+                "CycleCapacityRemainPrecise",
+                "CycleCapacityRemain",
+                "CapacityRemainPrecise",
+                "CapacityRemain",
+            ]
+            .iter()
+            .find_map(|key| item.get(*key).and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+            // 用完了的包不占版面：列表里 66 个包，真正还有余额的只有一半
+            if remain <= 0.0 {
+                continue;
+            }
+            let size = [
+                "CycleCapacitySizePrecise",
+                "CycleCapacitySize",
+                "CapacitySizePrecise",
+                "CapacitySize",
+            ]
+            .iter()
+            .find_map(|key| item.get(*key).and_then(|v| v.as_f64()))
+            .unwrap_or(remain);
+            let expires = item
+                .get("DeductionEndTime")
+                .and_then(dt_of)
+                .or_else(|| item.get("CycleEndTime").and_then(local_text))
+                .or_else(|| item.get("ExpiredTime").and_then(dt_of))
+                .map(|dt| dt.timestamp_millis());
+            let name = item
+                .get("PackageName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("积分包")
+                .to_string();
+            let entry = grouped.entry(name.clone()).or_insert(RewardPackage {
+                name,
+                remain: 0.0,
+                size: 0.0,
+                count: 0,
+                expires_at: None,
+            });
+            entry.remain += remain;
+            entry.size += size;
+            entry.count += 1;
+            // 同一包名可能有多批，取最近到期的那批（用户关心「最晚能用到什么时候」）
+            entry.expires_at = match (entry.expires_at, expires) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (None, b) => b,
+                (a, None) => a,
+            };
+        }
+
+        let mut packages: Vec<RewardPackage> = grouped.into_values().collect();
+        packages.sort_by(|a, b| {
+            b.remain
+                .partial_cmp(&a.remain)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(RewardCredits {
+            total: data
+                .get("TotalDosage")
+                .and_then(|v| v.as_f64())
+                .unwrap_or_else(|| packages.iter().map(|p| p.remain).sum()),
+            packages,
+            refreshed_at: chrono::Local::now().timestamp_millis(),
+        })
     }
 
     /// 资源包批次。**不要带 `PackageEndTimeRange`**：部分账号的活跃资源包不在那个
@@ -869,9 +1336,110 @@ fn default_data_root(intl: bool) -> Option<PathBuf> {
     Some(home.join(if intl { ".workbuddy-ai" } else { ".workbuddy" }))
 }
 
+fn travel_location(value: &Value) -> Option<TravelLocation> {
+    let obj = value.as_object()?;
+    let id = obj.get("id").and_then(|v| v.as_i64())?;
+    Some(TravelLocation {
+        id,
+        code: obj
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        name: obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        description: obj
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        duration_hours: obj.get("duration_hours").and_then(|v| v.as_i64()),
+        duration_hours_min: obj.get("duration_hours_min").and_then(|v| v.as_i64()),
+        duration_hours_max: obj.get("duration_hours_max").and_then(|v| v.as_i64()),
+        reward_credit_min: obj.get("reward_credit_min").and_then(|v| v.as_f64()),
+        reward_credit_max: obj.get("reward_credit_max").and_then(|v| v.as_f64()),
+    })
+}
+
+fn normalize_travel_status(data: &Value) -> TravelStatus {
+    let daily_limit_reached = data
+        .get("daily_limit_reached")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let raw = data
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let state = match (raw, daily_limit_reached) {
+        ("idle", true) | ("limit", _) => TravelState::Limit,
+        ("idle", false) => TravelState::Idle,
+        ("traveling", _) => TravelState::Traveling,
+        ("arrived", _) => TravelState::Arrived,
+        _ => TravelState::Unknown,
+    };
+
+    TravelStatus {
+        state: Some(state),
+        location: data.get("location").and_then(travel_location),
+        arrive_at: data.get("arrive_at").and_then(positive_ts),
+        depart_at: data.get("depart_at").and_then(positive_ts),
+        server_now: data.get("server_now").and_then(positive_ts),
+        reward_credit: data.get("reward_credit").and_then(|v| v.as_f64()),
+        duration_hours: data.get("duration_hours").and_then(|v| v.as_i64()),
+        daily_limit_reached,
+        letter: data
+            .pointer("/letter/text")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        buddy_name: None,
+        record_id: data.get("record_id").and_then(|v| v.as_i64()),
+    }
+}
+
+fn normalize_travel_record(value: &Value) -> TravelRecord {
+    TravelRecord {
+        record_id: value.get("record_id").and_then(|v| v.as_i64()),
+        travel_date: value
+            .get("travel_date")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        location_name: value
+            .pointer("/location/name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        reward_credit: value.get("reward_credit").and_then(|v| v.as_f64()),
+        depart_at: value.get("depart_at").and_then(positive_ts),
+        arrive_at: value.get("arrive_at").and_then(positive_ts),
+        claimed_at: value.get("claimed_at").and_then(positive_ts),
+        letter: value
+            .pointer("/letter/text")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    }
+}
+
+/// 0 在这套接口里表示「没有时间」（idle 状态的 arrive_at 就是 0），
+/// 不能当成 1970-01-01，否则界面会显示一个看起来很真的假日期。
+fn positive_ts(value: &Value) -> Option<i64> {
+    crate::app::timeutil::parse_ts(value).filter(|ms| *ms > 0)
+}
+
+fn local_hhmm(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|at| {
+            at.with_timezone(&chrono::Local)
+                .format("%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "—".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::net::MockHttp;
     use aes_gcm::aead::Aead;
 
     fn provider(dir: &Path) -> WorkBuddyProvider {
@@ -960,6 +1528,35 @@ mod tests {
     fn plain_field_passes_through() {
         assert_eq!(open_field(&json!("plain")).unwrap(), "plain");
         assert_eq!(open_field(&Value::Null).unwrap(), "");
+    }
+
+    #[test]
+    fn headers_prefer_account_ua_and_fall_back_to_constant() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path());
+
+        let mut cred = Credential {
+            token: "tk".into(),
+            ..Default::default()
+        };
+        cred.put("ua", json!("Mozilla/5.0 Account/9.0"));
+        let headers = p.headers(&cred);
+        let ua = headers
+            .iter()
+            .find(|(key, _)| key == "User-Agent")
+            .map(|(_, value)| value.as_str());
+        assert_eq!(ua, Some("Mozilla/5.0 Account/9.0"));
+
+        let old = Credential {
+            token: "tk".into(),
+            ..Default::default()
+        };
+        let headers = p.headers(&old);
+        let ua = headers
+            .iter()
+            .find(|(key, _)| key == "User-Agent")
+            .map(|(_, value)| value.as_str());
+        assert_eq!(ua, Some(USER_AGENT), "旧凭据没有 ua 时回退常量");
     }
 
     #[test]
@@ -1155,6 +1752,62 @@ mod tests {
         );
     }
 
+    /// 旧版 `save_pack` 在 rename 失败时会同时丢掉正式档案、只留下完整 tmp。
+    /// 这些账号必须能被认领回来，否则永远报「本机没有完整登录态档案」。
+    #[test]
+    fn orphan_tmp_pack_is_claimed_back() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path());
+        let tmp = p.pack_dir("u1").with_extension("tmp");
+        std::fs::create_dir_all(tmp.join("app/session")).unwrap();
+        std::fs::write(tmp.join("auth.info"), ticket("u1", "tk", "n")).unwrap();
+
+        assert!(
+            p.pack_ready("u1"),
+            "内容完整的 tmp 必须被认领，否则这个账号永远切不过去"
+        );
+        assert!(
+            p.pack_dir("u1").join("app/session").is_dir(),
+            "认领后应提升为正式目录"
+        );
+        assert!(!tmp.exists(), "提升成功后 tmp 不该留着");
+    }
+
+    #[test]
+    fn half_written_tmp_pack_is_not_claimed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path());
+        let tmp = p.pack_dir("u1").with_extension("tmp");
+        std::fs::create_dir_all(tmp.join("app/session")).unwrap();
+        // 缺 auth.info：切过去只会停在登录页，不能当成可用档案
+        assert!(!p.pack_ready("u1"));
+    }
+
+    #[test]
+    fn repeated_save_leaves_no_staging_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path());
+        let client = dir.path().join("client");
+        std::fs::create_dir_all(client.join("app/session")).unwrap();
+        std::fs::write(client.join("app/session/Cookies"), b"c").unwrap();
+        std::fs::create_dir_all(dir.path().join("auth")).unwrap();
+        std::fs::write(
+            dir.path().join("auth/workbuddy-desktop.info"),
+            ticket("u1", "tk", "n"),
+        )
+        .unwrap();
+
+        p.save_pack("u1").unwrap();
+        p.save_pack("u1").unwrap();
+
+        assert!(p.pack_ready("u1"));
+        assert!(!p.pack_dir("u1").with_extension("tmp").exists());
+        assert!(
+            !p.pack_dir("u1").with_extension("old").exists(),
+            "换名用的旧目录不能残留"
+        );
+    }
+
     #[test]
     fn save_and_restore_pack_roundtrip() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1254,6 +1907,165 @@ mod tests {
         );
         assert!(p.pack_ready("u1"), "当前账号必须先被存档，否则切不回去");
         assert!(out.message.contains("存档"));
+    }
+
+    #[test]
+    fn travel_status_normalizes_the_real_arrived_shape() {
+        let data = json!({
+            "state": "arrived",
+            "buddy_id": 12314099,
+            "record_id": 38593793,
+            "location": {"id": 1, "code": "coffee", "name": "咖啡馆", "duration_hours": 3},
+            "depart_at": 1793519788,
+            "arrive_at": 1793530588,
+            "server_now": 1793870943,
+            "letter": {"id": 2, "text": "亲爱的铲屎官：……", "guide_text": "看看工具"},
+            "daily_limit_reached": false,
+            "duration_hours": 3,
+            "reward_credit": 8
+        });
+        let status = normalize_travel_status(&data);
+        assert_eq!(status.state, Some(TravelState::Arrived));
+        assert_eq!(
+            status.location.as_ref().map(|l| l.name.as_str()),
+            Some("咖啡馆")
+        );
+        assert_eq!(
+            status.arrive_at,
+            Some(1_793_530_588_000),
+            "秒级时间要转毫秒"
+        );
+        assert_eq!(status.reward_credit, Some(8.0));
+        assert_eq!(status.record_id, Some(38_593_793));
+        assert!(!status.daily_limit_reached);
+        assert!(status.letter.unwrap().contains("铲屎官"));
+    }
+
+    #[test]
+    fn travel_limit_wins_over_idle() {
+        let data = json!({"state": "idle", "daily_limit_reached": true});
+        assert_eq!(
+            normalize_travel_status(&data).state,
+            Some(TravelState::Limit),
+            "额度用完不能当成可派出"
+        );
+        let data = json!({"state": "traveling", "arrive_at": 0});
+        let status = normalize_travel_status(&data);
+        assert_eq!(status.state, Some(TravelState::Traveling));
+        assert_eq!(status.arrive_at, None, "0 表示没有时间，不能显示成 1970 年");
+    }
+
+    #[test]
+    fn travel_location_and_record_parse_the_real_fields() {
+        let location = travel_location(&json!({
+            "id": 1, "code": "coffee", "name": "咖啡馆",
+            "duration_hours_min": 1, "duration_hours_max": 4,
+            "reward_credit_min": 5, "reward_credit_max": 10
+        }))
+        .unwrap();
+        assert_eq!(location.name, "咖啡馆");
+        assert_eq!(location.duration_hours_max, Some(4));
+        assert_eq!(location.reward_credit_min, Some(5.0));
+
+        let record = normalize_travel_record(&json!({
+            "record_id": 34232265,
+            "location": {"id": 1, "code": "coffee", "name": "咖啡馆"},
+            "depart_at": 1793234984,
+            "arrive_at": 1793242184,
+            "claimed_at": 1793519786,
+            "reward_credit": 7,
+            "travel_date": "2026-10-29",
+            "letter": {"text": "记录信件"}
+        }));
+        assert_eq!(record.location_name.as_deref(), Some("咖啡馆"));
+        assert_eq!(record.reward_credit, Some(7.0));
+        assert_eq!(record.travel_date.as_deref(), Some("2026-10-29"));
+        assert!(record.claimed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn travel_claim_and_depart_hit_the_expected_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path());
+        let mut cred = Credential {
+            token: "tk".into(),
+            ..Default::default()
+        };
+        cred.put("uid", json!("u1"));
+
+        let http = MockHttp::new();
+        let claim_url = format!("{TRAVEL_BASE}{TRAVEL_CLAIM}");
+        http.on(
+            &claim_url,
+            200,
+            r#"{"code":0,"msg":"OK","data":{"reward_credit":8}}"#,
+        );
+        let claimed = p.travel_claim(&cred, &http).await.unwrap();
+        assert!(claimed.ok);
+        assert_eq!(claimed.granted, Some(8.0));
+        assert_eq!(http.call_count(&claim_url), 1);
+
+        let depart_url = format!("{TRAVEL_BASE}{TRAVEL_DEPART}");
+        http.on(
+            &depart_url,
+            200,
+            r#"{"code":0,"msg":"OK","data":{"location":{"id":1,"name":"咖啡馆"},"arrive_at":1793530588}}"#,
+        );
+        let departed = p.travel_depart(&cred, &http, 1).await.unwrap();
+        assert!(departed.ok);
+        assert!(departed.message.contains("咖啡馆"));
+        assert_eq!(http.call_count(&depart_url), 1);
+    }
+
+    #[tokio::test]
+    async fn travel_reward_does_not_complete_daily_checkin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path());
+        let mut cred = Credential {
+            token: "tk".into(),
+            ..Default::default()
+        };
+        cred.put("uid", json!("u1"));
+        let http = MockHttp::new();
+        http.on(
+            &format!("{TRAVEL_BASE}{TRAVEL_CLAIM}"),
+            200,
+            r#"{"code":0,"data":{"reward_credit":8}}"#,
+        );
+        http.on(
+            &format!("{}/checkin-activity-status", p.api_base()),
+            200,
+            r#"{"code":0,"data":{"active":true,"today_checked_in":false}}"#,
+        );
+        http.on(&format!("{}/get-user-resource", p.api_base()), 200,
+            r#"{"code":0,"data":{"Data":{"Accounts":[{"CycleCapacityRemain":108,"PackageName":"旅行奖励"}]}}}"#);
+        let daily_url = format!("{}/daily-checkin", p.api_base());
+        http.on(&daily_url, 200, r#"{"code":0,"data":{"credit":10}}"#);
+        assert_eq!(
+            p.travel_claim(&cred, &http).await.unwrap().granted,
+            Some(8.0)
+        );
+        let status = p.status(&cred, &http).await.unwrap();
+        assert_eq!(status.checked_in, Some(false));
+        assert_eq!(status.balance, Some(108.0));
+        assert_eq!(http.call_count(&daily_url), 0);
+        let result = p.checkin(&cred, &http).await.unwrap();
+        assert!(result.ok && !result.already);
+        assert_eq!(result.granted, Some(10.0));
+        assert_eq!(http.call_count(&daily_url), 1);
+    }
+
+    #[test]
+    fn intl_has_no_travel_activity() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let intl = WorkBuddyProvider::at(
+            true,
+            dir.path().join("auth"),
+            dir.path().join("client"),
+            dir.path().join("profiles"),
+        );
+        assert!(!intl.travel_supported(), "国际版没有猫猫旅行");
+        assert!(provider(dir.path()).travel_supported(), "国内版应支持");
     }
 
     #[test]

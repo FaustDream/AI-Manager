@@ -65,6 +65,30 @@ pub fn supported(platform: &str) -> bool {
     )
 }
 
+/// 「重新登录」用：由 iid 反推**客户端平台键**，并确认这个平台能走浏览器登录。
+///
+/// 平台键必须由后端算：WorkBuddy 两版共用 `workbuddy` 前缀、靠 `@intl` 后缀区分，
+/// 让界面自己拼一次就会多出第二套口径（关客户端已经踩过这个坑）。
+///
+/// 登录成功后凭据由 `save()` 自动落库：iid 相同 = 覆盖这个账号的凭据与到期时间；
+/// 登进了别的账号 = 作为新账号入库，界面要据此提示用户，不能假装切好了。
+pub fn relogin_platform(db: &Db, iid: &str) -> Result<String> {
+    if repo::identity(db, iid)?.is_none() {
+        return Err(AppError::new(
+            ErrorKind::Invalid,
+            "账号不存在，可能已被删除",
+        ));
+    }
+    let key = crate::app::providers::client_key_of(iid).to_string();
+    if !supported(&key) {
+        return Err(AppError::new(
+            ErrorKind::Unsupported,
+            "这个平台不支持浏览器重新登录，请在客户端里登录后点「扫描客户端」",
+        ));
+    }
+    Ok(key)
+}
+
 pub async fn start(platform: &str) -> Result<Pending> {
     match platform {
         "workbuddy" | "workbuddy_intl" => start_workbuddy(platform).await,
@@ -291,6 +315,7 @@ async fn wait_workbuddy(db: &Db, platform: &str, ticket: &str) -> Result<LoginOu
     meta.insert("uid".into(), json!(uid));
     meta.insert("domain".into(), json!(domain));
     meta.insert("edition".into(), json!(if intl { "intl" } else { "cn" }));
+    meta.insert("ua".into(), json!(WB_UA));
     meta.insert("refresh_token".into(), json!(refresh.clone()));
     meta.insert("account_info".into(), who);
     let credential = Credential {
@@ -493,6 +518,7 @@ async fn wait_qoder(db: &Db, platform: &str, ticket: &str) -> Result<LoginOutcom
         json!(str_of(&device, "refresh_token")),
     );
     meta.insert("email".into(), json!(email));
+    meta.insert("ua".into(), json!("Qoder"));
     let credential = Credential {
         token: access,
         refresh_token: refresh,
@@ -726,6 +752,7 @@ async fn wait_zcode(db: &Db, ticket: &str) -> Result<LoginOutcome> {
     meta.insert("device_mid".into(), json!(mid));
     meta.insert("provider".into(), json!("bigmodel"));
     meta.insert("email".into(), json!(email));
+    meta.insert("ua".into(), json!("ZCode/1.0"));
     let credential = Credential {
         token: jwt,
         refresh_token: String::new(),
@@ -920,11 +947,26 @@ fn save(
     nickname: &str,
 ) -> Result<LoginOutcome> {
     let iid = identity.iid.clone();
+    let existed = repo::identity(db, &iid)?.is_some();
     repo::upsert_identity(db, &identity, now_ms())?;
     repo::set_secret(db, &iid, &credential.to_bytes()?, expires_at)?;
+    // 重新登录 = 换了一套新凭据，旧的失败标记没有意义了；留着会让详情页
+    // 一直显示「最近一次查询失败」，用户以为重新登录没生效
+    if let Err(e) = repo::clear_health_fail(db, &iid) {
+        crate::app::log::log(
+            crate::app::log::Level::Warn,
+            "accounts",
+            format!("清理失败标记失败：{}", e.message),
+        );
+    }
     Ok(LoginOutcome {
         ok: true,
-        message: format!("已添加 {nickname}"),
+        // 「重新登录」不该说成「已添加」：同一个 iid 是覆盖凭据，不是新增账号
+        message: if existed {
+            format!("已重新登录：{nickname}")
+        } else {
+            format!("已添加 {nickname}")
+        },
         iid,
     })
 }
@@ -1038,5 +1080,107 @@ mod tests {
         let id = uuid_like();
         assert_eq!(id.split('-').count(), 5);
         assert_eq!(id.len(), 36);
+    }
+
+    fn seed(db: &Db, iid: &str) {
+        let (platform, account_id) = iid.split_once(':').unwrap();
+        repo::upsert_identity(
+            db,
+            &AccountIdentity {
+                iid: iid.into(),
+                platform: platform.into(),
+                platform_label: "Test".into(),
+                account_id: account_id.into(),
+                name: "测试账号".into(),
+                requires_checkin: true,
+                ..Default::default()
+            },
+            1,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn relogin_platform_follows_the_iid_edition() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+
+        for iid in ["workbuddy:u1", "workbuddy:u2@intl", "qoder:u3", "zcode:u4"] {
+            seed(&db, iid);
+            let expected = if iid.ends_with("@intl") {
+                "workbuddy_intl"
+            } else {
+                iid.split_once(':').unwrap().0
+            };
+            assert_eq!(relogin_platform(&db, iid).unwrap(), expected, "{iid}");
+        }
+    }
+
+    fn identity(iid: &str) -> AccountIdentity {
+        let (platform, account_id) = iid.split_once(':').unwrap();
+        AccountIdentity {
+            iid: iid.into(),
+            platform: platform.into(),
+            platform_label: "Test".into(),
+            account_id: account_id.into(),
+            name: "测试账号".into(),
+            requires_checkin: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn relogin_clears_failure_mark_and_says_relogin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        seed(&db, "qoder:u1");
+        repo::note_health_fail(&db, "qoder:u1", "provider", 1).unwrap();
+
+        let outcome = save(
+            &db,
+            identity("qoder:u1"),
+            &Credential::default(),
+            None,
+            "测试账号",
+        )
+        .unwrap();
+
+        assert_eq!(outcome.message, "已重新登录：测试账号");
+        let row = repo::list(&db).unwrap().remove(0);
+        assert!(
+            row.last_fail_at.is_none() && row.last_fail_kind.is_none(),
+            "重新登录后旧的失败标记必须清掉，否则界面一直说查询失败"
+        );
+    }
+
+    #[test]
+    fn first_login_still_reports_added() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+
+        let outcome = save(
+            &db,
+            identity("qoder:u9"),
+            &Credential::default(),
+            None,
+            "新账号",
+        )
+        .unwrap();
+
+        assert_eq!(outcome.message, "已添加 新账号");
+    }
+
+    #[test]
+    fn relogin_refuses_unknown_account_and_read_only_platform() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+
+        let err = relogin_platform(&db, "qoder:none").unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::Invalid));
+
+        // Trae 的登录态设备绑定，浏览器登录这条路走不通
+        seed(&db, "trae:u1");
+        let err = relogin_platform(&db, "trae:u1").unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::Unsupported));
     }
 }

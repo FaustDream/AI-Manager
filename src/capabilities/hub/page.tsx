@@ -218,6 +218,8 @@ export default function HubPage() {
                 </Button>
               </span>
             </div>
+            {/* 窗口收到最小宽度时整表横向滚动，操作按钮不被挤出卡片 */}
+            <div className="overflow-x-auto">
             <DataTable
               dense
               columns={[
@@ -303,6 +305,7 @@ export default function HubPage() {
               empty={<StateBlock kind="empty" title="技能库是空的" detail="把技能目录放进 data/skills/，或从平台导入。" />}
               rowClassName={() => 'group hover:bg-hover'}
             />
+            </div>
           </div>
 
           <div className={pane === 'mcp' ? 'rounded-lg border border-line bg-card p-3' : 'hidden'}>
@@ -310,6 +313,7 @@ export default function HubPage() {
               MCP（{snap.mcp.length}）
               <span className="ml-2 text-xs font-normal text-muted">移除请到对应平台页</span>
             </h2>
+            <div className="overflow-x-auto">
             <DataTable
               dense
               columns={[
@@ -366,6 +370,7 @@ export default function HubPage() {
               empty={<StateBlock kind="empty" title="还没有 MCP 条目" detail="点「粘贴导入 MCP」把配置写进选中的平台。" />}
               rowClassName={() => 'hover:bg-hover'}
             />
+            </div>
           </div>
         </>
       )}
@@ -417,6 +422,7 @@ export default function HubPage() {
                 {activeTarget.installed.filter((s) => !s.in_library).length} 个平台已有
               </span>
             </h2>
+            <div className="overflow-x-auto">
             <DataTable
               dense
               columns={[
@@ -518,12 +524,14 @@ export default function HubPage() {
               empty={<StateBlock kind="empty" title="这个平台的技能目录是空的" detail="回「总体」页部署技能到这里，或把技能目录放进上面的路径。" />}
               rowClassName={() => 'hover:bg-hover'}
             />
+            </div>
           </div>
           )}
 
           {pane === 'mcp' && (
           <div className="rounded-lg border border-line bg-card p-3">
             <h2 className="mb-2 text-sm font-semibold">这个平台的 MCP（{snap.mcp.filter((m) => m.present.includes(tab)).length}）</h2>
+            <div className="overflow-x-auto">
             <DataTable
               dense
               columns={[
@@ -581,6 +589,7 @@ export default function HubPage() {
               empty={<StateBlock kind="empty" title="这个平台还没有 MCP 条目" detail="回「总体」页点「粘贴导入 MCP」。" />}
               rowClassName={() => 'hover:bg-hover'}
             />
+            </div>
           </div>
           )}
         </>

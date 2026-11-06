@@ -3,7 +3,7 @@
 //! **本阶段预期全红**：被调用的实现全是 todo!()。红的来源必须是
 //! 「未实现 / 断言不成立」，不能是编译错误——那说明签名定错了。
 //!
-//! 契约编号对应 ARCHITECTURE-v2.md §7。
+//! 契约编号定义见 AGENTS.md §4 与 docs/rules/10-architecture-entrypoints.md。
 
 mod support;
 
@@ -472,7 +472,7 @@ fn contract_18_time_crosses_ipc_as_machine_readable() {
 // ---------------------------------------------------------------- 契约 19
 #[test]
 fn contract_19_no_stdout_writes() {
-    // 例外只有一处：`src/main.rs` 是命令行入口（`--import-v1`），stdout 是它唯一的输出渠道。
+    // 例外只有一处：`src/main.rs` 是命令行入口（`--scan`），stdout 是它唯一的输出渠道。
     // 业务与界面代码（`app/`、`desktop/`）一律不得写 stdout——release 版是 windows 子系统，
     // 没有控制台，写了等于把日志丢掉。所以检查排除 bin 入口，其余全部要查。
     let hits = grep_source_except(&["println!", "print!", "dbg!"], &["main.rs"]);

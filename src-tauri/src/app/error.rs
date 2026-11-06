@@ -10,8 +10,14 @@ pub enum ErrorKind {
     Provider,
     Crypto,
     Invalid,
-    /// 平台里存在同名但非本工具写入的条目（契约 16）
+    /// 平台存在同名但非本工具写入的条目（契约 16）
     Conflict,
+    /// 登录态失效（401/403）：需要重新登录，重试没有意义
+    AuthExpired,
+    /// 平台限流（429）：稍后重试，属于可恢复错误
+    RateLimited,
+    /// 活动未开放/已结束：不是失败，只是暂无数据
+    ActivityClosed,
     /// 目标客户端正在运行，不能写（契约 9）
     ClientRunning,
     /// 用户主动取消——不能被记成失败
@@ -48,6 +54,9 @@ impl ErrorKind {
             Self::Crypto => "crypto",
             Self::Invalid => "invalid",
             Self::Conflict => "conflict",
+            Self::AuthExpired => "auth_expired",
+            Self::RateLimited => "rate_limited",
+            Self::ActivityClosed => "activity_closed",
             Self::ClientRunning => "client_running",
             Self::Cancelled => "cancelled",
             Self::ProfileMismatch => "profile_mismatch",

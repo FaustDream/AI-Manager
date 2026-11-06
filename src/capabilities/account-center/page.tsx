@@ -1,14 +1,16 @@
 // 账号中心：八列列定义驱动 + 拖动排序 + 列宽持久化 + 操作列 + 详情面板。
 // 行 key = iid（四处共用的主键）；界面任何位置不渲染 uid（契约 17）。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Button } from '@/components/ui/button';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { errKind, errText } from '@/lib/ipc';
-import { SkeletonRows, StateBlock } from '@/components/ui/form';
+import { Select, SkeletonRows, StateBlock } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
+import { fmtMs } from '@/lib/format';
 import type { AccountView } from '@/lib/types';
-import { COLUMNS, type Cell } from './columns';
+import { attentionRank, COLUMNS, type Cell } from './columns';
 import { DetailPanel } from './detail';
 import { OPS_WIDTH, RestoreDialog, RowActions, SwitchDialog } from './actions';
 import { AddAccountDialog, AccountToolbar } from './toolbar';
@@ -46,7 +48,29 @@ export default function AccountCenterPage() {
   const [restoreTarget, setRestoreTarget] = useState<AccountView | null>(null);
   // 查询失败是运行时状态：接口这轮报错就标红，成功后自动消失，不落库
   const [queryErrors, setQueryErrors] = useState<Record<string, string>>({});
+  const [tagFilter, setTagFilter] = useState('');
+  const [sortMode, setSortMode] = useState<'manual' | 'attention'>('manual');
   const rows = accounts.data ?? [];
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of rows) for (const tag of row.tags) set.add(tag);
+    return [...set].sort();
+  }, [rows]);
+
+  // 筛选只影响展示；「需处理优先」是临时排序，不改 sort_order
+  const visible = useMemo(() => {
+    const filtered = rows.filter((row) => {
+      if (!tagFilter) return true;
+      if (tagFilter === '__none__') return row.tags.length === 0;
+      return row.tags.includes(tagFilter);
+    });
+    return sortMode === 'attention'
+      ? [...filtered].sort((a, b) => attentionRank(a) - attentionRank(b))
+      : filtered;
+  }, [rows, tagFilter, sortMode]);
+
+  const canDrag = sortMode === 'manual' && !tagFilter;
+
   const selectedRow = rows.find((r) => r.iid === selected) ?? null;
   const currentSet = useMemo(() => new Set(current.data ?? []), [current.data]);
 
@@ -63,6 +87,15 @@ export default function AccountCenterPage() {
     }
     return out;
   }, [rows]);
+
+  // 从总览等页面跳过来时带着要看的 iid：挂载后直接选中那一行。
+  // 用 sessionStorage 而不是 URL 参数：壳层没有地址栏，页面间传值只活这一次。
+  useEffect(() => {
+    const iid = sessionStorage.getItem('aim.focusAccount');
+    if (!iid) return;
+    sessionStorage.removeItem('aim.focusAccount');
+    setSelected(iid);
+  }, []);
 
   // ---- 列宽：持久化在 kv ui.columns（v1 同键） ----
   useEffect(() => {
@@ -104,14 +137,11 @@ export default function AccountCenterPage() {
     // onMove/onUp 全走 ref，不依赖渲染期值：只在挂载时装一次
   }, []);
 
-  // 慢操作的按钮加载态：扫描/刷积分/切换/恢复要等几秒，不给 busy 态看起来就像没点上
+  // 慢操作的按钮加载态：刷积分/切换/恢复要等几秒，不给 busy 态看起来就像没点上
   const { busy, run: runBusy } = useBusy();
-  // 聚焦时自动同步要读「当前有没有任务在跑」：effect 里拿不到最新的 state，用 ref 过渡
-  const busyRef = useRef<string | null>(null);
-  busyRef.current = busy;
 
   // ---- 拖动排序：指针逻辑在 use-row-drag，这里只负责持久化 ----
-  const { dragging, dropAt, startDrag } = useRowDrag(rows, busy, async (iids) => {
+  const { dragging, dropAt, startDrag } = useRowDrag(visible, canDrag ? busy : 'locked', async (iids) => {
     
       if ((await runCmd('account_reorder', { iids })) === undefined) return;
       qc.invalidateQueries({ queryKey: ['accounts'] });
@@ -147,77 +177,128 @@ export default function AccountCenterPage() {
     return () => ro.disconnect();
   }, []);
 
-  const scanAndRefresh = () =>
-    runBusy('scan', async () => {
-      
-        const report = await runCmd('account_scan');
-
-        if (report === undefined) return;
-        toast(`扫描完成：${report.scanned} 个账号（新增 ${report.added}）`);
-        qc.invalidateQueries({ queryKey: ['accounts'] });
-      
-    });
-
-  // 切回窗口时静默同步一次：登录/换号多半是在客户端里做的，回来列表应该已经是最新的。
-  // 不弹 toast——用户没点任何按钮，不该被打断；5 秒内重复聚焦不重扫。
-  const lastScanAt = useRef(0);
-  useEffect(() => {
-    const onFocus = () => {
-      const now = Date.now();
-      if (busyRef.current) return;
-      if (now - lastScanAt.current < 5000) return;
-      lastScanAt.current = now;
-      void queryCmd('account_scan')
-        .then(() => {
-          qc.invalidateQueries({ queryKey: ['accounts'] });
-          qc.invalidateQueries({ queryKey: ['current'] });
-        })
-        .catch(() => {});
-    };
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [qc]);
-
   const refreshCredits = () =>
     runBusy('credits', async () => {
-      const iids = rows.filter((r) => r.has_secret).map((r) => r.iid);
+      const iids = rows.filter((r) => r.has_secret && r.enabled).map((r) => r.iid);
       if (iids.length === 0) {
-        toast('没有可刷新的账号（先扫描客户端）');
+        toast('没有可刷新的账号（先添加账号）');
         return;
       }
-      
-        const out = await runCmd('checkin_credits', { iids });
+      const started = performance.now();
+      const out = await runCmd('checkin_credits', { iids });
 
-        if (out === undefined) return;
-        // 只有后端标了 error 才算失败：成功但没拿到数值不能标红。
-        // 运行时状态，下次刷新成功自动消失，不进库。
-        const errors: Record<string, string> = {};
-        for (const [iid, snapshot] of out) {
-          if (snapshot.error) {
-            errors[iid] = snapshot.error;
-          }
+      if (out === undefined) return;
+      // 只有后端标了 error 才算失败：成功但没拿到数值不能标红。
+      // 运行时状态，下次刷新成功自动消失，不进库。
+      const errors: Record<string, string> = {};
+      for (const [iid, snapshot] of out) {
+        if (snapshot.error) {
+          errors[iid] = snapshot.error;
         }
-        setQueryErrors(errors);
-        const failed = Object.keys(errors).length;
-        toast(`已刷新 ${iids.length} 个账号的积分${failed ? `（${failed} 个查询失败）` : ''}`);
-        qc.invalidateQueries({ queryKey: ['accounts'] });
-        qc.invalidateQueries({ queryKey: ['detail'] });
-      
+      }
+      setQueryErrors(errors);
+      // 等列表与详情真正重取完再报「完成」：否则 toast 说刷新完了，屏幕还是旧值
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['accounts'] }),
+        qc.invalidateQueries({ queryKey: ['detail'] }),
+      ]);
+      const failed = Object.keys(errors).length;
+      const elapsed = fmtMs(Math.round(performance.now() - started));
+      toast(
+        failed === 0
+          ? `刷新完成：${out.length} 个账号全部成功 · ${elapsed}`
+          : `刷新完成：${out.length} 个账号，${failed} 个查询失败（原因见列表红字与日志）· ${elapsed}`,
+      );
     });
 
-  const batchCheckin = async () => {
-    const iids = rows
-      .filter((r) => r.requires_checkin && r.has_secret && r.checked_in !== true)
-      .map((r) => r.iid);
-    if (iids.length === 0) {
-      toast('没有需要签到的账号');
-      return;
-    }
-    
-      if ((await runCmd('checkin_batch', { iids })) === undefined) return;
-      toast(`批量签到已开始（${iids.length} 个账号）`);
-    
-  };
+  // 刷的是「本地库 ↔ 客户端登录态」的一致性：重扫凭据 + 校正到期时间 + 重读当前登录。
+  // 与「刷新积分」分开：那个打平台接口拿余额，这个只碰本机数据。
+  const refreshState = () =>
+    runBusy('refresh-state', async () => {
+      const report = await runCmd('account_refresh_all');
+      if (report === undefined) return;
+      const parts = [
+        `${report.total} 个账号`,
+        `有凭据 ${report.with_secret}`,
+        report.missing_secret > 0 ? `缺凭据 ${report.missing_secret}` : '',
+        report.expired > 0 ? `已过期 ${report.expired}` : '',
+        report.expiring > 0 ? `临期 ${report.expiring}` : '',
+        report.updated > 0 ? `校正到期 ${report.updated}` : '',
+      ].filter(Boolean);
+      const head = `账号状态已刷新：${parts.join(' · ')} · ${fmtMs(report.ms)}`;
+      toast(
+        report.errors.length === 0
+          ? head
+          : `${head}\n${report.errors.slice(0, 2).join('\n')}${
+              report.errors.length > 2 ? `\n…另 ${report.errors.length - 2} 条见日志` : ''
+            }`,
+      );
+      // 到期时间、「当前登录」标记都在这一批里更新过：列表、当前账号、详情一起重取
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['accounts'] }),
+        qc.invalidateQueries({ queryKey: ['current'] }),
+        qc.invalidateQueries({ queryKey: ['detail'] }),
+        qc.invalidateQueries({ queryKey: ['codebuddy-targets'] }),
+      ]);
+    });
+
+  const batchCheckin = () =>
+    runBusy('checkin', async () => {
+      const iids = rows
+        .filter((r) => r.requires_checkin && r.has_secret && r.enabled && r.checked_in !== true)
+        .map((r) => r.iid);
+      if (iids.length === 0) {
+        toast('没有需要签到的账号');
+        return;
+      }
+      const started = performance.now();
+      const round = await runCmd('checkin_batch', { iids });
+
+      if (round === undefined) return;
+      // 签到会改余额与今日标记：列表与详情必须一起重取
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['accounts'] }),
+        qc.invalidateQueries({ queryKey: ['detail'] }),
+      ]);
+      const elapsed = fmtMs(Math.round(performance.now() - started));
+      const parts = [
+        round.success > 0 ? `成功 ${round.success}` : '',
+        round.already > 0 ? `已签 ${round.already}` : '',
+        round.failed > 0 ? `失败 ${round.failed}` : '',
+        round.skipped > 0 ? `跳过 ${round.skipped}` : '',
+      ].filter(Boolean);
+      toast(
+        `批量签到完成：${parts.join(' · ') || '无需处理'} · ${elapsed}` +
+          (round.failed > 0 ? '\n失败详情见「日志 → 执行动作」' : ''),
+      );
+    });
+
+  const batchDiagnose = () =>
+    runBusy('diagnose', async () => {
+      const iids = visible.filter((r) => r.has_secret && r.enabled).map((r) => r.iid);
+      if (iids.length === 0) {
+        toast('当前筛选下没有可诊断的账号（需要凭据且已启用）');
+        return;
+      }
+      const result = await runCmd('account_batch_diagnose', { iids });
+      if (result === undefined) return;
+      const head = `批量诊断：${result.total} 个账号 · 成功 ${result.ok} · 失败 ${result.failed.length}`;
+      toast(
+        result.failed.length === 0
+          ? head
+          : `${head}\n${result.failed.slice(0, 2).join('\n')}${
+              result.failed.length > 2 ? `\n…另 ${result.failed.length - 2} 条见日志` : ''
+            }`,
+      );
+      qc.invalidateQueries({ queryKey: ['accounts'] });
+    });
+
+  const exportList = () =>
+    runBusy('export', async () => {
+      const path = await runCmd('account_export');
+      if (path === undefined) return;
+      toast(`账号清单已导出：${path}`);
+    });
 
   // 添加账号的整条链路（关客户端 → 备份登录态 → 打开登录页 → 扫描）都在弹窗里，
   // 页面只负责在扫完后刷新列表——弹窗中途不关，用户才看得到「正在做什么」。
@@ -284,8 +365,19 @@ export default function AccountCenterPage() {
     });
   };
 
+  const toggleEnabled = (row: AccountView) =>
+    runBusy(`enabled:${row.iid}`, async () => {
+      const changed = await runCmd('account_set_enabled', {
+        iid: row.iid,
+        enabled: !row.enabled,
+      });
+      if (changed === undefined) return;
+      toast(`已${row.enabled ? '停用' : '启用'}「${row.name}」`);
+      qc.invalidateQueries({ queryKey: ['accounts'] });
+    });
+
   const removeAccount = async (row: AccountView) => {
-    // 不可逆动作（同页的会话删除、清空回收站都有确认）
+    // 不可逆动作（同页的会话归档 / 彻底删除都有确认）
     if (!(await confirmAction({ title: '确认操作', message: `从账号库移除「${row.name}」？\n只删本机记录，客户端登录态不动。`, danger: true }))) return;
     
       if ((await runCmd('account_delete', { iid: row.iid })) === undefined) return;
@@ -312,11 +404,68 @@ export default function AccountCenterPage() {
     <div className="flex flex-col gap-2.5">
       <AccountToolbar
         busy={busy}
-        onScan={scanAndRefresh}
         onAdd={() => setAddOpen(true)}
         onRefresh={refreshCredits}
+        onRefreshState={refreshState}
         onCheckin={batchCheckin}
+        onDiagnose={batchDiagnose}
       />
+
+      {/* 标签筛选 + 排序：只影响展示，不写库 */}
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="text-muted">标签</span>
+        <button
+          className={`cursor-pointer rounded px-1.5 py-0.5 ${!tagFilter ? 'bg-hover text-fg' : 'text-muted hover:text-fg'}`}
+          onClick={() => setTagFilter('')}
+        >
+          全部
+        </button>
+        {allTags.map((tag) => (
+          <button
+            key={tag}
+            className={`cursor-pointer rounded px-1.5 py-0.5 ${
+              tagFilter === tag ? 'bg-hover text-fg' : 'text-muted hover:text-fg'
+            }`}
+            onClick={() => setTagFilter(tagFilter === tag ? '' : tag)}
+          >
+            {tag}
+          </button>
+        ))}
+        {rows.some((row) => row.tags.length === 0) && (
+          <button
+            className={`cursor-pointer rounded px-1.5 py-0.5 ${
+              tagFilter === '__none__' ? 'bg-hover text-fg' : 'text-muted hover:text-fg'
+            }`}
+            onClick={() => setTagFilter(tagFilter === '__none__' ? '' : '__none__')}
+          >
+            未标记
+          </button>
+        )}
+        <span className="flex-1" />
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={exportList}
+          loading={busy === 'export'}
+          disabled={!!busy}
+          title="导出当前全部账号（不含凭据），CSV 可直接用表格打开"
+        >
+          导出清单
+        </Button>
+        {tagFilter && (
+          <span className="text-muted">
+            {visible.length} / {rows.length} 个账号
+          </span>
+        )}
+        <Select
+          value={sortMode}
+          title="手动顺序可拖动调整；需处理优先只是临时排序，不改保存的顺序"
+          onChange={(e) => setSortMode(e.target.value as 'manual' | 'attention')}
+        >
+          <option value="manual">手动顺序</option>
+          <option value="attention">需处理优先</option>
+        </Select>
+      </div>
 
       {/* 窄窗口只在表格自己身上横向滚动，操作列 sticky 在右侧始终可点；
           详情面板不跟着横向滚，避免整页左右晃 */}
@@ -369,14 +518,14 @@ export default function AccountCenterPage() {
               </td>
             </tr>
           )}
-          {!accounts.isLoading && rows.length === 0 && (
+          {!accounts.isLoading && visible.length === 0 && (
             <tr>
               <td colSpan={COLUMNS.length + 2}>
-                <StateBlock kind="empty" title="还没有账号" detail="点「扫描客户端」把各平台已登录的账号收进来。" />
+                <StateBlock kind="empty" title="还没有账号" detail="启动时会自动扫描客户端；也可以点「添加账号」登录后入库。" />
               </td>
             </tr>
           )}
-          {rows.map((row) => {
+          {visible.map((row) => {
             const isCurrent = currentSet.has(row.iid);
             const isDragging = dragging === row.iid;
             const dropBefore = dropAt?.iid === row.iid && dropAt.before;
@@ -399,11 +548,13 @@ export default function AccountCenterPage() {
               >
                 <td
                   className="px-1 py-1.5 text-center text-muted select-none"
-                  style={{ cursor: 'grab', touchAction: 'none' }}
-                  onPointerDown={(e) => startDrag(e, row.iid)}
-                  title="拖动排序"
+                  style={{ cursor: canDrag ? 'grab' : 'default', touchAction: 'none' }}
+                  onPointerDown={(e) => {
+                    if (canDrag) startDrag(e, row.iid);
+                  }}
+                  title={canDrag ? '拖动排序' : '切回「手动顺序」且不筛选标签后可拖动'}
                 >
-                  ⠿
+                  {canDrag ? '⠿' : '·'}
                 </td>
                 {table.map((col) => (
                   <td
@@ -430,6 +581,7 @@ export default function AccountCenterPage() {
                     onSwitch={() => setSwitchTarget(row)}
                     onRestore={() => setRestoreTarget(row)}
                     onCopyUid={() => void copyUid(row)}
+                    onToggleEnabled={() => void toggleEnabled(row)}
                     onDelete={() => void removeAccount(row)}
                   />
                 </td>

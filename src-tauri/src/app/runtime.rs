@@ -1,4 +1,4 @@
-//! tokio 运行时。参数按 `docs/TASK-CONCURRENCY.md` §3 定死，不要凭感觉调。
+//! tokio 运行时。参数按并发契约定死，不要凭感觉调。
 
 use crate::app::error::ErrorKind;
 use std::sync::OnceLock;

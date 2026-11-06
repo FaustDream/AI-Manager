@@ -102,10 +102,6 @@ pub struct Filter {
     pub state: Option<String>,
     #[serde(default)]
     pub sort: Sort,
-    /// 默认不显示已归档：归档的意义就是让列表安静下来。
-    /// 用「显示」而不是「隐藏」命名，缺省值 false 正好等于默认行为。
-    #[serde(default)]
-    pub show_archived: bool,
 }
 
 impl Filter {
@@ -307,7 +303,7 @@ impl<'a> SqliteSessions<'a> {
              WHERE (?1 IS NULL OR source_key = ?1)
                AND (?2 IS NULL OR account = ?2)
                AND (?3 IS NULL OR state = ?3)
-               AND (?7 = 1 OR ?3 IS NOT NULL OR state <> 'archived')
+               AND (?3 IS NOT NULL OR state <> 'archived')
                AND (?4 IS NULL OR {col} < ?4 OR ({col} = ?4 AND session_id < ?5))
              ORDER BY {col} DESC, session_id DESC
              LIMIT ?6",
@@ -317,15 +313,7 @@ impl<'a> SqliteSessions<'a> {
         self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(
-                rusqlite::params![
-                    source,
-                    account,
-                    state,
-                    cur,
-                    cur_sid,
-                    limit + 1,
-                    if filter.show_archived { 1 } else { 0 }
-                ],
+                rusqlite::params![source, account, state, cur, cur_sid, limit + 1,],
                 |row| {
                     let slug: String = row.get(11)?;
                     let cwd: String = row.get(12)?;
@@ -371,7 +359,7 @@ impl<'a> SqliteSessions<'a> {
             } else {
                 None
             };
-            let total = count_with(conn, source, account, state, filter.show_archived)?;
+            let total = count_with(conn, source, account, state)?;
             Ok(Page {
                 items,
                 next_cursor,
@@ -387,7 +375,7 @@ impl<'a> SqliteSessions<'a> {
                 "SELECT s.source_key, s.source_label, COUNT(*) FROM session_index s
                  LEFT JOIN session_marks m
                    ON m.source_key = s.source_key AND m.session_id = s.session_id
-                 WHERE m.hidden_at IS NULL
+                 WHERE m.hidden_at IS NULL AND m.archived_at IS NULL
                  GROUP BY s.source_key, s.source_label ORDER BY s.source_label",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -405,7 +393,7 @@ impl<'a> SqliteSessions<'a> {
                 "SELECT s.account, COUNT(*) FROM session_index s
                  LEFT JOIN session_marks m
                    ON m.source_key = s.source_key AND m.session_id = s.session_id
-                 WHERE m.hidden_at IS NULL
+                 WHERE m.hidden_at IS NULL AND m.archived_at IS NULL
                  GROUP BY s.account ORDER BY s.account",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -419,9 +407,9 @@ impl<'a> SqliteSessions<'a> {
                 facets.accounts.push(item?);
             }
 
-            // 状态计数必须与列表同一口径（含归档与已删除的合并规则）
+            // 状态计数与活跃列表同一口径：已归档单独成列表，不混进这里
             let sql = format!(
-                "SELECT state, COUNT(*) FROM ({}) GROUP BY state",
+                "SELECT state, COUNT(*) FROM ({}) WHERE state <> 'archived' GROUP BY state",
                 effective_state_sql()
             );
             let mut stmt = conn.prepare(&sql)?;
@@ -479,26 +467,18 @@ impl<'a> SqliteSessions<'a> {
              WHERE (?1 IS NULL OR source_key = ?1)
                AND (?2 IS NULL OR account = ?2)
                AND (?3 IS NULL OR state = ?3)
-               AND (?4 = 1 OR ?3 IS NOT NULL OR state <> 'archived')",
+               AND (?3 IS NOT NULL OR state <> 'archived')",
             effective_state_sql()
         );
         self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(
-                rusqlite::params![
-                    source,
-                    account,
-                    state,
-                    if filter.show_archived { 1 } else { 0 }
-                ],
-                |row| {
-                    let kind: String = row.get(0)?;
-                    let source_key: String = row.get(1)?;
-                    let account: String = row.get(2)?;
-                    let session_id: String = row.get(3)?;
-                    Ok(format!("{kind}|{source_key}|{account}|{session_id}"))
-                },
-            )?;
+            let rows = stmt.query_map(rusqlite::params![source, account, state], |row| {
+                let kind: String = row.get(0)?;
+                let source_key: String = row.get(1)?;
+                let account: String = row.get(2)?;
+                let session_id: String = row.get(3)?;
+                Ok(format!("{kind}|{source_key}|{account}|{session_id}"))
+            })?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -576,21 +556,18 @@ fn count_with(
     source: Option<&str>,
     account: Option<&str>,
     state: Option<&str>,
-    show_archived: bool,
 ) -> Result<usize> {
     let sql = format!(
         "SELECT COUNT(*) FROM ({})
          WHERE (?1 IS NULL OR source_key = ?1)
            AND (?2 IS NULL OR account = ?2)
            AND (?3 IS NULL OR state = ?3)
-           AND (?4 = 1 OR ?3 IS NOT NULL OR state <> 'archived')",
+           AND (?3 IS NOT NULL OR state <> 'archived')",
         effective_state_sql()
     );
-    let total: i64 = conn.query_row(
-        &sql,
-        rusqlite::params![source, account, state, if show_archived { 1 } else { 0 }],
-        |row| row.get(0),
-    )?;
+    let total: i64 = conn.query_row(&sql, rusqlite::params![source, account, state], |row| {
+        row.get(0)
+    })?;
     Ok(total as usize)
 }
 
@@ -601,6 +578,7 @@ pub fn state_text(state: SessionState) -> &'static str {
         SessionState::OldAccount => "old_account",
         SessionState::Cloud => "cloud",
         SessionState::Archived => "archived",
+        SessionState::Orphan => "orphan",
     }
 }
 
@@ -611,6 +589,7 @@ pub fn state_label(state: SessionState) -> &'static str {
         SessionState::OldAccount => "旧账号",
         SessionState::Cloud => "云端",
         SessionState::Archived => "已归档",
+        SessionState::Orphan => "孤立",
     }
 }
 
@@ -620,6 +599,7 @@ fn state_of(value: Option<&str>) -> SessionState {
         Some("old_account") => SessionState::OldAccount,
         Some("cloud") => SessionState::Cloud,
         Some("archived") => SessionState::Archived,
+        Some("orphan") => SessionState::Orphan,
         _ => SessionState::Visible,
     }
 }

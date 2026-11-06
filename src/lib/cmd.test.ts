@@ -42,7 +42,7 @@ describe('errMsg', () => {
   });
 });
 
-// 执行记录的详情：要能回答「当时到底传了什么、回来的是什么」，而不是一串占位符。
+// 执行动作的详情：要能回答「当时到底传了什么、回来的是什么」，而不是一串占位符。
 describe('argsSummary', () => {
   it('数组摊开列出元素，不再退化成「N 项」', () => {
     expect(argsSummary({ iids: ['workbuddy:a', 'qoder:b'] })).toBe('iids=[workbuddy:a, qoder:b]');

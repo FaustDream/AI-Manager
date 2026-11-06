@@ -13,7 +13,7 @@ pub async fn maintenance_space() -> crate::app::maintenance::SpaceReport {
         .unwrap_or_default()
 }
 
-/// 回收站批次（会话删除与平台技能移除都算）。
+/// 回收站批次（平台技能移除时落下的副本）。
 #[tauri::command]
 
 pub async fn maintenance_trash() -> Vec<crate::app::maintenance::SpaceEntry> {

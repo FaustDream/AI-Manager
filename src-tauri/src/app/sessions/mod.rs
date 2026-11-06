@@ -7,14 +7,12 @@
 //! 增量靠源指纹：`sources()` 只 stat 元数据，指纹没变就整源复用索引。
 
 pub mod backend;
-pub mod backup;
 pub mod delete;
 pub mod marks;
 pub mod preview;
 pub mod restore;
 pub mod sources;
 pub mod store;
-pub mod trash;
 
 pub use preview::Preview;
 pub use store::{Facets, Filter, RawRow, SqliteSessions};
@@ -170,24 +168,25 @@ impl Service {
         .await?
     }
 
-    /// 删除：文件进回收站 + 删库行，写库前自动关客户端并重启。
-    pub async fn remove(&self, keys: Vec<String>) -> Result<delete::DeleteReport> {
-        let db = self.db.clone();
-        let roots = self.roots.clone();
-        blocking(move || delete::delete(&roots, &db, &keys, true)).await?
-    }
-
     /// 归档 / 取消归档（只写本地标记，不动客户端）。
     pub async fn archive(&self, keys: Vec<String>, on: bool) -> Result<usize> {
         let db = self.db.clone();
         blocking(move || marks::archive(&db, &keys, on)).await?
     }
 
-    /// 彻底删除：**只放行已归档 / 客户端已删除的会话**，不留回收站副本。
-    ///
-    /// 这是不可逆动作，所以门槛放在后端而不是只靠界面置灰：绕过界面直接调命令
-    /// 也删不掉一条还在用的会话。
+    /// 彻底删除：**可见会话必须先归档**；已归档 / 已删除 / 云端占位 / 旧账号
+    /// 可以直接删。门槛放在后端而不是只靠界面置灰：绕过界面直接调命令也不行。
     pub async fn purge(&self, keys: Vec<String>) -> Result<delete::PurgeReport> {
+        self.purge_with(keys, true).await
+    }
+
+    /// `with_guard=false` 只给测试用：不碰真实客户端进程。
+    #[doc(hidden)]
+    pub async fn purge_with(
+        &self,
+        keys: Vec<String>,
+        with_guard: bool,
+    ) -> Result<delete::PurgeReport> {
         let db = self.db.clone();
         let roots = self.roots.clone();
         blocking(move || {
@@ -198,32 +197,19 @@ impl Service {
                 let target = preview::parse_key(key)?;
                 let state = store.state_of(&target.source_key, &target.session_id)?;
                 match state {
-                    Some(SessionState::Archived) | Some(SessionState::Deleted) => {
-                        allowed.push(key.clone())
-                    }
-                    _ => refused += 1,
+                    Some(SessionState::Visible) | None => refused += 1,
+                    Some(_) => allowed.push(key.clone()),
                 }
             }
             if allowed.is_empty() {
                 return Err(crate::app::error::AppError::new(
                     ErrorKind::Invalid,
-                    "只能彻底删除「已归档」或「已删除」的会话；其余会话请先归档",
+                    "可见会话不能直接删除；请先归档，再在归档列表中彻底删除",
                 ));
             }
-            let report = delete::delete_with(&roots, &db, &allowed, true, &|_, _| {})?;
-            // 行已经真删了，归档标记跟着清掉；回收站批次立刻销毁，不留副本
-            let _ = marks::forget(&db, &allowed);
-            if !report.tag.is_empty() {
-                let _ = delete::purge(&report.tag);
-            }
-            Ok(delete::PurgeReport {
-                deleted: report.sessions,
-                files: report.files,
-                bytes: report.bytes,
-                refused,
-                errors: report.errors,
-                warnings: report.warnings,
-            })
+            let mut report = delete::purge(&roots, &db, &allowed, with_guard)?;
+            report.refused = refused;
+            Ok(report)
         })
         .await?
     }
@@ -251,32 +237,6 @@ impl Service {
             Ok(marks::retention_days(&db))
         })
         .await?
-    }
-
-    /// 整库快照：客户端开着也能备份（走 SQLite 在线备份）。
-    pub async fn backup(&self) -> Result<backup::Snapshot> {
-        let roots = self.roots.clone();
-        blocking(move || backup::make(&roots, &backup::root())).await?
-    }
-
-    pub async fn backups(&self) -> Vec<backup::Snapshot> {
-        blocking(|| backup::list(&backup::root()))
-            .await
-            .unwrap_or_default()
-    }
-
-    /// 回收站批次（最近的在前）。
-    pub async fn trash(&self) -> Vec<trash::Manifest> {
-        blocking(delete::list).await.unwrap_or_default()
-    }
-
-    pub async fn trash_restore(&self, tag: String) -> Result<delete::RestoreReport> {
-        let roots = self.roots.clone();
-        blocking(move || delete::restore(&roots, &tag, true)).await?
-    }
-
-    pub async fn trash_purge(&self, tag: String) -> Result<i64> {
-        blocking(move || delete::purge(&tag)).await?
     }
 
     /// 正文预览：按行 key 找正文，三种来源各自的解析在 `preview.rs`。

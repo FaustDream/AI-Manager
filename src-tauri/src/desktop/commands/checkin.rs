@@ -11,8 +11,17 @@ pub async fn checkin_credits(
     state: State<'_, AppState>,
     iids: Vec<String>,
 ) -> std::result::Result<Vec<(String, crate::types::CreditSnapshot)>, String> {
-    // 并发与失败兜底都在 Service::credits_batch 里，命令层只转接
-    Ok(state.checkin.credits_batch(&iids).await)
+    // 并发、失败兜底与逐条失败日志都在 Service::credits_batch 里，命令层只转接
+    Ok(state.checkin.credits_batch(&iids, "user").await)
+}
+
+/// 只读诊断：调平台查询接口，不写库、不触发签到；结果同时落日志 `diagnose`。
+#[tauri::command]
+pub async fn checkin_diagnose(
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<crate::app::checkin::DiagnoseReport, String> {
+    state.checkin.diagnose(&iid).await.map_err(err_text)
 }
 
 /// 详情面板：余额、今日增减、批次、下次可签。只读本地库，不打接口。
@@ -34,17 +43,8 @@ pub async fn checkin_run(
     iid: String,
 ) -> std::result::Result<crate::types::ActionResult, String> {
     let service = state.checkin.clone();
-    let result = service.checkin(&iid).await.map_err(err_text)?;
-    log::log(
-        if result.ok { Level::Info } else { Level::Warn },
-        "checkin",
-        format!(
-            "{}：{}",
-            iid.split(':').next().unwrap_or("-"),
-            result.message
-        ),
-    );
-    Ok(result)
+    // 逐账号结果由 checkin_traced 落成动作行，命令层不再重复记一遍
+    service.checkin(&iid).await.map_err(err_text)
 }
 
 /// 批量签到：并发 3，跑完返回本轮结果。
@@ -54,19 +54,9 @@ pub async fn checkin_batch(
     state: State<'_, AppState>,
     iids: Vec<String>,
 ) -> std::result::Result<crate::app::checkin::RoundResult, String> {
-    let total = iids.len();
     let service = state.checkin.clone();
-    let round = service.batch(&iids, "user").await;
-    log::log(
-        if round.failed > 0 {
-            Level::Warn
-        } else {
-            Level::Info
-        },
-        "checkin",
-        format!("批量签到 {total} 个账号：{}", round.detail()),
-    );
-    Ok(round)
+    // 批次开始/逐账号/批次结束三层记录都在 Service::batch 里
+    Ok(service.batch(&iids, "user").await)
 }
 
 /// 每日轮询的最近一轮结果（界面底部那一行）。
@@ -76,23 +66,20 @@ pub fn daily_state(state: State<'_, AppState>) -> Option<crate::app::checkin::Ro
     state.checkin.daily_state()
 }
 
-/// 手动跑一轮每日轮询，跑完返回本轮结果。
+/// 手动跑一轮每日轮询，跑完返回本轮结果，并推一条 `checkin:round`。
+/// 推事件的原因：顶部「跑一轮」与总览页都靠它统一失效账号列表，
+/// 只在返回值里给结果的话，界面要点两次才看到新状态。
 #[tauri::command]
 
 pub async fn daily_run_now(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> std::result::Result<crate::app::checkin::RoundResult, String> {
+    use tauri::Emitter;
     let service = state.checkin.clone();
+    // 轮询的批次记录已由 run_round 的 finish_batch 统一落盘
     let round = service.run_round("user").await;
-    log::log(
-        if round.failed > 0 {
-            Level::Warn
-        } else {
-            Level::Info
-        },
-        "checkin",
-        format!("每日轮询（手动）：{}", round.detail()),
-    );
+    let _ = app.emit("checkin:round", &round);
     Ok(round)
 }
 
@@ -117,4 +104,35 @@ pub async fn zcode_claim_run(
 ) -> std::result::Result<crate::app::providers::zclaim::ClaimOutcome, String> {
     let service = state.checkin.clone();
     service.zcode_claim(&iid, &plan_id).await.map_err(err_text)
+}
+
+/// 积分趋势：读每日余额快照，不查接口。`iid` 为空表示全部账号汇总。
+#[tauri::command]
+
+pub async fn credit_trend(
+    state: State<'_, AppState>,
+    iid: Option<String>,
+    days: Option<i64>,
+) -> std::result::Result<Vec<crate::app::checkin::TrendPoint>, String> {
+    Ok(state.checkin.credit_trend(iid, days.unwrap_or(30)).await)
+}
+
+/// 跨账号最近领取：仪表盘「最近领取」用。
+#[tauri::command]
+
+pub async fn credit_claims_recent(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> std::result::Result<Vec<crate::app::checkin::RecentClaim>, String> {
+    Ok(state.checkin.recent_claims(limit.unwrap_or(20)).await)
+}
+
+/// 积分收支（按天）：到账 / 消耗 / 净额 / 当日末余额。
+#[tauri::command]
+
+pub async fn credit_flow(
+    state: State<'_, AppState>,
+    days: Option<i64>,
+) -> std::result::Result<Vec<crate::app::checkin::CreditFlowPoint>, String> {
+    Ok(state.checkin.credit_flow(days.unwrap_or(30)).await)
 }

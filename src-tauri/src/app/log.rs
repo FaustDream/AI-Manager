@@ -47,15 +47,25 @@ impl Level {
     }
 }
 
+/// 结构化日志协议版本。新增字段默认带版本号，旧行缺省按 1 读。
+pub const LOG_SCHEMA_VERSION: u8 = 1;
+
+fn default_schema() -> u8 {
+    LOG_SCHEMA_VERSION
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 /// 一行结构化日志，直接对应 app.jsonl 的一行。
 ///
-/// 「执行记录」与普通业务日志共用这一份文件：带 `action` 的行表示**一次动作的完整交代**
-/// （谁触发、成没成、花了多久），执行记录页只筛这一类。老 jsonl 行没有这些字段，
+/// 「执行动作」与普通业务日志共用这一份文件：带 `action` 的行表示**一次动作的完整交代**
+/// （谁触发、成没成、花了多久），日志页的「执行动作」视图只筛这一类。老 jsonl 行没有这些字段，
 /// 靠 `serde(default)` 兼容——日志是历史资产，不能因为加字段就读不出来。
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Line {
+    /// 协议版本：机器消费方先读这个字段再决定字段语义
+    #[serde(default = "default_schema")]
+    pub schema: u8,
     pub ts: String,
     pub level: Level,
     pub module: String,
@@ -92,6 +102,43 @@ pub struct Line {
     /// 批次号：批量动作的逐条记录都挂在同一个批次下
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch: Option<String>,
+    /// 合并次数：连续重复的同一行只写一次，次数记在这里（首行没有这个字段）。
+    /// 有它才能「少输出」又不丢信息——重复 400 次和 1 次必须能区分开。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<u32>,
+    /// 这一串重复里**最后一次**出现的时间；配合 `repeat` 说明「最近还在发生」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ts: Option<String>,
+}
+
+impl Line {
+    /// 这一行是不是「执行动作」：动作行与逐项记录都落在 `module == "action"`。
+    pub fn is_action(&self) -> bool {
+        self.module == "action"
+    }
+
+    /// 旧版命令面把只读查询也回传成动作行，这些历史行不该继续占执行视图。
+    pub fn is_legacy_read(&self) -> bool {
+        self.action
+            .as_deref()
+            .is_some_and(|action| LEGACY_READ_ACTIONS.contains(&action))
+    }
+
+    /// 结果字段缺失时按 `ok` 推导，兼容尚未写 `outcome` 的老日志行。
+    pub fn effective_outcome(&self) -> Option<&'static str> {
+        match self.outcome.as_deref() {
+            Some("ok") => Some("ok"),
+            Some("skip") => Some("skip"),
+            Some("fail") => Some("fail"),
+            Some("partial") => Some("partial"),
+            Some(_) => None,
+            None => match self.ok {
+                Some(true) => Some("ok"),
+                Some(false) => Some("fail"),
+                None => None,
+            },
+        }
+    }
 }
 
 struct Sink {
@@ -126,6 +173,8 @@ pub fn init(level: Level) -> Result<()> {
 
 /// 测试用：指定目录，且可重复调用覆盖上一次。
 pub fn init_at(level: Level, dir: &Path) -> Result<()> {
+    // 换文件等于换会话：上一轮的待合并计数不能带进新日志
+    reset_pending();
     std::fs::create_dir_all(dir).ok();
     let text = open_rotating(dir.join("app.log"))?;
     let json = open_rotating(dir.join("app.jsonl"))?;
@@ -149,11 +198,116 @@ pub fn set_level(level: Level) {
     }
 }
 
+/// 同一条日志连续重复时的合并窗口。
+///
+/// 60 秒足够覆盖重试风暴、前端热更新与同一轮批量里的重复失败，又不会把
+/// 「上午一次、下午一次」的同类事件并成一条——那两次之间必然夹着别的日志。
+const REPEAT_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 等待合并的重复串：首行已实时写出，这里只累计次数与最后一次时间。
+struct Pending {
+    key: String,
+    line: Line,
+    count: u32,
+    last: std::time::Instant,
+}
+
+static PENDING: OnceLock<Mutex<Option<Pending>>> = OnceLock::new();
+
+fn pending() -> &'static Mutex<Option<Pending>> {
+    PENDING.get_or_init(|| Mutex::new(None))
+}
+
+/// 判定「是不是同一条日志」：只比内容与语义，不比时间与耗时。
+///
+/// `ms` 一定不同、`ts` 一定不同，把它们算进去等于永不去重；`batch` 也不参与，
+/// 批次号本来就写在 message 里，真正的不同批次不会撞车。
+fn fingerprint(line: &Line) -> String {
+    [
+        line.level.as_str(),
+        line.module.as_str(),
+        line.message.as_str(),
+        line.action.as_deref().unwrap_or(""),
+        line.trigger.as_deref().unwrap_or(""),
+        line.outcome.as_deref().unwrap_or(""),
+        line.subject.as_deref().unwrap_or(""),
+        line.step.as_deref().unwrap_or(""),
+        line.evidence.as_deref().unwrap_or(""),
+    ]
+    .join("\u{1}")
+}
+
+/// 写一行日志。连续重复的同一行只留首行 + 一条带次数的汇总，不再逐条刷屏。
 pub fn write(line: Line) {
+    write_with(line, REPEAT_WINDOW);
+}
+
+fn write_with(line: Line, window: std::time::Duration) {
+    let key = fingerprint(&line);
+    let now = std::time::Instant::now();
+    let done = {
+        // 锁被 panic 污染也要继续记：日志是排障手段，
+        // 不能因为某次 panic 发生在写入途中就永久静默
+        let mut guard = pending().lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_mut() {
+            // 窗口内的同一行：只计数，不落盘
+            Some(p) if p.key == key && now.duration_since(p.last) <= window => {
+                p.count += 1;
+                p.last = now;
+                p.line.last_ts = Some(line.ts.clone());
+                return;
+            }
+            // 换了内容或窗口已过：把上一串的汇总补上，再开新的一串
+            _ => guard.take(),
+        }
+    };
+    if let Some(prev) = done {
+        emit_repeat(prev);
+    }
+    emit(line.clone());
+    let mut guard = pending().lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(Pending {
+        key,
+        line,
+        count: 1,
+        last: now,
+    });
+}
+
+/// 把待合并的重复次数落盘。清空日志前、退出前调用，避免最后一次计数丢掉。
+pub fn flush() {
+    let mut guard = pending().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(prev) = guard.take() {
+        emit_repeat(prev);
+    }
+}
+
+/// 丢弃待合并的计数，不落盘。清空日志时用：旧计数不该写进新文件。
+fn reset_pending() {
+    let mut guard = pending().lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
+}
+
+fn emit_repeat(prev: Pending) {
+    if prev.count <= 1 {
+        return;
+    }
+    let mut line = prev.line;
+    line.repeat = Some(prev.count);
+    // 汇总行落在「最后一次」的位置：它是这一段重复的收尾，
+    // 时间戳留在首次会让日志页把它和首行当成同一行（同 ts 同内容）而丢掉。
+    if let Some(last) = line.last_ts.clone() {
+        line.ts = last;
+    }
+    emit(line);
+}
+
+fn emit(line: Line) {
     if let Some(tx) = LIVE.get() {
         let _ = tx.send(line.clone());
     }
-    let Ok(mut guard) = slot().lock() else { return };
+    // 同 pending：污染过的锁照样用，别让日志自己先哑掉
+    let mut guard = slot().lock().unwrap_or_else(|e| e.into_inner());
     let Some(sink) = guard.as_mut() else { return };
 
     // 结构化行不受级别门槛限制
@@ -191,12 +345,15 @@ pub fn write(line: Line) {
         };
         let _ = writeln!(
             sink.text,
-            "{ts} [{}] {head} · {}{}",
+            "{ts} [{}] {head} · {}{}{}",
             line.level.as_str(),
             line.message,
             // 结构化字段不能只活在 jsonl 里：`app.log` 是给人排障用的，
             // 证据/环节漏在这里等于没记
-            structured_suffix(&line)
+            structured_suffix(&line),
+            // 合并行必须说清「重复了多少次、最近一次是什么时候」，
+            // 否则读者会以为这条只发生过一次
+            repeat_suffix(&line)
         );
         let _ = sink.text.flush();
         if rotated(&sink.text, &sink.dir, "app.log").unwrap_or(false) {
@@ -212,8 +369,71 @@ pub fn write(line: Line) {
     }
 }
 
+/// 合并行的尾巴：` · 重复 42 次（最近 11-06 10:22:25）`。
+fn repeat_suffix(line: &Line) -> String {
+    let Some(count) = line.repeat else {
+        return String::new();
+    };
+    match line.last_ts.as_deref() {
+        Some(last) => {
+            let at = chrono::DateTime::parse_from_rfc3339(last)
+                .map(|at| at.format("%m-%d %H:%M:%S").to_string())
+                .unwrap_or_else(|_| last.to_string());
+            format!(" · 重复 {count} 次（最近 {at}）")
+        }
+        None => format!(" · 重复 {count} 次"),
+    }
+}
+
+/// 清空当前日志（人读 + 机读），并删除历史轮转文件。
+/// 只动日志文件，不碰 `data/` 下的其他内容。
+///
+/// Windows 下打开中的日志文件不能原地截断（os error 5），所以先把 Sink 摘下、
+/// 关闭句柄，再删文件并重新打开；这期间极短的写入会被丢弃，是清空动作的必然代价。
+pub fn clear() -> Result<()> {
+    // 待合并的计数属于旧文件，不能带到清空后的新日志里
+    reset_pending();
+    let old = {
+        let mut guard = slot()
+            .lock()
+            .map_err(|_| crate::app::error::AppError::new(ErrorKind::Io, "日志锁被污染"))?;
+        guard.take()
+    };
+    let Some(old) = old else {
+        return Ok(());
+    };
+    let dir = old.dir.clone();
+    let level = old.level;
+    drop(old);
+    for name in [
+        "app.log",
+        "app.log.1",
+        "app.log.2",
+        "app.log.3",
+        "app.jsonl",
+        "app.jsonl.1",
+        "app.jsonl.2",
+        "app.jsonl.3",
+    ] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    let text = open_rotating(dir.join("app.log"))?;
+    let json = open_rotating(dir.join("app.jsonl"))?;
+    let mut guard = slot()
+        .lock()
+        .map_err(|_| crate::app::error::AppError::new(ErrorKind::Io, "日志锁被污染"))?;
+    *guard = Some(Sink {
+        level,
+        dir,
+        text,
+        json,
+    });
+    Ok(())
+}
+
 pub fn log(level: Level, module: &str, message: impl Into<String>) {
     write(Line {
+        schema: LOG_SCHEMA_VERSION,
         ts: Local::now().to_rfc3339(),
         level,
         module: module.to_string(),
@@ -228,15 +448,18 @@ pub fn log(level: Level, module: &str, message: impl Into<String>) {
         outcome: None,
         attempts: None,
         batch: None,
+        repeat: None,
+        last_ts: None,
     });
 }
 
-/// 记一次动作（执行记录）：谁触发、成没成、花了多久、结果是什么。
+/// 记一次动作（执行动作）：谁触发、成没成、花了多久、结果是什么。
 ///
-/// 界面上的「执行记录」页只筛这一类（`module == "action"`）。手动点击与定时任务
+/// 界面上的「执行动作」视图只筛这一类（`module == "action"`）。手动点击与定时任务
 /// 走同一个入口——排查问题时最怕的就是「这条到底是我点的还是它自己跑的」。
 pub fn action(action: &str, trigger: &str, ok: bool, ms: u64, message: impl Into<String>) {
     write(Line {
+        schema: LOG_SCHEMA_VERSION,
         ts: Local::now().to_rfc3339(),
         // 失败必须可筛：Warn 在 app.log 里默认也可见
         level: if ok { Level::Info } else { Level::Warn },
@@ -252,6 +475,8 @@ pub fn action(action: &str, trigger: &str, ok: bool, ms: u64, message: impl Into
         outcome: Some(if ok { "ok" } else { "fail" }.to_string()),
         attempts: None,
         batch: None,
+        repeat: None,
+        last_ts: None,
     });
 }
 
@@ -291,7 +516,7 @@ impl Outcome {
     }
 }
 
-/// 一条逐项执行记录：谁、做了什么、结果、卡在哪、为什么、有什么证据、多慢。
+/// 一条逐项动作记录：谁、做了什么、结果、卡在哪、为什么、有什么证据、多慢。
 ///
 /// 用 builder 而不是一个十参数函数：调用点散在签到 / 切换 / 恢复三处，
 /// 位置参数一多必然写错顺序，而且看不出来漏了哪一项。
@@ -445,6 +670,7 @@ fn structured_suffix(line: &Line) -> String {
 /// 用户只能一行行翻——这正是「日志不详细，找不出问题」的根因。
 pub fn fail(module: &str, action: &str, message: impl Into<String>, evidence: impl Into<String>) {
     write(Line {
+        schema: LOG_SCHEMA_VERSION,
         ts: Local::now().to_rfc3339(),
         level: Level::Error,
         module: module.to_string(),
@@ -459,6 +685,8 @@ pub fn fail(module: &str, action: &str, message: impl Into<String>, evidence: im
         outcome: Some("fail".to_string()),
         attempts: None,
         batch: None,
+        repeat: None,
+        last_ts: None,
     });
 }
 
@@ -466,6 +694,7 @@ pub fn fail(module: &str, action: &str, message: impl Into<String>, evidence: im
 /// 这样日志页能直接看出「是哪个命令挂的」。
 pub fn ui(level: Level, action: Option<&str>, message: impl Into<String>, evidence: Option<&str>) {
     write(Line {
+        schema: LOG_SCHEMA_VERSION,
         ts: Local::now().to_rfc3339(),
         level,
         module: "ui".to_string(),
@@ -484,13 +713,16 @@ pub fn ui(level: Level, action: Option<&str>, message: impl Into<String>, eviden
         }),
         attempts: None,
         batch: None,
+        repeat: None,
+        last_ts: None,
     });
 }
 
-/// 写一条逐项执行记录。`action` 是动作键，`subject` 是账号或批次。
+/// 写一条逐项动作记录。`action` 是动作键，`subject` 是账号或批次。
 pub fn item(item: Item) {
     let outcome = item.outcome;
     write(Line {
+        schema: LOG_SCHEMA_VERSION,
         ts: Local::now().to_rfc3339(),
         level: outcome.map(Outcome::level).unwrap_or(Level::Info),
         module: "action".to_string(),
@@ -506,12 +738,17 @@ pub fn item(item: Item) {
         outcome: outcome.map(|o| o.as_str().to_string()),
         attempts: item.attempts,
         batch: item.batch,
+        repeat: None,
+        last_ts: None,
     });
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
-/// 日志查询：从 `app.jsonl` 尾部读，按级别 / 模块 / 关键词筛。
+/// 日志查询：从 `app.jsonl` 尾部读，按级别 / 模块 / 关键词 / 动作维度筛。
+///
+/// 「日志」与「执行动作」共用这份过滤器：`action_only` 把视图收窄到动作行，
+/// `outcome` / `trigger` / `subject` 则让排障时能直接定位到「谁、怎么触发、成没成」。
 ///
 /// 返回 `Result` 而不是空数组：读不出来（权限、磁盘、内容不是 UTF-8）与「没有符合条件的
 /// 日志」在界面上是两句完全不同的话，吞成空数组会让用户以为自己没日志。
@@ -520,13 +757,54 @@ pub fn item(item: Item) {
 pub struct LogFilter {
     /// 空 = 全部；给值则按级别精确匹配
     pub level: Option<String>,
+    /// 最低级别（含）：`warn` 一次性覆盖 warn + error
+    pub min_level: Option<Level>,
     /// 模块名包含
     pub module: Option<String>,
-    /// 消息包含
+    /// 消息 / 主体 / 环节 / 证据 / 动作 / 批次 任一包含
     pub keyword: Option<String>,
+    /// 主体包含
+    pub subject: Option<String>,
+    /// 只看动作行（`module == "action"`）
+    pub action_only: Option<bool>,
+    /// 动作结果精确匹配：`ok` / `skip` / `fail` / `partial`
+    pub outcome: Option<String>,
+    /// 触发方精确匹配：`user` / `schedule` / `startup`
+    pub trigger: Option<String>,
+    /// 起始时间（RFC3339，含）
+    pub from: Option<String>,
+    /// 结束时间（RFC3339，含）
+    pub to: Option<String>,
+    /// 隐藏旧版记成动作的只读命令（`ui_ready` / `account_list` …）
+    pub hide_legacy: Option<bool>,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub limit: Option<usize>,
 }
+
+/// 旧版命令面把只读查询也回传成动作行，这些历史行不该继续占执行视图。
+/// 不改写日志文件——历史资产只做展示层过滤。
+const LEGACY_READ_ACTIONS: &[&str] = &[
+    "ui_ready",
+    "account_list",
+    "account_current",
+    "account_uid",
+    "account_codebuddy_targets",
+    "hub_snapshot",
+    "session_page",
+    "session_preview",
+    "session_keys",
+    "session_facets",
+    "session_retention",
+    "session_running_clients",
+    "checkin_detail",
+    "daily_state",
+    "log_query",
+    "settings_get",
+    "autostart_get",
+    "schedule_list",
+    "maintenance_space",
+    "maintenance_trash",
+];
 
 pub fn query(filter: &LogFilter) -> Result<Vec<Line>> {
     let dir = logs_dir();
@@ -558,9 +836,99 @@ pub fn query(filter: &LogFilter) -> Result<Vec<Line>> {
     Ok(out)
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 一组同类日志：同一模块 + 动作 + 结果 + 级别。
+///
+/// 日志页的「异常聚合」用它回答「到底哪一类在反复出问题」，
+/// 而不是让人在几千行里数同一个错误出现了几次。
+#[derive(Debug, Clone, Serialize)]
+pub struct LogStat {
+    pub module: String,
+    pub action: Option<String>,
+    pub outcome: Option<String>,
+    pub level: String,
+    /// 合并后的行数（文件里实际有多少条记录）
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub rows: u64,
+    /// 真实发生次数：合并行按 `repeat` 展开
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub occurrences: u64,
+    pub first_ts: String,
+    pub last_ts: String,
+    /// 一条代表性命中内容，界面用来判断「这是不是我关心的那类」
+    pub sample: String,
+}
+
+/// 聚合最近 2 万行：按「模块 + 动作 + 结果 + 级别」分组，按发生次数排序。
+pub fn stats(filter: &LogFilter) -> Result<Vec<LogStat>> {
+    let path = logs_dir().join("app.jsonl");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(crate::app::error::AppError::new(
+                ErrorKind::Io,
+                format!("读取日志失败：{}（{e}）", path.display()),
+            ))
+        }
+    };
+
+    let mut groups: std::collections::HashMap<(String, String, String, String), LogStat> =
+        std::collections::HashMap::new();
+    for raw in text.lines().rev().take(20_000) {
+        let Ok(line) = serde_json::from_str::<Line>(raw) else {
+            continue;
+        };
+        if !matches_filter(&line, filter) {
+            continue;
+        }
+        let key = (
+            line.module.clone(),
+            line.action.clone().unwrap_or_default(),
+            line.outcome.clone().unwrap_or_default(),
+            line.level.as_str().to_string(),
+        );
+        let entry = groups.entry(key).or_insert_with(|| LogStat {
+            module: line.module.clone(),
+            action: line.action.clone(),
+            outcome: line.outcome.clone(),
+            level: line.level.as_str().to_string(),
+            rows: 0,
+            occurrences: 0,
+            first_ts: line.ts.clone(),
+            last_ts: line.ts.clone(),
+            sample: line.message.clone(),
+        });
+        entry.rows += 1;
+        entry.occurrences += u64::from(line.repeat.unwrap_or(1));
+        if line.ts < entry.first_ts {
+            entry.first_ts = line.ts.clone();
+        }
+        if line.ts > entry.last_ts {
+            entry.last_ts = line.ts.clone();
+        }
+    }
+
+    let mut out: Vec<LogStat> = groups.into_values().collect();
+    // 发生次数优先，其次看最近一次：刚出问题的排前面
+    out.sort_by(|a, b| {
+        b.occurrences
+            .cmp(&a.occurrences)
+            .then_with(|| b.last_ts.cmp(&a.last_ts))
+    });
+    out.truncate(100);
+    Ok(out)
+}
+
 fn matches_filter(line: &Line, filter: &LogFilter) -> bool {
     if let Some(level) = filter.level.as_deref().filter(|s| !s.is_empty()) {
         if line.level.as_str() != level {
+            return false;
+        }
+    }
+    if let Some(min) = filter.min_level {
+        if line.level < min {
             return false;
         }
     }
@@ -568,6 +936,35 @@ fn matches_filter(line: &Line, filter: &LogFilter) -> bool {
         if !line.module.contains(module) {
             return false;
         }
+    }
+    if let Some(subject) = filter.subject.as_deref().filter(|s| !s.is_empty()) {
+        if !line
+            .subject
+            .as_deref()
+            .unwrap_or_default()
+            .contains(subject)
+        {
+            return false;
+        }
+    }
+    if filter.action_only.unwrap_or(false) && !line.is_action() {
+        return false;
+    }
+    if filter.hide_legacy.unwrap_or(false) && line.is_legacy_read() {
+        return false;
+    }
+    if let Some(outcome) = filter.outcome.as_deref().filter(|s| !s.is_empty()) {
+        if line.effective_outcome() != Some(outcome) {
+            return false;
+        }
+    }
+    if let Some(trigger) = filter.trigger.as_deref().filter(|s| !s.is_empty()) {
+        if line.trigger.as_deref() != Some(trigger) {
+            return false;
+        }
+    }
+    if !in_time_range(line, filter) {
+        return false;
     }
     if let Some(keyword) = filter.keyword.as_deref().filter(|s| !s.is_empty()) {
         // 关键词要能搜到证据里：报错原文（`HTTP 401`、`os error 5`）常常只存在
@@ -586,6 +983,32 @@ fn matches_filter(line: &Line, filter: &LogFilter) -> bool {
         if !hit {
             return false;
         }
+    }
+    true
+}
+
+fn in_time_range(line: &Line, filter: &LogFilter) -> bool {
+    let from = filter
+        .from
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    let to = filter
+        .to
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    if from.is_none() && to.is_none() {
+        return true;
+    }
+    let Some(ts) = chrono::DateTime::parse_from_rfc3339(&line.ts).ok() else {
+        return false;
+    };
+    if from.is_some_and(|bound| ts < bound) {
+        return false;
+    }
+    if to.is_some_and(|bound| ts > bound) {
+        return false;
     }
     true
 }
@@ -705,6 +1128,45 @@ mod tests {
             json.trim_start().starts_with('{'),
             "jsonl 每行必须是 JSON 对象"
         );
+        assert!(
+            json.contains("\"schema\":1"),
+            "机器消费方必须先看到协议版本：{json}"
+        );
+    }
+
+    /// 清空日志：当前两份归零、历史轮转删除，不碰其他文件。
+    #[test]
+    fn clear_truncates_current_and_removes_rotated_logs() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Debug, dir.path()).unwrap();
+        log(Level::Info, "测试", "清空前");
+        std::fs::write(dir.path().join("app.log.1"), "old").unwrap();
+        clear().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("app.log")).unwrap(),
+            ""
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("app.jsonl")).unwrap(),
+            ""
+        );
+        assert!(!dir.path().join("app.log.1").exists());
+
+        log(Level::Info, "测试", "清空后仍可写");
+        assert!(std::fs::read_to_string(dir.path().join("app.jsonl"))
+            .unwrap()
+            .contains("清空后仍可写"));
+    }
+
+    /// 老日志行没有 schema 字段，不能因为加字段就读不出来。
+    #[test]
+    fn legacy_line_without_schema_reads_as_version_one() {
+        let raw = r#"{"ts":"2026-01-01T00:00:00+08:00","level":"info","module":"sessions","message":"旧行"}"#;
+        let line: Line = serde_json::from_str(raw).expect("旧行必须仍可解析");
+        assert_eq!(line.schema, LOG_SCHEMA_VERSION);
+        assert_eq!(line.message, "旧行");
     }
 
     #[test]
@@ -869,14 +1331,14 @@ mod tests {
 
         ui(
             Level::Error,
-            Some("session_delete"),
-            "删除会话失败（session_delete）",
+            Some("session_purge"),
+            "彻底删除会话失败（session_purge）",
             Some("kind=client_running · 原文=请先关闭 WorkBuddy 客户端"),
         );
 
         let text = std::fs::read_to_string(dir.path().join("app.log")).unwrap();
         assert!(
-            text.contains("session_delete[user] fail"),
+            text.contains("session_purge[user] fail"),
             "抬头要能看出是哪个命令挂的：{text}"
         );
         assert!(
@@ -918,5 +1380,255 @@ mod tests {
             "错误要说清是读失败：{}",
             err.message
         );
+    }
+
+    #[test]
+    fn unified_action_and_log_filters() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Debug, dir.path()).unwrap();
+
+        // 日志 sink 是进程级的：别的模块的用例也在写日志，可能落进这个临时目录。
+        // 每条都带上本用例专属标记，查询时一并筛掉外来行，计数才是确定的。
+        let tag = "log-filter-case";
+        let mark = |text: &str| format!("{text} {tag}");
+
+        log(Level::Info, "sessions", mark("普通日志"));
+        log(Level::Warn, "sessions", mark("警告日志"));
+        // 旧版只读命令留下的动作行，默认仍在全量视图，执行视图要隐藏
+        action("ui_ready", "user", true, 1, mark("界面就绪"));
+        action("account_switch", "user", false, 120, mark("切换登录失败"));
+        item(
+            Item::new("签到", "凌致", Outcome::Skip)
+                .reason(mark("今日已签到"))
+                .ms(30),
+        );
+        fail(
+            "sessions",
+            "session_purge",
+            mark("彻底删除失败"),
+            "os error 17",
+        );
+
+        let action_view = query(&LogFilter {
+            keyword: Some(tag.into()),
+            action_only: Some(true),
+            hide_legacy: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(action_view.len(), 2, "动作视图只保留真实动作与逐项记录");
+        assert!(action_view
+            .iter()
+            .all(|line| line.module == "action" && line.action.is_some()));
+
+        let failed = query(&LogFilter {
+            keyword: Some(tag.into()),
+            action_only: Some(true),
+            hide_legacy: Some(true),
+            outcome: Some("fail".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].action.as_deref(), Some("account_switch"));
+
+        let skipped = query(&LogFilter {
+            keyword: Some(tag.into()),
+            action_only: Some(true),
+            outcome: Some("skip".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].subject.as_deref(), Some("凌致"));
+
+        let scheduled = query(&LogFilter {
+            keyword: Some(tag.into()),
+            action_only: Some(true),
+            trigger: Some("schedule".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(scheduled.is_empty(), "逐项记录不单独标触发方");
+
+        // 只看异常要一次覆盖 warn + error，而不是只筛一个级别
+        let warn_plus = query(&LogFilter {
+            keyword: Some(tag.into()),
+            min_level: Some(Level::Warn),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(warn_plus.len(), 3, "警告日志 + 失败动作 + 失败日志");
+
+        let by_subject = query(&LogFilter {
+            keyword: Some(tag.into()),
+            subject: Some("凌致".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(by_subject.len(), 1);
+
+        let future = query(&LogFilter {
+            keyword: Some(tag.into()),
+            from: Some("2099-01-01T00:00:00+08:00".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(future.is_empty(), "时间下界应过滤掉历史行");
+    }
+
+    fn info_line(module: &str, message: &str) -> Line {
+        Line {
+            schema: LOG_SCHEMA_VERSION,
+            ts: Local::now().to_rfc3339(),
+            level: Level::Info,
+            module: module.into(),
+            message: message.into(),
+            action: None,
+            trigger: None,
+            ok: None,
+            ms: None,
+            subject: None,
+            step: None,
+            evidence: None,
+            outcome: None,
+            attempts: None,
+            batch: None,
+            repeat: None,
+            last_ts: None,
+        }
+    }
+
+    /// 连续重复的同一行只留首行 + 一条带次数的汇总，不再逐条刷屏。
+    #[test]
+    fn repeated_lines_collapse_into_one_counted_summary() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Info, dir.path()).unwrap();
+        // 模块名当隔离标记：sink 是进程级的，别的用例可能同时写日志
+        let case = "repeat-case";
+        for _ in 0..5 {
+            log(Level::Info, case, "前端已就绪");
+        }
+        // 换一条内容：上一串的汇总在这时补写，不必等进程退出
+        log(Level::Info, case, "启动体检");
+
+        let rows = query(&LogFilter {
+            module: Some(case.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(rows.len(), 3, "首行 + 汇总 + 新行：{rows:?}");
+        assert_eq!(rows[0].message, "前端已就绪");
+        assert_eq!(rows[0].repeat, None, "首行实时写出，不带次数");
+        assert_eq!(rows[1].message, "前端已就绪");
+        assert_eq!(rows[1].repeat, Some(5), "汇总要保留总次数");
+        assert!(rows[1].last_ts.is_some(), "汇总要能说出最近一次发生时间");
+        assert_ne!(rows[0].ts, rows[1].ts, "汇总要落在最后一次的位置");
+        assert_eq!(rows[2].message, "启动体检");
+    }
+
+    /// 内容不同就不合并：A/B/A 是三次独立事件。
+    #[test]
+    fn different_messages_are_never_merged() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Info, dir.path()).unwrap();
+        let case = "diff-case";
+        log(Level::Info, case, "A");
+        log(Level::Info, case, "B");
+        log(Level::Info, case, "A");
+
+        let rows = query(&LogFilter {
+            module: Some(case.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|line| line.repeat.is_none()));
+    }
+
+    /// 异常也参与合并，但级别与证据必须保留：合并 ≠ 静默丢弃。
+    #[test]
+    fn repeated_errors_keep_level_and_evidence_with_count() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Info, dir.path()).unwrap();
+        let case = "error-case";
+        for _ in 0..3 {
+            fail(
+                case,
+                "credit_claim_read",
+                "读取积分领取记录失败",
+                "code=500",
+            );
+        }
+        flush();
+
+        let rows = query(&LogFilter {
+            module: Some(case.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(rows.len(), 2, "首条 + 汇总：{rows:?}");
+        let summary = &rows[1];
+        assert_eq!(summary.level, Level::Error, "合并后仍是错误级");
+        assert_eq!(summary.evidence.as_deref(), Some("code=500"), "证据不能丢");
+        assert_eq!(summary.repeat, Some(3), "必须保留发生次数");
+    }
+
+    /// 窗口过期后重新计数：同一句话隔很久再出现，是两次事件，不能并成一条。
+    #[test]
+    fn expired_window_starts_a_new_streak() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Info, dir.path()).unwrap();
+        let case = "window-case";
+        write_with(info_line(case, "定时轮询"), std::time::Duration::ZERO);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        write_with(info_line(case, "定时轮询"), std::time::Duration::ZERO);
+
+        let rows = query(&LogFilter {
+            module: Some(case.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(rows.len(), 2, "窗口外不合并：{rows:?}");
+        assert!(rows.iter().all(|line| line.repeat.is_none()));
+    }
+
+    /// 合并计数必须能主动落盘：否则进程退出前的最后一串就只剩首行。
+    #[test]
+    fn flush_writes_the_pending_count() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Info, dir.path()).unwrap();
+        let case = "flush-case";
+        log(Level::Info, case, "重载界面");
+        log(Level::Info, case, "重载界面");
+        flush();
+
+        let rows = query(&LogFilter {
+            module: Some(case.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].repeat, Some(2));
+    }
+
+    /// 合并行在 app.log 里也要说清次数，人读的那份不能只剩一句话。
+    #[test]
+    fn repeat_suffix_is_rendered_for_humans() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Info, dir.path()).unwrap();
+        log(Level::Info, "ui", "心跳");
+        log(Level::Info, "ui", "心跳");
+        flush();
+
+        let text = std::fs::read_to_string(dir.path().join("app.log")).unwrap();
+        assert!(text.contains("重复 2 次"), "人读文本要带次数：{text}");
     }
 }

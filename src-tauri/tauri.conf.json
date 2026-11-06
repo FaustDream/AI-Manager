@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AI Manager",
-  "version": "1.8.2",
+  "version": "1.9.0",
   "identifier": "com.faustdream.aimanager",
   "build": {
     "frontendDist": "../dist",
@@ -33,7 +33,7 @@
     "publisher": "FaustDream",
     "copyright": "© 2026 FaustDream",
     "shortDescription": "签到 / 会话 / 技能分发一体化桌面工作台",
-    "longDescription": "把三家 AI 编程平台的每日签到与本地会话库管理合并到一个界面：账号与登录态切换、积分台账、会话浏览与删除、技能与 MCP 分发、日志与维护。",
+    "longDescription": "把五家 AI 编程平台（Qoder、WorkBuddy、ZCode、Trae、CodeBuddy）的每日签到与本地会话库管理合并到一个界面：账号与登录态切换、积分台账、会话浏览与删除、技能与 MCP 分发、日志与维护。",
     "category": "DeveloperTool",
     "windows": {
       "nsis": {

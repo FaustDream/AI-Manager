@@ -16,6 +16,60 @@ use rusqlite::OptionalExtension;
 
 pub const KEEP_CHECKIN_DAYS: i64 = 3;
 pub const KEEP_SNAPSHOT_DAYS: i64 = 60;
+const CLAIM_HISTORY_LIMIT: usize = 100;
+
+/// 只记本工具收到明确领取成功的事件；余额快照和旧批次不能补成领取历史。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CreditClaim {
+    pub event_key: String,
+    pub source: String,
+    pub amount: Option<f64>,
+    pub description: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub claimed_at: i64,
+}
+
+/// 领取记录写入成功后的实时通道：界面收到就重取详情面板，不用等下一次轮询。
+/// 没人订阅时发送直接丢弃，落库不受它影响。
+static CLAIM_LIVE: std::sync::OnceLock<tokio::sync::broadcast::Sender<String>> =
+    std::sync::OnceLock::new();
+
+/// 订阅「有新领取记录」的通知，载荷是账号 iid。
+/// 去重命中（同一笔重复上报）不推，避免界面无意义刷新。
+pub fn subscribe_claims() -> tokio::sync::broadcast::Receiver<String> {
+    let (tx, rx) = tokio::sync::broadcast::channel(64);
+    match CLAIM_LIVE.set(tx) {
+        Ok(()) => rx,
+        Err(existing) => existing.subscribe(),
+    }
+}
+
+fn publish_claim(iid: &str) {
+    if let Some(tx) = CLAIM_LIVE.get() {
+        let _ = tx.send(iid.to_string());
+    }
+}
+
+/// 平台已发放的事实不能因本地落库失败反转为失败，也不能诱导用户重复领取。
+pub async fn record_claim(db: std::sync::Arc<Db>, iid: &str, claim: CreditClaim) {
+    let iid = iid.to_string();
+    let notify = iid.clone();
+    match crate::app::runtime::blocking(move || SqliteCheckin::new(&db).insert_claim(&iid, &claim))
+        .await
+    {
+        // 只有真正插入了新行才推：重复上报不该让面板白刷一次
+        Ok(Ok(true)) => publish_claim(&notify),
+        Ok(Ok(false)) => {}
+        Ok(Err(e)) | Err(e) => crate::app::log::fail(
+            "checkin",
+            "credit_claim_record",
+            "写入积分领取记录失败",
+            e.evidence(),
+        ),
+    }
+}
 
 pub struct SqliteCheckin<'a> {
     db: &'a Db,
@@ -26,8 +80,130 @@ impl<'a> SqliteCheckin<'a> {
         Self { db }
     }
 
+    pub fn insert_claim(&self, iid: &str, claim: &CreditClaim) -> Result<bool> {
+        self.db.write(|conn| {
+            let rows = conn.execute(
+                "INSERT INTO credit_claims(iid, event_key, source, amount, description, claimed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(iid, event_key) DO NOTHING",
+                rusqlite::params![
+                    iid,
+                    claim.event_key,
+                    claim.source,
+                    claim.amount,
+                    claim.description,
+                    claim.claimed_at,
+                ],
+            )?;
+            Ok(rows > 0)
+        })
+    }
+
+    pub fn claims(&self, iid: &str) -> Result<Vec<CreditClaim>> {
+        self.db.read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT event_key, source, amount, description, claimed_at FROM credit_claims
+                 WHERE iid = ?1 ORDER BY claimed_at DESC, event_key DESC LIMIT ?2",
+            )?;
+            let rows =
+                stmt.query_map(rusqlite::params![iid, CLAIM_HISTORY_LIMIT as i64], |row| {
+                    Ok(CreditClaim {
+                        event_key: row.get(0)?,
+                        source: row.get(1)?,
+                        amount: row.get(2)?,
+                        description: row.get(3)?,
+                        claimed_at: row.get(4)?,
+                    })
+                })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Into::into)
+        })
+    }
+
     fn next_at_key(iid: &str) -> String {
         format!("next_at:{iid}")
+    }
+
+    /// 全部账号的最近领取（跨账号，按时间倒序）。
+    ///
+    /// 仪表盘只关心「最近发生了什么」，不按账号分组；单个账号的历史仍走 `claims`。
+    pub fn recent_claims(&self, limit: usize) -> Result<Vec<(String, CreditClaim)>> {
+        self.db.read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT iid, event_key, source, amount, description, claimed_at FROM credit_claims
+                 ORDER BY claimed_at DESC, event_key DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map([limit.min(CLAIM_HISTORY_LIMIT) as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    CreditClaim {
+                        event_key: row.get(1)?,
+                        source: row.get(2)?,
+                        amount: row.get(3)?,
+                        description: row.get(4)?,
+                        claimed_at: row.get(5)?,
+                    },
+                ))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Into::into)
+        })
+    }
+
+    /// 每日余额明细（date, iid, balance）。收支视图要**按账号**算日增量：
+    /// 先跨账号求和再算差值，会把「A 号赚 100、B 号花 100」算成没变化。
+    pub fn balance_rows(&self, since: &str) -> Result<Vec<(String, String, f64)>> {
+        self.db.read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT date, iid, balance FROM credit_snapshots
+                 WHERE date >= ?1 ORDER BY iid, date",
+            )?;
+            let rows = stmt.query_map([since], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Into::into)
+        })
+    }
+
+    /// 每日余额序列（`date` 升序）。不传 `iid` 时按天汇总全部账号。
+    ///
+    /// 只读 `credit_snapshots`：这是每天刷新时顺手记下的余额，不额外打接口。
+    pub fn snapshot_series(&self, iid: Option<&str>, since: &str) -> Result<Vec<(String, f64)>> {
+        self.db.read(|conn| {
+            let mut out = Vec::new();
+            match iid {
+                Some(iid) => {
+                    let mut stmt = conn.prepare(
+                        "SELECT date, balance FROM credit_snapshots
+                         WHERE iid = ?1 AND date >= ?2 ORDER BY date",
+                    )?;
+                    let rows = stmt.query_map(rusqlite::params![iid, since], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+                    })?;
+                    for row in rows {
+                        out.push(row?);
+                    }
+                }
+                None => {
+                    let mut stmt = conn.prepare(
+                        "SELECT date, SUM(balance) FROM credit_snapshots
+                         WHERE date >= ?1 GROUP BY date ORDER BY date",
+                    )?;
+                    let rows = stmt.query_map([since], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+                    })?;
+                    for row in rows {
+                        out.push(row?);
+                    }
+                }
+            }
+            Ok(out)
+        })
     }
 
     /// 「今天没签」的结论缓存。`daily_marks` 只记签过的，未签没有落点，
@@ -70,6 +246,16 @@ impl<'a> SqliteCheckin<'a> {
             )?;
             removed += conn.execute("DELETE FROM daily_marks WHERE date <> ?1", [&today])?;
             Ok(removed)
+        })
+    }
+
+    pub fn clear_today_mark(&self, iid: &str, clock: &dyn Clock) -> Result<()> {
+        self.db.write(|conn| {
+            conn.execute(
+                "DELETE FROM daily_marks WHERE iid = ?1 AND date = ?2",
+                rusqlite::params![iid, day_of(clock)],
+            )?;
+            Ok(())
         })
     }
 
@@ -474,6 +660,107 @@ mod tests {
     use crate::app::accounts::{repo, AccountIdentity};
     use crate::app::clock::FakeClock;
     use crate::types::CreditLot;
+
+    fn claim(key: &str, at: i64) -> CreditClaim {
+        CreditClaim {
+            event_key: key.into(),
+            source: "activity".into(),
+            amount: None,
+            description: "测试活动".into(),
+            claimed_at: at,
+        }
+    }
+
+    #[test]
+    fn credit_claims_deduplicate_without_rewriting_and_isolate_iid() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("app.db");
+        let db = Db::open_at(&path).unwrap();
+        let store = SqliteCheckin::new(&db);
+        let first = claim("activity:plan:123", 100);
+        assert!(store.insert_claim("zcode:u1", &first).unwrap());
+        let mut replay = first.clone();
+        replay.amount = Some(99.0);
+        replay.claimed_at = 200;
+        assert!(!store.insert_claim("zcode:u1", &replay).unwrap());
+        assert!(store.insert_claim("zcode:u2", &replay).unwrap());
+        assert_eq!(store.claims("zcode:u1").unwrap(), vec![first.clone()]);
+        assert_eq!(store.claims("zcode:u2").unwrap(), vec![replay]);
+        assert!(store.claims("zcode:missing").unwrap().is_empty());
+        drop(db);
+        let reopened = Db::open_at(&path).unwrap();
+        assert_eq!(reopened.schema_version().unwrap(), 2);
+        assert_eq!(
+            SqliteCheckin::new(&reopened).claims("zcode:u1").unwrap(),
+            vec![first]
+        );
+    }
+
+    #[test]
+    fn recorded_claim_notifies_subscribers_once() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = std::sync::Arc::new(Db::open_at(&dir.path().join("app.db")).unwrap());
+        let mut rx = subscribe_claims();
+        // 用不会与其它用例撞车的 iid：通道是进程级的，并发用例可能同时发事件
+        let iid = "claim-live-test:u1";
+        crate::app::runtime::runtime().block_on(async {
+            record_claim(db.clone(), iid, claim("checkin:1", 100)).await;
+            // 同一笔重复上报（去重命中）不该再推，否则面板会被无意义刷新
+            record_claim(db.clone(), iid, claim("checkin:1", 100)).await;
+        });
+        let mut hits = 0;
+        while let Ok(seen) = rx.try_recv() {
+            if seen == iid {
+                hits += 1;
+            }
+        }
+        assert_eq!(hits, 1, "一笔新记录只推一次，去重命中不推");
+    }
+
+    #[test]
+    fn credit_claims_return_latest_100_with_stable_time_order() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let store = SqliteCheckin::new(&db);
+        for at in (1..=105).rev() {
+            store
+                .insert_claim("zcode:u1", &claim(&format!("event:{at:03}"), at))
+                .unwrap();
+        }
+        store
+            .insert_claim("zcode:u1", &claim("event:tie", 105))
+            .unwrap();
+        let rows = store.claims("zcode:u1").unwrap();
+        assert_eq!(rows.len(), 100);
+        assert_eq!(rows[0].event_key, "event:tie");
+        assert_eq!(rows[1].event_key, "event:105");
+        assert_eq!(rows.last().unwrap().claimed_at, 7);
+        assert!(rows
+            .windows(2)
+            .all(|pair| pair[0].claimed_at >= pair[1].claimed_at));
+        assert_eq!(store.claims("zcode:u1").unwrap(), rows);
+    }
+
+    #[test]
+    fn credit_claims_do_not_backfill_from_marks_lots_or_balance() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("app.db");
+        let db = Db::open_at(&path).unwrap();
+        let clock = FakeClock::at("2026-11-02T09:00:00+08:00");
+        let store = SqliteCheckin::new(&db);
+        store.mark_today("trae:u1", &clock).unwrap();
+        store.note_balance("trae:u1", 100.0, &clock).unwrap();
+        SqliteLedger::new(&db)
+            .record("trae:u1", 10.0, None, None, &clock)
+            .unwrap();
+        drop(db);
+        let reopened = Db::open_at(&path).unwrap();
+        assert!(SqliteCheckin::new(&reopened)
+            .claims("trae:u1")
+            .unwrap()
+            .is_empty());
+        assert_eq!(SqliteLedger::new(&reopened).count("trae:u1"), 1);
+    }
 
     fn identity(iid: &str, platform: &str) -> AccountIdentity {
         AccountIdentity {

@@ -1,11 +1,10 @@
 [package]
 name = "ai-manager"
-version = "1.8.2"
+version = "1.9.0"
 edition = "2021"
 description = "AI Manager：签到 / 会话 / 技能分发一体化桌面工作台"
 
-# P0 阶段刻意不引入 tauri：本阶段只做契约测试与注入点，
-# tauri / reqwest / aes-gcm / windows 在 P1~P2 按需加入，避免一开始就背上编译负担。
+# 依赖按能力收敛：只保留账号、签到、会话、技能四条业务链真正用到的组件。
 [lib]
 name = "ai_manager"
 path = "src/lib.rs"
@@ -28,7 +27,7 @@ cbc = "0.1"
 getrandom = "0.2"
 # 只开用得到的特性：tray-icon 托盘、wry 默认 webview；不开 devtools 之外的花哨能力
 tauri = { version = "2", features = ["tray-icon"] }
-# 签到 / 积分的唯一网络库（ARCHITECTURE-v2 §4）；Windows 上 native-tls = schannel，
+# 签到 / 积分的唯一网络库；Windows 上 native-tls = schannel，
 # 不引入 OpenSSL、也不用 rustls（那套会多背 1MB 以上）
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
@@ -46,12 +45,12 @@ windows = { version = "0.58", features = [
     "Win32_Storage_FileSystem",         # MoveFileExW：替换登录票据不留中间态
     "Win32_UI_WindowsAndMessaging",     # FindWindowW / SetForegroundWindow：二次启动唤出已有窗口
     "Win32_UI_Shell",                   # ShellExecuteW：用默认浏览器打开登录页
-    "Win32_System_ProcessStatus",       # GetProcessMemoryInfo：内存验收（TASK-CONCURRENCY §9）
 ] }
-# D8 类型同步：仅 ts feature 下编译，默认构建 / release 产物不含它（ARCHITECTURE §6.4）。
+# D8 类型同步：仅 ts feature 下编译，默认构建 / release 产物不含它。
 # cargo test --features ts 时把全部 IPC 载荷类型生成到 ../src/lib/types/，
 # CI 里用 git status 校验「生成物 = 提交物」。用 v8：i64 生成 number（v10 起改成 bigint）。
 ts-rs = { version = "8", optional = true, features = ["serde-compat", "chrono-impl", "no-serde-warnings"] }
+tauri-plugin-notification = "2.8.0"
 
 [features]
 ts = ["dep:ts-rs"]
@@ -66,7 +65,7 @@ tempfile = "3"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-# 见 ARCHITECTURE-v2.md D7：单进程架构下 abort 会杀掉整个进程，绝不能配。
+# 单进程架构下 abort 会杀掉整个进程，绝不能配。
 [profile.release]
 panic = "unwind"
 opt-level = "s"

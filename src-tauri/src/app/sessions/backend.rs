@@ -1,25 +1,16 @@
-// 平台会话库的适配器接缝（架构评审 C2）：删除 / 恢复 / 预览三个动作按 kind
+// 平台会话库的适配器接缝（架构评审 C2）：彻底删除 / 预览两个动作按 kind
 // 分派的唯一分支点，平台显示名也收在这里。各平台实现仍在 delete.rs / preview.rs
-// （写前 checkpoint、正文导出等纪律在那里），本文件只收敛分派——
-// 新增平台 = 加一个实现块，不再同步 3-4 处 match。
+// （写前 checkpoint、正文清理等纪律在那里），本文件只收敛分派——
+// 新增平台 = 加一个实现块，不再同步多处 match。
 
 use crate::app::clients::Roots;
 use crate::app::error::Result;
 use crate::app::sessions::delete;
 use crate::app::sessions::preview::{self, Preview, Target};
-use crate::app::sessions::trash::Item;
-use std::path::Path;
 
 pub(crate) trait SessionBackend {
-    fn delete(
-        &self,
-        roots: &Roots,
-        target: &Target,
-        batch: &Path,
-        title: &str,
-        partials: &mut Vec<Item>,
-    ) -> Result<Item>;
-    fn restore(&self, roots: &Roots, dir: &Path, item: &Item) -> Result<()>;
+    /// 永久删除：返回（删除的文件数, 释放的字节数）。失败必须让调用方记进报告。
+    fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)>;
     fn load_preview(&self, roots: &Roots, target: &Target) -> Preview;
 }
 
@@ -34,18 +25,8 @@ static QODER: Qoder = Qoder;
 static ZCODE: Zcode = Zcode;
 
 impl SessionBackend for Workbuddy {
-    fn delete(
-        &self,
-        roots: &Roots,
-        target: &Target,
-        batch: &Path,
-        title: &str,
-        partials: &mut Vec<Item>,
-    ) -> Result<Item> {
-        delete::delete_workbuddy(roots, target, batch, title, partials)
-    }
-    fn restore(&self, roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
-        delete::restore_workbuddy(roots, dir, item)
+    fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)> {
+        delete::purge_workbuddy(roots, target)
     }
     fn load_preview(&self, roots: &Roots, target: &Target) -> Preview {
         preview::load_workbuddy(roots, target)
@@ -53,18 +34,8 @@ impl SessionBackend for Workbuddy {
 }
 
 impl SessionBackend for Codebuddy {
-    fn delete(
-        &self,
-        roots: &Roots,
-        target: &Target,
-        batch: &Path,
-        title: &str,
-        partials: &mut Vec<Item>,
-    ) -> Result<Item> {
-        delete::delete_codebuddy(roots, target, batch, title, partials)
-    }
-    fn restore(&self, roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
-        delete::restore_codebuddy(roots, dir, item)
+    fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)> {
+        delete::purge_codebuddy(roots, target)
     }
     fn load_preview(&self, roots: &Roots, target: &Target) -> Preview {
         preview::load_codebuddy(roots, target)
@@ -72,18 +43,8 @@ impl SessionBackend for Codebuddy {
 }
 
 impl SessionBackend for Qoder {
-    fn delete(
-        &self,
-        roots: &Roots,
-        target: &Target,
-        batch: &Path,
-        title: &str,
-        partials: &mut Vec<Item>,
-    ) -> Result<Item> {
-        delete::delete_sqlite(roots, target, batch, title, "qoder", partials)
-    }
-    fn restore(&self, roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
-        delete::restore_sqlite(roots, dir, item, "qoder")
+    fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)> {
+        delete::purge_sqlite(roots, target, "qoder")
     }
     fn load_preview(&self, roots: &Roots, target: &Target) -> Preview {
         preview::load_qoder(roots, target)
@@ -91,18 +52,8 @@ impl SessionBackend for Qoder {
 }
 
 impl SessionBackend for Zcode {
-    fn delete(
-        &self,
-        roots: &Roots,
-        target: &Target,
-        batch: &Path,
-        title: &str,
-        partials: &mut Vec<Item>,
-    ) -> Result<Item> {
-        delete::delete_sqlite(roots, target, batch, title, "zcode", partials)
-    }
-    fn restore(&self, roots: &Roots, dir: &Path, item: &Item) -> Result<()> {
-        delete::restore_sqlite(roots, dir, item, "zcode")
+    fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)> {
+        delete::purge_sqlite(roots, target, "zcode")
     }
     fn load_preview(&self, roots: &Roots, target: &Target) -> Preview {
         preview::load_zcode(roots, target)

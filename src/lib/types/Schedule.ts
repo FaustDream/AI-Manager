@@ -2,7 +2,11 @@
 import type { RuleKind } from "./RuleKind";
 import type { ScheduleAction } from "./ScheduleAction";
 
-export type Schedule = { id: string, name: string, action: ScheduleAction, kind: RuleKind, 
+export type Schedule = { id: string, name: string, action: ScheduleAction, 
+/**
+ * None 保留原来的全账号任务；Some 只执行这个账号的旅行。
+ */
+account_iid: string | null, kind: RuleKind, 
 /**
  * `kind = daily` 时的触发时刻，`HH:mm`
  */
@@ -14,4 +18,8 @@ hours: number | null, enabled: boolean,
 /**
  * 上次真正跑起来的时刻（RFC3339）。`every` 用它推下一次，也用来判「今天跑过没」
  */
-last_run: string | null, };
+last_run: string | null, 
+/**
+ * 首次间隔的固定锚点；与真实执行记录分开，升级旧规则时补齐。
+ */
+created_at: string | null, };

@@ -17,7 +17,7 @@ pub async fn log_query(
         .map_err(err_text)
 }
 
-/// 记录一次用户动作（执行记录）。前端命令面在每次调用后回传结果。
+/// 记录一次用户动作（日志页的「执行动作」视图）。前端命令面在每次调用后回传结果。
 ///
 /// 走独立命令而不是让每个业务命令自己写日志：命令有几十条，只有前端知道
 /// 「用户点了什么、参数是什么、等了多久」，后端各写各的必然漏。
@@ -36,7 +36,7 @@ pub fn log_action(
 
 /// 界面侧的日志：读失败、前端异常、命令报错都走这里。
 ///
-/// **不进执行记录**（读不是「动作」），但必须留痕且必须带证据：界面上只剩一句
+/// **不进执行动作视图**（读不是「动作」），但必须留痕且必须带证据：界面上只剩一句
 /// toast 时，`evidence` 里的错误原文是唯一能定位问题的东西。
 #[tauri::command]
 
@@ -53,6 +53,12 @@ pub fn log_ui(
         evidence.as_deref(),
     );
     Ok(())
+}
+
+/// 清空当前日志与历史轮转文件；只动 `data/logs/`，不碰其他数据。
+#[tauri::command]
+pub fn log_clear() -> std::result::Result<(), String> {
+    crate::app::log::clear().map_err(err_text)
 }
 
 /// 导出日志到文件；不给路径就落到 `data/logs/export-<时间戳>.txt`。
@@ -76,4 +82,17 @@ pub async fn log_export(
         .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
         .map_err(err_text)?;
     Ok(format!("已导出 {count} 行到 {shown}"))
+}
+
+/// 日志聚合：按「模块 + 动作 + 结果 + 级别」统计最近 2 万行。
+/// 回答「哪一类在反复出问题」，而不是让人在几千行里数同一个错误。
+#[tauri::command]
+
+pub async fn log_stats(
+    filter: crate::app::log::LogFilter,
+) -> std::result::Result<Vec<crate::app::log::LogStat>, String> {
+    crate::app::runtime::blocking(move || crate::app::log::stats(&filter))
+        .await
+        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+        .map_err(err_text)
 }

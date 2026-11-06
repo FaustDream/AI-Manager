@@ -77,6 +77,16 @@ impl Credential {
         self.meta.get(key).filter(|v| !v.is_null())
     }
 
+    /// 账号自己的 UA（扫描/登录时随凭据一起保存）。
+    /// 旧凭据没有这个字段，调用方传平台常量即可，行为不变。
+    pub fn user_agent(&self, fallback: &str) -> String {
+        self.meta_str("ua")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(fallback)
+            .to_string()
+    }
+
     pub fn put(&mut self, key: &str, value: impl Into<Value>) {
         self.meta.insert(key.to_string(), value.into());
     }
@@ -164,5 +174,17 @@ mod tests {
         let mut cred = Credential::default();
         cred.put("region", json!("cn"));
         assert_eq!(cred.meta_str("region"), Some("cn"));
+    }
+
+    #[test]
+    fn user_agent_prefers_saved_value_and_falls_back() {
+        let mut cred = Credential::default();
+        assert_eq!(cred.user_agent("const"), "const", "旧凭据没有 ua 时用常量");
+
+        cred.put("ua", json!("Mozilla/5.0 Account/1.0"));
+        assert_eq!(cred.user_agent("const"), "Mozilla/5.0 Account/1.0");
+
+        cred.put("ua", json!("  "));
+        assert_eq!(cred.user_agent("const"), "const", "空白 ua 视为未保存");
     }
 }

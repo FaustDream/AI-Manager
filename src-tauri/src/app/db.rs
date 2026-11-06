@@ -9,7 +9,7 @@ use crate::app::paths;
 use rusqlite::Connection;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 pub struct Db {
     write: Mutex<Connection>,
@@ -51,8 +51,7 @@ impl Db {
                      migrated_from TEXT,
                      migrated_at   INTEGER
                  );
-                 -- 业务表在 P1 一次建齐：v1 导入器必须有落点。
-                 -- 后续阶段只准「加列/加表」并升级 SCHEMA_VERSION，不准重建。
+                 -- 新版本直接建齐；不兼容旧 schema，也不再做旧库迁移。
                  CREATE TABLE IF NOT EXISTS accounts (
                      iid              TEXT PRIMARY KEY,
                      platform         TEXT NOT NULL,
@@ -64,6 +63,10 @@ impl Db {
                      requires_checkin INTEGER NOT NULL DEFAULT 1,
                      meta_keys        TEXT NOT NULL DEFAULT '[]',
                      secret_blob      BLOB,
+                     enabled          INTEGER NOT NULL DEFAULT 1,
+                     last_ok_at       INTEGER,
+                     last_fail_at     INTEGER,
+                     last_fail_kind   TEXT,
                      sort_order       INTEGER NOT NULL DEFAULT 0,
                      created_at       INTEGER NOT NULL,
                      updated_at       INTEGER NOT NULL
@@ -86,6 +89,32 @@ impl Db {
                      granted_at INTEGER,
                      lot_key    TEXT NOT NULL UNIQUE
                  );
+                 CREATE TABLE IF NOT EXISTS credit_claims (
+                     iid         TEXT NOT NULL,
+                     event_key   TEXT NOT NULL,
+                     source      TEXT NOT NULL,
+                     amount      REAL,
+                     description TEXT NOT NULL,
+                     claimed_at  INTEGER NOT NULL,
+                     PRIMARY KEY (iid, event_key)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_credit_claims_recent
+                     ON credit_claims(iid, claimed_at DESC, event_key DESC);
+                 CREATE TABLE IF NOT EXISTS token_usage_records (
+                     record_id         TEXT PRIMARY KEY,
+                     platform          TEXT NOT NULL,
+                     model             TEXT NOT NULL,
+                     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                     completion_tokens INTEGER NOT NULL DEFAULT 0,
+                     total_tokens      INTEGER NOT NULL DEFAULT 0,
+                     credit            REAL,
+                     created_at        INTEGER NOT NULL,
+                     source            TEXT NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_token_usage_time
+                     ON token_usage_records(created_at DESC);
+                 CREATE INDEX IF NOT EXISTS idx_token_usage_model
+                     ON token_usage_records(model);
                  CREATE TABLE IF NOT EXISTS credit_snapshots (
                      iid     TEXT NOT NULL,
                      date    TEXT NOT NULL,
@@ -143,7 +172,8 @@ impl Db {
                     [SCHEMA_VERSION],
                 )?;
             } else {
-                // 上面注释承诺「升级 SCHEMA_VERSION」：版本错配时带病运行比启动期报错糟
+                // 不做旧库迁移：所有环境都已升级到当前版本，版本不一致直接报错，
+                // 避免带着旧结构运行产生难以排查的数据问题。
                 let stored: i64 =
                     conn.query_row("SELECT MAX(version) FROM schema_meta", [], |r| r.get(0))?;
                 if stored != SCHEMA_VERSION as i64 {
@@ -200,32 +230,25 @@ impl Db {
         })
     }
 
+    /// 全部键值对（按 key 排序）。诊断包与配置展示用，调用方自己决定脱敏口径。
+    pub fn kv_entries(&self) -> Result<Vec<(String, String)>> {
+        self.read(|conn| {
+            let mut stmt = conn.prepare("SELECT key, value FROM kv ORDER BY key")?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
     pub fn schema_version(&self) -> Result<u32> {
         self.read(|conn| {
             let version: u32 =
                 conn.query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))?;
             Ok(version)
-        })
-    }
-
-    /// v1 导入的幂等守卫：已导入则拒绝重跑。
-    pub fn migrated_from(&self) -> Result<Option<String>> {
-        self.read(|conn| {
-            let value: Option<String> =
-                conn.query_row("SELECT migrated_from FROM schema_meta LIMIT 1", [], |r| {
-                    r.get(0)
-                })?;
-            Ok(value)
-        })
-    }
-
-    pub fn mark_migrated(&self, from: &str) -> Result<()> {
-        self.write(|conn| {
-            conn.execute(
-                "UPDATE schema_meta SET migrated_from = ?1, migrated_at = ?2",
-                rusqlite::params![from, crate::app::timeutil::now_ms()],
-            )?;
-            Ok(())
         })
     }
 }
@@ -248,6 +271,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn existing_v2_database_gains_empty_claim_history_without_version_change() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("app.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_meta(version INTEGER NOT NULL);
+             INSERT INTO schema_meta(version) VALUES (2);",
+        )
+        .unwrap();
+        drop(conn);
+        let db = Db::open_at(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), 2);
+        assert!(crate::app::checkin::SqliteCheckin::new(&db)
+            .claims("workbuddy:u1")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn kv_roundtrip_and_schema_version() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
@@ -262,14 +304,5 @@ mod tests {
             "kv_set 必须是 upsert"
         );
         assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
-        assert_eq!(db.migrated_from().unwrap(), None);
-    }
-
-    #[test]
-    fn migration_guard_is_idempotent() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
-        db.mark_migrated("v1.4.0").unwrap();
-        assert_eq!(db.migrated_from().unwrap().as_deref(), Some("v1.4.0"));
     }
 }
