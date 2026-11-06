@@ -151,8 +151,10 @@ pub(crate) fn reg_read_raw(root: HKEY, subkey: &str, name: &str) -> Option<Vec<u
 pub(crate) fn reg_read_string(root: HKEY, subkey: &str, name: &str) -> Option<String> {
     let buf = reg_read_raw(root, subkey, name)?;
     let units: Vec<u16> = buf
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|unit| *unit != 0)
         .collect();
     String::from_utf16(&units).ok()
