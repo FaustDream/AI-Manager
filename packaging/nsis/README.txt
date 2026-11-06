@@ -1,4 +1,4 @@
-AI Manager 1.8.2 · 免安装版（Windows x64）
+AI Manager 1.9.0 · 免安装版（Windows x64）
 ==========================================
 
 一、怎么用
@@ -18,12 +18,11 @@ AI Manager 1.8.2 · 免安装版（Windows x64）
     data\logs\             运行日志
     data\backups\          写客户端配置前的自动备份
     data\skills\           技能库
-    data\trash\            会话回收站
+    data\trash\            平台技能移除的回收站
 
 - 换机器 / 备份：整个文件夹拷走即可，账号库跟着走。
-- 从 v1 升级：把本程序放到 v1 目录旁，首次启动后在「设置 → 维护」里点「迁移校验」，
-  三项计数一致再点「归档 v1 文件」。v1 的原始文件不会被删除或移动，另外复制一份到
-  data-v1-archive\<时间戳>\ 作为回退依据。
+- 从 v1 升级：v1 数据导入器已在 v2 下线，程序不会读取或删除旧版目录；
+  如需保留旧数据，请自行备份 data-v1-archive\（本程序不会触碰该目录）。
 - 账号库的凭据用 Windows DPAPI 加密，与当前 Windows 用户绑定：换用户或换机器后
   账号需要重新登录（这是有意为之，不是缺陷）。
 
@@ -39,6 +38,6 @@ AI Manager 1.8.2 · 免安装版（Windows x64）
 
 四、校验
 --------
-版本：1.8.2    产物：AI-Manager-1.8.2-windows-x64-portable.zip
-安装版请用 AI-Manager-1.8.2-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
+版本：1.9.0    产物：AI-Manager-1.9.0-windows-x64-portable.zip
+安装版请用 AI-Manager-1.9.0-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
 免管理员，卸载同样保留 data\）。

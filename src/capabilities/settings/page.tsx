@@ -1,5 +1,5 @@
 // 设置中心：通用（主题/开机自启）与维护（定时任务/空间/回收站/打开目录）。
-// 日志与执行记录是独立能力（capabilities/logs、capabilities/executions），不在这里。
+// 日志与执行动作统一在 capabilities/logs，不在这里。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy, errMsg } from '@/lib/cmd';
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox, Input, Select, SkeletonRows } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { saveTheme, type ThemeChoice } from '@/lib/theme';
+import { HistoryPane } from './history';
 import type { RuleKind, Schedule, ScheduleAction, SpaceEntry, SpaceReport } from '@/lib/types';
 
 // 设置页上下两栏：上面「通用」（主题/开机自启），下面「维护」（定时任务/空间/回收站）。
@@ -19,6 +20,7 @@ export default function SettingsPage() {
     <div className="flex flex-col gap-3">
       <GeneralPane />
       <MaintenancePane />
+      <HistoryPane />
     </div>
   );
 }
@@ -26,19 +28,46 @@ export default function SettingsPage() {
 function GeneralPane() {
   const [theme, setTheme] = useState<ThemeChoice>('');
   const [autostart, setAutostart] = useState<boolean | null>(null);
+  // 签到节奏：并发上限 + 账号间隔。默认 3/0，与旧行为一致。
+  const [concurrency, setConcurrency] = useState(3);
+  const [gapMs, setGapMs] = useState(0);
+  // ZCode 活动自动领取：kv 开关，默认关。领取要开浏览器过验证码，必须由用户主动打开。
+  const [zcodeAutoClaim, setZcodeAutoClaim] = useState(false);
+  const [version, setVersion] = useState('');
 
   useEffect(() => {
+    queryCmd('app_version').then(setVersion).catch(() => {});
     queryCmd('settings_get', { key: 'ui.theme' })
       .then((v) => setTheme((v as ThemeChoice) || ''))
       .catch(() => {});
     queryCmd('autostart_get')
       .then(setAutostart)
       .catch(() => setAutostart(false));
+    queryCmd('settings_get', { key: 'checkin.max_concurrent' })
+      .then((v) => setConcurrency(Number(v) || 3))
+      .catch(() => {});
+    queryCmd('settings_get', { key: 'checkin.gap_ms' })
+      .then((v) => setGapMs(Number(v) || 0))
+      .catch(() => {});
+    queryCmd('settings_get', { key: 'zcode_auto_claim' })
+      .then((v) => setZcodeAutoClaim(v === true))
+      .catch(() => {});
   }, []);
+
+  const savePacing = (key: string, value: number, apply: (n: number) => void) => {
+    apply(value);
+    void queryCmd('settings_set', { key, value })
+      .then(() => toast('签到节奏已保存，下一轮批量生效'))
+      .catch((e) => toast(errMsg(e)));
+  };
 
   return (
     <div className="rounded-lg border border-line bg-card p-4">
-      <h2 className="mb-2 text-sm font-semibold">通用</h2>
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="text-sm font-semibold">通用</h2>
+        <span className="flex-1" />
+        {version && <span className="text-xs text-muted">AI Manager v{version}</span>}
+      </div>
       {/* 两个开关横排：拉通整行后单列会留下大片空白 */}
       <div className="grid gap-4 md:grid-cols-2">
         <div>
@@ -59,10 +88,6 @@ function GeneralPane() {
               <option value="classic-dark">经典深色（暖黑）</option>
             </Select>
           </label>
-          <p className="mt-1 text-xs text-muted">
-            「经典」两套是暖色调：米纸底配棕强调（浅）、暖黑底配琥珀强调（深）；默认两套是冷灰蓝。
-            切换即时生效并持久化。
-          </p>
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
@@ -84,14 +109,65 @@ function GeneralPane() {
               }}
             />
           </label>
-          <p className="mt-1 text-xs text-muted">
-            写 HKCU\Run，不需要管理员权限；开机后直接进托盘。
-          </p>
+        </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-24 text-muted">签到并发</span>
+            <Select
+              value={String(concurrency)}
+              onChange={(e) => savePacing('checkin.max_concurrent', Number(e.target.value), setConcurrency)}
+            >
+              {[1, 2, 3, 4].map((n) => (
+                <option key={n} value={n}>
+                  {n} 个
+                </option>
+              ))}
+            </Select>
+          </label>
+        </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-24 text-muted">账号间隔</span>
+            <Select
+              value={String(gapMs)}
+              onChange={(e) => savePacing('checkin.gap_ms', Number(e.target.value), setGapMs)}
+            >
+              {[0, 500, 1000, 2000, 5000].map((ms) => (
+                <option key={ms} value={ms}>
+                  {ms === 0 ? '不间隔' : `${ms / 1000} 秒`}
+                </option>
+              ))}
+            </Select>
+          </label>
+        </div>
+        <div className="md:col-span-2">
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-24 text-muted">ZCode 自动领取</span>
+            <Checkbox
+              checked={zcodeAutoClaim}
+              onChange={(e) => {
+                const enabled = e.target.checked;
+                setZcodeAutoClaim(enabled);
+                void queryCmd('settings_set', { key: 'zcode_auto_claim', value: enabled })
+                  .then(() =>
+                    toast(
+                      enabled
+                        ? '已开启：每 15 分钟探测一次，有可领活动时会打开浏览器过验证码'
+                        : '已关闭 ZCode 自动领取',
+                    ),
+                  )
+                  .catch((err) => {
+                    setZcodeAutoClaim(!enabled);
+                    toast(errMsg(err));
+                  });
+              }}
+            />
+            <span className="text-xs text-muted">
+              每 15 分钟探测一轮；领取要你在浏览器里过验证码，所以默认关闭
+            </span>
+          </label>
         </div>
       </div>
-      <p className="mt-3 text-xs text-muted">
-        日志级别在「日志」页调整；数据目录在下面「数据目录占用」里打开。
-      </p>
     </div>
   );
 }
@@ -138,7 +214,7 @@ function MaintenancePane() {
 
       <div className="rounded-lg border border-line bg-card p-4">
         <div className="mb-2 flex items-center gap-2">
-          <h2 className="text-sm font-semibold">回收站（会话删除与平台技能移除）</h2>
+          <h2 className="text-sm font-semibold">平台技能回收站</h2>
           <span className="flex-1" />
           <Button size="sm" variant="ghost" onClick={() => qc.invalidateQueries({ queryKey: ['maint-trash'] })}>
             刷新
@@ -174,7 +250,7 @@ function MaintenancePane() {
         ))}
         {(trash.data ?? []).length > 0 && (
           <div className="mt-2 flex items-center justify-between">
-            <span className="text-xs text-muted">共 {(trash.data ?? []).length} 个批次；删除会话时选「彻底删除」就不会进回收站。</span>
+            <span className="text-xs text-muted">共 {(trash.data ?? []).length} 个批次；移除平台技能时副本会先放这里。会话删除不进回收站。</span>
             <Button
               size="sm"
               variant="danger"
@@ -231,6 +307,15 @@ function ScheduleCard() {
   const [kind, setKind] = useState<RuleKind>('daily');
   const [at, setAt] = useState('08:30');
   const [hours, setHours] = useState('6');
+  const [editing, setEditing] = useState<Schedule | null>(null);
+
+  const edit = (item: Schedule) => {
+    setEditing(item);
+    setAction(item.action);
+    setKind(item.kind);
+    setAt(item.at ?? '08:30');
+    setHours(String(item.hours ?? 6));
+  };
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['schedules'] });
 
@@ -238,18 +323,16 @@ function ScheduleCard() {
     runBusy('schedule-add', async () => {
       const saved = await runCmd('schedule_save', {
         input: {
-          id: '',
-          name: '',
+          ...(editing ?? { id: '', name: '', enabled: true, last_run: null, account_iid: null, created_at: null }),
           action,
           kind,
           at: kind === 'daily' ? at : null,
           hours: kind === 'every' ? Number(hours) || 0 : null,
-          enabled: true,
-          last_run: null,
         },
       });
       if (saved === undefined) return;
-      toast(`已添加：${saved.name} · ${ruleText(saved)}`);
+      toast(`已${editing ? '保存' : '添加'}：${saved.name} · ${ruleText(saved)}`);
+      setEditing(null);
       refresh();
     });
 
@@ -265,13 +348,15 @@ function ScheduleCard() {
     runBusy(`schedule-del:${item.id}`, async () => {
       const ok = await confirmAction({
         title: '删除定时任务',
-        message: `删除「${item.name}」？之后不会再自动执行，已有执行记录保留。`,
+        message: `删除「${item.name}」？之后不会再自动执行，已有执行动作保留。`,
         danger: true,
       });
       if (!ok) return;
       if ((await runCmd('schedule_delete', { id: item.id })) === undefined) return;
       toast('已删除');
+      if (editing?.id === item.id) setEditing(null);
       refresh();
+      qc.invalidateQueries({ queryKey: ['activity'] });
     });
 
   const runNow = (item: Schedule) =>
@@ -282,18 +367,15 @@ function ScheduleCard() {
       refresh();
       qc.invalidateQueries({ queryKey: ['accounts'] });
       qc.invalidateQueries({ queryKey: ['daily'] });
+      qc.invalidateQueries({ queryKey: ['detail'] });
+      qc.invalidateQueries({ queryKey: ['activity'] });
     });
 
   return (
     <div className="rounded-lg border border-line bg-card p-4">
-      <div className="mb-1 flex items-center gap-2">
+      <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">定时任务</h2>
-        <span className="flex-1" />
-        <span className="text-xs text-muted">到点自动执行，结果记进「执行记录」</span>
       </div>
-      <p className="mb-2 text-xs text-muted">
-        关掉就不自动跑，仍可在账号页手动点「批量签到」或这里点「立即执行」。
-      </p>
 
       {list.isLoading && <SkeletonRows rows={2} cols={3} />}
       {(list.data ?? []).length === 0 && <p className="text-sm text-muted">还没有定时任务。</p>}
@@ -303,7 +385,7 @@ function ScheduleCard() {
           key={item.id}
           className="flex flex-wrap items-center gap-2 border-b border-line px-1 py-1.5 text-sm last:border-b-0"
         >
-          <span className="w-24 truncate font-medium" title={item.name}>
+          <span className="w-48 max-w-full truncate font-medium" title={item.name}>
             {item.name}
           </span>
           <span className="w-28 text-xs text-muted">{ruleText(item)}</span>
@@ -318,12 +400,15 @@ function ScheduleCard() {
             />
             启用
           </label>
+          <Button size="sm" disabled={!!busy} onClick={() => edit(item)}>
+            编辑
+          </Button>
           <Button
             size="sm"
             loading={busy === `schedule-run:${item.id}`}
             disabled={!!busy}
             onClick={() => runNow(item)}
-            title="按这条任务现在跑一次（记一条手动执行记录）"
+            title="按这条任务现在跑一次（记一条手动执行动作）"
           >
             立即执行
           </Button>
@@ -340,11 +425,13 @@ function ScheduleCard() {
       ))}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <Select value={action} onChange={(e) => setAction(e.target.value as ScheduleAction)}>
+        {editing && <span className="text-xs font-semibold">编辑：{editing.name}</span>}
+        <Select aria-label="任务动作" value={action} disabled={!!editing} onChange={(e) => setAction(e.target.value as ScheduleAction)}>
           <option value="checkin_round">签到轮询</option>
           <option value="credits_round">积分刷新</option>
+          <option value="travel_round">猫猫旅行</option>
         </Select>
-        <Select value={kind} onChange={(e) => setKind(e.target.value as RuleKind)}>
+        <Select aria-label="执行频率" value={kind} disabled={!!busy} onChange={(e) => setKind(e.target.value as RuleKind)}>
           <option value="daily">每天</option>
           <option value="every">每隔</option>
         </Select>
@@ -366,8 +453,9 @@ function ScheduleCard() {
         )}
         {kind === 'every' && <span className="text-xs text-muted">小时</span>}
         <Button size="sm" variant="primary" loading={busy === 'schedule-add'} disabled={!!busy} onClick={add}>
-          添加
+          {editing ? '保存' : '添加'}
         </Button>
+        {editing && <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => setEditing(null)}>取消</Button>}
       </div>
     </div>
   );

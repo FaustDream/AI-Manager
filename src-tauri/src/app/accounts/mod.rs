@@ -8,11 +8,42 @@ pub mod add;
 pub mod credential;
 pub mod login;
 pub mod profile;
+pub mod refresh;
 pub mod repo;
 pub mod scan;
 pub mod switch;
 pub mod view;
 
+use crate::app::db::Db;
+use crate::app::error::{AppError, ErrorKind, Result};
+use crate::app::runtime::blocking;
+use std::sync::Arc;
+
+/// 取账号视图与凭据包。**唯一入口**：签到、旅行、诊断都走这里，
+/// 避免每处各写一遍「找不到账号 / 没保存凭据」的错误话术。
+/// 凭据只在这一次调用里存在，不往外传。
+pub async fn load_credential(
+    db: Arc<Db>,
+    iid: &str,
+) -> Result<(view::AccountView, credential::Credential)> {
+    let wanted = iid.to_string();
+    blocking(move || {
+        let view = repo::list(&db)?
+            .into_iter()
+            .find(|v| v.iid == wanted)
+            .ok_or_else(|| AppError::new(ErrorKind::Invalid, "账号不存在，可能已被删除"))?;
+        let bytes = repo::secret_of(&db, &wanted)?.ok_or_else(|| {
+            AppError::new(
+                ErrorKind::Invalid,
+                "这个账号没有保存凭据，请重新点「扫描客户端」",
+            )
+        })?;
+        Ok((view, credential::Credential::parse(&bytes)?))
+    })
+    .await?
+}
+
+pub use refresh::{refresh_all, RefreshReport};
 pub use scan::{scan_all, ScanReport};
 pub use switch::{current_iids, is_current, switch, switch_codebuddy, SwitchResult};
 pub use view::{AccountIdentity, AccountTable, AccountView};

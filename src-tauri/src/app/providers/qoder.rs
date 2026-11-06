@@ -14,6 +14,7 @@
 use super::{Provider, ScannedAccount, Sink, SwitchOutcome};
 use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::AccountIdentity;
+use crate::app::clock::{Clock, SystemClock};
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, process, secret};
@@ -23,6 +24,7 @@ use aes_gcm::{Aes256Gcm, Key};
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct QoderProvider {
     pub intl: bool,
@@ -30,6 +32,9 @@ pub struct QoderProvider {
     profile: Option<PathBuf>,
     /// 进程探测的注入点：`None` = 真去查全局进程表（生产路径）
     alive: Option<bool>,
+    clock: Arc<dyn Clock>,
+    #[cfg(test)]
+    request_headers: Option<Vec<(String, String)>>,
 }
 
 impl QoderProvider {
@@ -38,6 +43,9 @@ impl QoderProvider {
             intl,
             profile: default_profile(intl),
             alive: None,
+            clock: Arc::new(SystemClock),
+            #[cfg(test)]
+            request_headers: None,
         }
     }
 
@@ -47,6 +55,9 @@ impl QoderProvider {
             intl,
             profile: Some(profile),
             alive: None,
+            clock: Arc::new(SystemClock),
+            #[cfg(test)]
+            request_headers: None,
         }
     }
 
@@ -327,6 +338,8 @@ impl Provider for QoderProvider {
         };
         cred.put("uid", json!(account_id));
         cred.put("name", json!(name));
+        // 账号自己的 UA：与 Provider 请求头同一口径，旧凭据没有时回退常量
+        cred.put("ua", json!("Qoder"));
         for key in ["email", "phone"] {
             if let Some(v) = user.get(key).filter(|v| !v.is_null()) {
                 cred.put(key, v.clone());
@@ -372,7 +385,7 @@ impl Provider for QoderProvider {
 
         // 活动接口挂了也要把余额给出去，所以这里不 `?`，失败就保持「状态未知」
         if let Ok(campaigns) = self.campaigns(cred, http).await {
-            let now = chrono::Local::now();
+            let now = self.clock.now();
             let benefits = benefits_of(&campaigns, now.timestamp());
             let pending: Vec<&Value> = benefits
                 .iter()
@@ -381,9 +394,9 @@ impl Provider for QoderProvider {
             let daily = daily_of(&benefits);
             let today = now.date_naive();
             if !pending.is_empty() {
-                checked = Some(false);
-                summary = format!("{summary}；可领 {} 项", pending.len());
-            } else if let Some(daily) = daily {
+                summary = format!("{summary}；可领活动 {} 项（不等于签到）", pending.len());
+            }
+            if let Some(daily) = daily {
                 let opened = opened_at(daily);
                 match daily.get("claimStatus").and_then(|v| v.as_str()) {
                     Some("CLAIMABLE") => checked = Some(false),
@@ -422,16 +435,18 @@ impl Provider for QoderProvider {
 
     async fn checkin(&self, cred: &Credential, http: &dyn Http) -> Result<ActionResult> {
         let campaigns = self.campaigns(cred, http).await?;
-        let now = chrono::Local::now();
+        let now = self.clock.now();
         let benefits = benefits_of(&campaigns, now.timestamp());
-        let targets: Vec<&Value> = benefits
-            .iter()
+        let daily = daily_of(&benefits);
+        let targets: Vec<&Value> = daily
             .filter(|c| c.get("claimStatus").and_then(|v| v.as_str()) == Some("CLAIMABLE"))
+            .into_iter()
             .collect();
 
         if targets.is_empty() {
-            let daily = daily_of(&benefits);
-            if let Some(opened) = daily.and_then(opened_at) {
+            let claimed =
+                daily.filter(|c| c.get("claimStatus").and_then(Value::as_str) == Some("CLAIMED"));
+            if let Some(opened) = claimed.and_then(opened_at) {
                 if opened.date_naive() < now.date_naive() {
                     let hint = next_window(&benefits)
                         .map(|n| n.format("%H:%M").to_string())
@@ -445,7 +460,7 @@ impl Provider for QoderProvider {
                     });
                 }
             }
-            if !benefits.is_empty() {
+            if claimed.is_some() {
                 return Ok(ActionResult {
                     ok: true,
                     message: "今日已领取".into(),
@@ -464,6 +479,7 @@ impl Provider for QoderProvider {
         }
 
         let (mut claimed, mut granted, mut validity_days) = (0usize, 0.0f64, None);
+        let mut replay_count = 0;
         let mut failed: Vec<String> = Vec::new();
         for campaign in &targets {
             let id = campaign
@@ -492,7 +508,9 @@ impl Provider for QoderProvider {
                 && (data.get("status").and_then(|v| v.as_str()) == Some("CLAIMED") || replayed);
             if ok {
                 claimed += 1;
-                if !replayed {
+                if replayed {
+                    replay_count += 1;
+                } else {
                     if let Some(amount) =
                         campaign.pointer("/benefit/amount").and_then(|v| v.as_f64())
                     {
@@ -548,7 +566,7 @@ impl Provider for QoderProvider {
             },
             granted: (granted > 0.0).then_some(granted),
             validity_days,
-            already: false,
+            already: claimed > 0 && replay_count == claimed,
         })
     }
 }
@@ -572,12 +590,17 @@ impl QoderProvider {
     async fn headers(&self, cred: &Credential) -> Vec<(String, String)> {
         let mut headers = vec![
             ("Accept".to_string(), "application/json".to_string()),
-            ("User-Agent".to_string(), "Qoder".to_string()),
+            ("User-Agent".to_string(), cred.user_agent("Qoder")),
             (
                 "Authorization".to_string(),
                 format!("Bearer {}", cred.token),
             ),
         ];
+        #[cfg(test)]
+        if let Some(extra) = &self.request_headers {
+            headers.extend(extra.clone());
+            return headers;
+        }
         headers.extend(risk_headers(self.intl).await);
         headers
     }
@@ -589,7 +612,7 @@ impl QoderProvider {
             .await?;
         if resp.status == 401 {
             return Err(AppError::new(
-                ErrorKind::Provider,
+                ErrorKind::AuthExpired,
                 "HTTP 401（登录态可能过期）",
             ));
         }
@@ -910,6 +933,177 @@ fn default_profile(intl: bool) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use base64::Engine;
+
+    fn checkin_fixture(intl: bool) -> (QoderProvider, crate::app::net::MockHttp, i64) {
+        let now = crate::app::clock::local(2026, 10, 30, 9, 0);
+        let mut provider = QoderProvider::new(intl);
+        provider.clock = Arc::new(crate::app::clock::FakeClock::at(&now.to_rfc3339()));
+        provider.request_headers = Some(Vec::new());
+        let http = crate::app::net::MockHttp::new();
+        http.on(
+            &format!("{}/api/v2/quota/usage", provider.api_base()),
+            200,
+            r#"{"userQuota":{"total":100,"remaining":50}}"#,
+        );
+        (provider, http, now.timestamp())
+    }
+
+    fn campaign(id: &str, start: i64, span: i64, status: &str) -> Value {
+        json!({
+            "campaignId": id, "actionType": "CLAIM_BENEFIT",
+            "startAt": start, "endAt": start + span, "claimStatus": status,
+            "benefit": {"amount": 10, "validity": {"mode": "RELATIVE_DAYS", "days": 7}}
+        })
+    }
+
+    fn serve_campaigns(
+        provider: &QoderProvider,
+        http: &crate::app::net::MockHttp,
+        items: Vec<Value>,
+    ) {
+        http.on(
+            &format!("{}/sash/api/v1/me/campaigns", provider.api_base()),
+            200,
+            &json!({"campaigns": items}).to_string(),
+        );
+    }
+
+    #[tokio::test]
+    async fn bonus_claim_does_not_count_as_daily_checkin() {
+        for intl in [false, true] {
+            let (provider, http, now) = checkin_fixture(intl);
+            serve_campaigns(
+                &provider,
+                &http,
+                vec![campaign("bonus", now - 3600, 7 * 86400, "CLAIMABLE")],
+            );
+            let bonus_url = format!(
+                "{}/sash/api/v1/me/campaigns/bonus/claim",
+                provider.api_base()
+            );
+            http.on(&bonus_url, 200, r#"{"status":"CLAIMED"}"#);
+            let result = provider.checkin(&sample_cred(), &http).await.unwrap();
+            assert!(!result.ok, "没有每日签到活动，不能用赠送领取冒充签到成功");
+            assert!(!result.already);
+            assert_eq!(http.call_count(&bonus_url), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn bonus_does_not_hide_next_daily_window() {
+        for intl in [false, true] {
+            let (provider, http, now) = checkin_fixture(intl);
+            let start = now - 23 * 3600;
+            serve_campaigns(
+                &provider,
+                &http,
+                vec![
+                    campaign("daily", start, 86340, "CLAIMED"),
+                    campaign("bonus", now - 3600, 7 * 86400, "CLAIMABLE"),
+                ],
+            );
+            let state = provider.status(&sample_cred(), &http).await.unwrap();
+            assert_eq!(state.checked_in, Some(false));
+            assert_eq!(state.next_at.map(|at| at.timestamp()), Some(start + 86400));
+            let result = provider.checkin(&sample_cred(), &http).await.unwrap();
+            assert!(result.already);
+            assert_eq!(result.granted, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_bonus_does_not_override_completed_daily_checkin() {
+        let (provider, http, now) = checkin_fixture(true);
+        serve_campaigns(
+            &provider,
+            &http,
+            vec![
+                campaign("daily", now - 3600, 86340, "CLAIMED"),
+                campaign("bonus", now - 3600, 7 * 86400, "CLAIMABLE"),
+            ],
+        );
+        let state = provider.status(&sample_cred(), &http).await.unwrap();
+        assert_eq!(state.checked_in, Some(true));
+    }
+
+    #[tokio::test]
+    async fn failed_daily_is_not_rescued_by_successful_bonus() {
+        let (provider, http, now) = checkin_fixture(true);
+        serve_campaigns(
+            &provider,
+            &http,
+            vec![
+                campaign("daily", now - 3600, 86340, "CLAIMABLE"),
+                campaign("bonus", now - 3600, 7 * 86400, "CLAIMABLE"),
+            ],
+        );
+        let daily_url = format!(
+            "{}/sash/api/v1/me/campaigns/daily/claim",
+            provider.api_base()
+        );
+        let bonus_url = format!(
+            "{}/sash/api/v1/me/campaigns/bonus/claim",
+            provider.api_base()
+        );
+        http.on(&daily_url, 500, r#"{"message":"daily failed"}"#);
+        http.on(&bonus_url, 200, r#"{"status":"CLAIMED"}"#);
+        let result = provider.checkin(&sample_cred(), &http).await.unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.granted, None);
+        assert_eq!(http.call_count(&bonus_url), 0);
+    }
+
+    #[tokio::test]
+    async fn missing_or_unknown_daily_state_is_not_evidence_of_unchecked() {
+        for status in [None, Some("UNKNOWN")] {
+            let (provider, http, now) = checkin_fixture(true);
+            let mut campaigns = vec![campaign("bonus", now - 3600, 7 * 86400, "CLAIMED")];
+            if let Some(status) = status {
+                campaigns.push(campaign("daily", now - 3600, 86340, status));
+            }
+            serve_campaigns(&provider, &http, campaigns);
+            let state = provider.status(&sample_cred(), &http).await.unwrap();
+            assert_eq!(
+                state.checked_in, None,
+                "每日活动缺失或状态未知时，不能否定已有签到记录"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn daily_claim_excludes_bonus_amount_and_replays() {
+        for replayed in [false, true] {
+            let (provider, http, now) = checkin_fixture(true);
+            serve_campaigns(
+                &provider,
+                &http,
+                vec![
+                    campaign("daily", now - 3600, 86340, "CLAIMABLE"),
+                    campaign("bonus", now - 3600, 7 * 86400, "CLAIMABLE"),
+                ],
+            );
+            let daily_url = format!(
+                "{}/sash/api/v1/me/campaigns/daily/claim",
+                provider.api_base()
+            );
+            let bonus_url = format!(
+                "{}/sash/api/v1/me/campaigns/bonus/claim",
+                provider.api_base()
+            );
+            http.on(
+                &daily_url,
+                200,
+                &json!({"status": "CLAIMED", "replayed": replayed}).to_string(),
+            );
+            http.on(&bonus_url, 200, r#"{"status":"CLAIMED"}"#);
+            let result = provider.checkin(&sample_cred(), &http).await.unwrap();
+            assert!(result.ok);
+            assert_eq!(result.already, replayed);
+            assert_eq!(result.granted, if replayed { None } else { Some(10.0) });
+            assert_eq!(http.call_count(&daily_url), 1);
+            assert_eq!(http.call_count(&bonus_url), 0);
+        }
+    }
 
     fn sample_cred() -> Credential {
         let mut cred = Credential {

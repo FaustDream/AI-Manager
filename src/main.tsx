@@ -5,6 +5,7 @@ import { ErrorBoundary } from '@/app/shell/ErrorBoundary';
 import { ReloadIndicator } from '@/app/shell/ReloadIndicator';
 import { Shell } from '@/app/shell/Shell';
 import { call } from '@/lib/ipc';
+import { installContextMenuGuard } from '@/lib/context-menu';
 import { armSplashTimeout } from '@/lib/splash';
 import '@/index.css';
 
@@ -15,6 +16,8 @@ import '@/index.css';
 void call('app_show_window').catch(() => {});
 // 兜底：页面 chunk 加载失败时也不会永远停在启动画面上
 armSplashTimeout();
+// 桌面应用不需要浏览器原生右键菜单；开关在 lib/context-menu.ts
+installContextMenuGuard();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

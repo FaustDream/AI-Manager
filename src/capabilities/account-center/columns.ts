@@ -32,39 +32,75 @@ export interface ColumnDefEx {
 /** 凭据剩余天数：今天到期算 0，已过期是负数。只用来上色，不显示。 */
 const leftDays = (a: AccountView) => daysUntil(a.expires_at);
 
+export const FAIL_LABEL: Record<string, string> = {
+  auth_expired: '登录失效',
+  rate_limited: '平台限流',
+  activity_closed: '活动未开放',
+  provider: '平台错误',
+  io: '网络错误',
+  invalid: '配置无效',
+};
+
+/** 账号级健康标记：停用 / 最近失败，叠加在登录态单元格上。 */
+const decorateHealth = (a: AccountView, cell: Cell): Cell => {
+  const notes: string[] = [];
+  if (!a.enabled) notes.push('已停用');
+  if (a.last_fail_kind) {
+    const label = FAIL_LABEL[a.last_fail_kind] ?? a.last_fail_kind;
+    notes.push(`最近失败：${label}${a.last_fail_at ? `（${fmtTime(a.last_fail_at)}）` : ''}`);
+  }
+  if (notes.length === 0) return cell;
+  return {
+    ...cell,
+    sub: notes.join(' · '),
+    tone: !a.enabled ? 'muted' : 'bad',
+    title: [
+      !a.enabled ? '已停用：不参与自动签到、自动轮询与积分刷新；手动单账号操作仍可执行' : '',
+      a.last_fail_kind
+        ? `最近失败（${FAIL_LABEL[a.last_fail_kind] ?? a.last_fail_kind}），上次成功：${
+            a.last_ok_at ? fmtTime(a.last_ok_at) : '无记录'
+          }`
+        : '',
+      cell.title,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  };
+};
+
 /**
  * 登录态：只回答「凭据哪天到期」。
  * 剩余天数不给——同一个信息说两遍反而要人算，日期本身就是结论。
  */
 const loginCell = (a: AccountView): Cell => {
   if (!a.has_secret) {
-    return {
+    return decorateHealth(a, {
       text: '未保存',
       tone: 'warn',
       title: '本机账号库里没有这个账号的登录凭据：不能一键切换，也不参与自动签到',
-    };
+    });
   }
   if (!a.expires_at) {
-    return {
+    return decorateHealth(a, {
       text: '有效期未知',
       tone: 'muted',
       title: '平台没有提供登录凭据的到期时间（例如 ZCode 的令牌不含 exp），只能确认凭据已加密存在本机',
-    };
+    });
   }
   const days = leftDays(a);
   const when = fmtFullDay(a.expires_at);
   if (days !== null && days < 0) {
-    return {
+    return decorateHealth(a, {
       text: `${when} 已过期`,
       tone: 'bad',
-      title: `登录凭据已于 ${when} 过期（过期 ${Math.abs(days)} 天），需要在客户端重新登录一次，再点「扫描客户端」补存`,
-    };
+      title: `登录凭据已于 ${when} 过期（过期 ${Math.abs(days)} 天），需要在客户端重新登录一次，下次启动自动扫描会补存`,
+    });
   }
-  return {
+  return decorateHealth(a, {
     text: `${when} 到期`,
     tone: days !== null && days <= 3 ? 'warn' : undefined,
     title: `登录凭据有效至 ${when}（不是积分到期）`,
-  };
+  });
 };
 
 /** 积分与配额共用一列：额度型账号没有「积分」，显示最紧窗口的剩余百分比。 */
@@ -124,10 +160,41 @@ export const COLUMNS: ColumnDefEx[] = [
     header: '昵称',
     width: 168,
     min: 80,
-    cell: (a) => ({ text: a.name, title: a.source ? `凭据来源：${a.source}` : undefined }),
+    cell: (a) => ({
+      text: a.name,
+      title: a.source ? `凭据来源：${a.source}` : undefined,
+    }),
+  },
+  {
+    key: 'tags',
+    header: '标签',
+    width: 132,
+    min: 70,
+    cell: (a) => ({
+      text: a.tags.length > 0 ? a.tags.join(' · ') : '—',
+      tone: a.tags.length > 0 ? undefined : 'muted',
+      title: [a.tags.length > 0 ? `标签：${a.tags.join('、')}` : '', a.note ? `备注：${a.note}` : '']
+        .filter(Boolean)
+        .join('\n') || undefined,
+    }),
   },
   { key: 'login', header: '登录态', width: 150, min: 110, cell: loginCell },
   { key: 'credit', header: '积分 / 配额', width: 128, min: 90, cell: creditCell },
   { key: 'checkin', header: '签到', width: 104, min: 70, cell: checkinCell },
 ];
 
+
+/**
+ * 「需要人处理」的排序权重：0 已坏 → 1 快到期/最近失败 → 2 正常 → 3 停用/无凭据。
+ *
+ * 手动拖动顺序是用户的主排序；这个权重只在用户主动切到「需处理优先」时生效，
+ * 不改变 `sort_order`，也不在后台偷偷重排。
+ */
+export function attentionRank(a: AccountView, now = Date.now()): number {
+  if (a.has_secret && a.expires_at !== null && a.expires_at < now) return 0;
+  const days = daysUntil(a.expires_at);
+  if (a.has_secret && days !== null && days <= 3) return 1;
+  if (a.last_fail_kind) return 1;
+  if (!a.has_secret || !a.enabled) return 3;
+  return 2;
+}

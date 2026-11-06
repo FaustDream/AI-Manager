@@ -4,7 +4,31 @@ export type AccountView = { iid: string, platform: string, platform_label: strin
 /**
  * 原始昵称。**不要直接显示**——用 `display_name()`，有些平台的昵称就是手机号。
  */
-name: string, source: string, requires_checkin: boolean, expires_at: number | null, has_secret: boolean, sort_order: number, checked_in: boolean | null, checked_at: number | null, balance: number | null, 
+name: string, 
+/**
+ * 用户手工设置的别名。重扫只覆盖身份字段，别名单独存 kv，不会被平台昵称冲掉。
+ */
+alias: string | null, 
+/**
+ * 用户标签：筛选与批量操作用（工作号 / 私人号 / 待处理…）
+ */
+tags: Array<string>, 
+/**
+ * 备注：写「为什么停用」「绑定在哪台机器」这类上下文
+ */
+note: string | null, source: string, requires_checkin: boolean, expires_at: number | null, has_secret: boolean, 
+/**
+ * 是否参与自动签到/积分轮询。手动单账号操作仍可执行。
+ */
+enabled: boolean, 
+/**
+ * 最近一次成功拉取状态/积分的时刻
+ */
+last_ok_at: number | null, 
+/**
+ * 最近一次失败的时刻与类别（`kind` 与日志里的 ErrorKind 一致）
+ */
+last_fail_at: number | null, last_fail_kind: string | null, sort_order: number, checked_in: boolean | null, checked_at: number | null, balance: number | null, 
 /**
  * 额度型平台（ZCode）：窗口名 → **已用**百分比
  */

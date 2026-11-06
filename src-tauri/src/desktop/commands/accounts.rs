@@ -24,12 +24,47 @@ pub async fn account_list(
     for row in &mut rows {
         row.name = row.display_name();
     }
-    log::log(
-        Level::Info,
-        "accounts",
-        format!("列表返回 {} 个账号", rows.len()),
-    );
     Ok(rows)
+}
+
+/// 设置账号别名；传空字符串恢复平台昵称。别名单独存 kv，重扫不会覆盖。
+#[tauri::command]
+pub async fn account_set_alias(
+    state: State<'_, AppState>,
+    iid: String,
+    alias: String,
+) -> std::result::Result<String, String> {
+    let db = state.db.clone();
+    crate::app::runtime::blocking(move || crate::app::accounts::repo::set_alias(&db, &iid, &alias))
+        .await
+        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+        .map_err(err_text)
+}
+
+/// 平台奖励积分明细：按包名聚合的剩余/总量/到期（对应网页「套餐与积分」）。
+#[tauri::command]
+
+pub async fn account_reward_credits(
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<crate::app::providers::workbuddy::RewardCredits, String> {
+    state.checkin.reward_credits(&iid).await.map_err(err_text)
+}
+
+/// 启用/停用账号：只影响自动签到与自动积分轮询，手动单账号操作仍可执行。
+#[tauri::command]
+pub async fn account_set_enabled(
+    state: State<'_, AppState>,
+    iid: String,
+    enabled: bool,
+) -> std::result::Result<bool, String> {
+    let db = state.db.clone();
+    crate::app::runtime::blocking(move || {
+        crate::app::accounts::repo::set_enabled(&db, &iid, enabled)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)
 }
 
 #[tauri::command]
@@ -66,19 +101,11 @@ pub async fn account_scan(
     state: State<'_, AppState>,
 ) -> std::result::Result<crate::app::accounts::ScanReport, String> {
     let db = state.db.clone();
-    let report = crate::app::runtime::blocking(move || crate::app::accounts::scan_all(&db))
+    // 结果由调用方记账：启动扫描在后台落动作行，界面手动扫描由前端命令面回传
+    crate::app::runtime::blocking(move || crate::app::accounts::scan_all(&db))
         .await
         .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
-        .map_err(err_text)?;
-    log::log(
-        Level::Info,
-        "accounts",
-        format!(
-            "扫描完成：{} 个账号（新增 {}）",
-            report.scanned, report.added
-        ),
-    );
-    Ok(report)
+        .map_err(err_text)
 }
 
 /// 浏览器登录第一步：申请登录地址 → 后台等登录完成。
@@ -91,7 +118,6 @@ pub async fn account_login_start(
     state: State<'_, AppState>,
     platform: String,
 ) -> std::result::Result<crate::app::accounts::login::LoginStart, String> {
-    use tauri::Emitter;
     let pending = crate::app::accounts::login::start(&platform)
         .await
         .map_err(err_text)?;
@@ -104,15 +130,82 @@ pub async fn account_login_start(
         ),
     );
 
+    spawn_login_wait(
+        app,
+        state.db.clone(),
+        platform,
+        pending.ticket.clone(),
+        "account_login",
+        "浏览器登录",
+    );
+    Ok(pending.start)
+}
+
+/// 详情页的「重新登录」：给已有账号重新走一遍浏览器登录，成功后凭据自动落库。
+///
+/// 与「添加账号」的差异只有两点：
+///   1. 平台键由 **iid** 推出来（WorkBuddy 国际版带 `@intl`），界面不用自己拼；
+///   2. 日志按「重新登录」记，事后能分清这一次是补凭据还是加号。
+///
+/// 凭据由 `login::save()` 自动保存：iid 相同 = 覆盖这个账号的凭据与到期时间；
+/// 登进了别的账号 = 作为新账号入库（返回值里带新 iid，界面据此提示）。
+#[tauri::command]
+
+pub async fn account_relogin_start(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<crate::app::accounts::login::LoginStart, String> {
     let db = state.db.clone();
-    let login_state = pending.ticket.clone();
-    let platform_key = platform.clone();
+    let key = {
+        let db = db.clone();
+        crate::app::runtime::blocking(move || {
+            crate::app::accounts::login::relogin_platform(&db, &iid)
+        })
+        .await
+        .map_err(err_text)?
+        .map_err(err_text)?
+    };
+
+    let pending = crate::app::accounts::login::start(&key)
+        .await
+        .map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "accounts",
+        format!(
+            "重新登录：已生成 {} 的登录链接，等待用户在浏览器完成授权",
+            pending.start.label
+        ),
+    );
+
+    spawn_login_wait(
+        app,
+        db,
+        key,
+        pending.ticket.clone(),
+        "account_relogin",
+        "重新登录",
+    );
+    Ok(pending.start)
+}
+
+/// 登录的后半段：后台等授权 → 入库 → 推 `account:login`。
+/// 「添加账号」与「重新登录」共用：两处各写一遍必然有一处忘了落失败日志。
+fn spawn_login_wait(
+    app: tauri::AppHandle,
+    db: std::sync::Arc<crate::app::db::Db>,
+    platform_key: String,
+    ticket: String,
+    action: &'static str,
+    scene: &'static str,
+) {
+    use tauri::Emitter;
     // 日志要用平台名，但 platform_key 会被 move 进阻塞闭包，先留一份
     let log_platform = platform_key.clone();
-    let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let result = crate::app::runtime::blocking(move || {
-            crate::app::accounts::login::wait_for_login(&db, &platform_key, &login_state)
+            crate::app::accounts::login::wait_for_login(&db, &platform_key, &ticket)
         })
         .await;
         let outcome = match result {
@@ -122,8 +215,8 @@ pub async fn account_login_start(
                 // 分不清是网络、平台拒绝还是用户没操作
                 log::fail(
                     "accounts",
-                    "account_login",
-                    format!("浏览器登录失败：{}", e.message),
+                    action,
+                    format!("{scene}失败：{}", e.message),
                     format!("{} · 平台={log_platform}", e.evidence()),
                 );
                 crate::app::accounts::login::LoginOutcome {
@@ -137,13 +230,57 @@ pub async fn account_login_start(
             log::log(
                 Level::Info,
                 "accounts",
-                format!("浏览器登录：{}", outcome.message),
+                format!("{scene}：{}", outcome.message),
             );
         }
-        let _ = handle.emit("account:login", &outcome);
+        let _ = app.emit("account:login", &outcome);
     });
+}
 
-    Ok(pending.start)
+/// 「刷新所有账号状态」：重扫客户端登录态 + 用凭据包校正到期时间。
+///
+/// 要点是**让本地库追上客户端的实际登录情况**：登录态被客户端刷新过、凭据换了、
+/// 到期时间变了，界面上的「剩 N 天」「已过期」都跟着一起更新。
+/// 不自己实现 token 续期——凭据真过期了就重新登录，走平台自己的登录页。
+///
+/// 走阻塞线程：读客户端库 + 逐个解密凭据全是磁盘活，放主线程会让窗口变灰。
+#[tauri::command]
+
+pub async fn account_refresh_all(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::accounts::refresh::RefreshReport, String> {
+    let db = state.db.clone();
+    let started = std::time::Instant::now();
+    let report =
+        crate::app::runtime::blocking(move || crate::app::accounts::refresh::refresh_all(&db))
+            .await
+            .map_err(err_text)?
+            .map_err(err_text)?;
+    // 失败明细必须进日志：界面只说「N 个账号有问题」，事后要能查是哪几个、什么原因
+    let detail = if report.errors.is_empty() {
+        String::new()
+    } else {
+        format!(" | 失败明细: {}", report.errors.join("；"))
+    };
+    log::action(
+        "account_refresh_all",
+        "user",
+        report.errors.is_empty(),
+        started.elapsed().as_millis() as u64,
+        format!(
+            "刷新账号状态：{} 个账号 · 有凭据 {} · 缺凭据 {} · 已过期 {} · 临期 {} · 校正到期 {} · 当前登录 {} · 扫描 {}（新增 {}）{detail}",
+            report.total,
+            report.with_secret,
+            report.missing_secret,
+            report.expired,
+            report.expiring,
+            report.updated,
+            report.current,
+            report.scanned,
+            report.added
+        ),
+    );
+    Ok(report)
 }
 
 /// 切换登录。会写客户端登录态文件：失败一律带结构化 kind，界面按 kind 给话术。
@@ -243,15 +380,9 @@ pub async fn account_uid(
 #[tauri::command]
 
 pub async fn account_current() -> std::result::Result<Vec<String>, String> {
-    let current = crate::app::runtime::blocking(crate::app::accounts::current_iids)
+    crate::app::runtime::blocking(crate::app::accounts::current_iids)
         .await
-        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
-    log::log(
-        Level::Info,
-        "accounts",
-        format!("客户端当前登录：{} 个", current.len()),
-    );
-    Ok(current)
+        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))
 }
 
 /// 添加账号第一步：退出该平台登录态并启动客户端。
@@ -285,4 +416,196 @@ pub async fn account_open_client(platform: String) -> std::result::Result<bool, 
         .await
         .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
         .map_err(err_text)
+}
+
+// ---------------------------------------------------------------- 标签 / 备注
+
+/// 设置标签。返回最终保存的标签（已去空白、去重）。
+#[tauri::command]
+
+pub async fn account_set_tags(
+    state: State<'_, AppState>,
+    iid: String,
+    tags: Vec<String>,
+) -> std::result::Result<Vec<String>, String> {
+    let db = state.db.clone();
+    let saved = crate::app::runtime::blocking(move || {
+        crate::app::accounts::repo::set_tags(&db, &iid, &tags)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)?;
+    Ok(saved)
+}
+
+/// 设置备注；空字符串表示清空。
+#[tauri::command]
+
+pub async fn account_set_note(
+    state: State<'_, AppState>,
+    iid: String,
+    note: String,
+) -> std::result::Result<String, String> {
+    let db = state.db.clone();
+    let saved = crate::app::runtime::blocking(move || {
+        crate::app::accounts::repo::set_note(&db, &iid, &note)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)?;
+    Ok(saved)
+}
+
+// ---------------------------------------------------------------- 批量诊断
+
+/// 批量诊断结果：只回汇总，逐账号细节已经在日志里。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BatchDiagnoseReport {
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub total: usize,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub ok: usize,
+    /// `账号名 → 失败原因`，界面只显示前两条
+    pub failed: Vec<String>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub ms: u64,
+}
+
+/// 批量诊断：并发 3（与签到批次同一上限），只读、不写库、不触发签到。
+#[tauri::command]
+
+pub async fn account_batch_diagnose(
+    state: State<'_, AppState>,
+    iids: Vec<String>,
+) -> std::result::Result<BatchDiagnoseReport, String> {
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    let service = state.checkin.clone();
+    let started = std::time::Instant::now();
+    let semaphore = Arc::new(Semaphore::new(3));
+    let mut tasks = tokio::task::JoinSet::new();
+    for iid in iids {
+        let service = service.clone();
+        let permit = semaphore.clone();
+        tasks.spawn(async move {
+            let _permit = permit.acquire_owned().await.ok();
+            let result = service.diagnose(&iid).await;
+            (iid, result)
+        });
+    }
+    let mut total = 0usize;
+    let mut ok = 0usize;
+    let mut failed = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        total += 1;
+        match joined {
+            Ok((_, Ok(_))) => ok += 1,
+            Ok((iid, Err(e))) => failed.push(format!("{iid} → {}", e.message)),
+            Err(e) => failed.push(format!("任务崩溃 → {e}")),
+        }
+    }
+    let report = BatchDiagnoseReport {
+        total,
+        ok,
+        failed,
+        ms: started.elapsed().as_millis() as u64,
+    };
+    log::action(
+        "account_batch_diagnose",
+        "user",
+        report.failed.is_empty(),
+        report.ms,
+        format!(
+            "批量诊断：{} 个账号 · 成功 {} · 失败 {}",
+            report.total,
+            report.ok,
+            report.failed.len()
+        ),
+    );
+    Ok(report)
+}
+
+/// 导出账号清单（CSV）。给表格/对账用，**不含任何凭据**。
+#[tauri::command]
+
+pub async fn account_export(state: State<'_, AppState>) -> std::result::Result<String, String> {
+    let db = state.db.clone();
+    let path = crate::app::runtime::blocking(move || {
+        let mut rows = crate::app::accounts::repo::list(&db)?;
+        crate::app::checkin::store::hydrate(&db, &mut rows, &crate::app::clock::SystemClock);
+        let mut text = String::from(
+            "\u{feff}平台,昵称,标签,备注,已启用,有凭据,到期时间,余额,今日已签,最近成功,最近失败,失败类别\n",
+        );
+        for row in &rows {
+            let cells = [
+                row.platform_label.clone(),
+                row.display_name(),
+                row.tags.join("、"),
+                row.note.clone().unwrap_or_default(),
+                if row.enabled { "是" } else { "否" }.to_string(),
+                if row.has_secret { "是" } else { "否" }.to_string(),
+                row.expires_at.map(fmt_ms_day).unwrap_or_default(),
+                row.balance.map(|v| v.to_string()).unwrap_or_default(),
+                match row.checked_in {
+                    Some(true) => "已签".to_string(),
+                    Some(false) => "未签".to_string(),
+                    None => String::new(),
+                },
+                row.last_ok_at.map(fmt_ms_day).unwrap_or_default(),
+                row.last_fail_at.map(fmt_ms_day).unwrap_or_default(),
+                row.last_fail_kind.clone().unwrap_or_default(),
+            ];
+            text.push_str(
+                &cells
+                    .iter()
+                    .map(|cell| csv_cell(cell))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            text.push('\n');
+        }
+        let dir = crate::app::paths::data_dir().join("exports");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("创建导出目录失败：{e}")))?;
+        let path = dir.join(format!(
+            "accounts-{}.csv",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        ));
+        std::fs::write(&path, text)
+            .map_err(|e| AppError::new(ErrorKind::Io, format!("写入 CSV 失败：{e}")))?;
+        Ok::<_, AppError>(path)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)?;
+    log::action(
+        "account_export",
+        "user",
+        true,
+        0,
+        format!("账号清单已导出：{}", path.display()),
+    );
+    Ok(path.display().to_string())
+}
+
+fn fmt_ms_day(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|at| {
+            at.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// CSV 单元格：逗号/引号/换行一律加引号并转义，避免备注把整行撑坏。
+fn csv_cell(text: &str) -> String {
+    if text.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", text.replace('"', "\"\""))
+    } else {
+        text.to_string()
+    }
 }

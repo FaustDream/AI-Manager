@@ -1,11 +1,14 @@
-// 会话页：状态/排序下拉 + 自动归档档位 + 游标分页无限滚动 + 正文预览 +
-// 删除（进回收站）+ 备份 + 回收站管理。行 key = kind|source|account|session_id。
-// 工具栏只保留不重复的三组：来源标签 / 筛选 / 动作；归档相关的入口只留一处。
+// 会话页：活跃列表 + 独立归档列表。
+//
+// 两个列表的边界是硬的：
+//   - 活跃列表永远不含已归档（归档只能在下方「已归档会话」里看到）；
+//   - 归档列表只含已归档。
+// 分组交互也是两套：活跃列表按项目/账号/状态，归档列表按软件/项目/账号。
+// 归档只写本地标记；可见会话不能直接删，彻底删除只出现在归档/特殊状态上。
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BackupsDrawer, TrashDrawer } from './dialogs';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { errText } from '@/lib/ipc';
 import { fmtSize, fmtTime } from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -14,6 +17,13 @@ import { Notice, Tag } from '@/components/ui';
 import { DataTable, type Column } from '@/components/ui/table';
 import { toast } from '@/components/ui/toast';
 import type { Facets, Filter, Message, Preview, SessionRow } from '@/lib/types';
+import {
+  STATE_LABELS,
+  groupActive,
+  groupArchived,
+  type ActiveGroup,
+  type ArchiveGroup,
+} from './grouping';
 
 const PAGE_SIZE = 100;
 
@@ -48,11 +58,9 @@ const SESSION_COLUMNS: Column<SessionRow>[] = [
     ),
   },
 ];
-const STATE_LABELS: Record<string, string> = {
-  visible: '可见', deleted: '已删除', old_account: '旧账号', cloud: '云端', archived: '已归档',
-};
 const STATE_TONES: Record<string, 'ok' | 'warn' | 'bad' | 'muted'> = {
   visible: 'ok', archived: 'warn', deleted: 'bad', cloud: 'muted', old_account: 'muted',
+  orphan: 'warn',
 };
 /** 自动归档档位：关闭 + 四档。0 = 关闭，后端只认这几个值。 */
 const RETENTION_CHOICES = [
@@ -62,51 +70,60 @@ const RETENTION_CHOICES = [
   { days: 15, label: '15 天' },
   { days: 30, label: '30 天' },
 ];
-/** 可以「彻底删除」的状态：归档过，或客户端那边已经删了。 */
-const PURGEABLE = new Set(['archived', 'deleted']);
+/** 活跃列表里可以直接彻底删除的状态（可见会话必须先归档）。
+ *  孤儿是父会话已消失的内部会话，客户端里点不到，只能在这里清理。 */
+const PURGEABLE = new Set(['deleted', 'cloud', 'old_account', 'orphan']);
+
+const rowKey = (r: SessionRow) => `${r.kind}|${r.source_key}|${r.account}|${r.session_id}`;
 
 export default function SessionsPage() {
   const qc = useQueryClient();
   const [filter, setFilter] = useState<Filter>({
-    source: null, account: null, state: null, sort: 'last_at', show_archived: false,
+    source: null, account: null, state: null, sort: 'last_at',
   });
+  // 两个列表各自选中、各自分组、各自滚动，互不干扰
+  const [activeChecked, setActiveChecked] = useState<Set<string>>(new Set());
+  const [archivedChecked, setArchivedChecked] = useState<Set<string>>(new Set());
+  const [activeGroup, setActiveGroup] = useState<ActiveGroup>('none');
+  const [archiveGroup, setArchiveGroup] = useState<ArchiveGroup>('none');
+  const [activeCollapsed, setActiveCollapsed] = useState<Set<string>>(new Set());
+  const [archiveCollapsed, setArchiveCollapsed] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
-  const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [trashOpen, setTrashOpen] = useState(false);
-  const [backupsOpen, setBackupsOpen] = useState(false);
 
   const facets = useQuery<Facets>({
     queryKey: ['facets'],
     queryFn: () => queryCmd('session_facets'),
   });
-  // 状态下拉 = facets 的状态 + 恒定的「已归档」。facets 里没有已归档时（一条都没归档过）
-  // 这一项就消失了，「只看已归档」的视图也点不到——所以这里补回来。
-  const stateOptions = useMemo(() => {
-    const list = facets.data?.states ?? [];
-    if (list.some((s) => s.value === 'archived')) return list;
-    return [...list, { value: 'archived', label: '已归档', count: 0 }];
-  }, [facets.data]);
 
-  // 游标分页交给 useInfiniteQuery：queryKey 带上 filterKey，换筛选天然开新请求，
-  // 旧响应不会覆盖新列表（手写 useState 累加在这里有竞态）；key 挂在 ['sessions']
-  // 前缀下，事件桥「扫描完成」的失效能直接命中本页
+  // 活跃列表：默认永远排除已归档（后端 SQL 已按此口径）
   const filterKey = JSON.stringify(filter);
-  const listQuery = useInfiniteQuery({
+  const activeQuery = useInfiniteQuery({
     queryKey: ['sessions', 'page', filterKey],
     queryFn: ({ pageParam }) =>
       queryCmd('session_page', { cursor: pageParam, limit: PAGE_SIZE, filter }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next_cursor ?? undefined,
   });
-  const items = listQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const activeItems = activeQuery.data?.pages.flatMap((page) => page.items) ?? [];
+
+  // 归档列表：独立的筛选（固定 state=archived）与分页游标
+  const archiveFilter: Filter = { source: null, account: null, state: 'archived', sort: 'last_at' };
+  const archiveQuery = useInfiniteQuery({
+    queryKey: ['sessions', 'archive', 'page'],
+    queryFn: ({ pageParam }) =>
+      queryCmd('session_page', { cursor: pageParam, limit: PAGE_SIZE, filter: archiveFilter }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
+  });
+  const archivedItems = archiveQuery.data?.pages.flatMap((page) => page.items) ?? [];
 
   useEffect(() => {
-    setChecked(new Set());
+    setActiveChecked(new Set());
     setSelected(null);
   }, [filterKey]);
 
   const sentinel = useRef<HTMLDivElement | null>(null);
-  const { fetchNextPage, hasNextPage, isFetchingNextPage } = listQuery;
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = activeQuery;
   useEffect(() => {
     const node = sentinel.current;
     if (!node) return;
@@ -135,72 +152,35 @@ export default function SessionsPage() {
       .then((saved) => {
         qc.setQueryData(['retention'], saved);
         toast(saved === 0 ? '已关闭自动归档' : `超过 ${saved} 天没动的会话会自动归档`);
-        // 改档位可能立刻归档一批：列表与计数都要重拉
         qc.invalidateQueries({ queryKey: ['facets'] });
         qc.invalidateQueries({ queryKey: ['sessions'] });
       })
       .catch((e) => toast(errText(e)));
   };
 
-  const toggle = (key: string) => {
-    setChecked((old) => {
-      const next = new Set(old);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+  const toggle = (set: Set<string>, apply: (next: Set<string>) => void, key: string) => {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    apply(next);
   };
 
-  const rowKey = (r: SessionRow) => `${r.kind}|${r.source_key}|${r.account}|${r.session_id}`;
+  // 活跃列表：可见 → 归档；特殊状态 → 彻底删除
+  const activeCheckedRows = activeItems.filter((row) => activeChecked.has(rowKey(row)));
+  const activeVisible = activeCheckedRows.filter((row) => row.state === 'visible');
+  const activeSpecial = activeCheckedRows.filter((row) => PURGEABLE.has(row.state));
+  const activeHasSel = activeChecked.size > 0;
 
-  // 选中行能做什么，全由状态决定（与后端放行规则一一对应）：
-  //   归档 / 取消归档 —— 除了「客户端已删除」，谁都能归档
-  //   删除（进回收站）—— 未归档、未删除的（含云端）
-  //   彻底删除       —— 必须**整批**都是已归档 / 已删除，否则先归档
-  // 归档与删除各只留一个按钮：当前选中状态决定它显示成哪个动作，
-  // 避免同一条工具栏上摆四个按钮、还各有各的禁用条件。
-  // 计数用 checked.size（跨页全选也算），动作依据只看当前已加载的行。
-  const checkedRows = items.filter((row) => checked.has(rowKey(row)));
-  const hasSel = checked.size > 0;
-  const canArchive = checkedRows.some((row) => row.state !== 'archived' && row.state !== 'deleted');
-  const canUnarchive = checkedRows.some((row) => row.state === 'archived');
-  const canDelete = checkedRows.some((row) => row.state !== 'archived' && row.state !== 'deleted');
-  const canPurge = checkedRows.length > 0 && checkedRows.every((row) => PURGEABLE.has(row.state));
-  // 归档按钮三态：全是已归档 → 取消归档；能归档 → 归档；只剩已删除 → 不给动作
-  const archiveMode: 'archive' | 'unarchive' | 'none' = !hasSel
-    ? 'archive'
-    : checkedRows.length === 0
-      ? 'archive'
-      : checkedRows.every((row) => row.state === 'archived')
-        ? 'unarchive'
-        : canArchive
-          ? 'archive'
-          : canUnarchive
-            ? 'unarchive'
-            : 'none';
-  // 删除按钮两态：整批都已归档/已删除 → 彻底删除，否则进回收站
-  const deleteMode: 'trash' | 'purge' | 'none' = !hasSel
-    ? 'trash'
-    : checkedRows.length === 0
-      ? 'trash'
-      : canPurge
-        ? 'purge'
-        : canDelete
-          ? 'trash'
-          : 'none';
-
-  // 批量选择：表头勾选框管「本页」，本页全选后再给一个「选中全部 N 条」（跨页）
-  const pageKeys = items.map(rowKey);
-  const allOnPage = pageKeys.length > 0 && pageKeys.every((key) => checked.has(key));
-  const someOnPage = !allOnPage && pageKeys.some((key) => checked.has(key));
+  const pageKeys = activeItems.map(rowKey);
+  const allOnPage = pageKeys.length > 0 && pageKeys.every((key) => activeChecked.has(key));
+  const someOnPage = !allOnPage && pageKeys.some((key) => activeChecked.has(key));
   const headRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    // indeterminate 只能走 DOM 属性，React 没有对应 prop
     if (headRef.current) headRef.current.indeterminate = someOnPage;
   }, [someOnPage]);
 
   const togglePage = () => {
-    setChecked((prev) => {
+    setActiveChecked((prev) => {
       const next = new Set(prev);
       for (const key of pageKeys) {
         if (allOnPage) next.delete(key);
@@ -211,44 +191,37 @@ export default function SessionsPage() {
   };
 
   const selectAllMatching = async () => {
-    
-      const keys = await runCmd('session_keys', { filter });
+    const keys = await runCmd('session_keys', { filter });
 
-      if (keys === undefined) return;
-      setChecked(new Set(keys));
-      toast(`已选中 ${keys.length} 条`);
-    
+    if (keys === undefined) return;
+    setActiveChecked(new Set(keys));
+    toast(`已选中 ${keys.length} 条`);
   };
 
   // 异步按钮的加载态（与账号中心同一套 Button loading）
   const { busy, run: runBusy } = useBusy();
 
-  const deleteChecked = () =>
-    runBusy('delete', async () => {
-      const keys = [...checked];
-      if (keys.length === 0) return;
-      const clients = await queryCmd('session_running_clients', { keys }).catch(
-        () => [] as string[],
-      );
-      const ok = await confirmAction({
-        title: '删除会话',
-        message:
-          `删除选中的 ${keys.length} 条会话？（进回收站，可恢复）` +
-          (clients.length ? `\n\n需要先临时关闭：${clients.join('、')}（删完自动重启）` : ''),
-        danger: true,
-      });
-      if (!ok) return;
-      // 后端在任务里跑：立刻返回任务 id，进度由任务条展示，结果走 session:delete 事件
-      if ((await runCmd('session_delete', { keys })) === undefined) return;
-      setChecked(new Set());
+  // 归档只写本地标记：不关客户端、不删文件，随时可以取消
+  const archiveActive = () =>
+    runBusy('archive', async () => {
+      const keys = activeVisible.map(rowKey);
+      if (keys.length === 0) {
+        toast('只有「可见」状态的会话可以归档；特殊状态请用「彻底删除」');
+        return;
+      }
+      const count = await runCmd('session_archive', { keys, on: true });
+
+      if (count === undefined) return;
+      toast(`已归档 ${count} 条会话（可在下方「已归档会话」查看）`);
+      setActiveChecked(new Set());
       setSelected(null);
+      qc.invalidateQueries({ queryKey: ['facets'] });
+      qc.invalidateQueries({ queryKey: ['sessions'] });
     });
 
-  // 真实删除：只放行「已归档 / 已删除」的行，后端会再校验一次（界面置灰只是提示）。
-  // 后端顺手把回收站批次销毁，所以这里不用再调 purge。
-  const purgeChecked = () =>
+  const purgeActive = () =>
     runBusy('purge', async () => {
-      const keys = [...checked];
+      const keys = activeSpecial.map(rowKey);
       if (keys.length === 0) return;
       const clients = await queryCmd('session_running_clients', { keys }).catch(
         () => [] as string[],
@@ -256,237 +229,472 @@ export default function SessionsPage() {
       const ok = await confirmAction({
         title: '彻底删除会话',
         message:
-          `彻底删除选中的 ${keys.length} 条会话？\n\n` +
-          '会从对应客户端真正删掉数据，不进回收站，不可恢复。' +
+          `彻底删除选中的 ${keys.length} 条特殊状态会话（已删除 / 云端 / 旧账号 / 孤立）？\n\n` +
+          '会从对应客户端真正删掉数据，不可恢复。' +
           (clients.length ? `\n\n需要先临时关闭：${clients.join('、')}（删完自动重启）` : ''),
         danger: true,
       });
       if (!ok) return;
-      
-        if ((await runCmd('session_purge', { keys })) === undefined) return;
-        setChecked(new Set());
-        setSelected(null);
-      
+      if ((await runCmd('session_purge', { keys })) === undefined) return;
+      setActiveChecked(new Set());
+      setSelected(null);
     });
 
-  // 归档只写本地标记：不关客户端、不进回收站，随时可以取消
-  const archiveChecked = (on: boolean) =>
-    runBusy(on ? 'archive' : 'unarchive', async () => {
-      const keys = [...checked];
-      if (keys.length === 0) return;
-      
-        const count = await runCmd('session_archive', { keys, on });
+  // 归档列表：取消归档 / 彻底删除
+  const archivedCheckedRows = archivedItems.filter((row) => archivedChecked.has(rowKey(row)));
+  const archivedHasSel = archivedChecked.size > 0;
 
-        if (count === undefined) return;
-        toast(on ? `已归档 ${count} 条会话` : `已取消归档 ${count} 条会话`);
-        setChecked(new Set());
-        setSelected(null);
-        qc.invalidateQueries({ queryKey: ['facets'] });
-        qc.invalidateQueries({ queryKey: ['sessions'] });
-      
+  const unarchive = () =>
+    runBusy('unarchive', async () => {
+      const keys = archivedCheckedRows.map(rowKey);
+      if (keys.length === 0) return;
+      const count = await runCmd('session_archive', { keys, on: false });
+      if (count === undefined) return;
+      toast(`已取消归档 ${count} 条会话，已回到活跃列表`);
+      setArchivedChecked(new Set());
+      setSelected(null);
+      qc.invalidateQueries({ queryKey: ['facets'] });
+      qc.invalidateQueries({ queryKey: ['sessions'] });
+    });
+
+  const purgeArchived = () =>
+    runBusy('purge-archived', async () => {
+      const keys = archivedCheckedRows.map(rowKey);
+      if (keys.length === 0) return;
+      const clients = await queryCmd('session_running_clients', { keys }).catch(
+        () => [] as string[],
+      );
+      const ok = await confirmAction({
+        title: '彻底删除已归档会话',
+        message:
+          `彻底删除选中的 ${keys.length} 条已归档会话？\n\n` +
+          '会从对应客户端真正删掉数据，不可恢复。' +
+          (clients.length ? `\n\n需要先临时关闭：${clients.join('、')}（删完自动重启）` : ''),
+        danger: true,
+      });
+      if (!ok) return;
+      if ((await runCmd('session_purge', { keys })) === undefined) return;
+      setArchivedChecked(new Set());
+      setSelected(null);
     });
 
   const scan = () =>
     runBusy('scan', async () => {
-      
-        if ((await runCmd('session_scan')) === undefined) return;
-        toast('会话扫描已开始（后台任务）');
-        // 扫描是后台任务：起个轮询等它收尾，完成时列表自然被事件桥刷新
-        setTimeout(() => qc.invalidateQueries({ queryKey: ['facets'] }), 3000);
-      
+      if ((await runCmd('session_scan')) === undefined) return;
+      toast('会话扫描已开始（后台任务）');
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['facets'] }), 3000);
     });
 
-  // 用列表查询返回的 total（已按筛选口径算过），facets 的 total 是全库、不带筛选
-  const total = listQuery.data?.pages[0]?.total ?? 0;
+  const activeTotal = activeQuery.data?.pages[0]?.total ?? 0;
+  const archiveTotal = archiveQuery.data?.pages[0]?.total ?? 0;
+
+  const toggleGroup = (set: Set<string>, apply: (next: Set<string>) => void, key: string) =>
+    toggle(set, apply, key);
+
+  const activeGroups = groupActive(activeItems, activeGroup);
+  const archiveGroups = groupArchived(archivedItems, archiveGroup);
+
   return (
-    <div className="flex h-[calc(100vh-118px)] flex-col gap-2.5">
-      {/* 来源标签栏：按软件分栏；删掉的会话不会再出现在对应软件里。
-          点来源只改来源，不再动状态——状态由下面的下拉管，两边互不干扰。 */}
-      <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
-        <button
-          className={`rounded-md px-3 py-1 text-sm ${
-            filter.source === null
-              ? 'bg-accent font-medium text-on-accent'
-              : 'text-muted hover:bg-hover hover:text-fg'
-          }`}
-          onClick={() => setFilter((f) => ({ ...f, source: null }))}
-        >
-          全部
-        </button>
-        {(facets.data?.sources ?? []).map((s) => (
+    <div className="flex h-[calc(100vh-118px)] flex-col gap-3 overflow-auto">
+      {/* ---------------------------------------------------------- 活跃会话 */}
+      <section className="flex min-h-0 flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold">活跃会话</h2>
+          <span className="text-xs text-muted">共 {activeTotal} 条</span>
+        </div>
+
+        {/* 来源标签栏：按软件分栏；删掉的会话不会再出现在对应软件里。 */}
+        <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
           <button
-            key={s.value}
             className={`rounded-md px-3 py-1 text-sm ${
-              filter.source === s.value
+              filter.source === null
                 ? 'bg-accent font-medium text-on-accent'
                 : 'text-muted hover:bg-hover hover:text-fg'
             }`}
-            onClick={() => setFilter((f) => ({ ...f, source: s.value }))}
+            onClick={() => setFilter((f) => ({ ...f, source: null }))}
           >
-            {s.label}
+            全部
           </button>
-        ))}
-      </div>
-      <div className="flex flex-wrap items-center gap-3 text-sm">
-        <label className="flex items-center gap-1 text-muted">
-          状态
-          <Select
-            value={filter.state ?? ''}
-            onChange={(e) => setFilter((f) => ({ ...f, state: e.target.value || null }))}
-          >
-            <option value="">全部</option>
-            {/* 已归档不跟着 facets 走：一条都没归档时列表里就没有这一项，
-                但「只看已归档」这个视图本身应该一直能点到。 */}
-            {stateOptions.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </Select>
-        </label>
-        <label className="flex items-center gap-1 text-muted">
-          排序
-          <Select
-            value={filter.sort ?? 'last_at'}
-            onChange={(e) => setFilter((f) => ({ ...f, sort: e.target.value as Filter['sort'] }))}
-          >
-            <option value="last_at">最近时间</option>
-            <option value="size">占用大小</option>
-            <option value="msgs">消息数</option>
-          </Select>
-        </label>
-        <label
-          className="flex items-center gap-1 text-muted"
-          title="超过这个天数没活动的会话，扫描时自动归档"
-        >
-          自动归档
-          <Select
-            value={String(retention.data ?? 0)}
-            onChange={(e) => setRetention(Number(e.target.value))}
-          >
-            {RETENTION_CHOICES.map((choice) => (
-              <option key={choice.days} value={choice.days}>
-                {choice.label}
-              </option>
-            ))}
-          </Select>
-        </label>
-        <label className="flex items-center gap-1 text-muted">
-          <Checkbox
-            checked={filter.show_archived}
-            onChange={(e) => setFilter((f) => ({ ...f, show_archived: e.target.checked }))}
-          />
-          显示已归档
-        </label>
-        <span className="flex-1" />
-        <Button size="sm" onClick={scan} loading={busy === 'scan'} disabled={!!busy}>
-          重新扫描
-        </Button>
-        <Button size="sm" onClick={() => setBackupsOpen(true)}>
-          备份
-        </Button>
-        <Button size="sm" onClick={() => setTrashOpen(true)}>
-          回收站
-        </Button>
-      </div>
+          {(facets.data?.sources ?? []).map((s) => (
+            <button
+              key={s.value}
+              className={`rounded-md px-3 py-1 text-sm ${
+                filter.source === s.value
+                  ? 'bg-accent font-medium text-on-accent'
+                  : 'text-muted hover:bg-hover hover:text-fg'
+              }`}
+              onClick={() => setFilter((f) => ({ ...f, source: s.value }))}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
 
-      {/* 选择操作单独一行：左边说清楚「选了几条」，右边才是动作，避免和筛选混在一起。
-          归档与删除各只留一个按钮——当前选中状态决定它显示成哪个动作。 */}
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        {checked.size > 0 && <span className="text-xs text-muted">已选 {checked.size} 条</span>}
-        {allOnPage && total > items.length && checked.size < total && (
-          <button
-            type="button"
-            className="cursor-pointer text-xs text-accent hover:underline"
-            onClick={() => void selectAllMatching()}
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <label className="flex items-center gap-1 text-muted">
+            状态
+            <Select
+              value={filter.state ?? ''}
+              onChange={(e) => setFilter((f) => ({ ...f, state: e.target.value || null }))}
+            >
+              <option value="">全部</option>
+              {(facets.data?.states ?? []).map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <label className="flex items-center gap-1 text-muted">
+            排序
+            <Select
+              value={filter.sort ?? 'last_at'}
+              onChange={(e) => setFilter((f) => ({ ...f, sort: e.target.value as Filter['sort'] }))}
+            >
+              <option value="last_at">最近时间</option>
+              <option value="size">占用大小</option>
+              <option value="msgs">消息数</option>
+            </Select>
+          </label>
+          <label className="flex items-center gap-1 text-muted">
+            分组
+            <Select
+              value={activeGroup}
+              onChange={(e) => setActiveGroup(e.target.value as ActiveGroup)}
+            >
+              <option value="none">不分组</option>
+              <option value="project">按项目</option>
+              <option value="account">按账号</option>
+              <option value="state">按状态</option>
+            </Select>
+          </label>
+          <label
+            className="flex items-center gap-1 text-muted"
+            title="超过这个天数没活动的会话，扫描时自动归档"
           >
-            选中全部 {total} 条
-          </button>
-        )}
-        <span className="flex-1" />
-        {archiveMode !== 'none' && (
+            自动归档
+            <Select
+              value={String(retention.data ?? 0)}
+              onChange={(e) => setRetention(Number(e.target.value))}
+            >
+              {RETENTION_CHOICES.map((choice) => (
+                <option key={choice.days} value={choice.days}>
+                  {choice.label}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <span className="flex-1" />
+          <Button size="sm" onClick={scan} loading={busy === 'scan'} disabled={!!busy}>
+            重新扫描
+          </Button>
+        </div>
+
+        {/* 选择操作单独一行：左边说清楚「选了几条」，右边才是动作 */}
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          {activeChecked.size > 0 && (
+            <span className="text-xs text-muted">已选 {activeChecked.size} 条</span>
+          )}
+          {allOnPage && activeTotal > activeItems.length && activeChecked.size < activeTotal && (
+            <button
+              type="button"
+              className="cursor-pointer text-xs text-accent hover:underline"
+              onClick={() => void selectAllMatching()}
+            >
+              选中全部 {activeTotal} 条
+            </button>
+          )}
+          <span className="flex-1" />
           <Button
             size="sm"
-            disabled={!hasSel || !!busy}
-            loading={busy === 'archive' || busy === 'unarchive'}
-            onClick={() => archiveChecked(archiveMode === 'archive')}
-            title={
-              archiveMode === 'archive'
-                ? '归档后不再出现在默认列表；归档是彻底删除的前提'
-                : '取消归档，重新回到默认列表'
-            }
+            disabled={!activeHasSel || activeVisible.length === 0 || !!busy}
+            loading={busy === 'archive'}
+            onClick={archiveActive}
+            title="归档后不再出现在活跃列表；可见会话必须先归档才能彻底删除"
           >
-            {archiveMode === 'archive' ? '归档' : '取消归档'}
-            {hasSel ? `（${checked.size}）` : ''}
+            归档{activeVisible.length > 0 ? `（${activeVisible.length}）` : ''}
           </Button>
-        )}
-        {deleteMode !== 'none' && (
+          {activeSpecial.length > 0 && (
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={!activeHasSel || !!busy}
+              loading={busy === 'purge'}
+              onClick={purgeActive}
+              title="特殊状态（已删除 / 云端 / 旧账号 / 孤立）可直接彻底删除"
+            >
+              彻底删除（{activeSpecial.length}）
+            </Button>
+          )}
+        </div>
+
+        <div className="min-h-[140px] flex-1 overflow-auto">
+          {activeItems.length === 0 ? (
+            <div className="py-6 text-center text-sm text-muted">
+              {activeQuery.isLoading ? '加载中…' : '没有符合条件的活跃会话。'}
+            </div>
+          ) : activeGroup === 'none' ? (
+            <DataTable<SessionRow>
+              className="w-full table-fixed border-collapse"
+              stickyHead
+              columns={SESSION_COLUMNS}
+              rows={activeItems}
+              rowKey={rowKey}
+              empty={null}
+              lead={{
+                width: 32,
+                head: (
+                  <input
+                    ref={headRef}
+                    type="checkbox"
+                    aria-label="选中本页全部"
+                    className="accent-[var(--color-accent)]"
+                    checked={allOnPage}
+                    onChange={togglePage}
+                  />
+                ),
+                cell: (row) => (
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={activeChecked.has(rowKey(row))}
+                      onChange={() => toggle(activeChecked, setActiveChecked, rowKey(row))}
+                    />
+                  </span>
+                ),
+              }}
+              onRowClick={(row) => setSelected(rowKey(row))}
+              rowClassName={(row) =>
+                selected === rowKey(row) ? 'cursor-pointer bg-hover' : 'cursor-pointer hover:bg-hover'
+              }
+            />
+          ) : (
+            activeGroups.map((group) => (
+              <div key={group.key} className="mb-2">
+                <button
+                  type="button"
+                  className="flex w-full cursor-pointer items-center gap-2 border-b border-line bg-hover px-2 py-1 text-left text-xs font-semibold"
+                  onClick={() =>
+                    toggleGroup(activeCollapsed, setActiveCollapsed, group.key)
+                  }
+                >
+                  <span>{activeCollapsed.has(group.key) ? '▸' : '▾'}</span>
+                  <span>{group.label}</span>
+                  <span className="text-muted">{group.rows.length} 条</span>
+                </button>
+                {!activeCollapsed.has(group.key) && (
+                  <DataTable<SessionRow>
+                    dense
+                    columns={SESSION_COLUMNS.filter(
+                      (c) =>
+                        !(
+                          (activeGroup === 'project' && c.key === 'project') ||
+                          (activeGroup === 'account' && c.key === 'account') ||
+                          (activeGroup === 'state' && c.key === 'state')
+                        ),
+                    )}
+                    rows={group.rows}
+                    rowKey={rowKey}
+                    empty={null}
+                    lead={{
+                      width: 32,
+                      cell: (row) => (
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            checked={activeChecked.has(rowKey(row))}
+                            onChange={() => toggle(activeChecked, setActiveChecked, rowKey(row))}
+                          />
+                        </span>
+                      ),
+                    }}
+                    onRowClick={(row) => setSelected(rowKey(row))}
+                    rowClassName={(row) =>
+                      selected === rowKey(row) ? 'cursor-pointer bg-hover' : 'cursor-pointer hover:bg-hover'
+                    }
+                  />
+                )}
+              </div>
+            ))
+          )}
+          <div ref={sentinel} className="h-px" />
+          {isFetchingNextPage && <div className="p-2 text-center text-xs text-muted">加载中…</div>}
+          {!hasNextPage && activeItems.length > 0 && (
+            <div className="p-2 text-center text-xs text-muted">共 {activeItems.length} 条，到底了</div>
+          )}
+        </div>
+      </section>
+
+      {/* ---------------------------------------------------------- 归档列表 */}
+      <section className="flex min-h-0 flex-col gap-2 rounded-lg border-t-2 border-line-strong bg-card/60 p-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold">已归档会话</h2>
+          <Tag tone="warn">已归档</Tag>
+          <span className="text-xs text-muted">共 {archiveTotal} 条</span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <label className="flex items-center gap-1 text-muted">
+            分组
+            <Select
+              value={archiveGroup}
+              onChange={(e) => setArchiveGroup(e.target.value as ArchiveGroup)}
+            >
+              <option value="none">不分组</option>
+              <option value="source">按软件</option>
+              <option value="project">按项目</option>
+              <option value="account">按账号</option>
+            </Select>
+          </label>
+          <span className="flex-1" />
+          {archivedChecked.size > 0 && (
+            <span className="text-xs text-muted">已选 {archivedChecked.size} 条</span>
+          )}
+          <Button
+            size="sm"
+            disabled={!archivedHasSel || !!busy}
+            loading={busy === 'unarchive'}
+            onClick={unarchive}
+            title="取消归档后回到活跃列表"
+          >
+            取消归档
+          </Button>
           <Button
             size="sm"
             variant="danger"
-            disabled={!hasSel || !!busy}
-            loading={busy === 'delete' || busy === 'purge'}
-            onClick={deleteMode === 'purge' ? purgeChecked : deleteChecked}
-            title={
-              deleteMode === 'purge'
-                ? '从客户端真正删除，不进回收站'
-                : '进回收站，可恢复'
-            }
+            disabled={!archivedHasSel || !!busy}
+            loading={busy === 'purge-archived'}
+            onClick={purgeArchived}
+            title="从客户端真正删除，不可恢复"
           >
-            {deleteMode === 'purge' ? '彻底删除' : '删除'}
-            {hasSel ? `（${checked.size}）` : ''}
+            彻底删除
           </Button>
-        )}
-      </div>
+        </div>
 
-      <div className="min-h-[180px] flex-1 overflow-auto">
-        <DataTable<SessionRow>
-          className="w-full table-fixed border-collapse"
-          stickyHead
-          columns={SESSION_COLUMNS}
-          rows={items}
-          rowKey={rowKey}
-          loading={items.length === 0 && (listQuery.isLoading || total === 0)}
-          skeletonRows={6}
-          empty={null}
-          lead={{
-            width: 32,
-            head: (
-              <input
-                ref={headRef}
-                type="checkbox"
-                aria-label="选中本页全部"
-                className="accent-[var(--color-accent)]"
-                checked={allOnPage}
-                onChange={togglePage}
-              />
-            ),
-            cell: (row) => (
-              <span onClick={(e) => e.stopPropagation()}>
-                <Checkbox checked={checked.has(rowKey(row))} onChange={() => toggle(rowKey(row))} />
-              </span>
-            ),
-          }}
-          onRowClick={(row) => setSelected(rowKey(row))}
-          rowClassName={(row) =>
-            selected === rowKey(row) ? 'cursor-pointer bg-hover' : 'cursor-pointer hover:bg-hover'
-          }
-        />
-        <div ref={sentinel} className="h-px" />
-        {isFetchingNextPage && <div className="p-2 text-center text-xs text-muted">加载中…</div>}
-        {!hasNextPage && items.length > 0 && (
-          <div className="p-2 text-center text-xs text-muted">共 {items.length} 条，到底了</div>
-        )}
-      </div>
+        <div className="min-h-[120px] flex-1 overflow-auto">
+          {archivedItems.length === 0 ? (
+            <div className="py-6 text-center text-sm text-muted">
+              {archiveQuery.isLoading ? '加载中…' : '还没有已归档的会话。'}
+            </div>
+          ) : archiveGroup === 'none' ? (
+            <DataTable<SessionRow>
+              className="w-full table-fixed border-collapse"
+              stickyHead
+              columns={SESSION_COLUMNS}
+              rows={archivedItems}
+              rowKey={rowKey}
+              empty={null}
+              lead={{
+                width: 32,
+                head: (
+                  <input
+                    type="checkbox"
+                    aria-label="选中本页全部归档"
+                    className="accent-[var(--color-accent)]"
+                    checked={
+                      archivedItems.length > 0 &&
+                      archivedItems.every((row) => archivedChecked.has(rowKey(row)))
+                    }
+                    onChange={() => {
+                      const all = archivedItems.every((row) => archivedChecked.has(rowKey(row)));
+                      const next = new Set(archivedChecked);
+                      for (const row of archivedItems) {
+                        if (all) next.delete(rowKey(row));
+                        else next.add(rowKey(row));
+                      }
+                      setArchivedChecked(next);
+                    }}
+                  />
+                ),
+                cell: (row) => (
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={archivedChecked.has(rowKey(row))}
+                      onChange={() => toggle(archivedChecked, setArchivedChecked, rowKey(row))}
+                    />
+                  </span>
+                ),
+              }}
+              onRowClick={(row) => setSelected(rowKey(row))}
+              rowClassName={(row) =>
+                selected === rowKey(row) ? 'cursor-pointer bg-hover' : 'cursor-pointer hover:bg-hover'
+              }
+            />
+          ) : (
+            archiveGroups.map((group) => (
+              <div key={group.key} className="mb-2">
+                <button
+                  type="button"
+                  className="flex w-full cursor-pointer items-center gap-2 border-b border-line bg-hover px-2 py-1 text-left text-xs font-semibold"
+                  onClick={() =>
+                    toggleGroup(archiveCollapsed, setArchiveCollapsed, group.key)
+                  }
+                >
+                  <span>{archiveCollapsed.has(group.key) ? '▸' : '▾'}</span>
+                  <span>{group.label}</span>
+                  <span className="text-muted">{group.rows.length} 条</span>
+                </button>
+                {!archiveCollapsed.has(group.key) && (
+                  <DataTable<SessionRow>
+                    dense
+                    columns={SESSION_COLUMNS.filter(
+                      (c) =>
+                        !(
+                          (archiveGroup === 'source' && c.key === 'source') ||
+                          (archiveGroup === 'project' && c.key === 'project') ||
+                          (archiveGroup === 'account' && c.key === 'account')
+                        ),
+                    )}
+                    rows={group.rows}
+                    rowKey={rowKey}
+                    empty={null}
+                    lead={{
+                      width: 32,
+                      cell: (row) => (
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            checked={archivedChecked.has(rowKey(row))}
+                            onChange={() => toggle(archivedChecked, setArchivedChecked, rowKey(row))}
+                          />
+                        </span>
+                      ),
+                    }}
+                    onRowClick={(row) => setSelected(rowKey(row))}
+                    rowClassName={(row) =>
+                      selected === rowKey(row) ? 'cursor-pointer bg-hover' : 'cursor-pointer hover:bg-hover'
+                    }
+                  />
+                )}
+              </div>
+            ))
+          )}
+          {archiveQuery.hasNextPage && (
+            <div className="p-2 text-center">
+              <Button
+                size="sm"
+                loading={archiveQuery.isFetchingNextPage}
+                onClick={() => void archiveQuery.fetchNextPage()}
+              >
+                加载更多
+              </Button>
+            </div>
+          )}
+          {!archiveQuery.hasNextPage && archivedItems.length > 0 && (
+            <div className="p-2 text-center text-xs text-muted">
+              共 {archivedItems.length} 条，到底了
+            </div>
+          )}
+        </div>
+      </section>
 
-      <div className="max-h-[46%] flex-none overflow-auto rounded-lg border border-line bg-card p-3">
+      {/* ---------------------------------------------------------- 正文预览 */}
+      <div className="max-h-[40%] flex-none overflow-auto rounded-lg border border-line bg-card p-3">
         {!selected && <p className="text-sm text-muted">点一行看正文预览。</p>}
         {selected && preview.isLoading && <SkeletonRows rows={3} cols={1} />}
         {selected && preview.data && (
           <>
             <div className="mb-2 flex items-center gap-2">
               <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">
-                {items.find((r) => rowKey(r) === selected)?.title || '（无标题）'}
+                {[...activeItems, ...archivedItems].find((r) => rowKey(r) === selected)?.title ||
+                  '（无标题）'}
               </h3>
               <CopyAllButton messages={preview.data.messages} />
             </div>
@@ -498,9 +706,6 @@ export default function SessionsPage() {
           </>
         )}
       </div>
-
-      <TrashDrawer open={trashOpen} onClose={() => setTrashOpen(false)} />
-      <BackupsDrawer open={backupsOpen} onClose={() => setBackupsOpen(false)} />
     </div>
   );
 }

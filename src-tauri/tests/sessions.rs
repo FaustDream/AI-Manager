@@ -186,9 +186,9 @@ fn filters_and_facets_are_consistent() {
     assert_eq!(visible.label, "可见");
 }
 
-/// 归档是本地标记：默认不出现在列表里，显式筛「已归档」才看得到。
+/// 归档是本地标记：活跃列表永远看不到，只有显式筛「已归档」才出现。
 #[test]
-fn archived_rows_are_hidden_until_asked_for() {
+fn archived_rows_are_hidden_from_active_list() {
     let paths = TestPaths::new();
     let db = Db::open_at(&paths.join("app.db")).unwrap();
     let store = SqliteSessions::new(&db);
@@ -202,26 +202,13 @@ fn archived_rows_are_hidden_until_asked_for() {
     let key = "workbuddy|cn|u1|s0002";
     marks::archive(&db, &[key.to_string()], true).unwrap();
 
-    // 默认视图：只剩没归档的那条
+    // 活跃视图：只剩没归档的那条
     let default = store.page(&Filter::default(), None, 50).unwrap();
     assert_eq!(default.items.len(), 1);
     assert_eq!(default.total, 1);
     assert_eq!(default.items[0].session_id, "s0001");
 
-    // 勾「显示已归档」：两条都在，且状态是 archived
-    let shown = store
-        .page(
-            &Filter {
-                show_archived: true,
-                ..Default::default()
-            },
-            None,
-            50,
-        )
-        .unwrap();
-    assert_eq!(shown.items.len(), 2);
-
-    // 显式筛已归档：即使没勾「显示已归档」也要能看到
+    // 归档列表：显式筛已归档，只有这一条
     let only_archived = store
         .page(
             &Filter {
@@ -235,14 +222,13 @@ fn archived_rows_are_hidden_until_asked_for() {
     assert_eq!(only_archived.items.len(), 1);
     assert_eq!(only_archived.items[0].state, SessionState::Archived);
 
-    // 计数与列表同一口径
+    // 活跃列表的来源/账号/状态计数都不含已归档
     let facets = store.facets().unwrap();
-    let archived = facets
-        .states
-        .iter()
-        .find(|f| f.value == "archived")
-        .unwrap();
-    assert_eq!(archived.count, 1);
+    assert_eq!(facets.total, 1, "来源计数只算活跃会话");
+    assert!(
+        !facets.states.iter().any(|f| f.value == "archived"),
+        "已归档不该出现在活跃列表的状态筛选项里"
+    );
 }
 
 /// 本地隐藏（Trae 这类只有云端占位的来源）之后，重扫也不该再冒出来。
@@ -299,14 +285,14 @@ async fn purge_refuses_sessions_that_are_not_archived() {
     let key = "workbuddy|cn|u1|s0001".to_string();
     let err = service.purge(vec![key.clone()]).await.unwrap_err();
     assert!(
-        err.message.contains("已归档"),
+        err.message.contains("归档"),
         "未归档必须被挡下并说明原因：{}",
         err.message
     );
 
     marks::archive(&db, std::slice::from_ref(&key), true).unwrap();
     // 归档后门槛放行（这里没有真的客户端目录，逐条删除会失败，但不该再被判为「拒绝」）
-    let report = service.purge(vec![key]).await.unwrap();
+    let report = service.purge_with(vec![key], false).await.unwrap();
     assert_eq!(report.refused, 0);
 }
 
@@ -333,14 +319,6 @@ fn keys_follow_the_same_filter_as_the_list() {
     assert!(default_keys
         .iter()
         .all(|k| k.starts_with("workbuddy|cn|u1|")));
-
-    let with_archived = store
-        .keys(&Filter {
-            show_archived: true,
-            ..Default::default()
-        })
-        .unwrap();
-    assert_eq!(with_archived.len(), 3);
 
     let only_archived = store
         .keys(&Filter {

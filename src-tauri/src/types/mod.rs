@@ -123,6 +123,9 @@ pub enum SessionState {
     Cloud,
     /// 客户端里被归档：不显示在默认列表，但数据还在
     Archived,
+    /// 父会话已从库里消失的内部会话（ZCode 子代理 / IDE 侧聊）：正文还在，
+    /// 但客户端列表与主会话都指不到它，不扫出来就成了三不管数据
+    Orphan,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

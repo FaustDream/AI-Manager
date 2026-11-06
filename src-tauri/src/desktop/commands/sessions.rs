@@ -74,108 +74,6 @@ pub async fn session_running_clients(
         .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))
 }
 
-/// 删除会话：进回收站，可恢复。会临时关掉正在运行的客户端。
-/// 关客户端 + 搬文件动辄几十秒，同步等它跑完，结果直接返回并 emit `session:delete`。
-#[tauri::command]
-
-pub async fn session_delete(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    keys: Vec<String>,
-) -> std::result::Result<crate::app::sessions::delete::DeleteReport, String> {
-    use tauri::Emitter;
-
-    let service = state.sessions.clone();
-    let report = service.remove(keys).await.map_err(err_text)?;
-    // 一条没删掉且全是错误 → error；部分失败 → warn。以前只要 errors 非空就是 warn，
-    // 「全部失败」和「删掉 9 条挂 1 条」在级别上分不开。
-    let level = if report.errors.is_empty() {
-        Level::Info
-    } else if report.sessions == 0 {
-        Level::Error
-    } else {
-        Level::Warn
-    };
-    let detail = if report.errors.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " · 失败明细={}",
-            report
-                .errors
-                .iter()
-                .take(3)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("；")
-        )
-    };
-    log::log(
-        level,
-        "sessions",
-        format!("删除会话：{}{detail}", report.summary()),
-    );
-    let _ = app.emit("session:delete", &report);
-    Ok(report)
-}
-
-/// 整库快照（备份与清理页也会用）。
-#[tauri::command]
-
-pub async fn session_backup(
-    state: State<'_, AppState>,
-) -> std::result::Result<crate::app::sessions::backup::Snapshot, String> {
-    let service = state.sessions.clone();
-    let snapshot = service.backup().await.map_err(err_text)?;
-    log::log(
-        Level::Info,
-        "sessions",
-        format!("会话快照：{}", snapshot.summary()),
-    );
-    Ok(snapshot)
-}
-
-#[tauri::command]
-
-pub async fn session_backups(
-    state: State<'_, AppState>,
-) -> std::result::Result<Vec<crate::app::sessions::backup::Snapshot>, String> {
-    let service = state.sessions.clone();
-    Ok(service.backups().await)
-}
-
-/// 回收站批次列表。
-#[tauri::command]
-
-pub async fn session_trash(
-    state: State<'_, AppState>,
-) -> std::result::Result<Vec<crate::app::sessions::trash::Manifest>, String> {
-    let service = state.sessions.clone();
-    Ok(service.trash().await)
-}
-
-/// 按批次恢复。
-#[tauri::command]
-
-pub async fn session_trash_restore(
-    state: State<'_, AppState>,
-    tag: String,
-) -> std::result::Result<crate::app::sessions::delete::RestoreReport, String> {
-    let service = state.sessions.clone();
-    service.trash_restore(tag).await.map_err(err_text)
-}
-
-/// 彻底清掉一个批次，不可恢复。
-#[tauri::command]
-
-pub async fn session_trash_purge(
-    state: State<'_, AppState>,
-    tag: String,
-) -> std::result::Result<i64, String> {
-    let service = state.sessions.clone();
-    service.trash_purge(tag).await.map_err(err_text)
-}
-
 /// 当前筛选下的全部行 key（不分页），给「选中全部」用。
 #[tauri::command]
 
@@ -215,7 +113,7 @@ pub async fn session_archive(
     Ok(count)
 }
 
-/// 彻底删除：只放行已归档 / 已删除的会话，不留回收站副本。
+/// 彻底删除：只放行已归档或特殊状态（已删除 / 云端 / 旧账号）的会话，不留副本。
 ///
 /// 这是不可逆动作，门槛放在后端而不是只靠界面置灰：绕过界面直接调命令也删不掉
 /// 一条还在用的会话。删完返回报告并 emit `session:purge`。

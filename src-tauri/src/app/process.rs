@@ -112,6 +112,59 @@ pub fn open_url(url: &str) -> bool {
     result.0 as usize > 32
 }
 
+/// 读注册表原始值。字符串型用 `reg_read_string`，DWORD 用 `reg_read_dword`。
+///
+/// 与开机自启共用同一组 API（`RegOpenKeyExW` + `RegQueryValueExW`），
+/// 不额外引入 windows feature；调用方自己按类型解析。
+pub(crate) fn reg_read_raw(root: HKEY, subkey: &str, name: &str) -> Option<Vec<u8>> {
+    let subkey = HSTRING::from(subkey);
+    let name = HSTRING::from(name);
+    let mut hkey = HKEY::default();
+    if unsafe { RegOpenKeyExW(root, &subkey, 0, KEY_READ, &mut hkey) }.0 != 0 {
+        return None;
+    }
+    let mut size = 0u32;
+    let probe = unsafe { RegQueryValueExW(hkey, &name, None, None, None, Some(&mut size)) };
+    if probe.0 != 0 || size == 0 {
+        let _ = unsafe { RegCloseKey(hkey) };
+        return None;
+    }
+    let mut buf = vec![0u8; size as usize];
+    let read = unsafe {
+        RegQueryValueExW(
+            hkey,
+            &name,
+            None,
+            None,
+            Some(buf.as_mut_ptr()),
+            Some(&mut size),
+        )
+    };
+    let _ = unsafe { RegCloseKey(hkey) };
+    if read.0 != 0 {
+        return None;
+    }
+    Some(buf)
+}
+
+/// 读 `REG_SZ`。`REG_SZ` 是 UTF-16LE、以 0 结尾。
+pub(crate) fn reg_read_string(root: HKEY, subkey: &str, name: &str) -> Option<String> {
+    let buf = reg_read_raw(root, subkey, name)?;
+    let units: Vec<u16> = buf
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .take_while(|unit| *unit != 0)
+        .collect();
+    String::from_utf16(&units).ok()
+}
+
+/// 读 `REG_DWORD`。
+pub(crate) fn reg_read_dword(root: HKEY, subkey: &str, name: &str) -> Option<u32> {
+    let buf = reg_read_raw(root, subkey, name)?;
+    let bytes: [u8; 4] = buf.get(..4)?.try_into().ok()?;
+    Some(u32::from_le_bytes(bytes))
+}
+
 fn spawn(exe: &Path, hidden: bool) -> Result<()> {
     spawn_with_args(exe, &[], hidden)
 }

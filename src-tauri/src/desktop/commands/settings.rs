@@ -26,10 +26,14 @@ pub async fn settings_set(
 ) -> std::result::Result<(), String> {
     let db = state.db.clone();
     let text = value.to_string();
-    crate::app::runtime::blocking(move || db.kv_set(&key, &text))
-        .await
-        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
-        .map_err(err_text)
+    crate::app::runtime::blocking(move || {
+        // 写前留一份旧值：设置页改错了能回滚（`ui.*` 不参与）
+        crate::app::config_history::capture(&db, &key, Some(&text))?;
+        db.kv_set(&key, &text)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)
 }
 
 #[tauri::command]

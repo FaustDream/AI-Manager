@@ -4,11 +4,15 @@ import type { Level } from "./Level";
 /**
  * 一行结构化日志，直接对应 app.jsonl 的一行。
  *
- * 「执行记录」与普通业务日志共用这一份文件：带 `action` 的行表示**一次动作的完整交代**
- * （谁触发、成没成、花了多久），执行记录页只筛这一类。老 jsonl 行没有这些字段，
+ * 「执行动作」与普通业务日志共用这一份文件：带 `action` 的行表示**一次动作的完整交代**
+ * （谁触发、成没成、花了多久），日志页的「执行动作」视图只筛这一类。老 jsonl 行没有这些字段，
  * 靠 `serde(default)` 兼容——日志是历史资产，不能因为加字段就读不出来。
  */
-export type Line = { ts: string, level: Level, module: string, message: string, 
+export type Line = { 
+/**
+ * 协议版本：机器消费方先读这个字段再决定字段语义
+ */
+schema: number, ts: string, level: Level, module: string, message: string, 
 /**
  * 动作键：`account_switch` / `schedule.daily_round` …；普通日志为 None
  */
@@ -49,4 +53,13 @@ attempts: string | null,
 /**
  * 批次号：批量动作的逐条记录都挂在同一个批次下
  */
-batch: string | null, };
+batch: string | null, 
+/**
+ * 合并次数：连续重复的同一行只写一次，次数记在这里（首行没有这个字段）。
+ * 有它才能「少输出」又不丢信息——重复 400 次和 1 次必须能区分开。
+ */
+repeat: number | null, 
+/**
+ * 这一串重复里**最后一次**出现的时间；配合 `repeat` 说明「最近还在发生」。
+ */
+last_ts: string | null, };

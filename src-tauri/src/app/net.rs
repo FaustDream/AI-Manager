@@ -6,10 +6,12 @@
 //! `RealHttp`（reqwest）只在这里出现一次，业务代码拿到的永远是 `&dyn Http`。
 
 use crate::app::error::{AppError, ErrorKind, Result};
+use crate::app::{log, process};
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
+use windows::Win32::System::Registry::HKEY_CURRENT_USER;
 
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
@@ -109,10 +111,28 @@ pub struct RealHttp {
 
 impl RealHttp {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             // 各家客户端都会校验 UA；空 UA 会被部分网关直接拒绝
-            .user_agent("AI-Manager")
+            .user_agent("AI-Manager");
+        if let Some((url, bypass)) = system_proxy() {
+            match reqwest::Proxy::all(&url) {
+                Ok(proxy) => {
+                    // 排除列表挂在代理上（ClientBuilder::no_proxy 是无参的「彻底不用代理」）
+                    let skip = bypass_list(&bypass);
+                    let proxy = proxy.no_proxy(reqwest::NoProxy::from_string(&skip));
+                    builder = builder.proxy(proxy);
+                    log::log(log::Level::Info, "net", "已启用系统代理（Internet 选项）");
+                }
+                // 代理地址写错不该让整个应用没网：退回直连，并在日志里说清楚
+                Err(e) => log::log(
+                    log::Level::Warn,
+                    "net",
+                    format!("系统代理地址不可用，已退回直连：{e}"),
+                ),
+            }
+        }
+        let client = builder
             .build()
             // 构造失败只可能是 TLS 后端初始化问题；宁可启动期崩，
             // 也别退化成无超时的 client——签到请求会永久挂起占住配额
@@ -121,15 +141,79 @@ impl RealHttp {
     }
 }
 
+/// Windows 系统代理（「Internet 选项」里的那套）。
+///
+/// reqwest 只认 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量，**不读** WinINET 的系统代理。
+/// 而绝大多数用户只把代理配在系统里：浏览器与各家客户端都走代理，唯独本应用直连 ——
+/// 表现就是国际版 WorkBuddy / Qoder 的登录与查询全部「请求超时」，而国内域名一切正常。
+///
+/// 返回 `(proxy url, bypass 文本)`；环境变量已存在时返回 None，交给 reqwest 自己处理，
+/// 免得两套配置互相覆盖。
+fn system_proxy() -> Option<(String, String)> {
+    if ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some())
+    {
+        return None;
+    }
+    const KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
+    // ProxyEnable 为 0 时 ProxyServer 常常还留着上次的残值，不能只看字符串非空
+    if process::reg_read_dword(HKEY_CURRENT_USER, KEY, "ProxyEnable")? == 0 {
+        return None;
+    }
+    let url = proxy_url(&process::reg_read_string(
+        HKEY_CURRENT_USER,
+        KEY,
+        "ProxyServer",
+    )?)?;
+    let bypass =
+        process::reg_read_string(HKEY_CURRENT_USER, KEY, "ProxyOverride").unwrap_or_default();
+    Some((url, bypass))
+}
+
+/// `ProxyServer` 有两种写法：`host:port`，或 `http=host:port;https=host:port`。
+/// 后者的 https 项优先——本应用的请求几乎全是 https。
+fn proxy_url(server: &str) -> Option<String> {
+    let text = server.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let picked = text
+        .split(';')
+        .filter_map(|item| item.split_once('='))
+        .find(|(scheme, _)| scheme.trim().eq_ignore_ascii_case("https"))
+        .map(|(_, value)| value.trim())
+        .unwrap_or_else(|| text.split(';').next().unwrap_or(text).trim());
+    if picked.is_empty() {
+        return None;
+    }
+    Some(if picked.contains("://") {
+        picked.to_string()
+    } else {
+        format!("http://{picked}")
+    })
+}
+
+/// `ProxyOverride` 用 `;` 分隔，还带 `<local>` / `<-loopback>` 这类伪项；
+/// reqwest 的 no_proxy 只认域名列表。
+fn bypass_list(override_text: &str) -> String {
+    override_text
+        .split(';')
+        .map(str::trim)
+        .filter(|item| !item.is_empty() && !item.starts_with('<'))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 impl Default for RealHttp {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[async_trait]
-impl Http for RealHttp {
-    async fn send(&self, req: HttpRequest) -> Result<HttpResponse> {
+impl RealHttp {
+    /// 真正发一次请求。错误带上「是否值得重试」，由 `send` 决定。
+    async fn once(&self, req: &HttpRequest) -> std::result::Result<HttpResponse, (AppError, bool)> {
         let mut builder = match req.method {
             Method::Get => self.client.get(&req.url),
             Method::Post => self.client.post(&req.url),
@@ -137,15 +221,42 @@ impl Http for RealHttp {
         for (key, value) in &req.headers {
             builder = builder.header(key, value);
         }
-        if let Some(body) = req.body {
-            builder = builder.body(body);
+        if let Some(body) = &req.body {
+            builder = builder.body(body.clone());
         }
         let resp = builder.send().await.map_err(|e| {
-            AppError::new(ErrorKind::Provider, format!("网络请求失败：{}", brief(&e)))
+            // 超时/连不上属于链路问题，重试有意义；解码失败之类重试也没用
+            let retry = e.is_timeout() || e.is_connect();
+            (
+                AppError::new(ErrorKind::Provider, format!("网络请求失败：{}", brief(&e))),
+                retry,
+            )
         })?;
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
         Ok(HttpResponse { status, body })
+    }
+}
+
+#[async_trait]
+impl Http for RealHttp {
+    async fn send(&self, req: HttpRequest) -> Result<HttpResponse> {
+        match self.once(&req).await {
+            Ok(resp) => Ok(resp),
+            // GET 是只读的：跨境链路 + 本地代理偶发重置时重试一次，别让账号列表
+            // 因为一次抖动就挂上「查询失败」的红字。
+            // POST 一律不重试——签到接口重放等于重复领取。
+            Err((e, retry)) if retry && req.method == Method::Get => {
+                log::log(
+                    log::Level::Debug,
+                    "net",
+                    format!("GET 失败，重试一次：{}", e.message),
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                self.once(&req).await.map_err(|(e, _)| e)
+            }
+            Err((e, _)) => Err(e),
+        }
     }
 }
 
@@ -267,6 +378,35 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_server_accepts_both_windows_shapes() {
+        assert_eq!(
+            proxy_url("127.0.0.1:7897").as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+        // 分段写法优先取 https
+        assert_eq!(
+            proxy_url("http=127.0.0.1:7890;https=127.0.0.1:7897").as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+        // 已经带 scheme 就原样用
+        assert_eq!(
+            proxy_url("socks5://127.0.0.1:7897").as_deref(),
+            Some("socks5://127.0.0.1:7897")
+        );
+        assert_eq!(proxy_url("   ").as_deref(), None);
+    }
+
+    #[test]
+    fn proxy_bypass_drops_windows_pseudo_entries() {
+        assert_eq!(
+            bypass_list("<local>;*.corp.example.com;10.*"),
+            "*.corp.example.com,10.*"
+        );
+        assert_eq!(bypass_list("<-loopback>"), "");
+        assert_eq!(bypass_list(""), "");
+    }
 
     #[tokio::test]
     async fn mock_records_calls_and_headers() {

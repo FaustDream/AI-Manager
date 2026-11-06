@@ -18,6 +18,7 @@ use crate::types::{ActionResult, CreditSnapshot, StatusResult};
 use async_trait::async_trait;
 
 pub mod codebuddy;
+pub mod hints;
 pub mod qoder;
 pub mod trae;
 pub mod workbuddy;
@@ -97,6 +98,59 @@ pub trait Provider: Send + Sync {
         Err(AppError::new(
             ErrorKind::Unsupported,
             format!("{} 暂不支持签到", self.label()),
+        ))
+    }
+
+    // ---- 猫猫旅行（WorkBuddy 国内版专属；其他平台保持「不支持」）----
+    /// 平台是否有猫猫旅行玩法。默认没有，平台适配器按需覆盖。
+    fn travel_supported(&self) -> bool {
+        false
+    }
+    async fn travel_status(
+        &self,
+        _cred: &Credential,
+        _http: &dyn Http,
+    ) -> Result<crate::app::activity::TravelStatus> {
+        Err(AppError::new(
+            ErrorKind::Unsupported,
+            format!("{} 暂不支持猫猫旅行", self.label()),
+        ))
+    }
+    async fn travel_config(
+        &self,
+        _cred: &Credential,
+        _http: &dyn Http,
+    ) -> Result<crate::app::activity::TravelConfig> {
+        Err(AppError::new(
+            ErrorKind::Unsupported,
+            format!("{} 暂不支持猫猫旅行", self.label()),
+        ))
+    }
+    async fn travel_records(
+        &self,
+        _cred: &Credential,
+        _http: &dyn Http,
+    ) -> Result<Vec<crate::app::activity::TravelRecord>> {
+        Err(AppError::new(
+            ErrorKind::Unsupported,
+            format!("{} 暂不支持猫猫旅行", self.label()),
+        ))
+    }
+    async fn travel_claim(&self, _cred: &Credential, _http: &dyn Http) -> Result<ActionResult> {
+        Err(AppError::new(
+            ErrorKind::Unsupported,
+            format!("{} 暂不支持猫猫旅行", self.label()),
+        ))
+    }
+    async fn travel_depart(
+        &self,
+        _cred: &Credential,
+        _http: &dyn Http,
+        _location_id: i64,
+    ) -> Result<ActionResult> {
+        Err(AppError::new(
+            ErrorKind::Unsupported,
+            format!("{} 暂不支持猫猫旅行", self.label()),
         ))
     }
 }

@@ -1,4 +1,4 @@
-// 库入口：契约层（contracts/）与各层模块。契约编号对应 ARCHITECTURE-v2.md §7。
+// 库入口：契约层（contracts/）与各层模块。契约编号定义见 AGENTS.md §4。
 
 pub mod app;
 pub mod contracts;

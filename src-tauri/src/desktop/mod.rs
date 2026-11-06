@@ -20,6 +20,8 @@ pub struct AppState {
     pub db: Arc<Db>,
     /// 签到编排。持有网络与时钟，命令层只转接
     pub checkin: Arc<crate::app::checkin::Service>,
+    /// 猫猫旅行编排（WorkBuddy 国内版）
+    pub activity: Arc<crate::app::activity::Service>,
     /// 会话索引。只读写 app.db，客户端库由扫描任务自己碰
     pub sessions: Arc<crate::app::sessions::Service>,
     /// 技能与 MCP：只写配置文件，每次写前备份
@@ -101,10 +103,15 @@ pub fn run() -> tauri::Result<()> {
     };
 
     tauri::Builder::default()
+        // 系统通知：到期/失败预警只在「状态变化」或「每天一次」时弹，避免刷屏
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let state = init_state(instance)?;
             let service = state.checkin.clone();
+            let activity = state.activity.clone();
             let hub = state.hub.clone();
+            let scan_db = state.db.clone();
+            let usage_db = state.db.clone();
             let sync_db = state.db.clone();
             let claim_db = state.db.clone();
             let sched_db = state.db.clone();
@@ -124,24 +131,34 @@ pub fn run() -> tauri::Result<()> {
                     }
                 });
             }
-            spawn_scheduler(sched_db, service.clone(), app.handle().clone());
+            spawn_scheduler(sched_db, service.clone(), activity, app.handle().clone());
+            spawn_startup_scan(scan_db, app.handle().clone());
             spawn_hub_auto_sync(sync_db, hub);
             spawn_zcode_auto_claim(claim_db, service, app.handle().clone());
             spawn_event_bridges(app.handle().clone());
+            spawn_usage_scan(usage_db);
 
-            // 启动本身也是一次「动作」：执行记录里能看到每次重启的时间点
+            // 启动本身也是一次「动作」：执行动作里能看到每次重启的时间点
             log::action("app.startup", "startup", true, 0, "外壳启动完成");
-            log::log(Level::Info, "app", "P1 外壳启动完成");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::shell::ui_ready,
+            commands::shell::app_version,
             commands::shell::app_quit,
             commands::settings::settings_get,
             commands::settings::settings_set,
             commands::shell::app_show_window,
             commands::shell::open_external,
+            commands::shell::open_private_browser,
             commands::accounts::account_list,
+            commands::accounts::account_set_enabled,
+            commands::accounts::account_set_alias,
+            commands::accounts::account_set_tags,
+            commands::accounts::account_set_note,
+            commands::accounts::account_batch_diagnose,
+            commands::accounts::account_export,
+            commands::accounts::account_reward_credits,
             commands::accounts::account_reorder,
             commands::accounts::account_delete,
             commands::accounts::account_scan,
@@ -153,6 +170,8 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_current,
             commands::accounts::account_add_prepare,
             commands::accounts::account_login_start,
+            commands::accounts::account_relogin_start,
+            commands::accounts::account_refresh_all,
             commands::accounts::account_open_client,
             commands::hub::hub_snapshot,
             commands::hub::hub_skill_deploy,
@@ -168,17 +187,21 @@ pub fn run() -> tauri::Result<()> {
             commands::sessions::session_facets,
             commands::sessions::session_preview,
             commands::sessions::session_running_clients,
-            commands::sessions::session_delete,
-            commands::sessions::session_backup,
-            commands::sessions::session_backups,
-            commands::sessions::session_trash,
-            commands::sessions::session_trash_restore,
-            commands::sessions::session_trash_purge,
             commands::sessions::session_archive,
             commands::sessions::session_purge,
             commands::sessions::session_retention,
             commands::sessions::session_retention_set,
+            commands::activity::activity_overview,
+            commands::activity::activity_daily_status,
+            commands::activity::activity_daily_hello,
+            commands::activity::activity_claim,
+            commands::activity::activity_depart,
+            commands::activity::activity_pref_set,
             commands::checkin::checkin_credits,
+            commands::checkin::checkin_diagnose,
+            commands::checkin::credit_trend,
+            commands::checkin::credit_claims_recent,
+            commands::checkin::credit_flow,
             commands::checkin::checkin_detail,
             commands::checkin::checkin_run,
             commands::checkin::checkin_batch,
@@ -191,10 +214,22 @@ pub fn run() -> tauri::Result<()> {
             commands::checkin::zcode_claim_plans,
             commands::checkin::zcode_claim_run,
             commands::logs::log_query,
+            commands::logs::log_stats,
             commands::logs::log_export,
+            commands::logs::log_clear,
             commands::logs::log_action,
             commands::logs::log_ui,
             commands::settings::log_level,
+            commands::system::system_health,
+            commands::system::diagnose_bundle,
+            commands::system::update_check,
+            commands::system::config_snapshot_list,
+            commands::system::config_snapshot_restore,
+            commands::system::config_snapshot_clear,
+            commands::system::alert_mute,
+            commands::system::alert_unmute_all,
+            commands::usage::usage_scan,
+            commands::usage::usage_overview,
             commands::maintenance::maintenance_space,
             commands::maintenance::maintenance_trash,
             commands::maintenance::maintenance_purge_trash,
@@ -211,13 +246,8 @@ fn init_state(
     log::init(Level::Info)?;
     let db = Arc::new(Db::open()?);
 
-    log::log(
-        Level::Info,
-        "app",
-        format!("数据目录 {}", crate::app::paths::data_dir().display()),
-    );
-
-    // 启动体检：账号数、会话索引、上一轮轮询结果，排查问题先看这一行
+    // 启动体检：版本、账号数、会话索引、数据目录、上一轮轮询结果。
+    // 排障先看这一行——原先「数据目录」单独占一行，两行说的是同一件事，合并掉。
     {
         let accounts = crate::app::accounts::repo::list(&db)
             .map(|v| v.len())
@@ -235,7 +265,11 @@ fn init_state(
         log::log(
             Level::Info,
             "app",
-            format!("启动体检：账号 {accounts} · 会话索引 {sessions} · 上一轮[{last_round}]"),
+            format!(
+                "启动体检：v{} · 账号 {accounts} · 会话索引 {sessions} · 数据目录 {} · 上一轮[{last_round}]",
+                env!("CARGO_PKG_VERSION"),
+                crate::app::paths::data_dir().display()
+            ),
         );
     }
 
@@ -259,11 +293,14 @@ fn init_state(
         }
     });
 
+    // 签到与旅行共用同一个 reqwest client：连接复用，也避免两套超时/证书策略
+    let http: Arc<dyn crate::app::net::Http> = Arc::new(crate::app::net::RealHttp::new());
     let checkin = Arc::new(crate::app::checkin::Service::new(
         db.clone(),
-        Arc::new(crate::app::net::RealHttp::new()),
+        http.clone(),
         Arc::new(crate::app::clock::SystemClock),
     ));
+    let activity = Arc::new(crate::app::activity::Service::new(db.clone(), http));
 
     let sessions = Arc::new(crate::app::sessions::Service::new(
         db.clone(),
@@ -273,13 +310,14 @@ fn init_state(
     Ok(AppState {
         db,
         checkin,
+        activity,
         sessions,
         hub: Arc::new(crate::app::hub::Hub::system()),
         _instance: instance,
     })
 }
 
-/// 定时任务调度器：30 秒一跳，谁到点跑谁。
+/// 定时任务调度器：睡到下次执行点，配置变更即时唤醒。
 ///
 /// **定时器必须在 Rust 侧**：前端 `setInterval` 在窗口隐藏/被挂起时就停了，
 /// 而后台常驻正是这个工具的主场景。
@@ -287,13 +325,21 @@ fn init_state(
 /// 规则本身是用户配的（`app::schedule`，存 kv），这里只负责「到点了就叫起来」，
 /// 并且每次触发都落一条 `trigger=schedule` 的执行记录——用户事后能看到
 /// 「它自己跑过什么、成没成、花了多久」。
-fn spawn_scheduler(db: Arc<Db>, service: Arc<crate::app::checkin::Service>, app: tauri::AppHandle) {
+fn spawn_scheduler(
+    db: Arc<Db>,
+    service: Arc<crate::app::checkin::Service>,
+    activity: Arc<crate::app::activity::Service>,
+    app: tauri::AppHandle,
+) {
     use std::collections::HashSet;
     use std::sync::Mutex;
 
     tauri::async_runtime::spawn(async move {
         // 等首屏稳定再开始判点，别和账号列表抢 SQLite 的读连接
-        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(20)) => {},
+            _ = crate::app::schedule::changed() => {},
+        }
         // 正在跑的 id：一轮签到几十秒，期间不能被下一跳重复捞起来
         let running: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
@@ -308,7 +354,20 @@ fn spawn_scheduler(db: Arc<Db>, service: Arc<crate::app::checkin::Service>, app:
             .and_then(|result| result.ok())
             .unwrap_or_default();
 
-            for item in list {
+            let mut next_at: Option<chrono::DateTime<chrono::Local>> = None;
+            for item in &list {
+                // 计算下次执行时刻时，把「本轮就要跑」的任务按已跑过处理，
+                // 否则 every 规则会拿着旧的 last_run 算出一个过去时刻，导致 5 秒空转
+                let mut candidate = item.clone();
+                if item.due(now) {
+                    candidate.last_run = Some(now.to_rfc3339());
+                }
+                if let Some(next) = candidate.next_run(now) {
+                    next_at = Some(match next_at {
+                        Some(current) => current.min(next),
+                        None => next,
+                    });
+                }
                 if !item.due(now) {
                     continue;
                 }
@@ -318,27 +377,44 @@ fn spawn_scheduler(db: Arc<Db>, service: Arc<crate::app::checkin::Service>, app:
                         continue;
                     }
                 }
-                // 先落 last_run 再执行：执行期间下一跳再判 due 也不会重复触发
-                let _ = crate::app::runtime::blocking({
-                    let db = db.clone();
-                    let id = item.id.clone();
-                    move || crate::app::schedule::mark_ran(&db, &id)
-                })
-                .await;
-
                 let service = service.clone();
+                let activity = activity.clone();
                 let app = app.clone();
                 let running = running.clone();
+                let db = db.clone();
+                let id = item.id.clone();
                 tauri::async_runtime::spawn(async move {
-                    run_schedule(&service, &app, &item).await;
+                    let fresh = crate::app::runtime::blocking({
+                        let id = id.clone();
+                        move || crate::app::schedule::take_due(&db, &id, chrono::Local::now())
+                    })
+                    .await;
+                    match fresh {
+                        Ok(Ok(Some(item))) => run_schedule(&service, &activity, &app, &item).await,
+                        Ok(Ok(None)) => {}
+                        Ok(Err(e)) | Err(e) => log::fail(
+                            "schedule",
+                            "schedule_start",
+                            "读取或标记定时任务失败，未执行",
+                            e.evidence(),
+                        ),
+                    }
                     running
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .remove(&item.id);
+                        .remove(&id);
                 });
             }
 
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            // 睡到最近一条规则的下次执行时刻；最长 30 分钟兜底，防止时钟跳变漏事件
+            let wait_ms = next_at
+                .map(|next| (next - now).num_milliseconds())
+                .unwrap_or(30 * 60 * 1000)
+                .clamp(5_000, 30 * 60 * 1000) as u64;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => {},
+                _ = crate::app::schedule::changed() => {},
+            }
         }
     });
 }
@@ -347,11 +423,23 @@ fn spawn_scheduler(db: Arc<Db>, service: Arc<crate::app::checkin::Service>, app:
 ///
 /// 定时触发和「立即执行」都走这里，只是外面各自记一条 trigger 不同的执行记录——
 /// 两条链路各写一遍动作分支，早晚会漂。
+/// 一次定时执行的结论。
+///
+/// `changed` 是这次优化新加的判断依据：**没产生任何变化的轮询不写日志**。
+/// 积分刷新每小时一次、旅行轮询每小时一次，全绿时逐条记录只是心跳噪声；
+/// 「定时任务到底跑没跑」由「定时任务」页的 last_run 回答，日志只留变化与失败。
+pub(crate) struct ScheduleOutcome {
+    pub ok: bool,
+    pub detail: String,
+    pub changed: bool,
+}
+
 pub(crate) async fn execute_schedule(
     service: &Arc<crate::app::checkin::Service>,
+    activity: &Arc<crate::app::activity::Service>,
     app: &tauri::AppHandle,
     item: &crate::app::schedule::Schedule,
-) -> (bool, String) {
+) -> ScheduleOutcome {
     use crate::app::schedule::ScheduleAction::*;
     use tauri::Emitter;
 
@@ -360,33 +448,70 @@ pub(crate) async fn execute_schedule(
             let round = service.run_round("schedule").await;
             // 界面收到就更新底部那一行；收不到也不影响结算
             let _ = app.emit("checkin:round", &round);
-            (round.failed == 0, round.detail())
+            // 签到之后补一次当日活跃：开关默认关，已补过的账号由幂等标记跳过
+            let daily = activity.daily_sweep().await;
+            let detail = match &daily {
+                Some(line) => format!("{}；{line}", round.detail()),
+                None => round.detail(),
+            };
+            ScheduleOutcome {
+                ok: round.failed == 0,
+                detail,
+                changed: round.success > 0 || round.failed > 0 || daily.is_some(),
+            }
         }
         CreditsRound => {
             let (total, failed) = service.credits_round().await;
             if total > 0 {
                 let _ = app.emit("credits:round", total);
             }
-            (failed == 0, format!("{total} 个账号，失败 {failed}"))
+            ScheduleOutcome {
+                ok: failed == 0,
+                detail: format!("{total} 个账号，失败 {failed}"),
+                // 全绿没有可看的信息：余额数字在账号列表上，日志里不必每小时重复一遍
+                changed: failed > 0,
+            }
+        }
+        TravelRound => {
+            let round = match item.account_iid.as_deref() {
+                Some(iid) => activity.round_for("schedule", Some(iid)).await,
+                None => activity.round("schedule").await,
+            };
+            let _ = app.emit("activity:round", &round.message);
+            ScheduleOutcome {
+                ok: round.failed == 0,
+                detail: round.message,
+                changed: round.claimed > 0 || round.departed > 0 || round.failed > 0,
+            }
         }
     }
 }
 
-/// 定时触发：执行 + 写 `trigger=schedule` 的执行记录。
+/// 定时触发：执行 + 只在「有变化」时写一条执行记录。
 async fn run_schedule(
     service: &Arc<crate::app::checkin::Service>,
+    activity: &Arc<crate::app::activity::Service>,
     app: &tauri::AppHandle,
     item: &crate::app::schedule::Schedule,
 ) {
     let started = std::time::Instant::now();
-    let (ok, detail) = execute_schedule(service, app, item).await;
-    log::action(
-        &format!("schedule.{}", item.id),
-        "schedule",
-        ok,
-        started.elapsed().as_millis() as u64,
-        format!("定时「{}」（{}）：{detail}", item.name, item.rule_text()),
-    );
+    let outcome = execute_schedule(service, activity, app, item).await;
+    // 无事可做的心跳轮询不留痕：这类「正常流程」每天能刷出上百行，
+    // 真正需要排查时反而把失败记录淹了。服务内部的动作记录也已按同一口径收敛。
+    if outcome.changed {
+        log::action(
+            &format!("schedule.{}", item.id),
+            "schedule",
+            outcome.ok,
+            started.elapsed().as_millis() as u64,
+            format!(
+                "定时「{}」（{}）：{}",
+                item.name,
+                item.rule_text(),
+                outcome.detail
+            ),
+        );
+    }
 }
 
 /// ZCode 活动自动领取（v1 行为，开关 kv `zcode_auto_claim` **默认关**）：
@@ -432,20 +557,102 @@ fn spawn_zcode_auto_claim(
     });
 }
 
-/// 日志的事件桥：log 的实时行 → `log:line`，执行记录页与日志页共用这一条通道。
+/// 本地用量采集：启动 15 秒后跑一次，之后每 30 分钟增量扫一遍。
+///
+/// 只读客户端落盘文件，慢一点没关系；失败只记日志，不影响任何业务。
+fn spawn_usage_scan(db: Arc<Db>) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        loop {
+            let db = db.clone();
+            match crate::app::runtime::blocking(move || {
+                crate::app::usage::scan_all(&db, &crate::app::clients::Roots::system())
+            })
+            .await
+            {
+                Ok(Ok(report)) if report.inserted > 0 => log::log(
+                    Level::Info,
+                    "usage",
+                    format!(
+                        "用量采集：新增 {} 条（扫描 {}）",
+                        report.inserted, report.scanned
+                    ),
+                ),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) | Err(e) => {
+                    log::fail("usage", "usage_scan", "用量采集失败", e.evidence())
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+        }
+    });
+}
+
+/// 事件桥：日志实时行 → `log:line`；新领取记录 → `claim:recorded`。
 fn spawn_event_bridges(app: tauri::AppHandle) {
     use tauri::Emitter;
 
+    let log_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut rx = log::subscribe_live();
         loop {
             match rx.recv().await {
                 Ok(line) => {
-                    let _ = app.emit("log:line", &line);
+                    let _ = log_app.emit("log:line", &line);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break,
             }
+        }
+    });
+
+    // 领取记录是本地台账：签到 / ZCode 活动 / 猫猫旅行任一路径写成功后推一条，
+    // 详情面板据此立刻重取，不用等用户点刷新或下一轮轮询。
+    tauri::async_runtime::spawn(async move {
+        let mut rx = crate::app::checkin::store::subscribe_claims();
+        loop {
+            match rx.recv().await {
+                Ok(iid) => {
+                    let _ = app.emit("claim:recorded", iid);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+/// 启动自动扫描账号：界面不再提供「扫描客户端」按钮，账号同步改为开机后台执行。
+///
+/// 延后 2 秒再跑：先让窗口上屏，扫描要读多个客户端目录，不该和冷启动抢 IO。
+/// 增量扫描本身很快；失败只记日志，不阻塞窗口。
+fn spawn_startup_scan(db: Arc<Db>, app: tauri::AppHandle) {
+    use tauri::Emitter;
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let started = std::time::Instant::now();
+        match crate::app::runtime::blocking(move || crate::app::accounts::scan_all(&db)).await {
+            Ok(Ok(report)) => {
+                log::action(
+                    "account_scan",
+                    "startup",
+                    true,
+                    started.elapsed().as_millis() as u64,
+                    format!(
+                        "启动自动扫描：{} 个账号（新增 {}）",
+                        report.scanned, report.added
+                    ),
+                );
+                // 扫描完通知界面重拉列表与「当前登录」
+                let _ = app.emit("accounts:scanned", ());
+            }
+            Ok(Err(e)) => log::fail("accounts", "account_scan", "启动自动扫描失败", e.evidence()),
+            Err(e) => log::fail(
+                "accounts",
+                "account_scan",
+                "启动自动扫描失败",
+                format!("kind=io · 原文={e}"),
+            ),
         }
     });
 }
@@ -482,9 +689,10 @@ fn spawn_hub_auto_sync(db: Arc<Db>, hub: Arc<crate::app::hub::Hub>) {
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let run_checkin = MenuItem::with_id(app, "run-checkin", "立即签到", true, None::<&str>)?;
     let reload = MenuItem::with_id(app, "reload", "重载界面", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &reload, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &run_checkin, &reload, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id("main-tray")
         .tooltip("AI Manager")
@@ -496,6 +704,27 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
+            }
+            // 不打开窗口也能跑一轮签到：结果照旧进「执行动作」，触发方记 tray
+            "run-checkin" => {
+                let service = app.state::<AppState>().checkin.clone();
+                tauri::async_runtime::spawn(async move {
+                    let iids = service.enabled_checkin_iids().await;
+                    if iids.is_empty() {
+                        log::log(Level::Info, "checkin", "托盘立即签到：没有可签账号");
+                        return;
+                    }
+                    let round = service.batch(&iids, "tray").await;
+                    log::log(
+                        if round.failed > 0 {
+                            Level::Warn
+                        } else {
+                            Level::Info
+                        },
+                        "checkin",
+                        format!("托盘立即签到：{}", round.detail()),
+                    );
+                });
             }
             // 界面层挂掉（白屏/卡死）时的自救通道：不动 Rust 侧状态，只重载前端。
             // 先在旧页面盖一层「正在重载」遮罩再刷新——动作发生在眼前，
@@ -520,7 +749,11 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     );
                 }
             }
-            "quit" => app.exit(0),
+            // 退出前把「重复 N 次」的计数补写掉，否则最后一串只剩首行
+            "quit" => {
+                log::flush();
+                app.exit(0)
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

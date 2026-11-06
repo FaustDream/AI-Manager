@@ -29,6 +29,34 @@ export function fmtDelta(value: number | null | undefined): string {
   return `${sign}${fmtAmount(value)}`;
 }
 
+/**
+ * Token 量级：与积分同口径，过亿读「亿」、过万读「万」。
+ * B / M 这类英文单位在中文界面里要心算一层，用量动辄十亿级，直接给亿更好读。
+ */
+export function fmtTokens(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  const abs = Math.abs(value);
+  if (abs >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
+  if (abs >= 1e4) return `${(value / 1e4).toFixed(2)}万`;
+  return String(Math.round(value));
+}
+
+/** 精确值：换算成亿会丢位数，需要原数时（悬浮提示）用它。 */
+export function fmtTokensExact(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  return Math.round(value).toLocaleString('en-US');
+}
+
+/** 坐标轴刻度用的短单位：8亿 / 2.5亿 / 5000万 —— 去掉多余的 0，刻度才不会互相挤。 */
+export function fmtTokensShort(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  const abs = Math.abs(value);
+  const trim = (n: number) => String(Number(n.toFixed(2)));
+  if (abs >= 1e8) return `${trim(value / 1e8)}亿`;
+  if (abs >= 1e4) return `${trim(value / 1e4)}万`;
+  return trim(value);
+}
+
 /** 只到日：到期日这类信息看「哪一天」就够，带时分反而占地方。 */
 export function fmtDay(iso: string | number | null | undefined): string {
   if (iso === null || iso === undefined || iso === '') return '—';
@@ -62,7 +90,7 @@ export function daysUntil(iso: string | number | null | undefined): number | nul
   return Math.round((end.getTime() - start.getTime()) / 86_400_000);
 }
 
-/** 耗时：低于 1 秒给毫秒，超过给秒。日志与执行记录共用一套口径。 */
+/** 耗时：低于 1 秒给毫秒，超过给秒。日志与执行动作共用一套口径。 */
 export function fmtMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return '—';
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;

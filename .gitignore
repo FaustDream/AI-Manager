@@ -7,6 +7,8 @@ node_modules/
 dist/
 release/
 src-tauri/target/
+# 隔离测试构建目录（CARGO_TARGET_DIR，开发版占用 target/debug 时跑测试用）
+src-tauri/target-test/
 src-tauri/gen/
 __pycache__/
 *.py[cod]
@@ -17,11 +19,14 @@ src-tauri/.cargo/
 .codebuddy/
 .workbuddy/
 .workbuddy-ai/
+.trae/
+.trae-html-share-packages/
 
 # 本地留存，不入库（docs/shots 截图带账号昵称等信息；tools/ 开发脚本与素材随本机走）
 docs/
 AGENTS.md
 tools/
+.trae/skills/
 
 # 打包脚本必须入库（发布要可复现），只忽略产物
 packaging/nsis/*.exe
@@ -32,3 +37,6 @@ packaging/nsis/*.exe
 *.old
 .DS_Store
 Thumbs.db
+wb_tool逆向/
+workbuddy-manager逆向/
+.screenshots/

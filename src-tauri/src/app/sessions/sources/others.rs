@@ -4,6 +4,13 @@
 //! Qoder 与 ZCode 的库**没有账号字段**（换号共用一份库），所以归属列留空、界面显示「本机」；
 //! Trae 的对话存在云端，本地只有输入历史，于是给已安装的版本各放一行占位，
 //! 状态标「云端」——比列表里空着更像「读到了，只是没有正文」。
+//!
+//! 「存在但列表不显示」（孤儿）只在 ZCode 成立：客户端删主会话不带走挂在它
+//! 名下的子代理（`subagent_child`）与 IDE 侧聊（`selection_side_chat`）会话，
+//! 这些行留库却再也指不到，扫描必须把父行已消失的子会话一起捞出来。
+//! 其他来源逐一验证过没有此问题——Qoder 侧聊有自己的清理字段
+//! （`side_chat_cleanup_state`）且扫描按 `session_kind='standard'` 过滤；
+//! WorkBuddy / CodeBuddy 无父子结构；Trae 只有云端占位。
 
 use crate::app::clients::Roots;
 use crate::app::sessions::sources::SourceInfo;
@@ -132,11 +139,13 @@ fn normalize_ms(value: i64) -> i64 {
     }
 }
 
-fn state_of(deleted: Option<i64>, archived: Option<i64>) -> SessionState {
+fn state_of(deleted: Option<i64>, archived: Option<i64>, orphaned: bool) -> SessionState {
     if deleted.is_some() {
         SessionState::Deleted
     } else if archived.unwrap_or(0) != 0 {
         SessionState::Archived
+    } else if orphaned {
+        SessionState::Orphan
     } else {
         SessionState::Visible
     }
@@ -199,7 +208,7 @@ fn scan_qoder(path: &Path, key: &str, label: &str, errors: &mut Vec<String>) -> 
         row.last_at = normalize_ms(updated.unwrap_or(0));
         row.msgs = msgs;
         row.size = size;
-        row.state = state_of(deleted, archived);
+        row.state = state_of(deleted, archived, false);
         row.has_body = msgs > 0;
         out.push(row);
     }
@@ -226,8 +235,19 @@ fn scan_zcode(path: &Path, errors: &mut Vec<String>) -> Vec<RawRow> {
         }
     }
     let mut out = Vec::new();
-    let query = "SELECT id, title, directory, time_updated, time_deleted, time_archived
-                 FROM session WHERE parent_id IS NULL ORDER BY time_updated DESC";
+    // 根会话之外还要捞「孤儿」：父会话已从库里消失的内部会话（子代理 / IDE 侧聊）。
+    // 客户端删主会话不带走它们，只扫 parent_id IS NULL 的话，这些数据在哪都看不见。
+    let query = "SELECT s.id, s.title, s.directory, s.time_updated, s.time_deleted,
+                        s.time_archived,
+                        (s.parent_id IS NOT NULL AND NOT EXISTS (
+                            SELECT 1 FROM session p WHERE p.id = s.parent_id
+                        ))
+                 FROM session s
+                 WHERE s.parent_id IS NULL
+                    OR (s.parent_id IS NOT NULL AND NOT EXISTS (
+                            SELECT 1 FROM session p WHERE p.id = s.parent_id
+                        ))
+                 ORDER BY s.time_updated DESC";
     let Ok(mut stmt) = conn.prepare(query) else {
         errors.push("ZCode：session 表读不出".into());
         return out;
@@ -240,12 +260,13 @@ fn scan_zcode(path: &Path, errors: &mut Vec<String>) -> Vec<RawRow> {
             row.get::<_, Option<i64>>(3).unwrap_or(None),
             row.get::<_, Option<i64>>(4).unwrap_or(None),
             row.get::<_, Option<i64>>(5).unwrap_or(None),
+            row.get::<_, i64>(6)? != 0,
         ))
     }) else {
         errors.push("ZCode：session 行读不出".into());
         return out;
     };
-    for (sid, title, directory, updated, deleted, archived) in rows.flatten() {
+    for (sid, title, directory, updated, deleted, archived, orphaned) in rows.flatten() {
         let msgs = counts.get(&sid).copied().unwrap_or(0);
         let mut row = RawRow::empty("zcode", ZCODE.0, ZCODE.1);
         row.session_id = sid;
@@ -258,7 +279,7 @@ fn scan_zcode(path: &Path, errors: &mut Vec<String>) -> Vec<RawRow> {
         // 库有几百 MB，逐条会话统计体积要把 blob 全读一遍：体积记 0，
         // 展示层把 0 归一为「—」（见 store::page 的映射）
         row.size = 0;
-        row.state = state_of(deleted, archived);
+        row.state = state_of(deleted, archived, orphaned);
         row.has_body = msgs > 0;
         out.push(row);
     }
@@ -287,8 +308,66 @@ mod tests {
 
     #[test]
     fn states_follow_columns() {
-        assert_eq!(state_of(Some(1), None), SessionState::Deleted);
-        assert_eq!(state_of(None, Some(1)), SessionState::Archived);
-        assert_eq!(state_of(None, None), SessionState::Visible);
+        assert_eq!(state_of(Some(1), None, false), SessionState::Deleted);
+        assert_eq!(state_of(None, Some(1), false), SessionState::Archived);
+        assert_eq!(state_of(None, None, false), SessionState::Visible);
+        assert_eq!(state_of(None, None, true), SessionState::Orphan);
+        // 孤儿不是免死金牌：客户端标了删除/归档仍按原状态算
+        assert_eq!(state_of(Some(1), None, true), SessionState::Deleted);
+        assert_eq!(state_of(None, Some(1), true), SessionState::Archived);
+    }
+
+    /// 孤儿内部会话（父会话已从库里消失）必须被扫出来，否则它们既不显示在
+    /// 客户端、也不显示在这里，数据成了三不管。真机确认过这条路径：主会话
+    /// 删除后，`subagent_child` / `selection_side_chat` 会留在库里。
+    #[test]
+    fn zcode_orphan_children_are_scanned() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            // 只建扫描用得到的最小形态：字段名与真实库一致，多余列一概省略
+            "CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                parent_id TEXT,
+                slug TEXT NOT NULL,
+                directory TEXT NOT NULL,
+                title TEXT NOT NULL,
+                version TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                time_deleted INTEGER,
+                time_archived INTEGER,
+                task_type TEXT NOT NULL DEFAULT 'interactive'
+            );
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+            INSERT INTO session (id, project_id, slug, directory, title, version,
+                                 time_created, time_updated)
+                VALUES ('sess_root', 'p', 's', 'D:/proj', '根会话', 'v1', 1, 2000);
+            INSERT INTO session (id, project_id, parent_id, slug, directory, title, version,
+                                 time_created, time_updated)
+                VALUES ('sess_child', 'p', 'sess_root', 's', 'D:/proj', '正常子会话', 'v1', 2, 2100);
+            INSERT INTO session (id, project_id, parent_id, slug, directory, title, version,
+                                 time_created, time_updated)
+                VALUES ('sess_orphan', 'p', 'sess_gone', 's', 'D:/proj', '孤儿子会话', 'v1', 3, 2200);
+            INSERT INTO message (id, session_id)
+                VALUES ('m1', 'sess_root'), ('m2', 'sess_orphan'), ('m3', 'sess_orphan');",
+        )
+        .unwrap();
+
+        let mut errors = Vec::new();
+        let rows = scan_zcode(&path, &mut errors);
+        let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+        assert!(ids.contains(&"sess_root"), "根会话必须在");
+        assert!(ids.contains(&"sess_orphan"), "孤儿必须被扫出来");
+        // 父还存在的子会话是客户端内部结构，不进列表（客户端也只显示根会话）
+        assert!(!ids.contains(&"sess_child"), "正常子会话不该出现");
+        let orphan = rows.iter().find(|r| r.session_id == "sess_orphan").unwrap();
+        assert_eq!(orphan.state, SessionState::Orphan);
+        assert_eq!(orphan.msgs, 2);
+        let root = rows.iter().find(|r| r.session_id == "sess_root").unwrap();
+        assert_eq!(root.state, SessionState::Visible);
+        assert_eq!(root.msgs, 1);
     }
 }

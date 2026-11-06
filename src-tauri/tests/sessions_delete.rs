@@ -1,65 +1,45 @@
-//! 删除 → 回收站 → 恢复，走一遍完整链路。
+//! 彻底删除的端到端断言：文件、客户端库行、索引三者必须一起消失。
 //!
-//! 这是整个 P4 里唯一会**动用户数据**的地方，所以断言不看返回值，看磁盘：
-//! 文件是不是真的搬走了、库行是不是真的没了、恢复之后是不是原样回来。
+//! 回收站已下线，这里断言的是**不可逆清理**：删完不再有副本，也不会出现幽灵行。
 
 mod support;
 
 use ai_manager::app::clients::Roots;
 use ai_manager::app::db::Db;
-use ai_manager::app::sessions::{delete, preview, sources::wb, SqliteSessions};
+use ai_manager::app::sessions::{marks, preview, sources::wb, SqliteSessions};
 use std::sync::Arc;
 use support::*;
 
-/// 一个测试里跑完 wb + codebuddy 两条链路：`data_dir` 的覆盖是进程级的，
-/// 拆成两个用例会互相踩。
+/// 归档两条（wb + codebuddy），再彻底删除：磁盘、客户端库、索引都不该留下。
 #[tokio::test]
-async fn delete_moves_to_trash_and_restore_brings_it_back() {
+async fn purge_removes_files_and_index() {
     let paths = TestPaths::new();
-    let trash_root = paths.join("trash");
     let roots = fake_roots(&paths);
     let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
     let iid_row = seed_workbuddy(&roots);
     let (cb_key, cb_dir) = seed_codebuddy(&roots);
 
-    // ---- 扫描进索引（删除要用行 key，key 来自索引） ----
     let service = ai_manager::app::sessions::Service::new(db.clone(), roots.clone());
     service.scan().await.unwrap();
     let page = service.page(Default::default(), None, 50).await.unwrap();
     assert_eq!(page.items.len(), 2, "两个来源各一条");
 
-    let wb_key = page
-        .items
-        .iter()
-        .find(|r| r.kind == "workbuddy")
-        .map(|r| format!("{}|{}|{}|{}", r.kind, r.source_key, r.account, r.session_id))
+    let wb_key = format!("workbuddy|cn|uid-1|{iid_row}");
+    marks::archive(&db, &[wb_key.clone(), cb_key.clone()], true).unwrap();
+
+    let report = service
+        .purge_with(vec![wb_key.clone(), cb_key.clone()], false)
+        .await
         .unwrap();
-    assert_eq!(wb_key.split('|').next_back(), Some(iid_row.as_str()));
-
-    // ---- 删除两条 ----
-    let report = delete::delete_into(
-        &roots,
-        &db,
-        &[wb_key.clone(), cb_key.clone()],
-        false,
-        &trash_root,
-        None,
-    )
-    .unwrap();
-    assert_eq!(report.sessions, 2, "{:?}", report.errors);
+    assert_eq!(report.deleted, 2, "{:?}", report.errors);
     assert!(report.bytes > 0);
-    assert!(
-        std::path::Path::new(&report.dir).exists(),
-        "批次目录要建出来"
-    );
 
-    // 正文文件不在了
     let wb_file = roots
         .workbuddy(false)
         .join("projects/demo")
         .join(format!("{iid_row}.jsonl"));
-    assert!(!wb_file.exists(), "删除后正文不该留在原地");
-    assert!(!cb_dir.exists(), "CodeBuddy 会话目录要整体搬走");
+    assert!(!wb_file.exists(), "正文要真的删掉，不能留下副本");
+    assert!(!cb_dir.exists(), "CodeBuddy 会话目录要整体删掉");
 
     // 库行真的删了
     let conn = rusqlite::Connection::open(roots.workbuddy(false).join("workbuddy.db")).unwrap();
@@ -69,46 +49,13 @@ async fn delete_moves_to_trash_and_restore_brings_it_back() {
     assert_eq!(left, 0, "sessions 行要删掉");
 
     // 索引里也不该再有
-    let store = SqliteSessions::new(&db);
-    assert_eq!(store.count().unwrap(), 0);
-
-    // 清单写清楚了这批删了什么
-    let manifest = delete::list_in(&trash_root)
-        .into_iter()
-        .next()
-        .expect("应该有批次");
-    assert_eq!(manifest.items.len(), 2);
-    assert_eq!(manifest.tag, report.tag);
-
-    // ---- 恢复 ----
-    let restored = delete::restore_from(&roots, &report.tag, false, &trash_root).unwrap();
-    assert_eq!(restored.restored, 2, "{:?}", restored.errors);
-    assert!(wb_file.exists(), "正文要搬回原位");
-    assert_eq!(
-        std::fs::read_to_string(&wb_file).unwrap().lines().count(),
-        2
-    );
-    assert!(cb_dir.exists(), "CodeBuddy 目录要回来");
-
-    let conn = rusqlite::Connection::open(roots.workbuddy(false).join("workbuddy.db")).unwrap();
-    let back: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sessions WHERE id = ?1",
-            [&iid_row],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(back, 1, "sessions 行要原样插回去");
-
-    // 恢复了就不该再留着批次目录（防止重复恢复插两遍）
-    assert!(!std::path::Path::new(&report.dir).exists());
+    assert_eq!(SqliteSessions::new(&db).count().unwrap(), 0);
 }
 
 /// 删除之后重新扫描，索引里不留幽灵行。
 #[tokio::test]
-async fn rescan_after_delete_has_no_ghosts() {
+async fn rescan_after_purge_has_no_ghosts() {
     let paths = TestPaths::new();
-    let trash_root = paths.join("trash");
     let roots = fake_roots(&paths);
     let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
     let sid = seed_workbuddy(&roots);
@@ -116,8 +63,9 @@ async fn rescan_after_delete_has_no_ghosts() {
     let service = ai_manager::app::sessions::Service::new(db.clone(), roots.clone());
     service.scan().await.unwrap();
     let key = format!("workbuddy|cn|uid-1|{sid}");
-    delete::delete_into(&roots, &db, &[key], false, &trash_root, None).unwrap();
-    // 删除时已经让来源失效，这里再扫一遍确认真没了
+    marks::archive(&db, std::slice::from_ref(&key), true).unwrap();
+    service.purge_with(vec![key], false).await.unwrap();
+
     service.scan().await.unwrap();
     let page = service.page(Default::default(), None, 50).await.unwrap();
     assert!(page.items.is_empty(), "删掉的会话不该被重新扫回来");
@@ -209,11 +157,9 @@ async fn preview_reads_workbuddy_body() {
 }
 
 /// ZCode 的删除最容易被漏：正文在 `part` 表，按 `message_id` 关联而不是 `session_id`。
-/// 这条用例把它钉住——删完 part 不能留孤儿行，恢复要能一行不差地插回去。
 #[tokio::test]
-async fn zcode_delete_and_restore_keeps_parts() {
+async fn zcode_purge_keeps_no_orphan_parts() {
     let paths = TestPaths::new();
-    let trash_root = paths.join("trash");
     let roots = fake_roots(&paths);
     let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
     let sid = "session_1fef456b559223f9a8961b11c0a07b71";
@@ -228,16 +174,9 @@ async fn zcode_delete_and_restore_keeps_parts() {
     assert_eq!(page.items[0].msgs, Some(2), "两条消息");
 
     let key = format!("zcode|zcode||{sid}");
-    let report = delete::delete_into(
-        &roots,
-        &db,
-        std::slice::from_ref(&key),
-        false,
-        &trash_root,
-        None,
-    )
-    .unwrap();
-    assert_eq!(report.sessions, 1, "{:?}", report.errors);
+    marks::archive(&db, std::slice::from_ref(&key), true).unwrap();
+    let report = service.purge_with(vec![key], false).await.unwrap();
+    assert_eq!(report.deleted, 1, "{:?}", report.errors);
 
     let db_path = roots.zcode().join("cli").join("db").join("db.sqlite");
     let counts = |path: &std::path::Path| {
@@ -256,13 +195,6 @@ async fn zcode_delete_and_restore_keeps_parts() {
     );
     for path in &artifacts {
         assert!(!path.exists(), "{} 还留在 cli 目录里", path.display());
-    }
-
-    let restored = delete::restore_from(&roots, &report.tag, false, &trash_root).unwrap();
-    assert_eq!(restored.restored, 1, "{:?}", restored.errors);
-    assert_eq!(counts(&db_path), (1, 2, 2), "恢复要一行不差地插回去");
-    for path in &artifacts {
-        assert!(path.exists(), "{} 没搬回原位", path.display());
     }
 }
 
@@ -327,14 +259,9 @@ fn seed_zcode(roots: &Roots, sid: &str) {
 }
 
 /// 客户端已经清过库的会话（先软删、之后硬删）：索引里还留着这些行。
-///
-/// 这类行的「彻底删除」曾经必然失败——`delete_workbuddy` 找不到库行就报错，
-/// 于是报告永远是「0 条」，那几行在列表里再也删不掉。现在要能清掉，
-/// 而且只清这几行，不能把整个来源的列表一起清空。
 #[tokio::test]
 async fn purge_clears_rows_the_client_already_forgot() {
     let paths = TestPaths::new();
-    let trash_root = paths.join("trash");
     let roots = fake_roots(&paths);
     let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
     let sid = seed_workbuddy(&roots);
@@ -371,34 +298,24 @@ async fn purge_clears_rows_the_client_already_forgot() {
         conn.execute("DELETE FROM session_usage", []).unwrap();
     }
 
-    let keys = [
+    let keys: Vec<String> = [
         format!("workbuddy|cn|uid-1|{sid}"),
         format!("workbuddy|cn|uid-1|{gone}"),
-    ];
-    let report = delete::delete_into(&roots, &db, &keys, false, &trash_root, None).unwrap();
+    ]
+    .to_vec();
+    marks::archive(&db, &keys, true).unwrap();
+    let report = service.purge_with(keys, false).await.unwrap();
     assert!(
         report.errors.is_empty(),
         "客户端已清库不是失败：{:?}",
         report.errors
     );
-    assert_eq!(report.sessions, 2, "两条都要算删除成功");
-    assert_eq!(
-        report.files, 4,
-        "正文 1 + 侧车 3（assistant-display / file-tree-manifests / 会话日志）"
-    );
+    assert_eq!(report.deleted, 2, "两条都要算删除成功");
 
     // 源数据必须真的不在原地了：正文、侧车、日志一个都不能剩
     for path in &sidecars {
         assert!(!path.exists(), "{} 还留在客户端目录里", path.display());
     }
-
-    // 彻底删除还会把回收站批次一起销毁：文件不是「挪走」而是真没了
-    delete::purge_into(&trash_root, &report.tag).unwrap();
-    assert!(
-        !std::path::Path::new(&report.dir).exists(),
-        "批次目录要销毁，不能留副本"
-    );
-
     assert_eq!(
         SqliteSessions::new(&db).count().unwrap(),
         0,
@@ -426,49 +343,4 @@ fn seed_sidecars(roots: &Roots, sid: &str) -> Vec<std::path::PathBuf> {
     std::fs::write(&log, "log line").unwrap();
     out.push(log);
     out
-}
-
-/// 回收站与客户端**不在同一个盘**：`rename` 会报 EXDEV（os error 17），
-/// 必须退回「复制 + 删源」。这是最常见的一种配置（客户端在 C:、工具数据在 D:），
-/// 也是「点了彻底删除却一条都没删掉」的真正原因。
-///
-/// 没有第二个盘的机器上跳过——跨盘路径没法用别的办法造出来。
-#[tokio::test]
-async fn delete_works_when_trash_lives_on_another_drive() {
-    let other = std::path::Path::new("D:/");
-    if !other.exists() {
-        return;
-    }
-    let paths = TestPaths::new(); // 源目录在 C: 的 %TEMP%
-    let roots = fake_roots(&paths);
-    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
-    let sid = seed_workbuddy(&roots);
-    let trash_root = other.join("ai-manager-cross-drive-test");
-    let _ = std::fs::remove_dir_all(&trash_root);
-
-    let service = ai_manager::app::sessions::Service::new(db.clone(), roots.clone());
-    service.scan().await.unwrap();
-
-    let key = format!("workbuddy|cn|uid-1|{sid}");
-    let report = delete::delete_into(&roots, &db, &[key], false, &trash_root, None).unwrap();
-    assert!(
-        report.errors.is_empty(),
-        "跨盘不该报错：{:?}",
-        report.errors
-    );
-    assert_eq!(report.sessions, 1, "跨盘也要能删掉");
-    assert!(
-        !roots
-            .workbuddy(false)
-            .join("projects/demo")
-            .join(format!("{sid}.jsonl"))
-            .exists(),
-        "源文件要从 C: 上消失"
-    );
-    assert!(
-        std::path::Path::new(&report.dir).starts_with(&trash_root),
-        "批次要落在 D: 的回收站里"
-    );
-
-    let _ = std::fs::remove_dir_all(&trash_root);
 }

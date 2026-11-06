@@ -17,6 +17,11 @@ export default defineConfig({
     strictPort: true,
     // 只绑 IPv4 回环：WebView2 解析 localhost 走 127.0.0.1
     host: '127.0.0.1',
+    // 不监听运行期目录：target/ 里的 exe 被运行中的 app 占用会 EBUSY 把 Vite 监听器打崩，
+    // data/ 的日志每次写入都会触发一轮无意义 HMR
+    watch: {
+      ignored: ['**/src-tauri/target/**', '**/data/**', '**/release/**'],
+    },
   },
   build: {
     outDir: 'dist',
