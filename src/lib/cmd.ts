@@ -108,7 +108,7 @@ export interface CmdArgs {
   activity_daily_status: { iid: string };
   activity_daily_hello: { iid: string };
   activity_pref_set: { iid: string; enabled: boolean; location: number | null };
-  checkin_credits: { iids: string[] };
+  checkin_credits: { iids: string[]; trigger?: 'auto' | 'user' };
   checkin_diagnose: { iid: string };
   checkin_detail: { iid: string };
   checkin_run: { iid: string };

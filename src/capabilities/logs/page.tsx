@@ -17,6 +17,7 @@ const LEVEL_RANK: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 3
 
 const TRIGGER_LABEL: Record<string, string> = {
   user: '手动',
+  auto: '自动',
   schedule: '定时',
   startup: '启动',
   tray: '托盘',
@@ -252,6 +253,7 @@ function LogsPane() {
               >
                 <option value="">全部触发</option>
                 <option value="user">手动</option>
+                <option value="auto">自动</option>
                 <option value="schedule">定时</option>
                 <option value="startup">启动</option>
               </Select>

@@ -1622,6 +1622,19 @@ impl RoundResult {
     }
 }
 
+/// 触发方归一化：命令层收到的客户端传参只认已知值，未知/缺省一律按「手动」处理，
+/// 不让任意字符串透传进动作日志。`auto` 是总览页积分过期时的自动补刷——
+/// 不是用户点的，记成「手动」会误导排障（v1.9.1 九类测试发现）。
+pub fn normalize_trigger(raw: Option<&str>) -> &'static str {
+    match raw {
+        Some("auto") => "auto",
+        Some("startup") => "startup",
+        Some("tray") => "tray",
+        Some("schedule") => "schedule",
+        _ => "user",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1659,5 +1672,22 @@ mod tests {
         ]);
         assert_eq!(points[0].earned, 0.0, "首日没有前一天，不算收支");
         assert_eq!(points[1].earned, 0.0, "浮点噪声不算变动");
+    }
+
+    #[test]
+    fn trigger_normalization_whitelists_known_values() {
+        assert_eq!(normalize_trigger(None), "user");
+        assert_eq!(normalize_trigger(Some("user")), "user");
+        assert_eq!(
+            normalize_trigger(Some("auto")),
+            "auto",
+            "自动补刷必须与手动区分"
+        );
+        assert_eq!(normalize_trigger(Some("schedule")), "schedule");
+        assert_eq!(normalize_trigger(Some("startup")), "startup");
+        assert_eq!(normalize_trigger(Some("tray")), "tray");
+        // 未知值按手动处理，不透传任意字符串进动作日志
+        assert_eq!(normalize_trigger(Some("hacker")), "user");
+        assert_eq!(normalize_trigger(Some("")), "user");
     }
 }

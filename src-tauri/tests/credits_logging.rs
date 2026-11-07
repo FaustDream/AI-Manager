@@ -114,3 +114,46 @@ async fn credits_failures_are_logged_per_account() {
         summary.message
     );
 }
+
+/// 触发方必须原样进批次汇总：总览页积分过期的自动补刷传 `auto`，
+/// 日志里就不能标「手动」——否则排障时看不出这轮是谁触发的
+/// （v1.9.1 九类测试发现：自动补刷曾与手动按钮共用 `user`）。
+#[tokio::test]
+async fn credits_batch_logs_client_trigger_verbatim() {
+    let paths = TestPaths::new();
+    log::init_at(Level::Debug, &paths.join("logs")).unwrap();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = "trae:u1".to_string();
+    seed(&db, &iid, "正常账号", true);
+
+    let http = Arc::new(MockHttp::new());
+    http.on(
+        STATUS_URL,
+        200,
+        r#"{"checked_in":false,"enable":true,"credits":10}"#,
+    );
+    http.on(
+        USAGE_URL,
+        200,
+        r#"{"usage_summary":{"total_amount":100,"consumed_amount":40}}"#,
+    );
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http, clock);
+
+    service.credits_batch(&[iid], "auto").await;
+
+    let rows = log::query(&LogFilter {
+        action_only: Some(true),
+        ..Default::default()
+    })
+    .unwrap();
+    let summary = rows
+        .iter()
+        .find(|line| line.action.as_deref() == Some("checkin_credits"))
+        .expect("批次收尾汇总必须存在");
+    assert_eq!(
+        summary.trigger.as_deref(),
+        Some("auto"),
+        "触发方要按客户端传的原样记录"
+    );
+}

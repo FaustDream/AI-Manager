@@ -6,13 +6,22 @@ use super::*;
 
 /// 「刷新积分」：刷余额，需要签到的平台顺带刷签到状态（否则平台侧已签的账号
 /// 会一直停在「待查询」）。真正的并发与失败兜底在 `Service::credits_batch`。
+/// `trigger` 由客户端声明（按钮点击缺省 `user`、总览页自动补刷传 `auto`），
+/// 未知值经 `normalize_trigger` 归一化为 `user`，任意字符串不透传进动作日志。
 #[tauri::command]
 pub async fn checkin_credits(
     state: State<'_, AppState>,
     iids: Vec<String>,
+    trigger: Option<String>,
 ) -> std::result::Result<Vec<(String, crate::types::CreditSnapshot)>, String> {
     // 并发、失败兜底与逐条失败日志都在 Service::credits_batch 里，命令层只转接
-    Ok(state.checkin.credits_batch(&iids, "user").await)
+    Ok(state
+        .checkin
+        .credits_batch(
+            &iids,
+            crate::app::checkin::normalize_trigger(trigger.as_deref()),
+        )
+        .await)
 }
 
 /// 只读诊断：调平台查询接口，不写库、不触发签到；结果同时落日志 `diagnose`。

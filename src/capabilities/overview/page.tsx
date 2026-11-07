@@ -92,9 +92,13 @@ export default function OverviewPage() {
   const health = useQuery<HealthReport>({
     queryKey: ['health'],
     queryFn: () => queryCmd('system_health'),
-    // 命令不存在 / 读库失败属于结构性错误：继续轮询只会每分钟刷一条同样的错误
-    retry: false,
-    refetchInterval: (query) => (query.state.error ? false : 60_000),
+    // 窗口先于后端 State 就绪创建（实测首行日志比窗口晚 ~5s），启动瞬间的首次
+    // 调用可能失败；有界重试 1 次（6s 后）让竞态自愈，结构性错误也只多记 1 条。
+    retry: 1,
+    retryDelay: 6_000,
+    // 出错后退避到 5 分钟再试：错误即永久停轮会让仪表盘整块数据冻成启动快照
+    // （v1.9.1 九类测试实测：数据库停在采集前大小、日志 0 B 达 4 分钟以上）。
+    refetchInterval: (query) => (query.state.error ? 300_000 : 60_000),
   });
   const trend = useQuery({
     queryKey: ['trend', days],
@@ -168,8 +172,9 @@ export default function OverviewPage() {
     setRefreshing(true);
     void (async () => {
       try {
-        // 自动刷新失败不弹 toast：错误会体现在「积分数据 N 分钟前」上，不打断用户
-        await runCmd('checkin_credits', { iids }, { onError: () => {} });
+        // 自动刷新失败不弹 toast：错误会体现在「积分数据 N 分钟前」上，不打断用户；
+        // trigger=auto 与手动按钮区分，动作日志里显示「自动」而不是「手动」
+        await runCmd('checkin_credits', { iids, trigger: 'auto' }, { onError: () => {} });
         await Promise.all([
           qc.invalidateQueries({ queryKey: ['accounts'] }),
           qc.invalidateQueries({ queryKey: ['health'] }),
