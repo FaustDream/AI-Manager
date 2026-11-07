@@ -72,22 +72,6 @@ pub struct ScheduleHealth {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize)]
-pub struct Alert {
-    /// 稳定标识：`credential:<iid>` / `credit:<iid>` / `failure:<iid>` / `schedule:<id>`。
-    /// 「已处理」按它静默——标题里的天数会变，不能拿标题当键。
-    pub key: String,
-    /// `bad` = 已经坏了；`warn` = 需要处理但还没坏
-    pub level: String,
-    /// `credential` / `credit` / `failure` / `schedule`
-    pub kind: String,
-    pub iid: Option<String>,
-    pub title: String,
-    pub detail: String,
-}
-
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
-#[derive(Debug, Clone, Serialize)]
 pub struct HealthReport {
     pub version: String,
     pub data_dir: String,
