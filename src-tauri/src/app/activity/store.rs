@@ -9,8 +9,13 @@ use std::collections::BTreeMap;
 const PREFS_KV: &str = "activity.travel.prefs";
 /// 本机旅行记录：派出/回来/领取。平台接口查不到这些时刻，只能自己记。
 const EVENTS_KV: &str = "activity.travel.events";
-/// 每个账号最多保留多少条：够回看最近几周，也不会把 kv 撑大。
-const EVENTS_LIMIT: usize = 50;
+/// 每个账号最多保留多少条：来自应用配置（够回看最近几周，也不会把 kv 撑大）。
+fn events_limit() -> usize {
+    crate::app::config::get()
+        .activity
+        .travel_events_limit
+        .max(1)
+}
 
 fn map_of(db: &Db) -> BTreeMap<String, TravelPrefs> {
     db.kv_get(PREFS_KV)
@@ -65,7 +70,7 @@ pub fn record_event(db: &Db, iid: &str, event: TravelEvent) {
     }
     events.push(event);
     events.sort_by_key(|item| std::cmp::Reverse(item.at));
-    events.truncate(EVENTS_LIMIT);
+    events.truncate(events_limit());
     if let Ok(text) = serde_json::to_string(&map) {
         let _ = db.kv_set(EVENTS_KV, &text);
     }
@@ -116,7 +121,9 @@ mod tests {
         );
         assert_eq!(events_of(&db, "workbuddy:u1")[0].at, 2000, "最新的在前");
 
-        for index in 0..(EVENTS_LIMIT + 10) {
+        // 未初始化配置时 events_limit() 回默认值 50；上限随配置走，逻辑不变
+        let limit = events_limit();
+        for index in 0..(limit + 10) {
             record_event(
                 &db,
                 "workbuddy:u1",
@@ -129,7 +136,7 @@ mod tests {
             );
         }
         let events = events_of(&db, "workbuddy:u1");
-        assert_eq!(events.len(), EVENTS_LIMIT, "超出上限时丢最旧的");
-        assert_eq!(events[0].at, 10_000 + (EVENTS_LIMIT + 10) as i64 - 1);
+        assert_eq!(events.len(), limit, "超出上限时丢最旧的");
+        assert_eq!(events[0].at, 10_000 + (limit + 10) as i64 - 1);
     }
 }

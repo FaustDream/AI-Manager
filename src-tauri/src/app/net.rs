@@ -104,16 +104,18 @@ pub trait Http: Send + Sync {
     }
 }
 
-/// 真实网络。整个进程共用一个 client（连接复用；每请求超时 15s）。
+/// 真实网络。整个进程共用一个 client（连接复用；超时走应用配置）。
 pub struct RealHttp {
     client: reqwest::Client,
 }
 
 impl RealHttp {
     pub fn new() -> Self {
+        let config = crate::app::config::get();
         let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            // 各家客户端都会校验 UA；空 UA 会被部分网关直接拒绝
+            .timeout(Duration::from_secs(config.network.timeout_secs.max(1)))
+            // 各家客户端都会校验 UA；空 UA 会被部分网关直接拒绝。
+            // UA 是协议标识不是配置项：改动会被平台风控盯上，写死在这里。
             .user_agent("AI-Manager");
         if let Some((url, bypass)) = system_proxy() {
             match reqwest::Proxy::all(&url) {
@@ -238,21 +240,29 @@ impl RealHttp {
 #[async_trait]
 impl Http for RealHttp {
     async fn send(&self, req: HttpRequest) -> Result<HttpResponse> {
-        match self.once(&req).await {
-            Ok(resp) => Ok(resp),
-            // GET 是只读的：跨境链路 + 本地代理偶发重置时重试一次，别让账号列表
-            // 因为一次抖动就挂上「查询失败」的红字。
-            // POST 一律不重试——签到接口重放等于重复领取。
-            Err((e, retry)) if retry && req.method == Method::Get => {
-                log::log(
-                    log::Level::Debug,
-                    "net",
-                    format!("GET 失败，重试一次：{}", e.message),
-                );
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                self.once(&req).await.map_err(|(e, _)| e)
+        // GET 是只读的：跨境链路 + 本地代理偶发重置时按配置重试，别让账号列表
+        // 因为一次抖动就挂上「查询失败」的红字。
+        // POST 一律不重试——签到接口重放等于重复领取。
+        let retries = if req.method == Method::Get {
+            crate::app::config::get().network.get_retry
+        } else {
+            0
+        };
+        let mut attempt = 0;
+        loop {
+            match self.once(&req).await {
+                Ok(resp) => return Ok(resp),
+                Err((e, retryable)) if retryable && attempt < retries => {
+                    attempt += 1;
+                    log::log(
+                        log::Level::Debug,
+                        "net",
+                        format!("GET 失败，重试第 {} 次：{}", attempt, e.message),
+                    );
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Err((e, _)) => return Err(e),
             }
-            Err((e, _)) => Err(e),
         }
     }
 }

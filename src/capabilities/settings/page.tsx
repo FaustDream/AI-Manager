@@ -11,7 +11,7 @@ import { Checkbox, Input, Select, SkeletonRows } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { saveTheme, type ThemeChoice } from '@/lib/theme';
 import { HistoryPane } from './history';
-import type { RuleKind, Schedule, ScheduleAction, SpaceEntry, SpaceReport } from '@/lib/types';
+import type { AppConfig, RuleKind, Schedule, ScheduleAction, SpaceEntry, SpaceReport } from '@/lib/types';
 
 // 设置页上下两栏：上面「通用」（主题/开机自启），下面「维护」（定时任务/空间/回收站）。
 // 不做左右分栏——左栏只有两个开关却占掉三分之一宽度，右侧表格反而挤。
@@ -19,6 +19,7 @@ export default function SettingsPage() {
   return (
     <div className="flex flex-col gap-3">
       <GeneralPane />
+      <ConfigPane />
       <MaintenancePane />
       <HistoryPane />
     </div>
@@ -28,11 +29,6 @@ export default function SettingsPage() {
 function GeneralPane() {
   const [theme, setTheme] = useState<ThemeChoice>('');
   const [autostart, setAutostart] = useState<boolean | null>(null);
-  // 签到节奏：并发上限 + 账号间隔。默认 3/0，与旧行为一致。
-  const [concurrency, setConcurrency] = useState(3);
-  const [gapMs, setGapMs] = useState(0);
-  // ZCode 活动自动领取：kv 开关，默认关。领取要开浏览器过验证码，必须由用户主动打开。
-  const [zcodeAutoClaim, setZcodeAutoClaim] = useState(false);
   const [version, setVersion] = useState('');
 
   useEffect(() => {
@@ -43,23 +39,7 @@ function GeneralPane() {
     queryCmd('autostart_get')
       .then(setAutostart)
       .catch(() => setAutostart(false));
-    queryCmd('settings_get', { key: 'checkin.max_concurrent' })
-      .then((v) => setConcurrency(Number(v) || 3))
-      .catch(() => {});
-    queryCmd('settings_get', { key: 'checkin.gap_ms' })
-      .then((v) => setGapMs(Number(v) || 0))
-      .catch(() => {});
-    queryCmd('settings_get', { key: 'zcode_auto_claim' })
-      .then((v) => setZcodeAutoClaim(v === true))
-      .catch(() => {});
   }, []);
-
-  const savePacing = (key: string, value: number, apply: (n: number) => void) => {
-    apply(value);
-    void queryCmd('settings_set', { key, value })
-      .then(() => toast('签到节奏已保存，下一轮批量生效'))
-      .catch((e) => toast(errMsg(e)));
-  };
 
   return (
     <div className="rounded-lg border border-line bg-card p-4">
@@ -110,14 +90,54 @@ function GeneralPane() {
             />
           </label>
         </div>
+      </div>
+      <p className="mt-2 text-xs text-muted">
+        签到节奏、网络与采集间隔等运行配置已移到下方「配置」区统一管理。
+      </p>
+    </div>
+  );
+}
+
+/**
+ * 「配置」区：应用运行参数的唯一调整入口（data/config.toml 的界面通道）。
+ * 保存 = config_set：立即生效并写回文件；手改文件则重启生效。
+ * 内容分级：数字输入 = 精调项，开关 = 显式授权项，保存按钮 = 唯一主操作。
+ */
+function ConfigPane() {
+  const qc = useQueryClient();
+  const { busy, run: runBusy } = useBusy();
+  const [draft, setDraft] = useState<AppConfig | null>(null);
+
+  useEffect(() => {
+    queryCmd('config_get')
+      .then(setDraft)
+      .catch(() => {});
+  }, []);
+
+  if (!draft) return null;
+
+  const patch = (change: Partial<AppConfig>) => setDraft({ ...draft, ...change });
+  const num = (value: string, fallback: number) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
+
+  return (
+    <div className="rounded-lg border border-line bg-card p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="text-sm font-semibold">配置</h2>
+        <span className="flex-1" />
+        <span className="text-xs text-muted">配置文件：data\config.toml（手改后重启生效）</span>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-24 text-muted">签到并发</span>
+            <span className="w-28 shrink-0 text-muted">签到并发</span>
             <Select
-              value={String(concurrency)}
-              onChange={(e) => savePacing('checkin.max_concurrent', Number(e.target.value), setConcurrency)}
+              value={String(draft.checkin.max_concurrent)}
+              onChange={(e) => patch({ checkin: { ...draft.checkin, max_concurrent: num(e.target.value, 3) } })}
             >
-              {[1, 2, 3, 4].map((n) => (
+              {[1, 2, 3, 4, 5, 6].map((n) => (
                 <option key={n} value={n}>
                   {n} 个
                 </option>
@@ -127,10 +147,10 @@ function GeneralPane() {
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-24 text-muted">账号间隔</span>
+            <span className="w-28 shrink-0 text-muted">账号间隔</span>
             <Select
-              value={String(gapMs)}
-              onChange={(e) => savePacing('checkin.gap_ms', Number(e.target.value), setGapMs)}
+              value={String(draft.checkin.gap_ms)}
+              onChange={(e) => patch({ checkin: { ...draft.checkin, gap_ms: num(e.target.value, 0) } })}
             >
               {[0, 500, 1000, 2000, 5000].map((ms) => (
                 <option key={ms} value={ms}>
@@ -140,37 +160,116 @@ function GeneralPane() {
             </Select>
           </label>
         </div>
-        <div className="md:col-span-2">
+        <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-24 text-muted">ZCode 自动领取</span>
-            <Checkbox
-              checked={zcodeAutoClaim}
-              onChange={(e) => {
-                const enabled = e.target.checked;
-                setZcodeAutoClaim(enabled);
-                void queryCmd('settings_set', { key: 'zcode_auto_claim', value: enabled })
-                  .then(() =>
-                    toast(
-                      enabled
-                        ? '已开启：每 15 分钟探测一次，有可领活动时会打开浏览器过验证码'
-                        : '已关闭 ZCode 自动领取',
-                    ),
-                  )
-                  .catch((err) => {
-                    setZcodeAutoClaim(!enabled);
-                    toast(errMsg(err));
-                  });
-              }}
+            <span className="w-28 shrink-0 text-muted">请求超时</span>
+            <Input
+              type="number"
+              min={3}
+              max={120}
+              className="w-24"
+              value={draft.network.timeout_secs}
+              onChange={(e) => patch({ network: { ...draft.network, timeout_secs: num(e.target.value, 15) } })}
             />
-            <span className="text-xs text-muted">
-              每 15 分钟探测一轮；领取要你在浏览器里过验证码，所以默认关闭
-            </span>
+            <span className="text-xs text-muted">秒（走代理调慢时可调大）</span>
           </label>
         </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-28 shrink-0 text-muted">GET 重试</span>
+            <Select
+              value={String(draft.network.get_retry)}
+              onChange={(e) => patch({ network: { ...draft.network, get_retry: num(e.target.value, 1) } })}
+            >
+              {[0, 1, 2, 3].map((n) => (
+                <option key={n} value={n}>
+                  {n} 次
+                </option>
+              ))}
+            </Select>
+          </label>
+        </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-28 shrink-0 text-muted">用量采集间隔</span>
+            <Select
+              value={String(draft.usage.scan_interval_min)}
+              onChange={(e) => patch({ usage: { ...draft.usage, scan_interval_min: num(e.target.value, 30) } })}
+            >
+              {[10, 15, 30, 60, 120].map((n) => (
+                <option key={n} value={n}>
+                  {n} 分钟
+                </option>
+              ))}
+            </Select>
+          </label>
+        </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-28 shrink-0 text-muted">仪表盘补刷</span>
+            <Select
+              value={String(draft.dashboard.stale_refresh_min)}
+              onChange={(e) => patch({ dashboard: { ...draft.dashboard, stale_refresh_min: num(e.target.value, 10) } })}
+            >
+              {[5, 10, 15, 30, 60].map((n) => (
+                <option key={n} value={n}>
+                  数据超过 {n} 分钟
+                </option>
+              ))}
+            </Select>
+          </label>
+        </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-28 shrink-0 text-muted">旅行记录条数</span>
+            <Input
+              type="number"
+              min={10}
+              max={500}
+              className="w-24"
+              value={draft.activity.travel_events_limit}
+              onChange={(e) => patch({ activity: { ...draft.activity, travel_events_limit: num(e.target.value, 50) } })}
+            />
+            <span className="text-xs text-muted">每账号保留（10-500）</span>
+          </label>
+        </div>
+        <div className="flex items-center">
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-28 shrink-0 text-muted">ZCode 自动领取</span>
+            <Checkbox
+              checked={draft.activity.zcode_auto_claim}
+              onChange={(e) => patch({ activity: { ...draft.activity, zcode_auto_claim: e.target.checked } })}
+            />
+            <span className="text-xs text-muted">每 15 分钟探测一轮，领取要过浏览器验证码</span>
+          </label>
+        </div>
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="primary"
+          loading={busy === 'config'}
+          disabled={busy === 'config'}
+          onClick={() =>
+            runBusy('config', async () => {
+              if ((await runCmd('config_set', { config: draft })) === undefined) return;
+              toast('配置已保存并生效（同时写入 data/config.toml）');
+              await qc.invalidateQueries({ queryKey: ['config'] });
+            })
+          }
+        >
+          保存配置
+        </Button>
+        <Button size="sm" variant="ghost" disabled={busy === 'config'} onClick={() => void queryCmd('config_get').then(setDraft)}>
+          还原
+        </Button>
+        <span className="flex-1" />
+        <span className="text-xs text-muted">并发实际执行收敛到 1-6，间隔上限 60 秒，越界值保存时按此修正</span>
       </div>
     </div>
   );
 }
+
 
 function MaintenancePane() {
   const qc = useQueryClient();
