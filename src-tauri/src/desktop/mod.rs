@@ -113,10 +113,18 @@ pub fn run() -> tauri::Result<()> {
             let sync_db = state.db.clone();
             let claim_db = state.db.clone();
             let sched_db = state.db.clone();
+            // 清掉「待处理告警」下线后留在 kv 里的死键（通知签名 / 静默表）：
+            // 功能已整体移除，留着只会让后面查 kv 的人困惑。启动时顺手清一次。
+            let dead_kv_db = state.db.clone();
             app.manage(state);
 
             build_tray(app)?;
             hook_window(app);
+            std::thread::spawn(move || {
+                for key in ["alert.notified", "alert.muted"] {
+                    let _ = dead_kv_db.kv_delete(key);
+                }
+            });
             // 兜底：页面加载事件没来（异常）也要把窗口显示出来，否则用户看不到任何东西
             {
                 let handle = app.handle().clone();

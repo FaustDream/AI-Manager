@@ -5,7 +5,7 @@
 // 面积图会把「0 → 大值」画成一条斜坡，看着像天天在匀速上涨；柱子则老实地留空。
 import { useMemo, useState } from 'react';
 import type { UsageDay, UsageModel } from '@/lib/types';
-import { fmtAmount, fmtTokens, fmtTokensExact, fmtTokensShort } from '@/lib/format';
+import { fmtTokens, fmtTokensExact, fmtTokensShort } from '@/lib/format';
 
 const W = 640;
 const H = 216;
@@ -336,8 +336,4 @@ export function ModelDonut({ models }: { models: UsageModel[] }) {
       </div>
     </div>
   );
-}
-
-export function fmtCredit(value: number): string {
-  return fmtAmount(value);
 }
