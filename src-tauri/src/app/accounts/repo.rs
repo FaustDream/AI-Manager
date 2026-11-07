@@ -14,16 +14,10 @@ use std::collections::BTreeMap;
 /// 放在 kv 而不是 `accounts` 表：它是纯展示配置，重扫不该碰，也避免为它加列。
 const ALIAS_KV: &str = "account.aliases";
 
-/// 账号标签：iid → 字符串数组。用来筛选与批量操作（工作号 / 私人号 / 待处理…）。
-/// 和别名一样放 kv：纯展示配置，重扫不该碰，也不值得为它加列。
-const TAGS_KV: &str = "account.tags";
-
 /// 账号备注：iid → 一句话。写「为什么停用」「这个号绑定在哪台机器」这类上下文。
 const NOTES_KV: &str = "account.notes";
 
 /// 标签上限：超过就是标签体系出了问题，不是账号需要更多标签。
-const MAX_TAGS: usize = 8;
-const MAX_TAG_CHARS: usize = 16;
 const MAX_NOTE_CHARS: usize = 200;
 
 /// 从 `accounts` 表读出全部账号（不解密凭据）。
@@ -46,7 +40,6 @@ pub fn list(db: &Db) -> Result<Vec<AccountView>> {
                 platform_label: r.get(2)?,
                 name: r.get(3)?,
                 alias: None,
-                tags: Vec::new(),
                 note: None,
                 expires_at: r.get(4)?,
                 source: r.get(5)?,
@@ -76,11 +69,9 @@ pub fn list(db: &Db) -> Result<Vec<AccountView>> {
     })?;
     // 别名与标签在 db.read 之外读：同一个读连接再加锁会自锁
     let aliases = alias_map(db);
-    let tags = tags_map(db);
     let notes = notes_map(db);
     for row in &mut out {
         row.alias = aliases.get(&row.iid).cloned();
-        row.tags = tags.get(&row.iid).cloned().unwrap_or_default();
         row.note = notes.get(&row.iid).cloned();
     }
     Ok(out)
@@ -119,62 +110,12 @@ pub fn set_alias(db: &Db, iid: &str, alias: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-fn tags_map(db: &Db) -> BTreeMap<String, Vec<String>> {
-    db.kv_get(TAGS_KV)
-        .ok()
-        .flatten()
-        .and_then(|text| serde_json::from_str::<BTreeMap<String, Vec<String>>>(&text).ok())
-        .unwrap_or_default()
-}
-
 fn notes_map(db: &Db) -> BTreeMap<String, String> {
     db.kv_get(NOTES_KV)
         .ok()
         .flatten()
         .and_then(|text| serde_json::from_str::<BTreeMap<String, String>>(&text).ok())
         .unwrap_or_default()
-}
-
-/// 设置标签：去空白、去重、限长限数量。空数组表示清空。
-pub fn set_tags(db: &Db, iid: &str, tags: &[String]) -> Result<Vec<String>> {
-    if identity(db, iid)?.is_none() {
-        return Err(AppError::new(
-            ErrorKind::Invalid,
-            "账号不存在，可能已被删除",
-        ));
-    }
-    let mut clean: Vec<String> = Vec::new();
-    for tag in tags {
-        let text = tag.trim();
-        if text.is_empty() {
-            continue;
-        }
-        if text.chars().count() > MAX_TAG_CHARS {
-            return Err(AppError::new(
-                ErrorKind::Invalid,
-                format!("单个标签最多 {MAX_TAG_CHARS} 个字符"),
-            ));
-        }
-        if !clean.iter().any(|item| item == text) {
-            clean.push(text.to_string());
-        }
-    }
-    if clean.len() > MAX_TAGS {
-        return Err(AppError::new(
-            ErrorKind::Invalid,
-            format!("一个账号最多 {MAX_TAGS} 个标签"),
-        ));
-    }
-    let mut all = tags_map(db);
-    if clean.is_empty() {
-        all.remove(iid);
-    } else {
-        all.insert(iid.to_string(), clean.clone());
-    }
-    let text = serde_json::to_string(&all)
-        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("保存标签失败：{e}")))?;
-    db.kv_set(TAGS_KV, &text)?;
-    Ok(clean)
 }
 
 /// 设置备注；空字符串表示清空。

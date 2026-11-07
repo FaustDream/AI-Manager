@@ -167,19 +167,6 @@ export const COLUMNS: ColumnDefEx[] = [
       title: a.source ? `凭据来源：${a.source}` : undefined,
     }),
   },
-  {
-    key: 'tags',
-    header: '标签',
-    width: 132,
-    min: 70,
-    cell: (a) => ({
-      text: a.tags.length > 0 ? a.tags.join(' · ') : '—',
-      tone: a.tags.length > 0 ? undefined : 'muted',
-      title: [a.tags.length > 0 ? `标签：${a.tags.join('、')}` : '', a.note ? `备注：${a.note}` : '']
-        .filter(Boolean)
-        .join('\n') || undefined,
-    }),
-  },
   { key: 'login', header: '凭据到期', width: 150, min: 110, cell: loginCell },
   { key: 'credit', header: '积分 / 配额', width: 128, min: 90, cell: creditCell },
   { key: 'checkin', header: '签到', width: 104, min: 70, cell: checkinCell },

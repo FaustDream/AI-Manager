@@ -11,9 +11,6 @@ name: string,
 alias: string | null, 
 /**
  * 用户标签：筛选与批量操作用（工作号 / 私人号 / 待处理…）
- */
-tags: Array<string>, 
-/**
  * 备注：写「为什么停用」「绑定在哪台机器」这类上下文
  */
 note: string | null, source: string, requires_checkin: boolean, expires_at: number | null, has_secret: boolean, 

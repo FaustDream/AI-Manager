@@ -94,8 +94,6 @@ export function DetailPanel({
   const [claimPlans, setClaimPlans] = useState<ClaimPlan[] | null>(null);
   const [aliasOpen, setAliasOpen] = useState(false);
   const [aliasDraft, setAliasDraft] = useState('');
-  const [tagOpen, setTagOpen] = useState(false);
-  const [tagDraft, setTagDraft] = useState('');
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState('');
   const [reloginOpen, setReloginOpen] = useState(false);
@@ -176,29 +174,10 @@ export function DetailPanel({
     setAliasOpen(true);
   };
 
-  const openTags = () => {
-    setTagDraft(account.tags.join('、'));
-    setTagOpen(true);
-  };
-
   const openNote = () => {
     setNoteDraft(account.note ?? '');
     setNoteOpen(true);
   };
-
-  const saveTags = () =>
-    runBusy('tags', async () => {
-      // 中英文逗号、顿号、空白都当分隔符：用户不会记得「标准」写法
-      const tags = tagDraft
-        .split(/[，,、\s]+/)
-        .map((tag) => tag.trim())
-        .filter(Boolean);
-      const saved = await runCmd('account_set_tags', { iid: account.iid, tags });
-      if (saved === undefined) return;
-      setTagOpen(false);
-      toast(saved.length > 0 ? `标签已保存：${saved.join('、')}` : '标签已清空');
-      qc.invalidateQueries({ queryKey: ['accounts'] });
-    });
 
   const saveNote = () =>
     runBusy('note', async () => {
@@ -299,15 +278,6 @@ export function DetailPanel({
           title="设置本机显示名；别名单独保存，重扫客户端不会覆盖"
         >
           改名
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={openTags}
-          disabled={!!busy}
-          title="标签用于筛选与批量操作，最多 8 个"
-        >
-          标签
         </Button>
         <Button
           size="sm"
@@ -593,8 +563,6 @@ export function DetailPanel({
                   : '切换到该账号后可用'
                 : '不适用'}
             </dd>
-            <dt className="text-muted">标签</dt>
-            <dd>{account.tags.length > 0 ? account.tags.join('、') : '未标记'}</dd>
             <dt className="text-muted">备注</dt>
             <dd className="break-words whitespace-pre-wrap">{account.note || '—'}</dd>
             <dt className="text-muted">最近查询</dt>
@@ -637,38 +605,6 @@ export function DetailPanel({
           </label>
           <p className="text-xs text-muted">
             只存在本机账号库，不写客户端，也不会在重扫时被平台昵称覆盖。留空即恢复平台昵称。
-          </p>
-        </div>
-      </Dialog>
-
-      <Dialog
-        open={tagOpen}
-        title="设置账号标签"
-        onClose={() => setTagOpen(false)}
-        footer={
-          <>
-            <Button onClick={() => setTagOpen(false)}>取消</Button>
-            <Button variant="primary" onClick={saveTags} loading={busy === 'tags'}>
-              保存
-            </Button>
-          </>
-        }
-      >
-        <div className="flex flex-col gap-2">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs text-muted">标签（用逗号、顿号或空格分隔）</span>
-            <Input
-              value={tagDraft}
-              placeholder="工作号、待处理"
-              maxLength={140}
-              onChange={(e) => setTagDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void saveTags();
-              }}
-            />
-          </label>
-          <p className="text-xs text-muted">
-            最多 8 个，单个标签不超过 16 字。只存本机，重扫客户端不会覆盖；列表顶部可按标签筛选。
           </p>
         </div>
       </Dialog>

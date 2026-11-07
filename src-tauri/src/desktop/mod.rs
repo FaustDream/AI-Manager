@@ -162,7 +162,6 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_list,
             commands::accounts::account_set_enabled,
             commands::accounts::account_set_alias,
-            commands::accounts::account_set_tags,
             commands::accounts::account_set_note,
             commands::accounts::account_batch_diagnose,
             commands::accounts::account_export,

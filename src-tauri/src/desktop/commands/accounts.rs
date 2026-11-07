@@ -418,25 +418,7 @@ pub async fn account_open_client(platform: String) -> std::result::Result<bool, 
         .map_err(err_text)
 }
 
-// ---------------------------------------------------------------- 标签 / 备注
-
-/// 设置标签。返回最终保存的标签（已去空白、去重）。
-#[tauri::command]
-
-pub async fn account_set_tags(
-    state: State<'_, AppState>,
-    iid: String,
-    tags: Vec<String>,
-) -> std::result::Result<Vec<String>, String> {
-    let db = state.db.clone();
-    let saved = crate::app::runtime::blocking(move || {
-        crate::app::accounts::repo::set_tags(&db, &iid, &tags)
-    })
-    .await
-    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
-    .map_err(err_text)?;
-    Ok(saved)
-}
+// ---------------------------------------------------------------- 备注
 
 /// 设置备注；空字符串表示清空。
 #[tauri::command]
@@ -537,13 +519,12 @@ pub async fn account_export(state: State<'_, AppState>) -> std::result::Result<S
         let mut rows = crate::app::accounts::repo::list(&db)?;
         crate::app::checkin::store::hydrate(&db, &mut rows, &crate::app::clock::SystemClock);
         let mut text = String::from(
-            "\u{feff}平台,昵称,标签,备注,已启用,有凭据,到期时间,余额,今日已签,最近成功,最近失败,失败类别\n",
+            "\u{feff}平台,昵称,备注,已启用,有凭据,到期时间,余额,今日已签,最近成功,最近失败,失败类别\n",
         );
         for row in &rows {
             let cells = [
                 row.platform_label.clone(),
                 row.display_name(),
-                row.tags.join("、"),
                 row.note.clone().unwrap_or_default(),
                 if row.enabled { "是" } else { "否" }.to_string(),
                 if row.has_secret { "是" } else { "否" }.to_string(),
