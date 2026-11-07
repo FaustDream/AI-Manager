@@ -17,9 +17,31 @@ pub async fn system_health(
         .map_err(err_text)?;
 
     if let Some(tray) = app.tray_by_id("main-tray") {
-        let _ = tray.set_tooltip(Some(format!("AI Manager v{}", report.version)));
+        let _ = tray.set_tooltip(Some(tray_tooltip(&report)));
     }
     Ok(report)
+}
+
+/// 托盘提示：版本之外只带两句「要人看」的事实——凭据临期数量与积分数据的新鲜度。
+/// 这是「待处理告警」下线后唯一残留的被动提醒，刻意保持一句话的信息量。
+fn tray_tooltip(report: &crate::app::health::HealthReport) -> String {
+    let mut parts = vec![format!("AI Manager v{}", report.version)];
+    if report.accounts.expiring > 0 {
+        parts.push(format!(
+            "{} 个账号凭据 3 天内到期",
+            report.accounts.expiring
+        ));
+    }
+    if let Some(at) = report.credits_at {
+        let minutes = (crate::app::timeutil::now_ms() - at).max(0) / 60_000;
+        let fresh = if minutes < 1 {
+            "刚刚".into()
+        } else {
+            format!("{minutes} 分钟前")
+        };
+        parts.push(format!("积分数据 {fresh}"));
+    }
+    parts.join(" · ")
 }
 
 /// 导出诊断包，返回文件路径。前端只负责提示「在哪」。

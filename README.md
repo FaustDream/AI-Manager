@@ -54,6 +54,14 @@ C:\Users\Lynn\.cargo\bin\cargo.exe build --release --features custom-protocol
 
 凭据使用 Windows DPAPI 加密，与当前 Windows 用户绑定。整个文件夹拷走即可迁移；`data/` 与 `data/backups/` 不要手工删除或上传。
 
+## 已知问题与想法
+
+单人维护的轻量 backlog：一句话一条，做完就删。
+
+- 国际版链路依赖系统代理节点，节点抖动时「网络错误」是预期表现（设置里可查自检）
+- 更新目前是手动下载安装包；若升级变频繁再考虑 Tauri updater 自动更新
+- 会话页大列表在几千条时的滚动性能尚未压测
+
 ## 许可证
 
 见 [LICENSE](LICENSE)。

@@ -27,6 +27,7 @@ pub mod providers;
 pub mod runtime;
 pub mod schedule;
 pub mod secret;
+pub mod selfcheck;
 pub mod sessions;
 pub mod timeutil;
 pub mod update;

@@ -3,9 +3,10 @@
 //!
 //! 这里显式再导 desktop 的私有 use：`use super::*` 的 glob 取不到父模块的
 //! 私有 use 绑定，各域文件的 `use super::*` 依赖本文件的再导出。
-pub(crate) use super::{err_text, execute_schedule, AppState};
+pub(crate) use super::{err_text, AppState};
 pub(crate) use crate::app::error::AppError;
 pub(crate) use crate::app::log::{self, Level};
+pub(crate) use crate::desktop::background::execute_schedule;
 pub(crate) use tauri::State;
 
 pub mod accounts;

@@ -6,12 +6,14 @@ import { queryCmd, runCmd, useBusy, errMsg } from '@/lib/cmd';
 import { useEffect, useState } from 'react';
 
 import { fmtSize } from '@/lib/format';
+import { numOr } from '@/lib/num';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Input, Select, SkeletonRows } from '@/components/ui/form';
+import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { saveTheme, type ThemeChoice } from '@/lib/theme';
 import { HistoryPane } from './history';
-import type { AppConfig, RuleKind, Schedule, ScheduleAction, SpaceEntry, SpaceReport } from '@/lib/types';
+import type { AppConfig, RuleKind, Schedule, ScheduleAction, SelfcheckReport, SpaceEntry, SpaceReport } from '@/lib/types';
 
 // 设置页上下两栏：上面「通用」（主题/开机自启），下面「维护」（定时任务/空间/回收站）。
 // 不做左右分栏——左栏只有两个开关却占掉三分之一宽度，右侧表格反而挤。
@@ -20,6 +22,7 @@ export default function SettingsPage() {
     <div className="flex flex-col gap-3">
       <GeneralPane />
       <ConfigPane />
+      <SelfcheckPane />
       <MaintenancePane />
       <HistoryPane />
     </div>
@@ -117,10 +120,6 @@ function ConfigPane() {
   if (!draft) return null;
 
   const patch = (change: Partial<AppConfig>) => setDraft({ ...draft, ...change });
-  const num = (value: string, fallback: number) => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-  };
 
   return (
     <div className="rounded-lg border border-line bg-card p-4">
@@ -135,7 +134,7 @@ function ConfigPane() {
             <span className="w-28 shrink-0 text-muted">签到并发</span>
             <Select
               value={String(draft.checkin.max_concurrent)}
-              onChange={(e) => patch({ checkin: { ...draft.checkin, max_concurrent: num(e.target.value, 3) } })}
+              onChange={(e) => patch({ checkin: { ...draft.checkin, max_concurrent: numOr(e.target.value, 3) } })}
             >
               {[1, 2, 3, 4, 5, 6].map((n) => (
                 <option key={n} value={n}>
@@ -150,7 +149,7 @@ function ConfigPane() {
             <span className="w-28 shrink-0 text-muted">账号间隔</span>
             <Select
               value={String(draft.checkin.gap_ms)}
-              onChange={(e) => patch({ checkin: { ...draft.checkin, gap_ms: num(e.target.value, 0) } })}
+              onChange={(e) => patch({ checkin: { ...draft.checkin, gap_ms: numOr(e.target.value, 0) } })}
             >
               {[0, 500, 1000, 2000, 5000].map((ms) => (
                 <option key={ms} value={ms}>
@@ -169,7 +168,7 @@ function ConfigPane() {
               max={120}
               className="w-24"
               value={draft.network.timeout_secs}
-              onChange={(e) => patch({ network: { ...draft.network, timeout_secs: num(e.target.value, 15) } })}
+              onChange={(e) => patch({ network: { ...draft.network, timeout_secs: numOr(e.target.value, 15) } })}
             />
             <span className="text-xs text-muted">秒（走代理调慢时可调大）</span>
           </label>
@@ -179,7 +178,7 @@ function ConfigPane() {
             <span className="w-28 shrink-0 text-muted">GET 重试</span>
             <Select
               value={String(draft.network.get_retry)}
-              onChange={(e) => patch({ network: { ...draft.network, get_retry: num(e.target.value, 1) } })}
+              onChange={(e) => patch({ network: { ...draft.network, get_retry: numOr(e.target.value, 1) } })}
             >
               {[0, 1, 2, 3].map((n) => (
                 <option key={n} value={n}>
@@ -194,7 +193,7 @@ function ConfigPane() {
             <span className="w-28 shrink-0 text-muted">用量采集间隔</span>
             <Select
               value={String(draft.usage.scan_interval_min)}
-              onChange={(e) => patch({ usage: { ...draft.usage, scan_interval_min: num(e.target.value, 30) } })}
+              onChange={(e) => patch({ usage: { ...draft.usage, scan_interval_min: numOr(e.target.value, 30) } })}
             >
               {[10, 15, 30, 60, 120].map((n) => (
                 <option key={n} value={n}>
@@ -209,7 +208,7 @@ function ConfigPane() {
             <span className="w-28 shrink-0 text-muted">仪表盘补刷</span>
             <Select
               value={String(draft.dashboard.stale_refresh_min)}
-              onChange={(e) => patch({ dashboard: { ...draft.dashboard, stale_refresh_min: num(e.target.value, 10) } })}
+              onChange={(e) => patch({ dashboard: { ...draft.dashboard, stale_refresh_min: numOr(e.target.value, 10) } })}
             >
               {[5, 10, 15, 30, 60].map((n) => (
                 <option key={n} value={n}>
@@ -228,7 +227,7 @@ function ConfigPane() {
               max={500}
               className="w-24"
               value={draft.activity.travel_events_limit}
-              onChange={(e) => patch({ activity: { ...draft.activity, travel_events_limit: num(e.target.value, 50) } })}
+              onChange={(e) => patch({ activity: { ...draft.activity, travel_events_limit: numOr(e.target.value, 50) } })}
             />
             <span className="text-xs text-muted">每账号保留（10-500）</span>
           </label>
@@ -270,6 +269,83 @@ function ConfigPane() {
   );
 }
 
+
+/**
+ * 「网络自检」：国际版链路排障的第一入口（口径与 tools/intl-doctor.ps1 一致）。
+ * 三段信息按「要不要动手」排：代理开关 → 端点可达性 → 档案完整性。
+ * 端点 401/403 算「通」（链路好、只是没带凭据），5xx/超时才算不通。
+ */
+function SelfcheckPane() {
+  const { busy, run: runBusy } = useBusy();
+  const [report, setReport] = useState<SelfcheckReport | null>(null);
+
+  return (
+    <div className="rounded-lg border border-line bg-card p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="text-sm font-semibold">网络自检</h2>
+        <span className="flex-1" />
+        <Button size="sm" loading={busy === 'selfcheck'} disabled={busy === 'selfcheck'} onClick={() =>
+          runBusy('selfcheck', async () => {
+            const report = await runCmd('network_selfcheck');
+            if (report !== undefined) setReport(report);
+          })
+        }>
+          {busy === 'selfcheck' ? '检测中…' : '运行自检'}
+        </Button>
+      </div>
+      {!report && (
+        <p className="text-xs text-muted">
+          国际版账号报「网络错误」时先跑这里：一次看清新系代理是否开启、三个国际端点是否可达、登录态档案是否完整。
+        </p>
+      )}
+      {report && (
+        <div className="flex flex-col gap-1.5 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <Tag tone={report.proxy_enabled ? 'ok' : 'warn'}>
+              {report.proxy_enabled ? '系统代理已开启' : '系统代理未开启'}
+            </Tag>
+            {report.proxy_server && (
+              <span className="font-mono text-muted" title="WinINET ProxyServer">
+                {report.proxy_server}
+              </span>
+            )}
+            {!report.proxy_enabled && (
+              <span className="text-muted">国际版直连必然超时——先开代理再测</span>
+            )}
+          </div>
+          {report.endpoints.map((endpoint) => (
+            <div key={endpoint.url} className="flex flex-wrap items-center gap-2">
+              <Tag tone={endpoint.ok ? 'ok' : 'bad'}>{endpoint.ok ? '可达' : '不通'}</Tag>
+              <span className="font-mono" title={endpoint.url}>
+                {endpoint.url.replace('https://', '').replace(/\/$/, '')}
+              </span>
+              <span className="text-muted">{endpoint.detail}</span>
+            </div>
+          ))}
+          {report.profiles.length > 0 && (
+            <>
+              <div className="mt-1 font-medium text-fg2">WorkBuddy 登录态档案</div>
+              {report.profiles.map((profile) => (
+                <div key={profile.label} className="flex flex-wrap items-center gap-2">
+                  <Tag tone={profile.complete ? 'ok' : profile.tmp_only ? 'muted' : 'bad'}>
+                    {profile.complete ? '完整' : profile.tmp_only ? '待认领' : '缺件'}
+                  </Tag>
+                  <span className="font-mono text-muted">{profile.label}</span>
+                  {profile.tmp_only && (
+                    <span className="text-muted">下次切换自动认领，不用管</span>
+                  )}
+                  {!profile.complete && !profile.tmp_only && (
+                    <span className="text-muted">在客户端登录一次该账号即可修复</span>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function MaintenancePane() {
   const qc = useQueryClient();
