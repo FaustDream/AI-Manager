@@ -38,7 +38,6 @@ pub struct AccountView {
     /// 用户手工设置的别名。重扫只覆盖身份字段，别名单独存 kv，不会被平台昵称冲掉。
     pub alias: Option<String>,
     /// 用户标签：筛选与批量操作用（工作号 / 私人号 / 待处理…）
-    pub tags: Vec<String>,
     /// 备注：写「为什么停用」「绑定在哪台机器」这类上下文
     pub note: Option<String>,
     pub source: String,
@@ -108,7 +107,6 @@ impl AccountView {
             expires_at: identity.expires_at,
             has_secret: identity.has_secret,
             enabled: true,
-            tags: Vec::new(),
             note: None,
             last_ok_at: None,
             last_fail_at: None,

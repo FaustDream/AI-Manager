@@ -63,7 +63,6 @@ export interface CmdArgs {
   account_list: void;
   account_set_enabled: { iid: string; enabled: boolean };
   account_set_alias: { iid: string; alias: string };
-  account_set_tags: { iid: string; tags: string[] };
   account_set_note: { iid: string; note: string };
   account_batch_diagnose: { iids: string[] };
   account_export: void;
@@ -166,7 +165,6 @@ export interface CmdReturn {
   account_list: AccountView[];
   account_set_enabled: boolean;
   account_set_alias: string;
-  account_set_tags: string[];
   account_set_note: string;
   account_batch_diagnose: BatchDiagnoseReport;
   account_export: string;
@@ -294,7 +292,6 @@ const CMD_LABELS: Record<string, string> = {
   account_list: '读取账号列表',
   account_set_enabled: '启用/停用账号',
   account_set_alias: '设置账号别名',
-  account_set_tags: '设置账号标签',
   account_set_note: '设置账号备注',
   account_batch_diagnose: '批量诊断',
   account_export: '导出账号清单',
@@ -393,7 +390,6 @@ const KEY_ACTIONS = new Set<string>([
   'activity_daily_hello',
   'account_set_enabled',
   'account_set_alias',
-  'account_set_tags',
   'account_set_note',
   'config_snapshot_clear',
   'config_set',

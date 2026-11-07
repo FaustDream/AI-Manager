@@ -48,28 +48,19 @@ export default function AccountCenterPage() {
   const [restoreTarget, setRestoreTarget] = useState<AccountView | null>(null);
   // 查询失败是运行时状态：接口这轮报错就标红，成功后自动消失，不落库
   const [queryErrors, setQueryErrors] = useState<Record<string, string>>({});
-  const [tagFilter, setTagFilter] = useState('');
   const [sortMode, setSortMode] = useState<'manual' | 'attention'>('manual');
   const rows = accounts.data ?? [];
-  const allTags = useMemo(() => {
-    const set = new Set<string>();
-    for (const row of rows) for (const tag of row.tags) set.add(tag);
-    return [...set].sort();
-  }, [rows]);
 
-  // 筛选只影响展示；「需处理优先」是临时排序，不改 sort_order
-  const visible = useMemo(() => {
-    const filtered = rows.filter((row) => {
-      if (!tagFilter) return true;
-      if (tagFilter === '__none__') return row.tags.length === 0;
-      return row.tags.includes(tagFilter);
-    });
-    return sortMode === 'attention'
-      ? [...filtered].sort((a, b) => attentionRank(a) - attentionRank(b))
-      : filtered;
-  }, [rows, tagFilter, sortMode]);
+  // 「需处理优先」是临时排序，不改 sort_order
+  const visible = useMemo(
+    () =>
+      sortMode === 'attention'
+        ? [...rows].sort((a, b) => attentionRank(a) - attentionRank(b))
+        : rows,
+    [rows, sortMode],
+  );
 
-  const canDrag = sortMode === 'manual' && !tagFilter;
+  const canDrag = sortMode === 'manual';
 
   const selectedRow = rows.find((r) => r.iid === selected) ?? null;
   const currentSet = useMemo(() => new Set(current.data ?? []), [current.data]);
@@ -411,36 +402,8 @@ export default function AccountCenterPage() {
         onDiagnose={batchDiagnose}
       />
 
-      {/* 标签筛选 + 排序：只影响展示，不写库 */}
+      {/* 导出与排序：只影响展示，不写库 */}
       <div className="flex flex-wrap items-center gap-1.5 text-xs">
-        <span className="text-muted">标签</span>
-        <button
-          className={`cursor-pointer rounded px-1.5 py-0.5 ${!tagFilter ? 'bg-hover text-fg' : 'text-muted hover:text-fg'}`}
-          onClick={() => setTagFilter('')}
-        >
-          全部
-        </button>
-        {allTags.map((tag) => (
-          <button
-            key={tag}
-            className={`cursor-pointer rounded px-1.5 py-0.5 ${
-              tagFilter === tag ? 'bg-hover text-fg' : 'text-muted hover:text-fg'
-            }`}
-            onClick={() => setTagFilter(tagFilter === tag ? '' : tag)}
-          >
-            {tag}
-          </button>
-        ))}
-        {rows.some((row) => row.tags.length === 0) && (
-          <button
-            className={`cursor-pointer rounded px-1.5 py-0.5 ${
-              tagFilter === '__none__' ? 'bg-hover text-fg' : 'text-muted hover:text-fg'
-            }`}
-            onClick={() => setTagFilter(tagFilter === '__none__' ? '' : '__none__')}
-          >
-            未标记
-          </button>
-        )}
         <span className="flex-1" />
         <Button
           size="sm"
@@ -452,11 +415,6 @@ export default function AccountCenterPage() {
         >
           导出清单
         </Button>
-        {tagFilter && (
-          <span className="text-muted">
-            {visible.length} / {rows.length} 个账号
-          </span>
-        )}
         <Select
           value={sortMode}
           title="手动顺序可拖动调整；需处理优先只是临时排序，不改保存的顺序"
