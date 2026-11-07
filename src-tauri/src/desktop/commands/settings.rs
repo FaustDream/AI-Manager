@@ -50,6 +50,28 @@ pub fn config_set(config: crate::app::config::AppConfig) -> std::result::Result<
     Ok(())
 }
 
+/// 网络与档案自检：设置页「网络自检」按钮。探测走应用自己的 HTTP 层（含系统代理）。
+#[tauri::command]
+pub async fn network_selfcheck(
+) -> std::result::Result<crate::app::selfcheck::SelfcheckReport, String> {
+    let data_dir = crate::app::paths::data_dir();
+    let http = crate::app::net::RealHttp::new();
+    let report = crate::app::selfcheck::run(&http, &data_dir).await;
+    log::action(
+        "network_selfcheck",
+        "user",
+        true,
+        0,
+        format!(
+            "网络自检：代理={} · 端点 {}/{} 可达",
+            if report.proxy_enabled { "开" } else { "关" },
+            report.endpoints.iter().filter(|e| e.ok).count(),
+            report.endpoints.len()
+        ),
+    );
+    Ok(report)
+}
+
 #[tauri::command]
 
 pub fn autostart_get() -> bool {

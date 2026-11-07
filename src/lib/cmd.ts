@@ -7,6 +7,7 @@ import { toast } from '@/components/ui/toast';
 import { errKind, errText } from './ipc';
 import type {
   AppConfig,
+  SelfcheckReport,
   AccountDetail,
   AccountView,
   ActionResult,
@@ -128,6 +129,7 @@ export interface CmdArgs {
   config_snapshot_clear: void;
   config_get: void;
   config_set: { config: AppConfig };
+  network_selfcheck: void;
   zcode_claim_plans: { iid: string };
   zcode_claim_run: { iid: string; planId: string };
   log_query: { filter: LogFilter };
@@ -230,6 +232,7 @@ export interface CmdReturn {
   config_snapshot_clear: void;
   config_get: AppConfig;
   config_set: void;
+  network_selfcheck: SelfcheckReport;
   zcode_claim_plans: ClaimPlan[];
   zcode_claim_run: ClaimOutcome;
   log_query: LogLine[];
@@ -356,6 +359,7 @@ const CMD_LABELS: Record<string, string> = {
   config_snapshot_restore: '回滚配置',
   config_snapshot_clear: '清空配置历史',
   config_get: '读取应用配置',
+  network_selfcheck: '网络与档案自检',
   config_set: '保存应用配置',
   credit_trend: '读取积分趋势',
   credit_claims_recent: '读取最近领取',
@@ -393,6 +397,7 @@ const KEY_ACTIONS = new Set<string>([
   'account_set_note',
   'config_snapshot_clear',
   'config_set',
+  'network_selfcheck',
   'account_delete',
   'account_switch',
   'account_switch_codebuddy',

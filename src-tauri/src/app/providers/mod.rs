@@ -57,6 +57,14 @@ pub type Sink<'a> = dyn FnMut(ScannedAccount) -> Result<()> + 'a;
 
 #[async_trait]
 pub trait Provider: Send + Sync {
+    /// 新平台适配指南（三段式，按需覆盖）：
+    /// 1. **必实现**：`platform` / `label` / `scan` / `current_id` —— 没有默认实现；
+    /// 2. **签到与积分**（`requires_checkin` / `live_credit` / `cooldown_hours` /
+    ///    `status` / `credits` / `checkin`）：有默认「不支持」，按平台玩法覆盖；
+    /// 3. **猫猫旅行**（`travel_*`）：WorkBuddy 国内版专属，其余平台保持默认即可。
+    /// 实现不了的接口保持默认「Unsupported」，调用方按 `ErrorKind::Unsupported` 降级，
+    /// 不要 panic 或返回假数据。
+    ///
     /// 平台键，与 `accounts.platform` 一致
     fn platform(&self) -> &'static str;
     fn label(&self) -> &'static str;

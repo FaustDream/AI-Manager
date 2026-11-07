@@ -143,6 +143,14 @@ impl RealHttp {
     }
 }
 
+/// 自检用的代理状态快照：`(是否启用, ProxyServer 原文)`。
+pub fn system_proxy_status() -> (bool, Option<String>) {
+    match system_proxy() {
+        Some((url, _)) => (true, Some(url)),
+        None => (false, None),
+    }
+}
+
 /// Windows 系统代理（「Internet 选项」里的那套）。
 ///
 /// reqwest 只认 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量，**不读** WinINET 的系统代理。

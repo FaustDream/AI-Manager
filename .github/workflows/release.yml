@@ -36,6 +36,14 @@ jobs:
       - name: 安装前端依赖
         run: npm ci
 
+      # 打包前兜底跑一遍门禁：tag 一推产物就出去，本地忘跑测试时这里是最后一道闸
+      - name: 后端测试门禁
+        run: cargo test --lib --tests --features ts
+        working-directory: src-tauri
+
+      - name: 前端测试门禁
+        run: npm test
+
       - name: 构建前端（dist 是 tauri build 的 frontendDist）
         run: npm run build
 
