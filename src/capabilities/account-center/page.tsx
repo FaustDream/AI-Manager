@@ -483,6 +483,7 @@ export default function AccountCenterPage() {
                 {col.header}
                 <span
                   className="absolute bottom-0 right-0 top-0 w-[7px] cursor-col-resize hover:bg-accent/35"
+                  title="拖动调宽，双击复位"
                   onMouseDown={(e) => {
                     resizing.current = {
                       key: col.key,
@@ -491,12 +492,15 @@ export default function AccountCenterPage() {
                     };
                     document.body.classList.add('resizing');
                   }}
+                  onDoubleClick={() => saveWidths({ ...widths, [col.key]: col.width })}
                 />
               </th>
             ))}
             <th
               className={`border-b border-line-strong px-2.5 py-1.5 text-right text-xs font-semibold text-muted ${
-                narrow ? 'sticky right-0 z-10 border-l border-line-strong bg-bg' : ''
+                narrow
+                  ? 'sticky right-0 z-10 border-l border-line-strong bg-bg shadow-[-10px_0_10px_-8px_rgba(16,24,40,0.28)]'
+                  : ''
               }`}
               style={{ width: OPS_WIDTH }}
             >
@@ -567,7 +571,7 @@ export default function AccountCenterPage() {
                 <td
                   className={`border-b border-line px-2 py-1.5 ${
                     narrow
-                      ? `sticky right-0 z-10 border-l border-line ${
+                      ? `sticky right-0 z-10 border-l border-line shadow-[-10px_0_10px_-8px_rgba(16,24,40,0.28)] ${
                           selected === row.iid ? 'bg-hover' : 'bg-bg'
                         }`
                       : ''
