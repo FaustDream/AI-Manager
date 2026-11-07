@@ -10,6 +10,7 @@ pub mod browser;
 pub mod checkin;
 pub mod clients;
 pub mod clock;
+pub mod config;
 pub mod config_history;
 pub mod db;
 pub mod error;

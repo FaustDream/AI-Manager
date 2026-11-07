@@ -36,6 +36,20 @@ pub async fn settings_set(
     .map_err(err_text)
 }
 
+/// 应用配置读取：设置页「配置」区整个拿走，改完整体写回。
+#[tauri::command]
+pub fn config_get() -> crate::app::config::AppConfig {
+    crate::app::config::get()
+}
+
+/// 应用配置写回：更新内存（立即生效）+ 落盘 data/config.toml（重启后仍是这个值）。
+#[tauri::command]
+pub fn config_set(config: crate::app::config::AppConfig) -> std::result::Result<(), String> {
+    crate::app::config::store(config).map_err(err_text)?;
+    log::action("config_set", "user", true, 0, "应用配置已更新");
+    Ok(())
+}
+
 #[tauri::command]
 
 pub fn autostart_get() -> bool {

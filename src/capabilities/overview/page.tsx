@@ -13,7 +13,7 @@ import { fmtAmount, fmtSize, fmtTime } from '@/lib/format';
 import { errText } from '@/lib/ipc';
 import { CreditTrend } from '@/components/credit-trend';
 import { CreditFlowChart } from '@/components/credit-flow';
-import type { AccountView, CreditFlowPoint, HealthReport, RecentClaim, UpdateInfo } from '@/lib/types';
+import type { AccountView, AppConfig, CreditFlowPoint, HealthReport, RecentClaim, UpdateInfo } from '@/lib/types';
 
 const NAV_EVENT = 'aim:navigate';
 
@@ -119,6 +119,12 @@ export default function OverviewPage() {
     retry: false,
     refetchInterval: (query) => (query.state.error ? false : 60_000),
   });
+  // 补刷阈值来自应用配置（设置界面可调）；配置没到时用默认值兜底
+  const config = useQuery<AppConfig>({
+    queryKey: ['config'],
+    queryFn: () => queryCmd('config_get'),
+  });
+  const staleAfterMs = (config.data?.dashboard.stale_refresh_min ?? 10) * 60 * 1000;
 
   const report = health.data;
   const rows = accounts.data ?? [];
@@ -153,7 +159,7 @@ export default function OverviewPage() {
   useEffect(() => {
     if (!report || autoRefreshing.current) return;
     const at = report.credits_at;
-    const stale = at === null || Date.now() - at > 10 * 60 * 1000;
+    const stale = at === null || Date.now() - at > staleAfterMs;
     if (!stale || Date.now() - lastAutoTry.current < 5 * 60 * 1000) return;
     const iids = rows.filter((row) => row.has_secret && row.enabled).map((row) => row.iid);
     if (iids.length === 0) return;
@@ -176,7 +182,7 @@ export default function OverviewPage() {
         setRefreshing(false);
       }
     })();
-  }, [report, rows, qc]);
+  }, [report, rows, qc, staleAfterMs]);
 
   const refreshCredits = () =>
     run('credits', async () => {

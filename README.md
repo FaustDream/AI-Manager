@@ -45,6 +45,8 @@ C:\Users\Lynn\.cargo\bin\cargo.exe build --release --features custom-protocol
 所有运行数据在 exe 同级 `data/`：
 
 - `app.db`：账号、签到、积分、会话索引、技能与 MCP
+- `config.toml`：应用配置（签到并发/间隔、请求超时、用量采集间隔等）。改完重启生效；
+  也可以在「设置 → 配置」里调整（立即生效并写回本文件）
 - `logs/`：`app.log`、`app.jsonl`、`crash.log`
 - `backups/`：写客户端配置前的自动备份
 - `skills/`：技能库

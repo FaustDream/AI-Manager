@@ -50,6 +50,8 @@ windows = { version = "0.58", features = [
 # cargo test --features ts 时把全部 IPC 载荷类型生成到 ../src/lib/types/，
 # CI 里用 git status 校验「生成物 = 提交物」。用 v8：i64 生成 number（v10 起改成 bigint）。
 ts-rs = { version = "8", optional = true, features = ["serde-compat", "chrono-impl", "no-serde-warnings"] }
+# 应用配置文件（data/config.toml）：已在依赖树里（tauri 传递引入），这里显式声明直接使用
+toml = "0.8"
 
 [features]
 ts = ["dep:ts-rs"]

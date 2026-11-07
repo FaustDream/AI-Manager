@@ -560,28 +560,13 @@ impl Service {
             .unwrap_or_default()
     }
 
-    /// 批量签到的节奏：并发上限 + 账号间隔。默认 3/0，与旧行为完全一致。
+    /// 批量签到的节奏：并发上限 + 账号间隔。来自应用配置（data/config.toml 或设置界面）。
     async fn checkin_limits(&self) -> (usize, u64) {
-        let db = self.db.clone();
-        blocking(move || {
-            let concurrent = db
-                .kv_get("checkin.max_concurrent")
-                .ok()
-                .flatten()
-                .and_then(|text| text.trim().parse::<usize>().ok())
-                .unwrap_or(3)
-                .clamp(1, 6);
-            let gap_ms = db
-                .kv_get("checkin.gap_ms")
-                .ok()
-                .flatten()
-                .and_then(|text| text.trim().parse::<u64>().ok())
-                .unwrap_or(0)
-                .min(60_000);
-            (concurrent, gap_ms)
-        })
-        .await
-        .unwrap_or((3, 0))
+        let config = crate::app::config::get();
+        (
+            config.checkin.max_concurrent.clamp(1, 6),
+            config.checkin.gap_ms.min(60_000),
+        )
     }
 
     /// 测试用：读取批量节奏配置。

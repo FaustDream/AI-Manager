@@ -111,8 +111,9 @@ pub fn run() -> tauri::Result<()> {
             let scan_db = state.db.clone();
             let usage_db = state.db.clone();
             let sync_db = state.db.clone();
-            let claim_db = state.db.clone();
             let sched_db = state.db.clone();
+            // 应用配置：加载 data/config.toml（首次会把旧 kv 配置键迁移进来）
+            crate::app::config::init(&state.db);
             // 清掉「待处理告警」下线后留在 kv 里的死键（通知签名 / 静默表）：
             // 功能已整体移除，留着只会让后面查 kv 的人困惑。启动时顺手清一次。
             let dead_kv_db = state.db.clone();
@@ -140,7 +141,7 @@ pub fn run() -> tauri::Result<()> {
             spawn_scheduler(sched_db, service.clone(), activity, app.handle().clone());
             spawn_startup_scan(scan_db, app.handle().clone());
             spawn_hub_auto_sync(sync_db, hub);
-            spawn_zcode_auto_claim(claim_db, service, app.handle().clone());
+            spawn_zcode_auto_claim(service, app.handle().clone());
             spawn_event_bridges(app.handle().clone());
             spawn_usage_scan(usage_db);
 
@@ -226,6 +227,8 @@ pub fn run() -> tauri::Result<()> {
             commands::logs::log_action,
             commands::logs::log_ui,
             commands::settings::log_level,
+            commands::settings::config_get,
+            commands::settings::config_set,
             commands::system::system_health,
             commands::system::diagnose_bundle,
             commands::system::update_check,
@@ -521,29 +524,14 @@ async fn run_schedule(
 /// ZCode 活动自动领取（v1 行为，开关 kv `zcode_auto_claim` **默认关**）：
 /// 每 15 分钟探测一轮，找到可领的就领第一个——领取会开浏览器过验证码，
 /// 所以必须是用户主动打开的开关。
-fn spawn_zcode_auto_claim(
-    db: Arc<Db>,
-    service: Arc<crate::app::checkin::Service>,
-    app: tauri::AppHandle,
-) {
+fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>, app: tauri::AppHandle) {
     use tauri::Emitter;
 
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
-            let enabled = crate::app::runtime::blocking({
-                let db = db.clone();
-                move || {
-                    db.kv_get("zcode_auto_claim")
-                        .ok()
-                        .flatten()
-                        .and_then(|v| serde_json::from_str::<bool>(&v).ok())
-                        .unwrap_or(false)
-                }
-            })
-            .await;
-            // panic / 读库失败都按「开关关闭」处理——这个开关本来就是缺省关
-            if !enabled.unwrap_or(false) {
+            let enabled = crate::app::config::get().activity.zcode_auto_claim;
+            if !enabled {
                 continue;
             }
             let started = std::time::Instant::now();
@@ -587,7 +575,9 @@ fn spawn_usage_scan(db: Arc<Db>) {
                     log::fail("usage", "usage_scan", "用量采集失败", e.evidence())
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+            // 间隔每轮都读一次配置：设置界面改完，下一轮就按新值走
+            let interval_min = crate::app::config::get().usage.scan_interval_min.max(1);
+            tokio::time::sleep(std::time::Duration::from_secs(interval_min * 60)).await;
         }
     });
 }
