@@ -9,9 +9,7 @@ import { ToastHost, toast } from '@/components/ui/toast';
 import { ConfirmHost } from '@/components/ui/confirm';
 import { Button } from '@/components/ui/button';
 import { queryCmd, runCmd } from '@/lib/cmd';
-import { useQuery } from '@tanstack/react-query';
 import { CommandPalette, type PaletteItem } from './CommandPalette';
-import type { HealthReport } from '@/lib/types';
 import { hideSplash } from '@/lib/splash';
 import { loadTheme } from '@/lib/theme';
 import { Suspense } from 'react';
@@ -30,14 +28,6 @@ const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
 export function Shell() {
   const caps = useMemo(() => capabilities(), []);
   const [active, setActive] = useState(caps[0]?.manifest.id ?? '');
-
-  // 待处理数量：与仪表盘共用同一份缓存（同一个 queryKey），不会多打一次命令
-  const health = useQuery<HealthReport>({
-    queryKey: ['health'],
-    queryFn: () => queryCmd('system_health'),
-    refetchInterval: 60_000,
-  });
-  const alertCount = health.data?.alerts.length ?? 0;
 
   useEffect(() => {
     void loadTheme();
@@ -63,7 +53,6 @@ export function Shell() {
       id: `nav:${cap.manifest.id}`,
       title: cap.manifest.title,
       group: '页面',
-      hint: cap.manifest.id === 'overview' && alertCount > 0 ? `${alertCount} 条待处理` : undefined,
       run: () => setActive(cap.manifest.id),
     }));
     const actions: PaletteItem[] = [
@@ -121,7 +110,7 @@ export function Shell() {
       },
     ];
     return [...pages, ...actions];
-  }, [caps, alertCount]);
+  }, [caps]);
 
   return (
     <MotionConfig reducedMotion="user">
@@ -141,14 +130,6 @@ export function Shell() {
               >
                 <Icon size={15} />
                 {cap.manifest.title}
-                {cap.manifest.id === 'overview' && alertCount > 0 && (
-                  <span
-                    className="ml-0.5 rounded-full bg-warn px-1 text-[10px] font-semibold text-on-accent"
-                    title={`${alertCount} 条待处理`}
-                  >
-                    {alertCount > 99 ? '99+' : alertCount}
-                  </span>
-                )}
               </button>
             );
           })}

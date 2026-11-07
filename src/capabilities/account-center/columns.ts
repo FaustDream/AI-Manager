@@ -2,7 +2,9 @@
 // 列宽持久化键 ui.columns 也按这里的 key 存（与 v1 同键，老配置直接可用）。
 //
 // 每列只答一个问题，别让它们互相重复：
-//   登录态     = 本机存没存凭据、凭据到哪天为止（剩余天数不在这里说）
+//   凭据到期   = 本机存没存凭据、凭据到哪天为止（剩余天数不在这里说）。
+//                曾经叫「登录态」，但它只是凭据的到期信息：切换登录靠的是
+//                本机保存的凭据文件，不是这个日期——名字诚实一点少一半误解。
 //   积分 / 配额 = 余额；额度型平台（ZCode）显示最紧窗口的剩余百分比
 //   签到       = 今天签没签
 // 「到期」列已删除：积分批次的到期日属于「点开这一行才关心」的细节，
@@ -178,7 +180,7 @@ export const COLUMNS: ColumnDefEx[] = [
         .join('\n') || undefined,
     }),
   },
-  { key: 'login', header: '登录态', width: 150, min: 110, cell: loginCell },
+  { key: 'login', header: '凭据到期', width: 150, min: 110, cell: loginCell },
   { key: 'credit', header: '积分 / 配额', width: 128, min: 90, cell: creditCell },
   { key: 'checkin', header: '签到', width: 104, min: 70, cell: checkinCell },
 ];

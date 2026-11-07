@@ -103,8 +103,6 @@ pub fn run() -> tauri::Result<()> {
     };
 
     tauri::Builder::default()
-        // 系统通知：到期/失败预警只在「状态变化」或「每天一次」时弹，避免刷屏
-        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let state = init_state(instance)?;
             let service = state.checkin.clone();
@@ -226,8 +224,6 @@ pub fn run() -> tauri::Result<()> {
             commands::system::config_snapshot_list,
             commands::system::config_snapshot_restore,
             commands::system::config_snapshot_clear,
-            commands::system::alert_mute,
-            commands::system::alert_unmute_all,
             commands::usage::usage_scan,
             commands::usage::usage_overview,
             commands::maintenance::maintenance_space,

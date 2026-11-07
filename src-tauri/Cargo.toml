@@ -50,7 +50,6 @@ windows = { version = "0.58", features = [
 # cargo test --features ts 时把全部 IPC 载荷类型生成到 ../src/lib/types/，
 # CI 里用 git status 校验「生成物 = 提交物」。用 v8：i64 生成 number（v10 起改成 bigint）。
 ts-rs = { version = "8", optional = true, features = ["serde-compat", "chrono-impl", "no-serde-warnings"] }
-tauri-plugin-notification = "2.8.0"
 
 [features]
 ts = ["dep:ts-rs"]

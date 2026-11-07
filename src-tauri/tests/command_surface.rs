@@ -69,7 +69,7 @@ fn command_surface_matches_registered_handlers() {
     );
     assert_eq!(
         ts.len(),
-        93,
+        91,
         "命令面数量变化：确认调用链已全部接好，再更新这里的基线"
     );
 }

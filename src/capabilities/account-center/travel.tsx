@@ -3,7 +3,7 @@
 // 由「猫猫旅行」定时任务执行。账号级偏好落 kv，重扫不会丢。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { Button } from '@/components/ui/button';
+import { Button, cn } from '@/components/ui/button';
 import { Checkbox, Select, StateBlock } from '@/components/ui/form';
 import { Notice, Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
@@ -68,6 +68,7 @@ export function TravelCard({ account }: { account: AccountView }) {
   const locations = data.config.locations;
   const prefs = data.prefs;
   const records = data.records;
+  const events = data.events;
   const buddyName = status.buddy_name ?? data.config.buddy_name;
   const locationName = status.location?.name;
   const canDepart = state === 'idle' || state === 'arrived';
@@ -230,9 +231,36 @@ export function TravelCard({ account }: { account: AccountView }) {
         </span>
       </div>
 
+      {events.length > 0 && (
+        <div className="mt-2 border-t border-line/60 pt-1.5">
+          <div className="mb-1 text-xs text-muted">本机记录（派出 / 回来 / 领到积分）</div>
+          <div className="flex flex-col gap-0.5 text-xs">
+            {events.slice(0, 8).map((event, index) => (
+              <div key={`${event.kind}-${event.at}-${index}`} className="flex items-baseline gap-2">
+                <span className="tabular-nums text-muted">{fmtTime(event.at)}</span>
+                <span
+                  className={cn(
+                    'w-14 shrink-0 font-medium',
+                    event.kind === 'claim' ? 'text-ok' : 'text-fg2',
+                  )}
+                >
+                  {event.kind === 'depart' ? '派出' : event.kind === 'arrive' ? '回来' : '领到'}
+                </span>
+                <span className="min-w-0 truncate text-fg2" title={event.location}>
+                  {event.location || '—'}
+                </span>
+                {event.amount !== null && (
+                  <span className="tabular-nums text-ok">+{fmtAmount(event.amount)}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {records.length > 0 && (
         <div className="mt-2 border-t border-line/60 pt-1.5">
-          <div className="mb-1 text-xs text-muted">最近记录</div>
+          <div className="mb-1 text-xs text-muted">平台记录</div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
             {records.slice(0, 5).map((record, index) => (
               <span key={record.record_id ?? index} className="tabular-nums">

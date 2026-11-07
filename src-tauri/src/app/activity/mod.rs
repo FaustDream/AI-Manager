@@ -127,6 +127,23 @@ pub struct TravelPrefs {
     pub location_id: Option<i64>,
 }
 
+/// 本机旅行记录里的一条：派出 / 回来 / 领到积分。
+/// 平台只给「已完成的旅行」列表，出发与到站时刻只有本机知道。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TravelEvent {
+    /// `depart` / `arrive` / `claim`
+    pub kind: String,
+    /// 事件时刻（毫秒）。arrive 用平台给的到站时刻，其余用本机时钟。
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub at: i64,
+    pub location: String,
+    /// 领到的积分；派出/回来没有数额
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub amount: Option<f64>,
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Default, Serialize)]
@@ -135,6 +152,8 @@ pub struct ActivityOverview {
     pub config: TravelConfig,
     pub records: Vec<TravelRecord>,
     pub prefs: TravelPrefs,
+    /// 本机记录（派出/回来/领取），最新的在前。
+    pub events: Vec<TravelEvent>,
     /// 非致命的查询失败（地点/记录读不到时仍给状态）。
     pub warnings: Vec<String>,
 }
@@ -214,18 +233,21 @@ impl Service {
         if status.buddy_name.is_none() {
             status.buddy_name = config.buddy_name.clone();
         }
+        self.note_arrival(iid, &status).await;
 
         let db = self.db.clone();
         let key = iid.to_string();
-        let prefs = blocking(move || store::prefs_of(&db, &key))
-            .await
-            .unwrap_or_default();
+        let (prefs, events) =
+            blocking(move || (store::prefs_of(&db, &key), store::events_of(&db, &key)))
+                .await
+                .unwrap_or_default();
 
         Ok(ActivityOverview {
             status,
             config,
             records,
             prefs,
+            events,
             warnings,
         })
     }
@@ -251,6 +273,7 @@ impl Service {
         if let Ok(value) = &result {
             self.record_travel_claim(iid, &status, value, &crate::app::clock::SystemClock)
                 .await;
+            self.note_arrival(iid, &status).await;
         }
         let ms = started.elapsed().as_millis() as u64;
         match &result {
@@ -281,30 +304,36 @@ impl Service {
         let started = std::time::Instant::now();
         let (view, cred) = self.load(iid).await?;
         let provider = Self::provider_of(iid)?;
-        let location_id = match self.resolve_location(&*provider, &cred, location_id).await {
-            Ok((id, _)) => id,
-            Err(e) => {
-                log::fail(
-                    "activity",
-                    "activity_depart",
-                    format!("派出失败：{}", view.display_name()),
-                    e.evidence(),
-                );
-                return Err(e);
-            }
-        };
+        let (location_id, location_name) =
+            match self.resolve_location(&*provider, &cred, location_id).await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    log::fail(
+                        "activity",
+                        "activity_depart",
+                        format!("派出失败：{}", view.display_name()),
+                        e.evidence(),
+                    );
+                    return Err(e);
+                }
+            };
         let result = provider
             .travel_depart(&cred, self.http.as_ref(), location_id)
             .await;
         let ms = started.elapsed().as_millis() as u64;
         match &result {
-            Ok(value) => log::action(
-                "activity_depart",
-                trigger,
-                value.ok,
-                ms,
-                format!("{}：{}", view.display_name(), value.message),
-            ),
+            Ok(value) => {
+                log::action(
+                    "activity_depart",
+                    trigger,
+                    value.ok,
+                    ms,
+                    format!("{}：{}", view.display_name(), value.message),
+                );
+                if value.ok {
+                    self.note_depart(iid, &location_name).await;
+                }
+            }
             Err(e) => log::fail(
                 "activity",
                 "activity_depart",
@@ -501,6 +530,7 @@ impl Service {
             Ok(status) => status,
             Err(e) => return Step::fail("查询状态", &e.message, &e.evidence()),
         };
+        self.note_arrival(&account.iid, &status).await;
 
         let state = status.state.unwrap_or(TravelState::Unknown);
         // `daily_limit_reached` 约束的是「今天还能不能再派一趟」，不是「已到手的奖励不许领」。
@@ -528,14 +558,17 @@ impl Service {
                 Step::fail("查询状态", "平台返回了未知的旅行状态", &evidence)
             }
             TravelState::Idle => match self.depart_step(&*provider, &cred, prefs).await {
-                Ok((name, message)) => Step {
-                    outcome: Outcome::Ok,
-                    departed: true,
-                    claimed: false,
-                    step: "派出".into(),
-                    reason: message,
-                    evidence: format!("地点={name} · 平台={}", view.platform_label),
-                },
+                Ok((name, message)) => {
+                    self.note_depart(&account.iid, &name).await;
+                    Step {
+                        outcome: Outcome::Ok,
+                        departed: true,
+                        claimed: false,
+                        step: "派出".into(),
+                        reason: message,
+                        evidence: format!("地点={name} · 平台={}", view.platform_label),
+                    }
+                }
                 Err(e) => Step::fail("派出", &e.message, &e.evidence()),
             },
             TravelState::Arrived => {
@@ -565,14 +598,17 @@ impl Service {
                     };
                 }
                 match self.depart_step(&*provider, &cred, prefs).await {
-                    Ok((name, message)) => Step {
-                        outcome: Outcome::Ok,
-                        claimed: !claimed.already,
-                        departed: true,
-                        step: "领取并派出".into(),
-                        reason: format!("{} · {message}", claimed.message),
-                        evidence: format!("地点={name} · 平台={}", view.platform_label),
-                    },
+                    Ok((name, message)) => {
+                        self.note_depart(&account.iid, &name).await;
+                        Step {
+                            outcome: Outcome::Ok,
+                            claimed: !claimed.already,
+                            departed: true,
+                            step: "领取并派出".into(),
+                            reason: format!("{} · {message}", claimed.message),
+                            evidence: format!("地点={name} · 平台={}", view.platform_label),
+                        }
+                    }
                     Err(e) => Step {
                         outcome: Outcome::Partial,
                         claimed: !claimed.already,
@@ -584,6 +620,53 @@ impl Service {
                 }
             }
         }
+    }
+
+    /// 记「派出」。地点此刻刚确定，用本机时钟即可；重复派出由状态机天然防重
+    /// （派出成功后状态就是旅行中，不会再次进入派出分支）。
+    async fn note_depart(&self, iid: &str, location: &str) {
+        let db = self.db.clone();
+        let key = iid.to_string();
+        let event = TravelEvent {
+            kind: "depart".into(),
+            at: crate::app::timeutil::now_ms(),
+            location: location.to_string(),
+            amount: None,
+        };
+        let _ = blocking(move || {
+            store::record_event(&db, &key, event);
+            Ok::<(), AppError>(())
+        })
+        .await;
+    }
+
+    /// 记「回来」。同一趟旅行会被 overview / 轮询 / 手动领取反复观察到，
+    /// store 按平台的 `arrive_at` 去重，只落一条。
+    async fn note_arrival(&self, iid: &str, status: &TravelStatus) {
+        if status.state != Some(TravelState::Arrived) {
+            return;
+        }
+        let at = status
+            .arrive_at
+            .filter(|at| *at > 0)
+            .unwrap_or_else(crate::app::timeutil::now_ms);
+        let db = self.db.clone();
+        let key = iid.to_string();
+        let event = TravelEvent {
+            kind: "arrive".into(),
+            at,
+            location: status
+                .location
+                .as_ref()
+                .map(|location| location.name.clone())
+                .unwrap_or_default(),
+            amount: status.reward_credit,
+        };
+        let _ = blocking(move || {
+            store::record_event(&db, &key, event);
+            Ok::<(), AppError>(())
+        })
+        .await;
     }
 
     async fn record_travel_claim(
@@ -625,6 +708,12 @@ impl Service {
             );
             return;
         };
+        let amount = result.granted.or(status.reward_credit);
+        let location = status
+            .location
+            .as_ref()
+            .map(|location| location.name.clone())
+            .unwrap_or_default();
         crate::app::checkin::store::record_claim(
             self.db.clone(),
             iid,
@@ -633,15 +722,29 @@ impl Service {
                 source: "travel".into(),
                 // 领取接口不一定回传奖励数额：退回领取前状态里的「本次奖励」，
                 // 免得记录里明明领到了却显示「未提供」。
-                amount: result.granted.or(status.reward_credit),
-                description: status
-                    .location
-                    .as_ref()
-                    .map(|location| format!("猫猫旅行 · {}", location.name))
-                    .unwrap_or_else(|| "猫猫旅行".into()),
+                amount,
+                description: if location.is_empty() {
+                    "猫猫旅行".into()
+                } else {
+                    format!("猫猫旅行 · {location}")
+                },
                 claimed_at: clock.now().timestamp_millis(),
             },
         )
+        .await;
+        // 台账之外同步落一条本机旅行记录，卡片上的时间线才是完整的
+        let db = self.db.clone();
+        let key = iid.to_string();
+        let event = TravelEvent {
+            kind: "claim".into(),
+            at: clock.now().timestamp_millis(),
+            location,
+            amount,
+        };
+        let _ = blocking(move || {
+            store::record_event(&db, &key, event);
+            Ok::<(), AppError>(())
+        })
         .await;
     }
 
