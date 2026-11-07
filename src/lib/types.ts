@@ -2,7 +2,6 @@
 // 源文件在 lib/types/ 目录，本文件只做统一出口。改字段请改 Rust 侧 + 重新
 // `cargo test --features ts`，生成物与提交物由 CI 校验一致。
 export type { AccountHealth } from './types/AccountHealth';
-export type { Alert } from './types/Alert';
 export type { BatchDiagnoseReport } from './types/BatchDiagnoseReport';
 export type { HealthReport } from './types/HealthReport';
 export type { LogStat } from './types/LogStat';

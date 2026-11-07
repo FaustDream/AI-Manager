@@ -227,10 +227,7 @@ impl RealHttp {
         let resp = builder.send().await.map_err(|e| {
             // 超时/连不上属于链路问题，重试有意义；解码失败之类重试也没用
             let retry = e.is_timeout() || e.is_connect();
-            (
-                AppError::new(ErrorKind::Provider, format!("网络请求失败：{}", brief(&e))),
-                retry,
-            )
+            (net_error(&e), retry)
         })?;
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
@@ -271,6 +268,13 @@ fn brief(e: &reqwest::Error) -> String {
     } else {
         e.to_string()
     }
+}
+
+/// 网络层失败（超时/连不上/解码）归 `io`：列表红字才会显示「网络错误」。
+/// 归成 `provider` 会显示「平台错误」——把代理没开、节点挂了这类本机链路问题
+/// 误导成平台故障，排障方向直接跑偏（实测踩过：国际版超时被当成平台错误）。
+fn net_error(e: &reqwest::Error) -> AppError {
+    AppError::new(ErrorKind::Io, format!("网络请求失败：{}", brief(e)))
 }
 
 /// 测试用网络层：按 URL 预先排好响应，并记录每次调用。
@@ -453,6 +457,29 @@ mod tests {
         assert_eq!(
             resp.json().unwrap_err().kind,
             crate::app::error::ErrorKind::Provider
+        );
+    }
+
+    /// 网络层失败（超时/连不上）要归 `io`：列表红字才会显示「网络错误」。
+    /// 归成 `provider` 会显示「平台错误」，把代理/链路问题误导成平台故障。
+    /// 直连一个必然拒绝的端口拿真实的 reqwest 错误——RealHttp 会吃系统代理，
+    /// 代理自己回 502 就不是网络错误了，所以这里用无代理的裸 client。
+    #[tokio::test]
+    async fn network_errors_are_io_kind_not_provider() {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(300))
+            .no_proxy()
+            .build()
+            .unwrap();
+        let Err(err) = client.get("http://127.0.0.1:1/").send().await else {
+            panic!("127.0.0.1:1 应该连不上");
+        };
+        let app_err = net_error(&err);
+        assert_eq!(app_err.kind, crate::app::error::ErrorKind::Io);
+        assert!(
+            app_err.message.contains("网络请求失败"),
+            "{}",
+            app_err.message
         );
     }
 }

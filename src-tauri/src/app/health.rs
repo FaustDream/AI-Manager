@@ -102,59 +102,12 @@ pub struct HealthReport {
     /// 最近一次成功查到积分的时刻（全部账号取最大）。界面据此判断「数据有多旧」。
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub credits_at: Option<i64>,
-    /// 被「已处理」静默掉的条数：界面给一个恢复入口，别让人以为问题消失了
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub muted: usize,
     pub accounts: AccountHealth,
     pub platforms: Vec<PlatformHealth>,
     pub schedules: Vec<ScheduleHealth>,
-    pub alerts: Vec<Alert>,
 }
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
-
-/// 「已处理」的告警：`key → 静默截止毫秒`。
-/// 只静默这一条，不改变判定逻辑；到期后自动恢复提醒。
-const MUTE_KV: &str = "alert.muted";
-
-fn muted_map(db: &Db) -> std::collections::BTreeMap<String, i64> {
-    db.kv_get(MUTE_KV)
-        .ok()
-        .flatten()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
-}
-
-/// 静默一条告警。`hours` 限制在 1～168（一周），避免「永久忽略」把真问题藏起来。
-pub fn mute(db: &Db, key: &str, hours: i64) -> Result<()> {
-    let now = crate::app::timeutil::now_ms();
-    let mut map = muted_map(db);
-    map.retain(|_, until| *until > now);
-    map.insert(key.to_string(), now + hours.clamp(1, 168) * 60 * 60 * 1000);
-    let text = serde_json::to_string(&map)
-        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("保存告警静默失败：{e}")))?;
-    db.kv_set(MUTE_KV, &text)
-}
-
-/// 恢复全部被静默的告警。
-pub fn unmute_all(db: &Db) -> Result<()> {
-    db.kv_delete(MUTE_KV)
-}
-
-/// 积分展示：整数不带小数点，零头保留两位。
-fn fmt_amount(value: f64) -> String {
-    if (value.fract()).abs() < 1e-9 {
-        format!("{}", value as i64)
-    } else {
-        format!("{value:.2}")
-    }
-}
-
-fn fmt_day(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms)
-        .map(|at| at.with_timezone(&Local).format("%m-%d").to_string())
-        .unwrap_or_else(|| "—".into())
-}
 
 fn dir_bytes(dir: &std::path::Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -194,7 +147,6 @@ pub fn report(db: &Db) -> Result<HealthReport> {
         failing: 0,
         checked_today: 0,
     };
-    let mut alerts: Vec<Alert> = Vec::new();
     let mut platforms: std::collections::BTreeMap<String, PlatformHealth> = Default::default();
 
     for row in &rows {
@@ -223,59 +175,15 @@ pub fn report(db: &Db) -> Result<HealthReport> {
             health.checked_today += 1;
         }
 
-        // 凭据到期：已过期是坏，3 天内是要处理
+        // 凭据到期：已过期是坏，3 天内要处理（指标卡用，不再生成告警条目）
         if row.has_secret {
             if let Some(expires) = row.expires_at {
                 let days = (expires - now) / DAY_MS;
                 if days < 0 {
                     health.expired += 1;
-                    alerts.push(Alert {
-                        key: format!("credential:{}", row.iid),
-                        level: "bad".into(),
-                        kind: "credential".into(),
-                        iid: Some(row.iid.clone()),
-                        title: format!("{} 登录态已过期 {} 天", row.display_name(), -days),
-                        detail: "需要重新登录这个账号，否则签到与积分查询都会失败".into(),
-                    });
                 } else if days <= 3 {
                     health.expiring += 1;
-                    alerts.push(Alert {
-                        key: format!("credential:{}", row.iid),
-                        level: "warn".into(),
-                        kind: "credential".into(),
-                        iid: Some(row.iid.clone()),
-                        title: format!("{} 登录态 {} 天后到期", row.display_name(), days),
-                        detail: "建议提前重新登录，避免到期当天自动任务失败".into(),
-                    });
                 }
-            }
-        }
-
-        // 积分批次到期：只提醒 7 天内、金额大于 0，且**当前还有余额**。
-        // 余额为 0 或未知时不报：要么已经用掉了，要么还没刷过积分——
-        // 拿旧批次缓存报「即将过期」，用户只会被反复提醒一笔早已消耗掉的积分。
-        if let (Some(expires), Some(amount)) = (row.lot_expires_at, row.lot_amount) {
-            let balance = row.balance.unwrap_or(0.0);
-            if amount > 0.0 && balance > 0.0 && expires > now && expires - now <= 7 * DAY_MS {
-                // 批次金额可能大于当前余额（缓存旧了或已部分消耗）：按余额封顶，
-                // 报「100 积分要过期」但账上只剩 30，只会让人白紧张。
-                let expiring = amount.min(balance);
-                alerts.push(Alert {
-                    key: format!("credit:{}", row.iid),
-                    level: "warn".into(),
-                    kind: "credit".into(),
-                    iid: Some(row.iid.clone()),
-                    title: format!(
-                        "{} 有 {} 积分 7 天内到期",
-                        row.display_name(),
-                        fmt_amount(expiring)
-                    ),
-                    detail: format!(
-                        "最近一笔 {} 到期 · 当前余额 {}；攒着不用就作废了",
-                        fmt_day(expires),
-                        fmt_amount(balance)
-                    ),
-                });
             }
         }
 
@@ -287,33 +195,11 @@ pub fn report(db: &Db) -> Result<HealthReport> {
             if let Some(entry) = platforms.get_mut(&row.platform) {
                 entry.failing += 1;
             }
-            alerts.push(Alert {
-                key: format!("failure:{}", row.iid),
-                level: "warn".into(),
-                kind: "failure".into(),
-                iid: Some(row.iid.clone()),
-                title: format!(
-                    "{} 最近一次查询失败：{}",
-                    row.display_name(),
-                    row.last_fail_kind.as_deref().unwrap_or("未知")
-                ),
-                detail: "打开账号详情点「诊断」看具体环节；持续失败会跳过自动任务".into(),
-            });
         }
     }
 
     let now_local = Local::now();
     let raw = crate::app::schedule::list(db)?;
-    // 建了多久：刚建的还没到点，不该报「从未运行」
-    let created: std::collections::HashMap<String, i64> = raw
-        .iter()
-        .filter_map(|item| {
-            item.created_at
-                .as_deref()
-                .and_then(parse_ms)
-                .map(|ms| (item.id.clone(), ms))
-        })
-        .collect();
     let schedules = raw
         .into_iter()
         .map(|item| ScheduleHealth {
@@ -327,36 +213,6 @@ pub fn report(db: &Db) -> Result<HealthReport> {
         })
         .collect::<Vec<_>>();
 
-    for item in &schedules {
-        let fresh = created
-            .get(&item.id)
-            .is_some_and(|ms| now - ms < 2 * 60 * 60 * 1000);
-        if item.enabled && item.last_run.is_none() && !fresh {
-            alerts.push(Alert {
-                key: format!("schedule:{}", item.id),
-                level: "warn".into(),
-                kind: "schedule".into(),
-                iid: None,
-                title: format!("定时任务「{}」从未运行", item.name),
-                detail: format!("规则 {}；如果刚配置，等下一次触发即可", item.rule),
-            });
-        }
-    }
-
-    // 已处理：按 key 静默，过期自动恢复；界面拿到 muted 数量给恢复入口
-    let muted_map = muted_map(db);
-    let total_alerts = alerts.len();
-    alerts.retain(|alert| {
-        muted_map
-            .get(&alert.key)
-            .map(|until| *until <= now)
-            .unwrap_or(true)
-    });
-    let muted = total_alerts - alerts.len();
-
-    // 坏的排前面，其次按标题稳定排序
-    alerts.sort_by(|a, b| a.level.cmp(&b.level).then_with(|| a.title.cmp(&b.title)));
-
     let data_dir = paths::data_dir();
     Ok(HealthReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -366,11 +222,9 @@ pub fn report(db: &Db) -> Result<HealthReport> {
         backup_bytes: dir_bytes(&data_dir.join("backups")),
         generated_at: now,
         credits_at,
-        muted,
         accounts: health,
         platforms: platforms.into_values().collect(),
         schedules,
-        alerts,
     })
 }
 
@@ -498,32 +352,11 @@ mod tests {
     }
 
     #[test]
-    fn report_counts_expiring_credentials_and_alerts() {
+    fn report_counts_expiring_credentials() {
         let (_dir, db) = seeded();
         let report = report(&db).unwrap();
         assert_eq!(report.accounts.total, 1);
         assert_eq!(report.accounts.expiring, 1, "1 天后到期应计入 3 天内");
-        assert!(report
-            .alerts
-            .iter()
-            .any(|a| a.kind == "credential" && a.level == "warn"));
-    }
-
-    #[test]
-    fn muted_alert_disappears_but_is_counted_and_restorable() {
-        let (_dir, db) = seeded();
-        let before = report(&db).unwrap();
-        assert_eq!(before.alerts.len(), 1);
-        assert_eq!(before.muted, 0);
-
-        let key = before.alerts[0].key.clone();
-        mute(&db, &key, 24).unwrap();
-        let muted = report(&db).unwrap();
-        assert!(muted.alerts.is_empty(), "已处理的告警不应再出现");
-        assert_eq!(muted.muted, 1, "要能告诉界面「忽略了几条」");
-
-        unmute_all(&db).unwrap();
-        assert_eq!(report(&db).unwrap().alerts.len(), 1, "恢复后要重新提醒");
     }
 
     #[test]

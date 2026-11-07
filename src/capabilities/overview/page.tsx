@@ -81,8 +81,6 @@ function SectionTitle({ children, right }: { children: React.ReactNode; right?: 
   );
 }
 
-const LEVEL_TONE = { bad: 'bad', warn: 'warn' } as const;
-
 export default function OverviewPage() {
   const qc = useQueryClient();
   const { busy, run } = useBusy();
@@ -196,19 +194,6 @@ export default function OverviewPage() {
         qc.invalidateQueries({ queryKey: ['recent-claims'] }),
       ]);
       toast('积分已刷新');
-    });
-
-  const muteAlert = (key: string) =>
-    run(`mute:${key}`, async () => {
-      if ((await runCmd('alert_mute', { key, hours: 24 })) === undefined) return;
-      toast('已标记处理，24 小时内不再提醒');
-      await qc.invalidateQueries({ queryKey: ['health'] });
-    });
-
-  const unmuteAll = () =>
-    run('unmute', async () => {
-      if ((await runCmd('alert_unmute_all')) === undefined) return;
-      await qc.invalidateQueries({ queryKey: ['health'] });
     });
 
   const runRound = () =>
@@ -386,81 +371,6 @@ export default function OverviewPage() {
 
       {report && report.accounts.total > 0 && (
         <>
-          {/* 待处理：坏的最多 6 条，其余给一句汇总，不在这里做长列表 */}
-          {(report.alerts.length > 0 || report.muted > 0) && (
-            <div
-              className={
-                report.alerts.length > 0
-                  ? 'rounded-lg border border-warn/40 bg-warn/5'
-                  : 'rounded-lg border border-line bg-card'
-              }
-            >
-              <div className="flex flex-wrap items-center gap-2 border-b border-warn/20 px-3 py-1.5">
-                <span
-                  className={`text-xs font-semibold ${
-                    report.alerts.length > 0 ? 'text-warn' : 'text-muted'
-                  }`}
-                >
-                  {report.alerts.length > 0
-                    ? `待处理 ${report.alerts.length} 条`
-                    : '告警都已处理'}
-                </span>
-                {report.muted > 0 && (
-                  <span className="text-xs text-muted">
-                    已忽略 {report.muted} 条
-                    <button
-                      className="ml-1 cursor-pointer text-accent hover:underline"
-                      onClick={unmuteAll}
-                    >
-                      恢复
-                    </button>
-                  </span>
-                )}
-                <span className="flex-1" />
-                {report.alerts.length > 0 && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => go('account-center', report.alerts[0]?.iid ?? undefined)}
-                  >
-                    去账号中心
-                  </Button>
-                )}
-              </div>
-              <ul className="divide-y divide-warn/10">
-                {report.alerts.slice(0, 6).map((alert) => (
-                  <li
-                    key={alert.key}
-                    className="flex cursor-pointer flex-wrap items-baseline gap-x-2 gap-y-0.5 px-3 py-1.5 text-xs hover:bg-hover"
-                    onClick={() => go('account-center', alert.iid ?? undefined)}
-                  >
-                    <Tag tone={LEVEL_TONE[alert.level as 'bad' | 'warn'] ?? 'warn'}>
-                      {alert.level === 'bad' ? '异常' : '待处理'}
-                    </Tag>
-                    <span className="font-medium">{alert.title}</span>
-                    <span className="text-muted">{alert.detail}</span>
-                    <span className="flex-1" />
-                    <button
-                      className="cursor-pointer text-muted hover:text-fg"
-                      title="标记为已处理：24 小时内不再提醒，到期自动恢复"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void muteAlert(alert.key);
-                      }}
-                    >
-                      已处理
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              {report.alerts.length > 6 && (
-                <div className="px-3 py-1.5 text-xs text-muted">
-                  另有 {report.alerts.length - 6} 条未显示
-                </div>
-              )}
-            </div>
-          )}
-
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Metric
               label="启用账号"
