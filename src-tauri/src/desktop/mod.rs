@@ -43,6 +43,7 @@ pub(crate) fn err_text(e: AppError) -> String {
 
 pub mod background;
 pub mod commands;
+pub mod web;
 
 // ------------------------------------------------------------------ 启动
 
@@ -139,10 +140,10 @@ pub fn run() -> tauri::Result<()> {
                     }
                 });
             }
-            background::spawn_scheduler(sched_db, service.clone(), activity, app.handle().clone());
-            background::spawn_startup_scan(scan_db, app.handle().clone());
+            background::spawn_scheduler(sched_db, service.clone(), activity);
+            background::spawn_startup_scan(scan_db);
             background::spawn_hub_auto_sync(sync_db, hub);
-            background::spawn_zcode_auto_claim(service, app.handle().clone());
+            background::spawn_zcode_auto_claim(service);
             background::spawn_event_bridges(app.handle().clone());
             background::spawn_usage_scan(usage_db);
 
@@ -181,6 +182,7 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_refresh_all,
             commands::accounts::account_open_client,
             commands::hub::hub_snapshot,
+            commands::hub::hub_official_scan,
             commands::hub::hub_skill_deploy,
             commands::hub::hub_skill_remove,
             commands::hub::hub_skill_import,
@@ -200,7 +202,6 @@ pub fn run() -> tauri::Result<()> {
             commands::sessions::session_retention_set,
             commands::activity::activity_overview,
             commands::activity::activity_daily_status,
-            commands::activity::activity_daily_hello,
             commands::activity::activity_claim,
             commands::activity::activity_depart,
             commands::activity::activity_pref_set,
@@ -221,6 +222,7 @@ pub fn run() -> tauri::Result<()> {
             commands::checkin::zcode_claim_plans,
             commands::checkin::zcode_claim_run,
             commands::logs::log_query,
+            commands::logs::log_span,
             commands::logs::log_stats,
             commands::logs::log_export,
             commands::logs::log_clear,
@@ -248,7 +250,9 @@ pub fn run() -> tauri::Result<()> {
         .run(tauri::generate_context!())
 }
 
-fn init_state(
+/// 桌面壳与网页壳共用的状态装配：日志、数据库、三个服务与 Hub。
+/// `pub` 是给 `src/bin/ai-manager-web.rs` 用的——两个壳的装配必须一致。
+pub fn init_state(
     instance: Option<process::SingleInstance>,
 ) -> std::result::Result<AppState, Box<dyn std::error::Error>> {
     log::init(Level::Info)?;
@@ -274,8 +278,7 @@ fn init_state(
             Level::Info,
             "app",
             format!(
-                "启动体检：v{} · 账号 {accounts} · 会话索引 {sessions} · 数据目录 {} · 上一轮[{last_round}]",
-                env!("CARGO_PKG_VERSION"),
+                "启动体检：账号 {accounts} · 会话索引 {sessions} · 数据目录 {} · 上一轮[{last_round}]",
                 crate::app::paths::data_dir().display()
             ),
         );

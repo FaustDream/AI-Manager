@@ -50,7 +50,6 @@ pub async fn schedule_delete(
 
 pub async fn schedule_run(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
     id: String,
 ) -> std::result::Result<String, String> {
     let db = state.db.clone();
@@ -68,7 +67,7 @@ pub async fn schedule_run(
 
     let started = std::time::Instant::now();
     // 与定时触发走同一条执行路径，只在记录里区分 trigger
-    let outcome = execute_schedule(&service, &activity, &app, &schedule).await;
+    let outcome = execute_schedule(&service, &activity, &schedule).await;
     // 手动跑也要更新 last_run：否则「每 N 小时」的任务刚手动跑完，下一跳又自动跑一次
     let _ = crate::app::runtime::blocking(move || crate::app::schedule::mark_ran(&db, &id)).await;
     // 手动触发是用户操作，即使这轮什么都没做也要留执行记录（与定时路径不同）

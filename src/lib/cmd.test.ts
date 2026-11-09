@@ -1,7 +1,7 @@
 // C1 的错误话术：errMsg（kind→下一步指引）与 errText（取 message）都是纯函数。
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { errKind, errText } from './ipc';
-import { argsSummary, errMsg, resultSummary } from './cmd';
+import { argsSummary, errMsg, queryCmd, resultSummary, runCmd } from './cmd';
 
 const appError = (kind: string, message: string) => JSON.stringify({ kind, message });
 
@@ -79,5 +79,34 @@ describe('resultSummary', () => {
     expect(resultSummary({ scanned: 11, failed: 0 })).toBe('{"scanned":11,"failed":0}');
     const long = resultSummary('x'.repeat(500));
     expect(long).toContain('共 500 字');
+  });
+});
+
+// 传输分流回归（网页调试模式）：命令面必须经 ipc.call 分流。裸 invoke 在纯
+// 浏览器里没有 __TAURI_INTERNALS__，会抛「Cannot read properties of undefined
+// (reading 'invoke')」——健康报告失败、列表为空、导出报错都是它。node 测试
+// 环境没有 window，与浏览器同态：inTauri=false，必须落到 HTTP /cmd。
+describe('命令面传输分流', () => {
+  const stubHttp = (data: unknown) => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ok: true, data }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+
+  it('queryCmd 在非 Tauri 环境走 HTTP /cmd（带安全头）', async () => {
+    const fetchMock = stubHttp('2.0.0');
+    await expect(queryCmd('app_version')).resolves.toBe('2.0.0');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/cmd/app_version');
+    expect(init?.headers).toMatchObject({ 'x-ai-manager-web': '1' });
+    vi.unstubAllGlobals();
+  });
+
+  it('runCmd 同样走 HTTP /cmd，成功值不被吞', async () => {
+    stubHttp(11);
+    await expect(runCmd('account_list')).resolves.toBe(11);
+    vi.unstubAllGlobals();
   });
 });

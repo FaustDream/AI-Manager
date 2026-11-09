@@ -221,6 +221,98 @@ pub struct CreditFlowPoint {
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 一个软件的积分收支。口径与总览完全一致，区别只是**先分组再汇总**：
+/// 跨软件直接相加会把「A 号到账 100、B 号消耗 100」抹成没变化。
+#[derive(Debug, Clone, Serialize)]
+pub struct CreditPlatformFlow {
+    /// 展示键：`workbuddy` / `workbuddy_intl` / `zcode` …
+    pub platform: String,
+    /// 账号表里的平台名（`platform_label`）
+    pub label: String,
+    /// 参与统计的账号数
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub accounts: usize,
+    /// 按天明细，日期轴与总览一致
+    pub points: Vec<CreditFlowPoint>,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 积分收支的两层口径：全部账号合计 + 按软件拆分。
+#[derive(Debug, Clone, Serialize)]
+pub struct CreditFlowReport {
+    /// 全部账号合计（按天，升序）
+    pub total: Vec<CreditFlowPoint>,
+    /// 每个软件一条，按区间消耗降序
+    pub platforms: Vec<CreditPlatformFlow>,
+}
+
+/// iid → (软件展示键, 中文名)。
+///
+/// WorkBuddy 国内版与国际版在账号表里共用 `platform = "workbuddy"`，积分却各算各的，
+/// 所以靠 iid 的 `@intl` 后缀拆成两条；账号表里查不到（已删除）就按平台前缀兜底。
+fn platform_of(iid: &str, view: Option<&AccountView>) -> (String, String) {
+    let platform = view
+        .map(|view| view.platform.as_str())
+        .unwrap_or_else(|| iid.split(':').next().unwrap_or(iid));
+    let key = if platform == "workbuddy" && crate::app::accounts::is_intl_account(iid) {
+        "workbuddy_intl"
+    } else {
+        platform
+    };
+    let label = view
+        .map(|view| view.platform_label.clone())
+        .unwrap_or_else(|| key.to_string());
+    (key.to_string(), label)
+}
+
+#[derive(Default)]
+struct PlatformGroup {
+    label: String,
+    rows: Vec<(String, String, f64)>,
+    accounts: std::collections::HashSet<String>,
+}
+
+/// 按软件分组后各自沿用总览的算法。排序按区间消耗降序——「钱花在哪」是第一眼要回答的问题。
+fn aggregate_platforms(
+    rows: Vec<(String, String, f64)>,
+    views: &std::collections::HashMap<String, AccountView>,
+) -> Vec<CreditPlatformFlow> {
+    let mut groups: std::collections::HashMap<String, PlatformGroup> = Default::default();
+    for (date, iid, balance) in rows {
+        let (key, label) = platform_of(&iid, views.get(&iid));
+        let group = groups.entry(key.clone()).or_default();
+        // 已删除账号排在前面时会先占住兜底名（就是平台键），后续有名字的账号要能改回来
+        if group.label.is_empty() || group.label == key {
+            group.label = label;
+        }
+        group.accounts.insert(iid.clone());
+        group.rows.push((date, iid, balance));
+    }
+
+    let mut out: Vec<CreditPlatformFlow> = groups
+        .into_iter()
+        .map(|(platform, group)| CreditPlatformFlow {
+            platform,
+            label: group.label,
+            accounts: group.accounts.len(),
+            points: aggregate_flow(group.rows),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        spent_of(b)
+            .total_cmp(&spent_of(a))
+            .then_with(|| a.platform.cmp(&b.platform))
+    });
+    out
+}
+
+fn spent_of(flow: &CreditPlatformFlow) -> f64 {
+    flow.points.iter().map(|point| point.spent).sum()
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 /// 积分趋势的一天。`date` 是本地自然日 `YYYY-MM-DD`。
 #[derive(Debug, Clone, Serialize)]
 pub struct TrendPoint {
@@ -709,11 +801,11 @@ impl Service {
         }
     }
 
-    /// 积分收支（按天）：由 `credit_snapshots` 的**账号级日增量**汇总。
+    /// 积分收支：一次取齐「全部账号合计」与「按软件拆分」两层口径。
     ///
     /// 平台只给余额，不给消费明细；把每个账号相邻两天的余额差相加，
     /// 正数是到账、负数是消耗。缺数据的日子不补零，避免把「没记录」画成「没变化」。
-    pub async fn credit_flow(&self, days: i64) -> Vec<CreditFlowPoint> {
+    pub async fn credit_flow(&self, days: i64) -> CreditFlowReport {
         let days = days.clamp(7, 60);
         let since = (self.clock.today() - chrono::Duration::days(days - 1))
             .format("%Y-%m-%d")
@@ -723,11 +815,25 @@ impl Service {
             Ok(Ok(rows)) => rows,
             Ok(Err(e)) | Err(e) => {
                 log::fail("checkin", "credit_flow", "读取积分收支失败", e.evidence());
-                return Vec::new();
+                return CreditFlowReport {
+                    total: Vec::new(),
+                    platforms: Vec::new(),
+                };
             }
         };
-
-        aggregate_flow(rows)
+        // 账号表只用来拿平台展示名：账目本身只认 credit_snapshots 里的 iid
+        let views: std::collections::HashMap<String, AccountView> = self
+            .accounts()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|view| (view.iid.clone(), view))
+            .collect();
+        let platforms = aggregate_platforms(rows.clone(), &views);
+        CreditFlowReport {
+            total: aggregate_flow(rows),
+            platforms,
+        }
     }
 
     /// 跨账号最近领取：仪表盘用，最多 100 条。
@@ -1672,6 +1778,64 @@ mod tests {
         ]);
         assert_eq!(points[0].earned, 0.0, "首日没有前一天，不算收支");
         assert_eq!(points[1].earned, 0.0, "浮点噪声不算变动");
+    }
+
+    #[test]
+    fn platform_flow_splits_software_instead_of_cancelling_out() {
+        let rows = vec![
+            row("2026-11-01", "workbuddy:u1", 100.0),
+            row("2026-11-02", "workbuddy:u1", 150.0),
+            row("2026-11-01", "zcode:u1", 80.0),
+            row("2026-11-02", "zcode:u1", 30.0),
+        ];
+        let list = aggregate_platforms(rows, &std::collections::HashMap::new());
+        assert_eq!(list.len(), 2);
+        // 消耗降序：zcode 花了 50，WorkBuddy 是到账
+        assert_eq!(list[0].platform, "zcode");
+        assert_eq!(list[0].accounts, 1);
+        assert_eq!(list[0].points[1].spent, 50.0);
+        assert_eq!(list[1].platform, "workbuddy");
+        assert_eq!(list[1].points[1].earned, 50.0);
+    }
+
+    /// 国内版与国际版都叫 workbuddy，但积分不互通：账目必须拆成两条。
+    #[test]
+    fn workbuddy_editions_are_separate_software() {
+        let rows = vec![
+            row("2026-11-01", "workbuddy:u1", 10.0),
+            row("2026-11-02", "workbuddy:u1", 20.0),
+            row("2026-11-01", "workbuddy:u2@intl", 300.0),
+            row("2026-11-02", "workbuddy:u2@intl", 260.0),
+        ];
+        let list = aggregate_platforms(rows, &std::collections::HashMap::new());
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].platform, "workbuddy_intl");
+        assert_eq!(list[0].points[1].spent, 40.0);
+        assert_eq!(list[1].platform, "workbuddy");
+    }
+
+    #[test]
+    fn platform_label_comes_from_account_table() {
+        let view = crate::app::accounts::AccountView::new(
+            crate::app::accounts::AccountIdentity {
+                iid: "zcode:u1".into(),
+                platform: "zcode".into(),
+                platform_label: "ZCode".into(),
+                account_id: "u1".into(),
+                ..Default::default()
+            },
+            1,
+        );
+        let mut views = std::collections::HashMap::new();
+        views.insert(view.iid.clone(), view);
+        let list = aggregate_platforms(
+            vec![
+                row("2026-11-01", "zcode:u1", 10.0),
+                row("2026-11-02", "zcode:u1", 5.0),
+            ],
+            &views,
+        );
+        assert_eq!(list[0].label, "ZCode");
     }
 
     #[test]

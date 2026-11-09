@@ -114,7 +114,6 @@ pub async fn account_scan(
 #[tauri::command]
 
 pub async fn account_login_start(
-    app: tauri::AppHandle,
     state: State<'_, AppState>,
     platform: String,
 ) -> std::result::Result<crate::app::accounts::login::LoginStart, String> {
@@ -131,7 +130,6 @@ pub async fn account_login_start(
     );
 
     spawn_login_wait(
-        app,
         state.db.clone(),
         platform,
         pending.ticket.clone(),
@@ -152,7 +150,6 @@ pub async fn account_login_start(
 #[tauri::command]
 
 pub async fn account_relogin_start(
-    app: tauri::AppHandle,
     state: State<'_, AppState>,
     iid: String,
 ) -> std::result::Result<crate::app::accounts::login::LoginStart, String> {
@@ -180,7 +177,6 @@ pub async fn account_relogin_start(
     );
 
     spawn_login_wait(
-        app,
         db,
         key,
         pending.ticket.clone(),
@@ -193,14 +189,12 @@ pub async fn account_relogin_start(
 /// 登录的后半段：后台等授权 → 入库 → 推 `account:login`。
 /// 「添加账号」与「重新登录」共用：两处各写一遍必然有一处忘了落失败日志。
 fn spawn_login_wait(
-    app: tauri::AppHandle,
     db: std::sync::Arc<crate::app::db::Db>,
     platform_key: String,
     ticket: String,
     action: &'static str,
     scene: &'static str,
 ) {
-    use tauri::Emitter;
     // 日志要用平台名，但 platform_key 会被 move 进阻塞闭包，先留一份
     let log_platform = platform_key.clone();
     tauri::async_runtime::spawn(async move {
@@ -233,7 +227,7 @@ fn spawn_login_wait(
                 format!("{scene}：{}", outcome.message),
             );
         }
-        let _ = app.emit("account:login", &outcome);
+        crate::app::events::emit("account:login", &outcome);
     });
 }
 

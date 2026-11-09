@@ -20,7 +20,6 @@ pub fn spawn_scheduler(
     db: Arc<Db>,
     service: Arc<crate::app::checkin::Service>,
     activity: Arc<crate::app::activity::Service>,
-    app: tauri::AppHandle,
 ) {
     use std::collections::HashSet;
     use std::sync::Mutex;
@@ -70,7 +69,6 @@ pub fn spawn_scheduler(
                 }
                 let service = service.clone();
                 let activity = activity.clone();
-                let app = app.clone();
                 let running = running.clone();
                 let db = db.clone();
                 let id = item.id.clone();
@@ -81,7 +79,7 @@ pub fn spawn_scheduler(
                     })
                     .await;
                     match fresh {
-                        Ok(Ok(Some(item))) => run_schedule(&service, &activity, &app, &item).await,
+                        Ok(Ok(Some(item))) => run_schedule(&service, &activity, &item).await,
                         Ok(Ok(None)) => {}
                         Ok(Err(e)) | Err(e) => log::fail(
                             "schedule",
@@ -128,33 +126,26 @@ pub(crate) struct ScheduleOutcome {
 pub(crate) async fn execute_schedule(
     service: &Arc<crate::app::checkin::Service>,
     activity: &Arc<crate::app::activity::Service>,
-    app: &tauri::AppHandle,
     item: &crate::app::schedule::Schedule,
 ) -> ScheduleOutcome {
+    use crate::app::events;
     use crate::app::schedule::ScheduleAction::*;
-    use tauri::Emitter;
 
     match item.action {
         CheckinRound => {
             let round = service.run_round("schedule").await;
             // 界面收到就更新底部那一行；收不到也不影响结算
-            let _ = app.emit("checkin:round", &round);
-            // 签到之后补一次当日活跃：开关默认关，已补过的账号由幂等标记跳过
-            let daily = activity.daily_sweep().await;
-            let detail = match &daily {
-                Some(line) => format!("{}；{line}", round.detail()),
-                None => round.detail(),
-            };
+            events::emit("checkin:round", &round);
             ScheduleOutcome {
                 ok: round.failed == 0,
-                detail,
-                changed: round.success > 0 || round.failed > 0 || daily.is_some(),
+                detail: round.detail(),
+                changed: round.success > 0 || round.failed > 0,
             }
         }
         CreditsRound => {
             let (total, failed) = service.credits_round().await;
             if total > 0 {
-                let _ = app.emit("credits:round", total);
+                events::emit("credits:round", total);
             }
             ScheduleOutcome {
                 ok: failed == 0,
@@ -168,7 +159,7 @@ pub(crate) async fn execute_schedule(
                 Some(iid) => activity.round_for("schedule", Some(iid)).await,
                 None => activity.round("schedule").await,
             };
-            let _ = app.emit("activity:round", &round.message);
+            events::emit("activity:round", &round.message);
             ScheduleOutcome {
                 ok: round.failed == 0,
                 detail: round.message,
@@ -182,11 +173,10 @@ pub(crate) async fn execute_schedule(
 async fn run_schedule(
     service: &Arc<crate::app::checkin::Service>,
     activity: &Arc<crate::app::activity::Service>,
-    app: &tauri::AppHandle,
     item: &crate::app::schedule::Schedule,
 ) {
     let started = std::time::Instant::now();
-    let outcome = execute_schedule(service, activity, app, item).await;
+    let outcome = execute_schedule(service, activity, item).await;
     // 无事可做的心跳轮询不留痕：这类「正常流程」每天能刷出上百行，
     // 真正需要排查时反而把失败记录淹了。服务内部的动作记录也已按同一口径收敛。
     if outcome.changed {
@@ -208,9 +198,7 @@ async fn run_schedule(
 /// ZCode 活动自动领取（v1 行为，开关 kv `zcode_auto_claim` **默认关**）：
 /// 每 15 分钟探测一轮，找到可领的就领第一个——领取会开浏览器过验证码，
 /// 所以必须是用户主动打开的开关。
-pub fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>, app: tauri::AppHandle) {
-    use tauri::Emitter;
-
+pub fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
@@ -227,7 +215,7 @@ pub fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>, app: t
                     started.elapsed().as_millis() as u64,
                     format!("ZCode 自动领取：{line}"),
                 );
-                let _ = app.emit("zcode:claim", &line);
+                crate::app::events::emit("zcode:claim", &line);
             }
         }
     });
@@ -266,17 +254,16 @@ pub fn spawn_usage_scan(db: Arc<Db>) {
     });
 }
 
-/// 事件桥：日志实时行 → `log:line`；新领取记录 → `claim:recorded`。
-pub fn spawn_event_bridges(app: tauri::AppHandle) {
-    use tauri::Emitter;
-
-    let log_app = app.clone();
+/// 事件桥（源侧）：把 lib 层的两个广播源接进统一事件总线
+/// （日志实时行 → `log:line`；新领取记录 → `claim:recorded`）。
+/// 桌面壳与网页壳共用，任何壳启动都要调它。
+pub fn spawn_source_bridges() {
     tauri::async_runtime::spawn(async move {
         let mut rx = log::subscribe_live();
         loop {
             match rx.recv().await {
                 Ok(line) => {
-                    let _ = log_app.emit("log:line", &line);
+                    crate::app::events::emit("log:line", &line);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break,
@@ -291,7 +278,7 @@ pub fn spawn_event_bridges(app: tauri::AppHandle) {
         loop {
             match rx.recv().await {
                 Ok(iid) => {
-                    let _ = app.emit("claim:recorded", iid);
+                    crate::app::events::emit("claim:recorded", iid);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break,
@@ -300,12 +287,36 @@ pub fn spawn_event_bridges(app: tauri::AppHandle) {
     });
 }
 
+/// 事件桥（WebView 侧，仅桌面壳）：把总线上的事件转发给前端。
+/// 网页壳不调它——`desktop::web` 直接订阅总线走 SSE。
+pub fn spawn_webview_bridge(app: tauri::AppHandle) {
+    use tauri::Emitter;
+
+    tauri::async_runtime::spawn(async move {
+        let mut rx = crate::app::events::subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let _ = app.emit(&event.name, event.payload);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+/// 桌面壳的完整事件桥：源侧 + WebView 转发。
+pub fn spawn_event_bridges(app: tauri::AppHandle) {
+    spawn_source_bridges();
+    spawn_webview_bridge(app);
+}
+
 /// 启动自动扫描账号：界面不再提供「扫描客户端」按钮，账号同步改为开机后台执行。
 ///
 /// 延后 2 秒再跑：先让窗口上屏，扫描要读多个客户端目录，不该和冷启动抢 IO。
 /// 增量扫描本身很快；失败只记日志，不阻塞窗口。
-pub fn spawn_startup_scan(db: Arc<Db>, app: tauri::AppHandle) {
-    use tauri::Emitter;
+pub fn spawn_startup_scan(db: Arc<Db>) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let started = std::time::Instant::now();
@@ -322,7 +333,7 @@ pub fn spawn_startup_scan(db: Arc<Db>, app: tauri::AppHandle) {
                     ),
                 );
                 // 扫描完通知界面重拉列表与「当前登录」
-                let _ = app.emit("accounts:scanned", ());
+                crate::app::events::emit("accounts:scanned", ());
             }
             Ok(Err(e)) => log::fail("accounts", "account_scan", "启动自动扫描失败", e.evidence()),
             Err(e) => log::fail(

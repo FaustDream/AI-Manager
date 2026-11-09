@@ -17,6 +17,12 @@ export default defineConfig({
     strictPort: true,
     // 只绑 IPv4 回环：WebView2 解析 localhost 走 127.0.0.1
     host: '127.0.0.1',
+    // 网页调试模式：命令与实时事件转发给 ai-manager-web（桌面 WebView 不走这层，
+    // 它直接用 Tauri IPC；端口与 src-tauri/src/desktop/web.rs 的 WEB_PORT 成对）
+    proxy: {
+      '/cmd': { target: 'http://127.0.0.1:5274', changeOrigin: false },
+      '/events': { target: 'http://127.0.0.1:5274', changeOrigin: false },
+    },
     // 不监听运行期目录：target/ 里的 exe 被运行中的 app 占用会 EBUSY 把 Vite 监听器打崩，
     // data/ 的日志每次写入都会触发一轮无意义 HMR
     watch: {

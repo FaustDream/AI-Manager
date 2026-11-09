@@ -5,17 +5,18 @@ import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy, errMsg } from '@/lib/cmd';
 import { useEffect, useState } from 'react';
 
-import { fmtSize } from '@/lib/format';
+import { fmtSize, fmtTime } from '@/lib/format';
 import { numOr } from '@/lib/num';
 import { Button } from '@/components/ui/button';
+import { Dialog } from '@/components/ui/dialog';
 import { Checkbox, Input, Select, SkeletonRows } from '@/components/ui/form';
 import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { saveTheme, type ThemeChoice } from '@/lib/theme';
 import { HistoryPane } from './history';
-import type { AppConfig, RuleKind, Schedule, ScheduleAction, SelfcheckReport, SpaceEntry, SpaceReport } from '@/lib/types';
+import type { AppConfig, HealthReport, RuleKind, Schedule, ScheduleAction, SelfcheckReport, SpaceEntry, SpaceReport } from '@/lib/types';
 
-// 设置页上下两栏：上面「通用」（主题/开机自启），下面「维护」（定时任务/空间/回收站）。
+// 设置页按「改什么」自上而下：通用 → 配置 → 自检 → 运行与存储 → 维护 → 可追溯。
 // 不做左右分栏——左栏只有两个开关却占掉三分之一宽度，右侧表格反而挤。
 export default function SettingsPage() {
   return (
@@ -23,6 +24,7 @@ export default function SettingsPage() {
       <GeneralPane />
       <ConfigPane />
       <SelfcheckPane />
+      <RuntimePane />
       <MaintenancePane />
       <HistoryPane />
     </div>
@@ -33,6 +35,8 @@ function GeneralPane() {
   const [theme, setTheme] = useState<ThemeChoice>('');
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [version, setVersion] = useState('');
+  // 技能页是否显示官方自带条目（kv ui.hub.show-official，缺省显示）
+  const [official, setOfficial] = useState(true);
 
   useEffect(() => {
     queryCmd('app_version').then(setVersion).catch(() => {});
@@ -42,6 +46,9 @@ function GeneralPane() {
     queryCmd('autostart_get')
       .then(setAutostart)
       .catch(() => setAutostart(false));
+    queryCmd('settings_get', { key: 'ui.hub.show-official' })
+      .then((v) => setOfficial(v !== false))
+      .catch(() => {});
   }, []);
 
   return (
@@ -49,7 +56,7 @@ function GeneralPane() {
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">通用</h2>
         <span className="flex-1" />
-        {version && <span className="text-xs text-muted">AI Manager v{version}</span>}
+        {version && <span className="text-xs text-muted">当前版本 v{version}</span>}
       </div>
       {/* 两个开关横排：拉通整行后单列会留下大片空白 */}
       <div className="grid gap-4 md:grid-cols-2">
@@ -91,6 +98,26 @@ function GeneralPane() {
                   toast(enabled ? '已开机自启（写 HKCU Run）' : '已关闭开机自启');
               }}
             />
+          </label>
+        </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-24 text-muted">官方条目</span>
+            <Checkbox
+              checked={official}
+              onChange={async (e) => {
+                const on = e.target.checked;
+                setOfficial(on);
+                try {
+                  await queryCmd('settings_set', { key: 'ui.hub.show-official', value: on });
+                  toast(on ? '技能页将显示官方自带条目' : '技能页已隐藏官方自带条目');
+                } catch (err) {
+                  setOfficial(!on);
+                  toast(errMsg(err));
+                }
+              }}
+            />
+            <span className="text-xs text-muted">技能页显示各软件自带的技能与 MCP</span>
           </label>
         </div>
       </div>
@@ -347,54 +374,167 @@ function SelfcheckPane() {
   );
 }
 
-function MaintenancePane() {
-  const qc = useQueryClient();
-  const { busy, run: runBusy } = useBusy();
+/**
+ * 「运行与存储」：从仪表盘迁来——仪表盘只留「要不要动手」的结论，运行细节归设置页。
+ * 数据目录逐项占用与健康报告合并成一张卡：原来分居两页，现在一个入口看全。
+ */
+function RuntimePane() {
+  const health = useQuery<HealthReport>({
+    queryKey: ['health'],
+    queryFn: () => queryCmd('system_health'),
+    retry: 1,
+    retryDelay: 6_000,
+    refetchInterval: (query) => (query.state.error ? 300_000 : 60_000),
+  });
   const space = useQuery<SpaceReport>({
     queryKey: ['space'],
     queryFn: () => queryCmd('maintenance_space'),
   });
+  const report = health.data;
+
+  return (
+    <div className="rounded-lg border border-line bg-card p-4">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <h2 className="text-sm font-semibold">运行与存储</h2>
+        <span className="flex-1" />
+        {space.data && <span className="text-xs text-muted">合计 {fmtSize(space.data.total)}</span>}
+        <Button size="sm" onClick={() => void runCmd('maintenance_open_data')}>
+          打开数据目录
+        </Button>
+      </div>
+
+      {report && (
+        <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+          <dt className="text-muted">数据目录</dt>
+          <dd className="truncate font-mono" title={report.data_dir}>
+            {report.data_dir}
+          </dd>
+          <dt className="text-muted">平台</dt>
+          <dd className="flex flex-wrap gap-1">
+            {report.platforms.map((platform) => (
+              <span
+                key={platform.platform}
+                className={
+                  platform.failing > 0
+                    ? 'rounded bg-bad/15 px-1 text-bad'
+                    : 'rounded bg-hover px-1 text-fg2'
+                }
+                title={`最近成功：${fmtTime(platform.last_ok_at)} · 最近失败：${fmtTime(platform.last_fail_at)}`}
+              >
+                {platform.label} {platform.accounts}
+                {platform.failing > 0 ? ` · 失败 ${platform.failing}` : ''}
+              </span>
+            ))}
+          </dd>
+        </dl>
+      )}
+
+      <div className="mt-2 border-t border-line pt-1">
+        {space.isLoading && <SkeletonRows rows={4} cols={2} />}
+        {(space.data?.entries ?? []).map((entry) => (
+          <div
+            key={entry.name}
+            className="flex items-center gap-2 border-b border-line/60 px-1 py-1 text-sm last:border-b-0"
+          >
+            <span className="flex-1 truncate" title={entry.path}>
+              {entry.name}
+            </span>
+            <span className="tabular-nums text-muted">{fmtSize(entry.size)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MaintenancePane() {
+  const qc = useQueryClient();
+  const { busy, run: runBusy } = useBusy();
   const trash = useQuery<SpaceEntry[]>({
     queryKey: ['maint-trash'],
     queryFn: () => queryCmd('maintenance_trash'),
   });
+  // 批次明细收进对话框：设置页只留一行摘要
+  const [trashOpen, setTrashOpen] = useState(false);
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <ScheduleCard />
 
+      {/* 摘要行：批次明细与逐批删除收进对话框，设置页不再被回收站列表撑高 */}
       <div className="rounded-lg border border-line bg-card p-4">
-        <div className="mb-2 flex items-center gap-2">
-          <h2 className="text-sm font-semibold">数据目录占用</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-semibold">平台技能回收站</h2>
+          <span className="text-xs text-muted">
+            {(trash.data ?? []).length > 0
+              ? `${(trash.data ?? []).length} 个批次 · 共 ${fmtSize((trash.data ?? []).reduce((sum, batch) => sum + batch.size, 0))}`
+              : '空的。'}
+          </span>
           <span className="flex-1" />
-          <Button
-            size="sm"
-            onClick={async () => {
-              
-                if ((await runCmd('maintenance_open_data')) === undefined) return;
-              
-            }}
-          >
-            打开数据目录
-          </Button>
+          {(trash.data ?? []).length > 0 && (
+            <>
+              <Button size="sm" onClick={() => setTrashOpen(true)}>
+                查看批次
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                loading={busy === 'purge'}
+                disabled={!!busy}
+                onClick={() =>
+                  runBusy('purge', async () => {
+                    if (!(await confirmAction({ title: '确认操作', message: '清空整个回收站？不可恢复。', danger: true }))) return;
+
+                      const bytes = await runCmd('maintenance_purge_trash', { tag: null });
+
+                      if (bytes === undefined) return;
+                      toast(`已释放 ${fmtSize(bytes)}`);
+                      qc.invalidateQueries({ queryKey: ['maint-trash'] });
+                      qc.invalidateQueries({ queryKey: ['space'] });
+
+                  })
+                }
+              >
+                清空
+              </Button>
+            </>
+          )}
         </div>
-        {space.isLoading && <SkeletonRows rows={4} cols={2} />}
-        {(space.data?.entries ?? []).map((entry) => (
-          <div key={entry.name} className="flex items-center gap-2 border-b border-line px-1 py-1 text-sm last:border-b-0">
-            <span className="flex-1 truncate" title={entry.path}>{entry.name}</span>
-            <span className="tabular-nums text-muted">{fmtSize(entry.size)}</span>
-          </div>
-        ))}
-        {space.data && <div className="mt-1 text-xs text-muted">合计 {fmtSize(space.data.total)}</div>}
       </div>
 
-      <div className="rounded-lg border border-line bg-card p-4">
-        <div className="mb-2 flex items-center gap-2">
-          <h2 className="text-sm font-semibold">平台技能回收站</h2>
-          <span className="flex-1" />
-          <Button size="sm" variant="ghost" onClick={() => qc.invalidateQueries({ queryKey: ['maint-trash'] })}>
-            刷新
-          </Button>
-        </div>
+      <Dialog
+        open={trashOpen}
+        title="平台技能回收站"
+        subtitle="移除平台技能时副本先放这里；会话删除不进回收站"
+        onClose={() => setTrashOpen(false)}
+        wide
+        footer={
+          <>
+            {(trash.data ?? []).length > 0 && (
+              <Button
+                variant="danger"
+                loading={busy === 'purge'}
+                disabled={!!busy}
+                onClick={() =>
+                  runBusy('purge', async () => {
+                    if (!(await confirmAction({ title: '确认操作', message: '清空整个回收站？不可恢复。', danger: true }))) return;
+
+                      const bytes = await runCmd('maintenance_purge_trash', { tag: null });
+
+                      if (bytes === undefined) return;
+                      toast(`已释放 ${fmtSize(bytes)}`);
+                      qc.invalidateQueries({ queryKey: ['maint-trash'] });
+                      qc.invalidateQueries({ queryKey: ['space'] });
+
+                  })
+                }
+              >
+                清空回收站
+              </Button>
+            )}
+            <Button onClick={() => setTrashOpen(false)}>关闭</Button>
+          </>
+        }
+      >
         {(trash.data ?? []).length === 0 && <p className="text-sm text-muted">空的。</p>}
         {(trash.data ?? []).map((batch) => (
           <div key={batch.path} className="flex items-center gap-2 border-b border-line px-1 py-1.5 text-sm last:border-b-0">
@@ -408,14 +548,14 @@ function MaintenancePane() {
               onClick={() =>
                 runBusy(`purge:${batch.name}`, async () => {
                   if (!(await confirmAction({ title: '确认操作', message: `彻底删除批次 ${batch.name}？不可恢复。`, danger: true }))) return;
-                  
+
                     const bytes = await runCmd('maintenance_purge_trash', { tag: batch.name });
 
                     if (bytes === undefined) return;
                     toast(`已释放 ${fmtSize(bytes)}`);
                     qc.invalidateQueries({ queryKey: ['maint-trash'] });
                     qc.invalidateQueries({ queryKey: ['space'] });
-                  
+
                 })
               }
             >
@@ -423,33 +563,7 @@ function MaintenancePane() {
             </Button>
           </div>
         ))}
-        {(trash.data ?? []).length > 0 && (
-          <div className="mt-2 flex items-center justify-between">
-            <span className="text-xs text-muted">共 {(trash.data ?? []).length} 个批次；移除平台技能时副本会先放这里。会话删除不进回收站。</span>
-            <Button
-              size="sm"
-              variant="danger"
-              loading={busy === 'purge'}
-              disabled={!!busy}
-              onClick={() =>
-                runBusy('purge', async () => {
-                  if (!(await confirmAction({ title: '确认操作', message: '清空整个回收站？不可恢复。', danger: true }))) return;
-                  
-                    const bytes = await runCmd('maintenance_purge_trash', { tag: null });
-
-                    if (bytes === undefined) return;
-                    toast(`已释放 ${fmtSize(bytes)}`);
-                    qc.invalidateQueries({ queryKey: ['maint-trash'] });
-                    qc.invalidateQueries({ queryKey: ['space'] });
-                  
-                })
-              }
-            >
-              清空回收站
-            </Button>
-          </div>
-        )}
-      </div>
+      </Dialog>
 
     </div>
   );
@@ -480,6 +594,7 @@ function ScheduleCard() {
   });
   const [action, setAction] = useState<ScheduleAction>('checkin_round');
   const [kind, setKind] = useState<RuleKind>('daily');
+  const [name, setName] = useState('');
   const [at, setAt] = useState('08:30');
   const [hours, setHours] = useState('6');
   const [editing, setEditing] = useState<Schedule | null>(null);
@@ -488,8 +603,16 @@ function ScheduleCard() {
     setEditing(item);
     setAction(item.action);
     setKind(item.kind);
+    setName(item.name);
     setAt(item.at ?? '08:30');
     setHours(String(item.hours ?? 6));
+  };
+
+  const resetForm = () => {
+    setEditing(null);
+    setName('');
+    setAt('08:30');
+    setHours('6');
   };
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['schedules'] });
@@ -499,6 +622,8 @@ function ScheduleCard() {
       const saved = await runCmd('schedule_save', {
         input: {
           ...(editing ?? { id: '', name: '', enabled: true, last_run: null, account_iid: null, created_at: null }),
+          // 名称留空交给后端按动作补全；时间值来自原生控件，格式天然合法
+          name,
           action,
           kind,
           at: kind === 'daily' ? at : null,
@@ -507,7 +632,7 @@ function ScheduleCard() {
       });
       if (saved === undefined) return;
       toast(`已${editing ? '保存' : '添加'}：${saved.name} · ${ruleText(saved)}`);
-      setEditing(null);
+      resetForm();
       refresh();
     });
 
@@ -601,6 +726,13 @@ function ScheduleCard() {
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {editing && <span className="text-xs font-semibold">编辑：{editing.name}</span>}
+        <Input
+          className="w-40"
+          aria-label="任务名称"
+          value={name}
+          placeholder="任务名称（可留空自动命名）"
+          onChange={(e) => setName(e.target.value)}
+        />
         <Select aria-label="任务动作" value={action} disabled={!!editing} onChange={(e) => setAction(e.target.value as ScheduleAction)}>
           <option value="checkin_round">签到轮询</option>
           <option value="credits_round">积分刷新</option>
@@ -611,26 +743,32 @@ function ScheduleCard() {
           <option value="every">每隔</option>
         </Select>
         {kind === 'daily' ? (
+          // 原生时间控件：产出恒为 HH:mm，后端不再需要挡格式错误
           <Input
-            className="w-24"
+            className="w-28"
+            type="time"
+            aria-label="触发时刻"
             value={at}
-            placeholder="08:30"
             onChange={(e) => setAt(e.target.value)}
-            title="触发时刻 HH:mm"
+            title="每天触发的时刻"
           />
         ) : (
           <Input
             className="w-20"
+            type="number"
+            aria-label="间隔小时"
+            min={1}
+            max={168}
             value={hours}
             onChange={(e) => setHours(e.target.value)}
-            title="间隔小时数"
+            title="间隔小时数（1–168）"
           />
         )}
         {kind === 'every' && <span className="text-xs text-muted">小时</span>}
         <Button size="sm" variant="primary" loading={busy === 'schedule-add'} disabled={!!busy} onClick={add}>
           {editing ? '保存' : '添加'}
         </Button>
-        {editing && <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => setEditing(null)}>取消</Button>}
+        {editing && <Button size="sm" variant="ghost" disabled={!!busy} onClick={resetForm}>取消</Button>}
       </div>
     </div>
   );

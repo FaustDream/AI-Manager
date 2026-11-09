@@ -25,7 +25,8 @@ pub async fn system_health(
 /// 托盘提示：版本之外只带两句「要人看」的事实——凭据临期数量与积分数据的新鲜度。
 /// 这是「待处理告警」下线后唯一残留的被动提醒，刻意保持一句话的信息量。
 fn tray_tooltip(report: &crate::app::health::HealthReport) -> String {
-    let mut parts = vec![format!("AI Manager v{}", report.version)];
+    // 托盘提示不露版本号：界面里除「设置 → 当前版本」外不出现版本信息
+    let mut parts = vec!["AI Manager".to_string()];
     if report.accounts.expiring > 0 {
         parts.push(format!(
             "{} 个账号凭据 3 天内到期",

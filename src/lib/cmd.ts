@@ -2,9 +2,10 @@
 // 错误 kind→话术、忙碌态都收在这里——页面只表达意图，不碰 invoke/toast 的细节。
 // 名单与 src-tauri 侧 generate_handler! 一一对应：改命令先改这张表（tsc 会红）。
 import { useCallback, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { toast } from '@/components/ui/toast';
-import { errKind, errText } from './ipc';
+// 命令面不直接碰 invoke：传输分流（Tauri / 网页 HTTP）统一在 ipc.call，
+// 这里漏用一次，网页调试模式里所有命令就会一起趴下
+import { call, errKind, errText } from './ipc';
 import type {
   AppConfig,
   SelfcheckReport,
@@ -22,7 +23,7 @@ import type {
   ClaimOutcome,
   ClaimPlan,
   CodebuddyTargetStatus,
-  CreditFlowPoint,
+  CreditFlowReport,
   CreditSnapshot,
   DailyActive,
   DeployReport,
@@ -31,8 +32,10 @@ import type {
   Filter,
   HubSnapshot,
   ImportReport,
+  OfficialScan,
   LogLine,
   LogFilter,
+  LogSpan,
   LoginStart,
   Page,
   Preview,
@@ -85,6 +88,7 @@ export interface CmdArgs {
   open_private_browser: { url: string };
   app_show_window: void;
   hub_snapshot: void;
+  hub_official_scan: void;
   hub_skill_import_many: { target: string; names: string[] };
   hub_skill_deploy: { name: string; targets: string[]; overwrite?: boolean | null };
   hub_skill_remove: { name: string; targets: string[] };
@@ -106,7 +110,6 @@ export interface CmdArgs {
   activity_claim: { iid: string };
   activity_depart: { iid: string; location: number | null };
   activity_daily_status: { iid: string };
-  activity_daily_hello: { iid: string };
   activity_pref_set: { iid: string; enabled: boolean; location: number | null };
   checkin_credits: { iids: string[]; trigger?: 'auto' | 'user' };
   checkin_diagnose: { iid: string };
@@ -132,6 +135,7 @@ export interface CmdArgs {
   zcode_claim_plans: { iid: string };
   zcode_claim_run: { iid: string; planId: string };
   log_query: { filter: LogFilter };
+  log_span: void;
   log_stats: { filter: LogFilter };
   log_export: { path: string | null; filter: LogFilter };
   log_clear: void;
@@ -187,6 +191,7 @@ export interface CmdReturn {
   open_private_browser: string;
   app_show_window: void;
   hub_snapshot: HubSnapshot;
+  hub_official_scan: OfficialScan;
   hub_skill_import_many: ImportReport;
   hub_skill_deploy: DeployReport;
   hub_skill_remove: DeployReport;
@@ -208,7 +213,6 @@ export interface CmdReturn {
   activity_claim: ActionResult;
   activity_depart: ActionResult;
   activity_daily_status: DailyActive;
-  activity_daily_hello: DailyActive;
   activity_pref_set: TravelPrefs;
   checkin_credits: [string, CreditSnapshot][];
   checkin_diagnose: DiagnoseReport;
@@ -219,7 +223,7 @@ export interface CmdReturn {
   daily_run_now: RoundResult;
   credit_trend: TrendPoint[];
   credit_claims_recent: RecentClaim[];
-  credit_flow: CreditFlowPoint[];
+  credit_flow: CreditFlowReport;
   system_health: HealthReport;
   usage_scan: UsageScanReport;
   usage_overview: UsageOverview;
@@ -234,6 +238,7 @@ export interface CmdReturn {
   zcode_claim_plans: ClaimPlan[];
   zcode_claim_run: ClaimOutcome;
   log_query: LogLine[];
+  log_span: LogSpan;
   log_stats: LogStat[];
   log_export: string;
   log_clear: void;
@@ -313,6 +318,7 @@ const CMD_LABELS: Record<string, string> = {
   open_external: '打开外部链接',
   open_private_browser: '打开登录页（无痕）',
   hub_snapshot: '读取技能与 MCP',
+  hub_official_scan: '扫描官方自带技能与 MCP',
   hub_skill_import: '导入技能',
   hub_skill_import_many: '批量导入技能',
   hub_skill_deploy: '部署技能',
@@ -334,7 +340,6 @@ const CMD_LABELS: Record<string, string> = {
   activity_claim: '领取旅行奖励',
   activity_depart: '派出猫猫',
   activity_daily_status: '读取每日活跃',
-  activity_daily_hello: '补发每日活跃',
   activity_pref_set: '保存旅行配置',
   checkin_credits: '刷新积分',
   checkin_diagnose: '只读诊断',
@@ -346,6 +351,7 @@ const CMD_LABELS: Record<string, string> = {
   zcode_claim_plans: '拉取可领活动',
   zcode_claim_run: '领取活动',
   log_query: '查询日志',
+  log_span: '读取日志时间范围',
   log_stats: '日志聚合',
   system_health: '读取健康报告',
   usage_scan: '扫描本地用量',
@@ -387,7 +393,6 @@ const KEY_ACTIONS = new Set<string>([
   'app_quit',
   'account_scan',
   'account_relogin_start',
-  'activity_daily_hello',
   'account_set_enabled',
   'account_set_alias',
   'account_set_note',
@@ -505,7 +510,7 @@ function logAction(
   ]
     .filter(Boolean)
     .join(' · ');
-  void invoke('log_action', { action: cmd, trigger: 'user', ok, ms, detail }).catch(() => {});
+  void call('log_action', { action: cmd, trigger: 'user', ok, ms, detail }).catch(() => {});
 }
 
 /**
@@ -517,7 +522,7 @@ function logAction(
  */
 function logUiFailure(cmd: string, error: unknown, args?: unknown) {
   const label = CMD_LABELS[cmd] ?? cmd;
-  void invoke('log_ui', {
+  void call('log_ui', {
     level: 'error',
     action: cmd,
     message: `${label}失败（${cmd}）`,
@@ -532,7 +537,7 @@ export async function queryCmd<K extends CmdName>(
 ): Promise<CmdReturn[K]> {
   const [args] = rest;
   try {
-    return await invoke<CmdReturn[K]>(cmd, args as Record<string, unknown> | undefined);
+    return await call<CmdReturn[K]>(cmd, args as Record<string, unknown> | undefined);
   } catch (e) {
     logUiFailure(cmd, e, args);
     throw e;
@@ -547,7 +552,7 @@ export async function runCmd<K extends CmdName>(
   const [args, opts] = rest;
   const started = performance.now();
   try {
-    const result = await invoke<CmdReturn[K]>(cmd, args as Record<string, unknown> | undefined);
+    const result = await call<CmdReturn[K]>(cmd, args as Record<string, unknown> | undefined);
     // 成功也要记：用户事后要能回答「我点过什么、它做成了什么」
     logAction(cmd, args, true, Math.round(performance.now() - started), undefined, result);
     return result;

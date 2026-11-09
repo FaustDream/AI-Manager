@@ -9,10 +9,7 @@ use crate::app::error::ErrorKind;
 #[tauri::command]
 pub async fn session_scan(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
 ) -> std::result::Result<crate::app::sessions::ScanReport, String> {
-    use tauri::Emitter;
-
     let service = state.sessions.clone();
     let report = match service.scan().await {
         Ok(report) => {
@@ -21,7 +18,7 @@ pub async fn session_scan(
                 "sessions",
                 format!("会话扫描：{}", report.summary()),
             );
-            let _ = app.emit("session:scan", &report);
+            crate::app::events::emit("session:scan", &report);
             report
         }
         Err(e) => {
@@ -120,12 +117,9 @@ pub async fn session_archive(
 #[tauri::command]
 
 pub async fn session_purge(
-    app: tauri::AppHandle,
     state: State<'_, AppState>,
     keys: Vec<String>,
 ) -> std::result::Result<crate::app::sessions::delete::PurgeReport, String> {
-    use tauri::Emitter;
-
     let service = state.sessions.clone();
     let report = service.purge(keys).await.map_err(err_text)?;
     // 一条都没删掉就是彻底失败：以前这里固定 Info，「135 条全部失败」在日志页
@@ -182,7 +176,7 @@ pub async fn session_purge(
     } else {
         log::log(level, "sessions", summary);
     }
-    let _ = app.emit("session:purge", &report);
+    crate::app::events::emit("session:purge", &report);
     Ok(report)
 }
 

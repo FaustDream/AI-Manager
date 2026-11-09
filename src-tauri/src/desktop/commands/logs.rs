@@ -84,6 +84,16 @@ pub async fn log_export(
     Ok(format!("已导出 {count} 行到 {shown}"))
 }
 
+/// 现存日志的时间跨度：日期筛选用它限定可选范围，选不到没有数据的日子。
+#[tauri::command]
+
+pub async fn log_span() -> std::result::Result<crate::app::log::LogSpan, String> {
+    crate::app::runtime::blocking(crate::app::log::span)
+        .await
+        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+        .map_err(err_text)
+}
+
 /// 日志聚合：按「模块 + 动作 + 结果 + 级别」统计最近 2 万行。
 /// 回答「哪一类在反复出问题」，而不是让人在几千行里数同一个错误。
 #[tauri::command]

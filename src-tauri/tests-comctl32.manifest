@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- 集成测试专用：mock 运行时把 tauri 的 app 代码单元（连带 muda 的
+       TaskDialogIndirect，comctl32 v6 独有入口）拖进测试 exe 的导入表，
+       没有这份依赖声明加载器会落到 comctl32 v5，进程一启动就
+       STATUS_ENTRYPOINT_NOT_FOUND。见 build.rs 的 rustc-link-arg-tests。 -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0" publicKeyToken="6595b64144ccf1df" language="*"
+        processorArchitecture="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>

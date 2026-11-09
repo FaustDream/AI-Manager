@@ -1,8 +1,9 @@
-// 用量图表：按天堆叠的柱状 + 模型占比环形。
+// 用量图表：按天分平台的折线 + 模型占比环形。
 // 纯 SVG，不引图表库；空数据由页面统一兜底，这里只画有数据的情况。
 //
-// 为什么是柱子而不是面积：采集是按天落库的，没调用的天就是 0。
-// 面积图会把「0 → 大值」画成一条斜坡，看着像天天在匀速上涨；柱子则老实地留空。
+// 为什么是折线：这张卡回答的是「走势」，相邻两点的斜率比单根柱子的高度更直观。
+// 按平台各画一条线（颜色与图例一一对应），纵轴上限仍取「每日合计」，
+// 这样几条线之间的相对关系不会被压缩到贴地。
 import { useMemo, useState } from 'react';
 import type { UsageDay, UsageModel } from '@/lib/types';
 import { fmtTokens, fmtTokensExact, fmtTokensShort } from '@/lib/format';
@@ -53,13 +54,13 @@ function shortDate(date: string): string {
   return date.slice(5);
 }
 
-export function StackedArea({ days }: { days: UsageDay[] }) {
+export function TrendLines({ days }: { days: UsageDay[] }) {
   const [hover, setHover] = useState<number | null>(null);
 
   const chart = useMemo(() => {
     if (days.length === 0) return null;
     const platforms = [...new Set(days.flatMap((day) => day.by_app.map((app) => app.platform)))];
-    // 图例顺序按区间总量降序，颜色也跟着定下来，堆叠顺序从下往上
+    // 图例顺序按区间总量降序，颜色也跟着定下来，和折线一一对应
     const totals = new Map<string, number>();
     for (const day of days) {
       for (const app of day.by_app) {
@@ -72,36 +73,24 @@ export function StackedArea({ days }: { days: UsageDay[] }) {
     const innerW = W - PAD_L - PAD_R;
     const innerH = H - PAD_T - PAD_B;
     const slot = innerW / n;
-    const barW = Math.max(3, Math.min(26, slot * 0.62));
+    // 纵轴按「每日合计」取整：单平台线之间的高低差仍看得清，合计也不会顶出框
     const max = niceMax(Math.max(...days.map((day) => day.tokens)));
     const y = (value: number) => PAD_T + innerH - (value / max) * innerH;
+    const centerX = (index: number) => PAD_L + slot * index + slot / 2;
+    const tokensOf = (day: UsageDay, platform: string) =>
+      day.by_app.find((app) => app.platform === platform)?.tokens ?? 0;
 
-    const bars = days.map((day, index) => {
-      let cumulative = 0;
-      const segs = platforms
-        .map((platform, layerIndex) => {
-          const tokens = day.by_app.find((app) => app.platform === platform)?.tokens ?? 0;
-          const bottom = cumulative;
-          cumulative += tokens;
-          return {
-            platform,
-            color: PALETTE[layerIndex % PALETTE.length],
-            tokens,
-            top: y(cumulative),
-            bottom: y(bottom),
-          };
-        })
-        .filter((seg) => seg.tokens > 0);
-      return {
-        day,
-        index,
-        left: PAD_L + slot * index + (slot - barW) / 2,
-        segs,
-        total: day.tokens,
-      };
-    });
+    const series = platforms.map((platform, index) => ({
+      platform,
+      color: PALETTE[index % PALETTE.length],
+      points: days.map((day, dayIndex) => ({
+        x: centerX(dayIndex),
+        y: y(tokensOf(day, platform)),
+        value: tokensOf(day, platform),
+      })),
+    }));
 
-    // 日期标签：最多 7 个，最后一根柱子必须有标签，且不和前一个挤在一起
+    // 日期标签：最多 7 个，最后一天必须有标签，且不和前一个挤在一起
     const labelStep = Math.max(1, Math.ceil(n / 6));
     const labels: number[] = [];
     for (let i = 0; i < n; i += labelStep) labels.push(i);
@@ -114,14 +103,53 @@ export function StackedArea({ days }: { days: UsageDay[] }) {
     const peak = days.reduce((best, day) => (day.tokens > best.tokens ? day : best), days[0]);
     const total = days.reduce((sum, day) => sum + day.tokens, 0);
 
-    return { platforms, totals, n, slot, barW, max, y, bars, labels, innerH, peak, total };
+    return {
+      platforms,
+      totals,
+      n,
+      slot,
+      max,
+      y,
+      centerX,
+      series,
+      labels,
+      innerH,
+      peak,
+      total,
+      tokensOf,
+    };
   }, [days]);
 
   if (!chart) return null;
 
-  const { platforms, totals, n, slot, barW, max, y, bars, labels, innerH, peak, total } = chart;
-  const active = hover !== null && hover >= 0 && hover < bars.length ? bars[hover] : null;
-  const centerX = (index: number) => PAD_L + slot * index + slot / 2;
+  const {
+    platforms,
+    totals,
+    n,
+    slot,
+    max,
+    y,
+    centerX,
+    series,
+    labels,
+    innerH,
+    peak,
+    total,
+    tokensOf,
+  } = chart;
+  const activeIndex = hover !== null && hover >= 0 && hover < n ? hover : null;
+  const activeDay = activeIndex === null ? null : days[activeIndex];
+  const activeRows =
+    activeDay === null
+      ? []
+      : platforms
+          .map((platform, index) => ({
+            platform,
+            color: PALETTE[index % PALETTE.length],
+            tokens: tokensOf(activeDay, platform),
+          }))
+          .filter((row) => row.tokens > 0)
+          .sort((a, b) => b.tokens - a.tokens);
 
   return (
     <div>
@@ -129,7 +157,7 @@ export function StackedArea({ days }: { days: UsageDay[] }) {
         {platforms.map((platform, index) => (
           <span key={platform} className="flex items-center gap-1 text-muted">
             <span
-              className="inline-block h-2 w-2 rounded-sm"
+              className="inline-block h-0.5 w-3.5 rounded-full"
               style={{ background: PALETTE[index % PALETTE.length] }}
             />
             {appLabel(platform)}
@@ -147,7 +175,7 @@ export function StackedArea({ days }: { days: UsageDay[] }) {
           viewBox={`0 0 ${W} ${H}`}
           className="block w-full"
           role="img"
-          aria-label={`Token 消耗趋势：${shortDate(bars[0].day.date)} 至 ${shortDate(bars[n - 1].day.date)}，日均 ${fmtTokens(total / n)}`}
+          aria-label={`Token 消耗趋势：${shortDate(days[0].date)} 至 ${shortDate(days[n - 1].date)}，日均 ${fmtTokens(total / n)}`}
           onMouseMove={(event) => {
             const rect = event.currentTarget.getBoundingClientRect();
             const x = ((event.clientX - rect.left) / rect.width) * W;
@@ -156,10 +184,10 @@ export function StackedArea({ days }: { days: UsageDay[] }) {
           }}
           onMouseLeave={() => setHover(null)}
         >
-          {/* 悬停列底色：先画，柱子盖在上面 */}
-          {active && (
+          {/* 悬停列底色：先画，折线盖在上面 */}
+          {activeIndex !== null && (
             <rect
-              x={PAD_L + slot * active.index}
+              x={PAD_L + slot * activeIndex}
               y={PAD_T}
               width={slot}
               height={innerH}
@@ -194,25 +222,43 @@ export function StackedArea({ days }: { days: UsageDay[] }) {
             );
           })}
 
-          {/* 柱子：同一根里自下而上堆叠 */}
-          {bars.map((bar) =>
-            bar.segs.map((seg, segIndex) => {
-              const height = Math.max(1, seg.bottom - seg.top);
-              const isTop = segIndex === bar.segs.length - 1;
-              return (
-                <rect
-                  key={`${bar.day.date}-${seg.platform}`}
-                  x={bar.left}
-                  y={seg.top}
-                  width={barW}
-                  height={height}
-                  fill={seg.color}
-                  rx={isTop && height >= 4 ? 2 : 0}
-                  opacity={active && active.index !== bar.index ? 0.45 : 0.85}
-                />
-              );
-            }),
+          {/* 悬停竖线：比整列底色更贴合折线的读法 */}
+          {activeIndex !== null && (
+            <line
+              x1={centerX(activeIndex)}
+              x2={centerX(activeIndex)}
+              y1={PAD_T}
+              y2={PAD_T + innerH}
+              stroke="var(--color-line)"
+              strokeDasharray="3 4"
+            />
           )}
+
+          {/* 折线：每个平台一条，点即当天 */}
+          {series.map((line) => (
+            <g key={line.platform}>
+              {line.points.length > 1 && (
+                <polyline
+                  points={line.points.map((point) => `${point.x},${point.y}`).join(' ')}
+                  fill="none"
+                  stroke={line.color}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              )}
+              {line.points.map((point, index) => (
+                <circle
+                  key={index}
+                  cx={point.x}
+                  cy={point.y}
+                  r={activeIndex === index ? 3.4 : 2.2}
+                  fill={line.color}
+                  opacity={activeIndex === null || activeIndex === index ? 1 : 0.45}
+                />
+              ))}
+            </g>
+          ))}
 
           {/* 日期 */}
           {labels.map((index) => (
@@ -223,48 +269,46 @@ export function StackedArea({ days }: { days: UsageDay[] }) {
               textAnchor="middle"
               className="fill-current text-[10px] text-muted"
             >
-              {shortDate(bars[index].day.date)}
+              {shortDate(days[index].date)}
             </text>
           ))}
         </svg>
 
-        {active && (
+        {activeDay && activeIndex !== null && (
           <div
             className="pointer-events-none absolute top-2 z-10 min-w-[168px] rounded-md border border-line bg-card px-2.5 py-2 text-xs shadow-lg"
             style={{
-              left: `${(centerX(active.index) / W) * 100}%`,
+              left: `${(centerX(activeIndex) / W) * 100}%`,
               transform:
-                active.index < n * 0.3
+                activeIndex < n * 0.3
                   ? 'translateX(-8px)'
-                  : active.index > n * 0.7
+                  : activeIndex > n * 0.7
                     ? 'translateX(calc(-100% + 8px))'
                     : 'translateX(-50%)',
             }}
           >
             <div className="mb-1 flex items-baseline gap-1.5">
-              <span className="font-semibold">{active.day.date}</span>
-              <span className="text-muted">周{weekday(active.day.date)}</span>
+              <span className="font-semibold">{activeDay.date}</span>
+              <span className="text-muted">周{weekday(activeDay.date)}</span>
             </div>
-            {active.segs.length === 0 ? (
+            {activeRows.length === 0 ? (
               <div className="text-muted">这天没有调用记录</div>
             ) : (
-              [...active.segs]
-                .sort((a, b) => b.tokens - a.tokens)
-                .map((seg) => (
-                  <div key={seg.platform} className="flex items-center gap-1.5">
-                    <span
-                      className="inline-block h-2 w-2 shrink-0 rounded-sm"
-                      style={{ background: seg.color }}
-                    />
-                    <span className="truncate text-muted">{appLabel(seg.platform)}</span>
-                    <span className="ml-auto tabular-nums">{fmtTokens(seg.tokens)}</span>
-                  </div>
-                ))
+              activeRows.map((row) => (
+                <div key={row.platform} className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-2 w-2 shrink-0 rounded-full"
+                    style={{ background: row.color }}
+                  />
+                  <span className="truncate text-muted">{appLabel(row.platform)}</span>
+                  <span className="ml-auto tabular-nums">{fmtTokens(row.tokens)}</span>
+                </div>
+              ))
             )}
             <div className="mt-1 flex items-baseline gap-2 border-t border-line pt-1">
               <span className="text-muted">合计</span>
-              <span className="tabular-nums font-semibold">{fmtTokens(active.total)}</span>
-              <span className="ml-auto text-muted">{active.day.calls} 次</span>
+              <span className="tabular-nums font-semibold">{fmtTokens(activeDay.tokens)}</span>
+              <span className="ml-auto text-muted">{activeDay.calls} 次</span>
             </div>
           </div>
         )}

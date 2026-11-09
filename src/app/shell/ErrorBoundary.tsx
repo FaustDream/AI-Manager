@@ -1,7 +1,7 @@
 // 渲染层兜底：任何页面抛错都给「重载界面 / 退出」，不再是无声白屏。
 // 白屏 = 用户只能杀进程，这是「出了问题整个软件都没法用」的根源。
 import { Component, type ReactNode } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { call } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
 
 interface Props {
@@ -33,7 +33,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <Button variant="primary" onClick={() => location.reload()}>
             重载界面
           </Button>
-          <Button onClick={() => void invoke('app_quit')}>退出</Button>
+          <Button onClick={() => void call('app_quit')}>退出</Button>
         </div>
       </div>
     );

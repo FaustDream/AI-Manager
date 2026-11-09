@@ -24,6 +24,18 @@ pub async fn hub_snapshot(
         .map_err(err_text)
 }
 
+/// 官方自带收录扫描（只读）：平台自带技能 + 非本工具写入的 MCP 条目。
+#[tauri::command]
+
+pub async fn hub_official_scan(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::hub::OfficialScan, String> {
+    let hub = state.hub.clone();
+    crate::app::runtime::blocking(move || crate::app::hub::official_scan(&hub))
+        .await
+        .map_err(err_text)
+}
+
 /// 从某个平台批量把技能收进技能库（「从软件保存到库」）。
 #[tauri::command]
 

@@ -412,6 +412,72 @@ pub fn snapshot(hub: &Hub) -> HubSnapshot {
     }
 }
 
+/// 官方自带收录扫描：一次扫全部目标平台，列出「平台自带但还没收进技能库的技能」
+/// 与「各平台配置里非本工具写入的 MCP 条目」。只读——收录动作复用既有的导入命令。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize)]
+pub struct OfficialScan {
+    pub skills: Vec<OfficialSkill>,
+    pub mcp: Vec<OfficialMcp>,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize)]
+pub struct OfficialSkill {
+    /// 平台键（与 TargetInfo.key 同一口径）
+    pub target: String,
+    pub label: String,
+    pub name: String,
+    /// SKILL.md 里的 description。列表要能一眼看出这是干什么的，
+    /// 只给名字等于把判断成本推给用户。
+    pub description: String,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize)]
+pub struct OfficialMcp {
+    pub source: String,
+    pub source_label: String,
+    pub name: String,
+    /// 平台配置里的原始条目体（command/args/env 原样）；收录时包成标准文本走既有导入
+    #[cfg_attr(feature = "ts", ts(type = "any"))]
+    pub server: serde_json::Value,
+}
+
+pub fn official_scan(hub: &Hub) -> OfficialScan {
+    let mut skills = Vec::new();
+    let mut mcp = Vec::new();
+    for target in targets::TARGETS {
+        let key = targets::key_name(target.key);
+        for inst in skills::installed(hub, target.key) {
+            if !inst.in_library {
+                let folder = hub.skill_dir(target.key).join(&inst.name);
+                skills.push(OfficialSkill {
+                    target: key.to_string(),
+                    label: target.label.to_string(),
+                    description: skills::description(&folder),
+                    name: inst.name,
+                });
+            }
+        }
+        let root = mcp::read_config(&hub.mcp_path(target.key));
+        for (name, body) in mcp::entries_of(&root, target.key) {
+            if !name.is_empty() && !hub.owns_mcp(&name, &body) {
+                mcp.push(OfficialMcp {
+                    source: key.to_string(),
+                    source_label: target.label.to_string(),
+                    name,
+                    server: body,
+                });
+            }
+        }
+    }
+    OfficialScan { skills, mcp }
+}
+
 /// 写一条 MCP 到多个平台。冲突的平台不覆盖，交给界面列出来。
 pub fn mcp_add(hub: &Hub, entry: &McpEntry, keys: &[TargetKey]) -> DeployReport {
     let mut report = DeployReport::default();
@@ -596,6 +662,35 @@ mod tests {
         assert_eq!(second.imported, vec!["beta".to_string()]);
         assert_eq!(second.errors.len(), 1, "已存在的同名技能要报冲突而不是覆盖");
         assert!(second.summary().contains("1 个失败"));
+    }
+
+    /// 官方分类只收「平台目录里有、技能库里没有」的技能：入库之后它就变成个人技能，
+    /// 不该再挂在官方分类下重复出现。
+    #[test]
+    fn official_scan_lists_only_skills_outside_the_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path());
+        for name in ["built-in", "already"] {
+            let folder = hub.skill_dir(TargetKey::QoderCn).join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(
+                folder.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name} 的说明\n---\n"),
+            )
+            .unwrap();
+        }
+        skills::import(&hub, TargetKey::QoderCn, "already").unwrap();
+
+        let scan = official_scan(&hub);
+        let official: Vec<_> = scan
+            .skills
+            .iter()
+            .filter(|skill| skill.target == "qoder_cn")
+            .collect();
+        assert_eq!(official.len(), 1, "已入库的技能不该再出现在官方分类");
+        assert_eq!(official[0].name, "built-in");
+        assert_eq!(official[0].description, "built-in 的说明");
+        assert_eq!(official[0].label, "Qoder CN");
     }
 
     #[test]

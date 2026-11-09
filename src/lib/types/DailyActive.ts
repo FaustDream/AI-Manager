@@ -14,10 +14,6 @@ active: boolean, score: number, streak_days: number,
  */
 next_tier_remaining: number, month_active_days: number, month_total_days: number, 
 /**
- * 今天是否已经由本工具补过活跃
- */
-hello_sent: boolean, 
-/**
  * 未完成的任务（已完成的不返回：18 条里绝大多数早已 claimed）
  */
 pending_tasks: Array<DailyTask>, total_tasks: number, message: string, };

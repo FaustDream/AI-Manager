@@ -7,7 +7,7 @@
 // 客户端全程不参与，所以弹窗只留一个下拉框 + 一个按钮；借客户端那条路退成失败时的兜底。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { queryCmd, runCmd } from '@/lib/cmd';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '@/lib/events';
 import { Check, Copy, ExternalLink, Link } from 'lucide-react';
 import { Button, cn } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';

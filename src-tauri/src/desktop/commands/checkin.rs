@@ -81,14 +81,12 @@ pub fn daily_state(state: State<'_, AppState>) -> Option<crate::app::checkin::Ro
 #[tauri::command]
 
 pub async fn daily_run_now(
-    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> std::result::Result<crate::app::checkin::RoundResult, String> {
-    use tauri::Emitter;
     let service = state.checkin.clone();
     // 轮询的批次记录已由 run_round 的 finish_batch 统一落盘
     let round = service.run_round("user").await;
-    let _ = app.emit("checkin:round", &round);
+    crate::app::events::emit("checkin:round", &round);
     Ok(round)
 }
 
@@ -136,12 +134,12 @@ pub async fn credit_claims_recent(
     Ok(state.checkin.recent_claims(limit.unwrap_or(20)).await)
 }
 
-/// 积分收支（按天）：到账 / 消耗 / 净额 / 当日末余额。
+/// 积分收支：全部账号合计 + 按软件拆分（两层口径一次取齐）。
 #[tauri::command]
 
 pub async fn credit_flow(
     state: State<'_, AppState>,
     days: Option<i64>,
-) -> std::result::Result<Vec<crate::app::checkin::CreditFlowPoint>, String> {
+) -> std::result::Result<crate::app::checkin::CreditFlowReport, String> {
     Ok(state.checkin.credit_flow(days.unwrap_or(30)).await)
 }

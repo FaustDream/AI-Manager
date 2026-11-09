@@ -1,7 +1,7 @@
 // 全局 Provider：QueryClient（服务端状态）+ 事件桥（§6.3 的前端侧）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '@/lib/events';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/components/ui/toast';
 import type { LoginOutcome, LogLine, RoundResult } from '@/lib/types';

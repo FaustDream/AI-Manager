@@ -1,21 +1,27 @@
-// 仪表盘 = 健康中心：先回答「有没有事要处理」，再回答「现在什么状态」。
+// 仪表盘 = 健康中心 + 积分 + 用量，一页看完「有没有事要处理」「钱进出了多少」「Token 花在哪」。
 //
-// 三块信息按「要不要动手」排序：待处理告警 → 账号/积分结论 → 运行细节
-// （趋势、定时任务、存储、平台最近结果）。全部读本地，不打平台接口。
+// 三块都读本地库，只有刷新积分/扫描文件/跑一轮这几个动作会打平台接口。
+// 顺序按「要不要动手」排：账号结论 → 积分收支（含按软件拆分）→ 用量统计。
+// 运行细节（存储占用、定时任务）与领取明细分别归设置页与日志页，这里不再重复。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cn } from '@/components/ui/button';
-import { StateBlock } from '@/components/ui/form';
-import { Tag } from '@/components/ui';
+import { Input, StateBlock } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { fmtAmount, fmtSize, fmtTime } from '@/lib/format';
+import { fmtAmount } from '@/lib/format';
 import { errText } from '@/lib/ipc';
-import { CreditTrend } from '@/components/credit-trend';
 import { CreditFlowChart } from '@/components/credit-flow';
-import type { AccountView, AppConfig, CreditFlowPoint, HealthReport, RecentClaim, UpdateInfo } from '@/lib/types';
+import { CreditPlatformSplit } from '@/components/credit-platforms';
+import { CreditTrend } from '@/components/credit-trend';
+import type { AccountView, AppConfig, CreditFlowReport, HealthReport, TrendPoint } from '@/lib/types';
+import { Metric, SectionTitle } from './metric';
+import { UsageSection } from './usage-section';
 
 const NAV_EVENT = 'aim:navigate';
+
+/** 收支图最多回看 60 天：后端 `credit_flow` 就是这个上限，UI 不承诺更多。 */
+const MAX_RANGE_DAYS = 60;
 
 /** 跨能力页跳转。账号中心挂载时消费 aim.focusAccount 并选中对应行。 */
 function go(id: string, iid?: string) {
@@ -24,70 +30,17 @@ function go(id: string, iid?: string) {
   window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: id }));
 }
 
-function Metric({
-  label,
-  value,
-  hint,
-  tone,
-  onClick,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  tone?: 'ok' | 'warn' | 'bad';
-  onClick?: () => void;
-}) {
-  return (
-    <div
-      role={onClick ? 'button' : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      onClick={onClick}
-      onKeyDown={(e) => {
-        if (onClick && (e.key === 'Enter' || e.key === ' ')) {
-          e.preventDefault();
-          onClick();
-        }
-      }}
-      className={cn(
-        'rounded-lg border border-line bg-card p-3',
-        onClick && 'cursor-pointer transition-colors hover:border-accent/60 hover:bg-hover',
-      )}
-    >
-      <div className="text-xs text-muted">{label}</div>
-      <div
-        className={cn(
-          'mt-1 text-2xl font-semibold tabular-nums',
-          tone === 'ok' && 'text-ok',
-          tone === 'warn' && 'text-warn',
-          tone === 'bad' && 'text-bad',
-        )}
-      >
-        {value}
-      </div>
-      <div className="mt-0.5 truncate text-xs text-muted" title={hint}>
-        {hint}
-      </div>
-    </div>
-  );
-}
-
-function SectionTitle({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
-  return (
-    <div className="mb-1.5 flex items-baseline gap-2">
-      <h3 className="text-xs font-semibold tracking-wide text-fg2">{children}</h3>
-      <span className="flex-1" />
-      {right && <span className="text-xs text-muted">{right}</span>}
-    </div>
-  );
-}
-
 export default function OverviewPage() {
   const qc = useQueryClient();
   const { busy, run } = useBusy();
   const [days, setDays] = useState(30);
-  const [chartMode, setChartMode] = useState<'balance' | 'flow'>('balance');
+  // 两种视角共存：收支看「进出」，余额看「存量走势」，默认收支
+  const [chartMode, setChartMode] = useState<'flow' | 'balance'>('flow');
+  // 自定义区间：起止日期由原生 date 控件给出（YYYY-MM-DD），与后端按日聚合的口径一致
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
   const [bundlePath, setBundlePath] = useState<string | null>(null);
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
 
   const health = useQuery<HealthReport>({
     queryKey: ['health'],
@@ -100,29 +53,66 @@ export default function OverviewPage() {
     // （v1.9.1 九类测试实测：数据库停在采集前大小、日志 0 B 达 4 分钟以上）。
     refetchInterval: (query) => (query.state.error ? 300_000 : 60_000),
   });
-  const trend = useQuery({
-    queryKey: ['trend', days],
-    queryFn: () => queryCmd('credit_trend', { days }),
-    retry: false,
-    refetchInterval: (query) => (query.state.error ? false : 5 * 60_000),
-  });
   const accounts = useQuery<AccountView[]>({
     queryKey: ['accounts'],
     queryFn: () => queryCmd('account_list'),
   });
-  const flow = useQuery<CreditFlowPoint[]>({
-    queryKey: ['flow', days],
-    queryFn: () => queryCmd('credit_flow', { days }),
-    enabled: chartMode === 'flow',
+  // 自定义区间的跨度 → 向后端要多长的时间窗（后端按「最近 N 天」取数，再在前端裁掉区间外的点）
+  const spanDays = useMemo(() => {
+    if (!customOpen || !customFrom) return days;
+    const from = new Date(`${customFrom}T00:00:00`);
+    const to = new Date(`${customTo || todayIso()}T00:00:00`);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return days;
+    const span = Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1;
+    return Math.min(MAX_RANGE_DAYS, Math.max(1, span));
+  }, [customOpen, customFrom, customTo, days]);
+  const flow = useQuery<CreditFlowReport>({
+    queryKey: ['flow', spanDays],
+    queryFn: () => queryCmd('credit_flow', { days: spanDays }),
     retry: false,
     refetchInterval: (query) => (query.state.error ? false : 5 * 60_000),
   });
-  const claims = useQuery<RecentClaim[]>({
-    queryKey: ['recent-claims'],
-    queryFn: () => queryCmd('credit_claims_recent', { limit: 20 }),
+  // 余额趋势只在切到「余额」时才查，别让默认视图多打一次数据库
+  const trend = useQuery<TrendPoint[]>({
+    queryKey: ['trend', spanDays],
+    queryFn: () => queryCmd('credit_trend', { days: spanDays }),
+    enabled: chartMode === 'balance',
     retry: false,
-    refetchInterval: (query) => (query.state.error ? false : 60_000),
+    refetchInterval: (query) => (query.state.error ? false : 5 * 60_000),
   });
+  // 区间外的点必须裁掉：后端只认「最近 N 天」，自定义的止日期可能早于今天
+  const flowPoints = useMemo(
+    () =>
+      (flow.data?.total ?? []).filter((point) =>
+        inRange(point.date, customOpen, customFrom, customTo),
+      ),
+    [flow.data, customOpen, customFrom, customTo],
+  );
+  // 每个软件同样先裁点再交给表格：合计数由点现算，裁剪后才和上图对得上
+  const platformFlows = useMemo(
+    () =>
+      (flow.data?.platforms ?? []).map((row) => ({
+        ...row,
+        points: row.points.filter((point) =>
+          inRange(point.date, customOpen, customFrom, customTo),
+        ),
+      })),
+    [flow.data, customOpen, customFrom, customTo],
+  );
+  const trendPoints = useMemo(
+    () => (trend.data ?? []).filter((point) => inRange(point.date, customOpen, customFrom, customTo)),
+    [trend.data, customOpen, customFrom, customTo],
+  );
+
+  /** 打开自定义区间时先给一个「最近 30 天」的默认值，避免两个空控件。 */
+  const openCustom = () => {
+    if (!customFrom || !customTo) {
+      const to = new Date();
+      setCustomTo(isoOf(to));
+      setCustomFrom(isoOf(new Date(to.getTime() - 29 * 86_400_000)));
+    }
+    setCustomOpen(true);
+  };
   // 补刷阈值来自应用配置（设置界面可调）；配置没到时用默认值兜底
   const config = useQuery<AppConfig>({
     queryKey: ['config'],
@@ -178,9 +168,7 @@ export default function OverviewPage() {
         await Promise.all([
           qc.invalidateQueries({ queryKey: ['accounts'] }),
           qc.invalidateQueries({ queryKey: ['health'] }),
-          qc.invalidateQueries({ queryKey: ['trend'] }),
           qc.invalidateQueries({ queryKey: ['flow'] }),
-          qc.invalidateQueries({ queryKey: ['recent-claims'] }),
         ]);
       } finally {
         autoRefreshing.current = false;
@@ -200,9 +188,7 @@ export default function OverviewPage() {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['accounts'] }),
         qc.invalidateQueries({ queryKey: ['health'] }),
-        qc.invalidateQueries({ queryKey: ['trend'] }),
           qc.invalidateQueries({ queryKey: ['flow'] }),
-        qc.invalidateQueries({ queryKey: ['recent-claims'] }),
       ]);
       toast('积分已刷新');
     });
@@ -245,20 +231,13 @@ export default function OverviewPage() {
       toast(`诊断包已导出：${path}`);
     });
 
-  const checkUpdate = () =>
-    run('update', async () => {
-      const info = await runCmd('update_check');
-      if (info === undefined) return;
-      setUpdate(info);
-    });
-
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="text-lg font-semibold">仪表盘</h1>
         {report && (
           <span className="text-xs text-muted">
-            v{report.version} · 积分数据 {ago(report.credits_at)}
+            积分数据 {ago(report.credits_at)}
             {refreshing && ' · 正在刷新…'}
           </span>
         )}
@@ -322,26 +301,6 @@ export default function OverviewPage() {
             }}
           >
             复制路径
-          </Button>
-        </div>
-      )}
-
-      {update && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-card px-3 py-1.5 text-xs">
-          {update.has_update ? (
-            <span className="text-warn">
-              有新版本 v{update.latest}（当前 v{update.current}）
-            </span>
-          ) : (
-            <span className="text-ok">已是最新版本 v{update.current}</span>
-          )}
-          <span className="flex-1" />
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => runCmd('open_external', { url: update.url })}
-          >
-            打开发布页
           </Button>
         </div>
       )}
@@ -426,209 +385,138 @@ export default function OverviewPage() {
             />
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-            <section className="rounded-lg border border-line bg-card p-3">
-              <SectionTitle
-                right={
-                  <span className="flex items-center gap-1">
-                    <span className="mr-1 flex items-center gap-0.5 rounded border border-line p-0.5">
-                      {(['balance', 'flow'] as const).map((mode) => (
-                        <button
-                          key={mode}
-                          className={cn(
-                            'cursor-pointer rounded px-1.5 py-0.5',
-                            chartMode === mode ? 'bg-hover text-fg' : 'text-muted hover:text-fg',
-                          )}
-                          onClick={() => setChartMode(mode)}
-                        >
-                          {mode === 'balance' ? '余额' : '收支'}
-                        </button>
-                      ))}
-                    </span>
-                    {[7, 30, 60].map((value) => (
+          <section className="rounded-lg border border-line bg-card p-3">
+            <SectionTitle
+              right={
+                <span className="flex flex-wrap items-center gap-1">
+                  <span className="mr-1 flex items-center gap-0.5 rounded border border-line p-0.5">
+                    {(['flow', 'balance'] as const).map((mode) => (
                       <button
-                        key={value}
+                        key={mode}
                         className={cn(
                           'cursor-pointer rounded px-1.5 py-0.5',
-                          days === value ? 'bg-hover text-fg' : 'text-muted hover:text-fg',
+                          chartMode === mode ? 'bg-hover text-fg' : 'text-muted hover:text-fg',
                         )}
-                        onClick={() => setDays(value)}
+                        onClick={() => setChartMode(mode)}
+                        title={
+                          mode === 'flow'
+                            ? '按天看进账与消耗（双向柱）'
+                            : '按天看余额存量走势（折线）'
+                        }
                       >
-                        {value} 天
+                        {mode === 'flow' ? '收支' : '余额'}
                       </button>
                     ))}
                   </span>
-                }
-              >
-                积分{chartMode === 'balance' ? '趋势' : '收支'}（全部账号合计）
-              </SectionTitle>
-              {chartMode === 'balance' ? (
-                trend.isLoading ? (
-                  <div className="h-[180px] animate-pulse rounded-md bg-hover" />
-                ) : (
-                  <CreditTrend points={trend.data ?? []} />
-                )
-              ) : flow.isLoading ? (
-                <div className="h-[180px] animate-pulse rounded-md bg-hover" />
-              ) : (
-                <CreditFlowChart points={flow.data ?? []} />
-              )}
-              <div className="mt-1 flex items-center gap-2 text-xs text-muted">
-                <span>
-                  7 天内到期{' '}
-                  <span className={expiringCredit > 0 ? 'font-medium text-warn' : ''}>
-                    {fmtAmount(expiringCredit)}
-                  </span>{' '}
-                  积分
-                </span>
-                <span className="flex-1" />
-                <button
-                  className="cursor-pointer hover:text-fg"
-                  onClick={() => go('account-center')}
-                >
-                  去用掉 →
-                </button>
-              </div>
-            </section>
-
-            <section className="rounded-lg border border-line bg-card p-3">
-              <SectionTitle>运行与存储</SectionTitle>
-              {/* minmax(0,1fr)：数据目录长路径时 truncate 才能真正截断，而不是把侧栏撑宽 */}
-              <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
-                <dt className="text-muted">数据目录</dt>
-                <dd className="truncate font-mono" title={report.data_dir}>
-                  {report.data_dir}
-                </dd>
-                <dt className="text-muted">数据库</dt>
-                <dd className="tabular-nums">{fmtSize(report.db_bytes)}</dd>
-                <dt className="text-muted">日志</dt>
-                <dd className="tabular-nums">{fmtSize(report.log_bytes)}</dd>
-                <dt className="text-muted">备份</dt>
-                <dd className="tabular-nums">{fmtSize(report.backup_bytes)}</dd>
-                <dt className="text-muted">平台</dt>
-                <dd className="flex flex-wrap gap-1">
-                  {report.platforms.map((platform) => (
-                    <span
-                      key={platform.platform}
+                  {[7, 30, 60].map((value) => (
+                    <button
+                      key={value}
                       className={cn(
-                        'rounded px-1',
-                        platform.failing > 0 ? 'bg-bad/15 text-bad' : 'bg-hover text-fg2',
+                        'cursor-pointer rounded px-1.5 py-0.5',
+                        !customOpen && days === value
+                          ? 'bg-hover text-fg'
+                          : 'text-muted hover:text-fg',
                       )}
-                      title={`最近成功：${fmtTime(platform.last_ok_at)} · 最近失败：${fmtTime(platform.last_fail_at)}`}
+                      onClick={() => {
+                        setCustomOpen(false);
+                        setDays(value);
+                      }}
                     >
-                      {platform.label} {platform.accounts}
-                      {platform.failing > 0 ? ` · 失败 ${platform.failing}` : ''}
-                    </span>
+                      {value} 天
+                    </button>
                   ))}
-                </dd>
-              </dl>
-              <div className="mt-2 flex items-center gap-2">
-                <Button size="sm" variant="ghost" onClick={checkUpdate} loading={busy === 'update'}>
-                  检查更新
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => runCmd('maintenance_open_data')}
-                >
-                  打开数据目录
-                </Button>
+                  <button
+                    className={cn(
+                      'cursor-pointer rounded px-1.5 py-0.5',
+                      customOpen ? 'bg-hover text-fg' : 'text-muted hover:text-fg',
+                    )}
+                    onClick={openCustom}
+                  >
+                    自定义
+                  </button>
+                </span>
+              }
+            >
+              积分{chartMode === 'flow' ? '收支' : '趋势'}（全部账号合计）
+            </SectionTitle>
+
+            {customOpen && (
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+                <label className="flex items-center gap-1 text-muted">
+                  起
+                  <Input
+                    type="date"
+                    className="w-36 text-xs"
+                    value={customFrom}
+                    max={customTo || todayIso()}
+                    onChange={(e) => setCustomFrom(e.target.value)}
+                  />
+                </label>
+                <label className="flex items-center gap-1 text-muted">
+                  止
+                  <Input
+                    type="date"
+                    className="w-36 text-xs"
+                    value={customTo}
+                    min={customFrom || undefined}
+                    max={todayIso()}
+                    onChange={(e) => setCustomTo(e.target.value)}
+                  />
+                </label>
+                <span className="text-muted">
+                  最多回看 {MAX_RANGE_DAYS} 天
+                  {customFrom && customTo && customFrom > customTo ? ' · 起日期晚于止日期' : ''}
+                </span>
               </div>
-            </section>
-          </div>
-
-          <section className="rounded-lg border border-line bg-card p-3">
-            <SectionTitle right="最近 8 条 · 仅本工具实际领取">最近领取</SectionTitle>
-            {claims.isLoading && <div className="h-16 animate-pulse rounded bg-hover" />}
-            {!claims.isLoading && (claims.data ?? []).length === 0 && (
-              <p className="text-xs text-muted">
-                还没有领取记录。签到成功、领取活动或猫猫旅行领奖后，这里会出现明细。
-              </p>
             )}
-            {(claims.data ?? []).length > 0 && (
-              <table className="w-full border-collapse text-xs">
-                <thead>
-                  <tr className="text-left text-muted">
-                    <th className="w-36 py-1 font-medium">时间</th>
-                    <th className="w-40 py-1 font-medium">账号</th>
-                    <th className="w-20 py-1 font-medium">来源</th>
-                    <th className="w-20 py-1 text-right font-medium">积分</th>
-                    <th className="py-1 font-medium">说明</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(claims.data ?? []).slice(0, 8).map((claim) => (
-                    <tr
-                      key={`${claim.iid}-${claim.claimed_at}-${claim.description}`}
-                      className="cursor-pointer border-t border-line/60 hover:bg-hover"
-                      onClick={() => go('account-center', claim.iid)}
-                    >
-                      <td className="py-1 tabular-nums text-muted">{fmtTime(claim.claimed_at)}</td>
-                      <td className="truncate py-1">{claim.name}</td>
-                      <td className="py-1">
-                        <Tag tone={claim.source === 'travel' ? 'ok' : 'muted'}>
-                          {claim.source === 'checkin'
-                            ? '签到'
-                            : claim.source === 'travel'
-                              ? '猫猫旅行'
-                              : claim.source === 'activity'
-                                ? '活动'
-                                : claim.source}
-                        </Tag>
-                      </td>
-                      <td className="py-1 text-right tabular-nums">
-                        {claim.amount === null ? '—' : `+${fmtAmount(claim.amount)}`}
-                      </td>
-                      <td className="max-w-[320px] truncate py-1 text-fg2" title={claim.description}>
-                        {claim.description}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </section>
 
-          <section className="rounded-lg border border-line bg-card p-3">
-            <SectionTitle right={`${report.schedules.length} 条`}>定时任务</SectionTitle>
-            {report.schedules.length === 0 ? (
-              <p className="text-xs text-muted">还没有定时任务，去设置页添加。</p>
+            {chartMode === 'flow' ? (
+              flow.isLoading ? (
+                <div className="h-[200px] animate-pulse rounded-md bg-hover" />
+              ) : (
+                <CreditFlowChart points={flowPoints} />
+              )
+            ) : trend.isLoading ? (
+              <div className="h-[200px] animate-pulse rounded-md bg-hover" />
             ) : (
-              <table className="w-full border-collapse text-xs">
-                <thead>
-                  <tr className="text-left text-muted">
-                    <th className="py-1 font-medium">名称</th>
-                    <th className="py-1 font-medium">规则</th>
-                    <th className="py-1 font-medium">上次执行</th>
-                    <th className="py-1 font-medium">下次执行</th>
-                    <th className="py-1 text-right font-medium">状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {report.schedules.map((item) => (
-                    <tr key={item.id} className="border-t border-line/60">
-                      <td className="py-1">
-                        {item.name}
-                        <span className="ml-1 text-muted">{item.action}</span>
-                      </td>
-                      <td className="py-1 text-muted">{item.rule}</td>
-                      <td className="py-1 tabular-nums">
-                        {item.last_run ? fmtTime(item.last_run) : '从未运行'}
-                      </td>
-                      <td className="py-1 tabular-nums text-muted">{fmtTime(item.next_run)}</td>
-                      <td className="py-1 text-right">
-                        <Tag tone={!item.enabled ? 'muted' : item.last_run ? 'ok' : 'warn'}>
-                          {!item.enabled ? '已停用' : item.last_run ? '正常' : '待首次运行'}
-                        </Tag>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <CreditTrend points={trendPoints} />
             )}
+            <div className="mt-1 flex items-center gap-2 text-xs text-muted">
+              <span>
+                7 天内到期{' '}
+                <span className={expiringCredit > 0 ? 'font-medium text-warn' : ''}>
+                  {fmtAmount(expiringCredit)}
+                </span>{' '}
+                积分
+              </span>
+              <span className="flex-1" />
+              <button
+                className="cursor-pointer hover:text-fg"
+                onClick={() => go('account-center')}
+              >
+                去用掉 →
+              </button>
+            </div>
           </section>
+
+          {/* 第二层：同样一份账目按软件拆开，看「钱花在哪」 */}
+          {flow.isLoading ? (
+            <div className="h-[180px] animate-pulse rounded-lg bg-hover" />
+          ) : (
+            <CreditPlatformSplit
+              platforms={platformFlows}
+              note={
+                customOpen && customFrom
+                  ? `${customFrom} ~ ${customTo || todayIso()}`
+                  : `最近 ${days} 天`
+              }
+            />
+          )}
         </>
       )}
+
+      {/* 用量与账号无关：没有账号也要能看本机客户端的 Token 消耗 */}
+      <UsageSection />
     </div>
   );
 }
@@ -641,4 +529,20 @@ function ago(ms: number | null): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
   return `${Math.floor(diff / 86_400_000)} 天前`;
+}
+
+/** 自定义区间裁剪：`open` 为假时原样放行（预设区间由后端按 days 截好）。 */
+function inRange(date: string, open: boolean, from: string, to: string): boolean {
+  if (!open) return true;
+  return (!from || date >= from) && (!to || date <= to);
+}
+
+/** 本地日期 → `YYYY-MM-DD`：date 控件与后端按日聚合都用这个口径，不做时区换算。 */
+function isoOf(date: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}`;
+}
+
+function todayIso(): string {
+  return isoOf(new Date());
 }

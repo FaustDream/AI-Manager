@@ -16,6 +16,7 @@ import { Checkbox, Select, SkeletonRows } from '@/components/ui/form';
 import { Notice, Tag } from '@/components/ui';
 import { DataTable, type Column } from '@/components/ui/table';
 import { toast } from '@/components/ui/toast';
+import { usePersistedFlag, usePersistedSet } from '@/lib/ui-state';
 import type { Facets, Filter, Message, Preview, SessionRow } from '@/lib/types';
 import {
   STATE_LABELS,
@@ -62,6 +63,23 @@ const STATE_TONES: Record<string, 'ok' | 'warn' | 'bad' | 'muted'> = {
   visible: 'ok', archived: 'warn', deleted: 'bad', cloud: 'muted', old_account: 'muted',
   orphan: 'warn',
 };
+
+/** 归档列表的列：整表都是已归档，所以去掉「状态」列，把标识收进标题——
+ *  即使把这块展开，也能一眼看出哪些是归档件。 */
+const ARCHIVED_COLUMNS: Column<SessionRow>[] = SESSION_COLUMNS.map(
+  (column): Column<SessionRow> =>
+    column.key === 'title'
+      ? {
+          ...column,
+          cell: (row: SessionRow) => (
+            <span className="flex min-w-0 items-center gap-1.5">
+              <Tag tone="warn">已归档</Tag>
+              <span className="truncate">{row.title || '（无标题）'}</span>
+            </span>
+          ),
+        }
+      : column,
+).filter((column) => column.key !== 'state');
 /** 自动归档档位：关闭 + 四档。0 = 关闭，后端只认这几个值。 */
 const RETENTION_CHOICES = [
   { days: 0, label: '关闭' },
@@ -86,8 +104,11 @@ export default function SessionsPage() {
   const [archivedChecked, setArchivedChecked] = useState<Set<string>>(new Set());
   const [activeGroup, setActiveGroup] = useState<ActiveGroup>('none');
   const [archiveGroup, setArchiveGroup] = useState<ArchiveGroup>('none');
-  const [activeCollapsed, setActiveCollapsed] = useState<Set<string>>(new Set());
-  const [archiveCollapsed, setArchiveCollapsed] = useState<Set<string>>(new Set());
+  // 折叠状态落 localStorage：刷新页面、切走再回来都保持原样（分组键与区块开关分开存）
+  const [activeCollapsed, setActiveCollapsed] = usePersistedSet('sessions.active.groups');
+  const [archiveCollapsed, setArchiveCollapsed] = usePersistedSet('sessions.archive.groups');
+  // 归档区默认折叠：它是「历史仓」，不该在每次进页时抢走首屏
+  const [archiveOpen, setArchiveOpen] = usePersistedFlag('sessions.archive.open', false);
   const [selected, setSelected] = useState<string | null>(null);
 
   const facets = useQuery<Facets>({
@@ -524,13 +545,31 @@ export default function SessionsPage() {
       </section>
 
       {/* ---------------------------------------------------------- 归档列表 */}
-      <section className="flex min-h-0 flex-col gap-2 rounded-lg border-t-2 border-line-strong bg-card/60 p-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold">已归档会话</h2>
+      <section className="flex flex-none flex-col gap-2 rounded-lg border-t-2 border-line-strong bg-card p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="flex cursor-pointer items-center gap-1.5 text-sm font-semibold hover:text-accent"
+            onClick={() => setArchiveOpen(!archiveOpen)}
+            aria-expanded={archiveOpen}
+            title={archiveOpen ? '收起已归档会话' : '展开已归档会话'}
+          >
+            <span className="w-3 text-muted">{archiveOpen ? '▾' : '▸'}</span>
+            <span>已归档会话</span>
+          </button>
           <Tag tone="warn">已归档</Tag>
           <span className="text-xs text-muted">共 {archiveTotal} 条</span>
+          <span className="flex-1" />
+          {!archiveOpen && archiveTotal > 0 && (
+            <span className="text-xs text-muted">默认折叠 · 点标题展开</span>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setArchiveOpen(!archiveOpen)}>
+            {archiveOpen ? '收起' : '展开'}
+          </Button>
         </div>
 
+        {archiveOpen && (
+          <>
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <label className="flex items-center gap-1 text-muted">
             分组
@@ -569,7 +608,7 @@ export default function SessionsPage() {
           </Button>
         </div>
 
-        <div className="min-h-[120px] flex-1 overflow-auto">
+        <div className="max-h-[42vh] min-h-[120px] flex-1 overflow-auto">
           {archivedItems.length === 0 ? (
             <div className="py-6 text-center text-sm text-muted">
               {archiveQuery.isLoading ? '加载中…' : '还没有已归档的会话。'}
@@ -578,7 +617,7 @@ export default function SessionsPage() {
             <DataTable<SessionRow>
               className="w-full table-fixed border-collapse"
               stickyHead
-              columns={SESSION_COLUMNS}
+              columns={ARCHIVED_COLUMNS}
               rows={archivedItems}
               rowKey={rowKey}
               empty={null}
@@ -635,7 +674,7 @@ export default function SessionsPage() {
                 {!archiveCollapsed.has(group.key) && (
                   <DataTable<SessionRow>
                     dense
-                    columns={SESSION_COLUMNS.filter(
+                    columns={ARCHIVED_COLUMNS.filter(
                       (c) =>
                         !(
                           (archiveGroup === 'source' && c.key === 'source') ||
@@ -683,6 +722,8 @@ export default function SessionsPage() {
             </div>
           )}
         </div>
+          </>
+        )}
       </section>
 
       {/* ---------------------------------------------------------- 正文预览 */}

@@ -43,15 +43,6 @@ pub async fn activity_daily_status(
     state.activity.daily_status(&iid).await.map_err(err_text)
 }
 
-/// 补一次当日活跃：用内置免费模型发一条「你好」，再回读活跃地图确认。
-#[tauri::command]
-pub async fn activity_daily_hello(
-    state: State<'_, AppState>,
-    iid: String,
-) -> std::result::Result<crate::app::activity::DailyActive, String> {
-    state.activity.daily_hello(&iid).await.map_err(err_text)
-}
-
 /// 保存账号级旅行偏好（是否参与自动旅行 + 地点）。
 #[tauri::command]
 pub async fn activity_pref_set(

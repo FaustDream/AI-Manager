@@ -7,7 +7,7 @@
 //!     否则互斥体可能提前释放，第二次启动就能进来。
 
 use crate::app::error::{AppError, ErrorKind, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use windows::core::HSTRING;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -171,6 +171,41 @@ fn spawn(exe: &Path, hidden: bool) -> Result<()> {
     spawn_with_args(exe, &[], hidden)
 }
 
+/// 把裸程序名（如 `explorer.exe`）解析成绝对路径后再预检。
+///
+/// `Path::exists` 只认当前工作目录，而 CreateProcessW 对裸名会按
+/// 「System32 → Windows → PATH」搜索——dev 模式工作目录是仓库根，
+/// 「explorer.exe」就被误报「可执行文件不存在」。这里按同一顺序解析，
+/// 解析到就交给 CreateProcessW 绝对路径；带目录的路径维持原语义只查存在性。
+fn resolve_bare_exe(exe: &Path) -> Result<PathBuf> {
+    let bare = exe.parent().is_none_or(|p| p.as_os_str().is_empty());
+    if !bare {
+        if exe.exists() {
+            return Ok(exe.to_path_buf());
+        }
+        return Err(AppError::new(
+            ErrorKind::Io,
+            format!("可执行文件不存在：{}", exe.display()),
+        ));
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(windir) = std::env::var("WINDIR") {
+        let windir = PathBuf::from(windir);
+        candidates.push(windir.join("System32").join(exe));
+        candidates.push(windir.join(exe));
+    }
+    if let Some(path_var) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path_var).map(|p| p.join(exe)));
+    }
+    candidates.into_iter().find(|c| c.is_file()).ok_or_else(|| {
+        AppError::new(
+            ErrorKind::Io,
+            format!("可执行文件不存在：{}", exe.display()),
+        )
+    })
+}
+
 /// 带参数启动。`CREATE_NO_WINDOW` 与 SW_HIDE 仍然双保险（契约 20）。
 ///
 /// **启动 GUI 客户端时不继承本进程的环境**：如果 AI Manager 是从某个 Electron 工具
@@ -178,12 +213,7 @@ fn spawn(exe: &Path, hidden: bool) -> Result<()> {
 /// 被启动的客户端会以 Node 模式跑一遍就退出（退出码 0、没有窗口），
 /// 表现就是「客户端关了再也起不来」。这几个变量在这里剥掉。
 pub fn spawn_with_args(exe: &Path, args: &[&str], hidden: bool) -> Result<()> {
-    if !exe.exists() {
-        return Err(AppError::new(
-            ErrorKind::Io,
-            format!("可执行文件不存在：{}", exe.display()),
-        ));
-    }
+    let exe = &resolve_bare_exe(exe)?;
     let path = HSTRING::from(exe.to_string_lossy().as_ref());
     let mut command_line = build_command_line(exe, args);
     let command_ptr = if command_line.is_empty() {
@@ -432,6 +462,26 @@ mod tests {
     #[test]
     fn unknown_process_is_not_running() {
         assert!(!process_running(&["definitely-not-a-real-process-42.exe"]));
+    }
+
+    /// 真实故障：dev 模式工作目录是仓库根，`Path::exists` 对裸名「explorer.exe」
+    /// 只查当前目录而误报「可执行文件不存在」。解析必须对齐 CreateProcessW
+    /// 的搜索顺序（System32 → Windows → PATH）。
+    #[test]
+    fn bare_system_exe_resolves_to_absolute_path() {
+        let resolved = resolve_bare_exe(Path::new("explorer.exe"))
+            .expect("explorer.exe 应能按系统搜索顺序解析到");
+        assert!(
+            resolved.is_absolute(),
+            "应解析成绝对路径：{}",
+            resolved.display()
+        );
+        assert!(resolved.exists());
+
+        // 带目录的路径维持原语义：只查存在性，不做搜索
+        assert!(resolve_bare_exe(Path::new("definitely-missing-42.exe")).is_err());
+        let abs_missing = std::env::temp_dir().join("definitely-missing-42.exe");
+        assert!(resolve_bare_exe(&abs_missing).is_err());
     }
 
     #[test]

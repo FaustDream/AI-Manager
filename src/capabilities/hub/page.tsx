@@ -3,9 +3,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { SubTabs, TargetPicker } from './parts';
 import { ImportDialog } from './import-dialog';
+import { OfficialDialog } from './official';
+import { OfficialSkills } from './official-skills';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { errText } from '@/lib/ipc';
 import { fmtSize } from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -51,6 +53,14 @@ export default function HubPage() {
   // 对话框动作（部署/移除/写 MCP）的加载态
   const { busy, run: runBusy } = useBusy();
   const [importPick, setImportPick] = useState(false);
+  const [officialOpen, setOfficialOpen] = useState(false);
+  // 「显示官方」开关（设置页控制）：关掉就把平台自带技能与外来 MCP 条目藏起来
+  const [showOfficial, setShowOfficial] = useState(true);
+  useEffect(() => {
+    queryCmd('settings_get', { key: 'ui.hub.show-official' })
+      .then((v) => setShowOfficial(v !== false))
+      .catch(() => {});
+  }, []);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [mcpText, setMcpText] = useState('');
   const [mcpTargets, setMcpTargets] = useState<Set<string>>(new Set());
@@ -149,6 +159,21 @@ export default function HubPage() {
   const snap = hub.data!;
   const conflicts = snap.skills.filter((s) => s.states.some(([, state]) => state === 'stale'));
   const activeTarget = snap.targets.find((t) => t.key === tab);
+  // 官方条目的统一过滤口径：技能看 in_library，MCP 看 foreign
+  const mcpAll = showOfficial ? snap.mcp : snap.mcp.filter((m) => !m.foreign);
+  // 官方技能单独归类：平台目录里有、技能库里没有。它不参与统一分发，
+  // 所以不进主表，只在下方折叠区查看（默认收起，展开才扫目录）。
+  const officialTotal = snap.targets.reduce(
+    (sum, t) => sum + t.installed.filter((s) => !s.in_library).length,
+    0,
+  );
+  const installedRows = activeTarget ? activeTarget.installed.filter((s) => s.in_library) : [];
+  const platformOfficial = activeTarget
+    ? activeTarget.installed.filter((s) => !s.in_library).length
+    : 0;
+  const platformMcp = activeTarget
+    ? snap.mcp.filter((m) => m.present.includes(tab) && (showOfficial || !m.foreign))
+    : [];
   const STATE_LABEL: Record<string, string> = { synced: '最新', stale: '待更新', missing: '未部署' };
 
   return (
@@ -190,21 +215,28 @@ export default function HubPage() {
               onChange={(v) => setPane(v as 'skills' | 'mcp')}
               items={[
                 { key: 'skills', label: `技能库（${snap.skills.length}）` },
-                { key: 'mcp', label: `MCP（${snap.mcp.length}）` },
+                { key: 'mcp', label: `MCP（${mcpAll.length}）` },
               ]}
             />
-            {pane === 'mcp' && (
-              <Button variant="primary" size="sm" onClick={() => setMcpOpen(true)}>
-                粘贴导入 MCP
+            <span className="flex items-center gap-2">
+              <Button variant="primary" size="sm" onClick={() => setOfficialOpen(true)}>
+                收录官方
               </Button>
-            )}
+              {pane === 'mcp' && (
+                <Button variant="primary" size="sm" onClick={() => setMcpOpen(true)}>
+                  粘贴导入 MCP
+                </Button>
+              )}
+            </span>
           </div>
 
           <div className={pane === 'skills' ? 'rounded-lg border border-line bg-card p-3' : 'hidden'}>
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-semibold">
                 技能库（{snap.skills.length}）
-                <span className="ml-2 text-xs font-normal text-muted">移除请到对应平台页</span>
+                <span className="ml-2 text-xs font-normal text-muted">
+                  个人技能 · 本工具维护并分发
+                </span>
               </h2>
               <span className="flex items-center gap-3">
                 {/* 图例：点阵颜色不单独表意（悬停有完整文字提示） */}
@@ -306,11 +338,12 @@ export default function HubPage() {
               rowClassName={() => 'group hover:bg-hover'}
             />
             </div>
+            {showOfficial && <OfficialSkills count={officialTotal} />}
           </div>
 
           <div className={pane === 'mcp' ? 'rounded-lg border border-line bg-card p-3' : 'hidden'}>
             <h2 className="mb-2 text-sm font-semibold">
-              MCP（{snap.mcp.length}）
+              MCP（{mcpAll.length}）
               <span className="ml-2 text-xs font-normal text-muted">移除请到对应平台页</span>
             </h2>
             <div className="overflow-x-auto">
@@ -365,7 +398,7 @@ export default function HubPage() {
                   ),
                 },
               ]}
-              rows={snap.mcp}
+              rows={mcpAll}
               rowKey={(row) => row.name}
               empty={<StateBlock kind="empty" title="还没有 MCP 条目" detail="点「粘贴导入 MCP」把配置写进选中的平台。" />}
               rowClassName={() => 'hover:bg-hover'}
@@ -395,8 +428,8 @@ export default function HubPage() {
               value={pane}
               onChange={(v) => setPane(v as 'skills' | 'mcp')}
               items={[
-                { key: 'skills', label: `技能（${activeTarget.installed.length}）` },
-                { key: 'mcp', label: `MCP（${snap.mcp.filter((m) => m.present.includes(tab)).length}）` },
+                { key: 'skills', label: `技能（${installedRows.length}）` },
+                { key: 'mcp', label: `MCP（${platformMcp.length}）` },
               ]}
             />
             {pane === 'mcp' && (
@@ -418,8 +451,7 @@ export default function HubPage() {
             <h2 className="mb-2 text-sm font-semibold">
               {activeTarget.label} 的技能目录
               <span className="ml-2 text-xs font-normal text-muted">
-                {activeTarget.installed.filter((s) => s.in_library).length} 个本工具分发 ·{' '}
-                {activeTarget.installed.filter((s) => !s.in_library).length} 个平台已有
+                {installedRows.length} 个本工具分发 · {platformOfficial} 个官方技能（下方折叠）
               </span>
             </h2>
             <div className="overflow-x-auto">
@@ -446,26 +478,12 @@ export default function HubPage() {
                   },
                 },
                 {
-                  key: 'kind',
-                  header: '分类',
-                  width: 128,
-                  cell: (inst) =>
-                    inst.in_library ? (
-                      <Tag tone="ok">本工具分发</Tag>
-                    ) : (
-                      <Tag tone="muted">平台已有（官方 / 手工放置）</Tag>
-                    ),
-                },
-                {
                   key: 'sync',
                   header: '与库对账',
                   width: 96,
-                  cell: (inst) =>
-                    inst.in_library ? (
-                      <Tag tone={inst.state === 'synced' ? 'ok' : 'warn'}>{STATE_LABEL[inst.state] ?? inst.state}</Tag>
-                    ) : (
-                      <span className="text-xs text-muted">—</span>
-                    ),
+                  cell: (inst) => (
+                    <Tag tone={inst.state === 'synced' ? 'ok' : 'warn'}>{STATE_LABEL[inst.state] ?? inst.state}</Tag>
+                  ),
                 },
                 {
                   key: 'ops',
@@ -473,7 +491,7 @@ export default function HubPage() {
                   width: 192,
                   cell: (inst) => (
                     <span className="flex gap-1">
-                      {inst.in_library && inst.state === 'stale' && (
+                      {inst.state === 'stale' && (
                         <Button
                           size="sm"
                           onClick={() => {
@@ -484,53 +502,35 @@ export default function HubPage() {
                           更新此副本
                         </Button>
                       )}
-                      {inst.in_library && (
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          loading={busy === `remove:${inst.name}:${tab}`}
-                          disabled={!!busy}
-                          onClick={async () => {
-                            if (!(await confirmAction({ title: '确认操作', message: `从${activeTarget.label}移除「${inst.name}」？副本会先进回收站。`, danger: true }))) return;
-                            void removeSkillFrom(inst.name, tab);
-                          }}
-                        >
-                          移除
-                        </Button>
-                      )}
-                      {!inst.in_library && (
-                        <Button
-                          size="sm"
-                          loading={busy === `import:${inst.name}`}
-                          disabled={!!busy}
-                          onClick={() =>
-                            runBusy(`import:${inst.name}`, async () => {
-                              const res = await runCmd('hub_skill_import', { target: tab, name: inst.name });
-                              if (res === undefined) return;
-                              toast(`已导入技能库：${res.name}`);
-                              refresh();
-                            })
-                          }
-                        >
-                          导入技能库
-                        </Button>
-                      )}
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        loading={busy === `remove:${inst.name}:${tab}`}
+                        disabled={!!busy}
+                        onClick={async () => {
+                          if (!(await confirmAction({ title: '确认操作', message: `从${activeTarget.label}移除「${inst.name}」？副本会先进回收站。`, danger: true }))) return;
+                          void removeSkillFrom(inst.name, tab);
+                        }}
+                      >
+                        移除
+                      </Button>
                     </span>
                   ),
                 },
               ]}
-              rows={activeTarget.installed}
+              rows={installedRows}
               rowKey={(inst) => inst.name}
-              empty={<StateBlock kind="empty" title="这个平台的技能目录是空的" detail="回「总体」页部署技能到这里，或把技能目录放进上面的路径。" />}
+              empty={<StateBlock kind="empty" title="这个平台还没有本工具分发的技能" detail="回「总体」页部署技能到这里；平台自带的技能在下方折叠区。" />}
               rowClassName={() => 'hover:bg-hover'}
             />
             </div>
+            {showOfficial && <OfficialSkills count={platformOfficial} target={tab} />}
           </div>
           )}
 
           {pane === 'mcp' && (
           <div className="rounded-lg border border-line bg-card p-3">
-            <h2 className="mb-2 text-sm font-semibold">这个平台的 MCP（{snap.mcp.filter((m) => m.present.includes(tab)).length}）</h2>
+            <h2 className="mb-2 text-sm font-semibold">这个平台的 MCP（{platformMcp.length}）</h2>
             <div className="overflow-x-auto">
             <DataTable
               dense
@@ -584,7 +584,7 @@ export default function HubPage() {
                   ),
                 },
               ]}
-              rows={snap.mcp.filter((m) => m.present.includes(tab))}
+              rows={platformMcp}
               rowKey={(row) => row.name}
               empty={<StateBlock kind="empty" title="这个平台还没有 MCP 条目" detail="回「总体」页点「粘贴导入 MCP」。" />}
               rowClassName={() => 'hover:bg-hover'}
@@ -594,6 +594,9 @@ export default function HubPage() {
           )}
         </>
       )}
+
+      {/* 官方自带收录：扫描 + 勾选导入，见 official.tsx */}
+      <OfficialDialog open={officialOpen} onClose={() => setOfficialOpen(false)} targets={snap.targets} />
 
       {/* 部署对话框：选平台 → 无冲突直接写；冲突时给「覆盖」确认（契约 16）。
           已部署（synced）的平台锁成「已勾选且不可改」，避免重复部署；

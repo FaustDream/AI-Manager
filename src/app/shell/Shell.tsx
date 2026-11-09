@@ -1,7 +1,7 @@
 // 窗口框架：顶部导航 + 内容区 + toast。
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Users, MessagesSquare, Blocks, Settings, RefreshCw, ScrollText, LayoutDashboard, BarChart3,
+  Users, MessagesSquare, Blocks, Settings, RefreshCw, ScrollText, LayoutDashboard,
 } from 'lucide-react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { capabilities } from '@/app/router';
@@ -20,7 +20,6 @@ const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   'account-center': Users,
   sessions: MessagesSquare,
   hub: Blocks,
-  usage: BarChart3,
   logs: ScrollText,
   settings: Settings,
 };
@@ -99,7 +98,7 @@ export function Shell() {
         run: async () => {
           const info = await runCmd('update_check');
           if (info === undefined) return;
-          toast(info.has_update ? `有新版本 v${info.latest}` : `已是最新 v${info.current}`);
+          toast(info.has_update ? '检测到可用更新，可在设置里查看' : '已是最新');
         },
       },
       {

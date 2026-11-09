@@ -1,6 +1,6 @@
 [package]
 name = "ai-manager"
-version = "2.0.0"
+version = "2.0.9"
 edition = "2021"
 description = "AI Manager：签到 / 会话 / 技能分发一体化桌面工作台"
 
@@ -12,6 +12,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "ai-manager"
 path = "src/main.rs"
+
+# 网页调试壳：cargo run --bin ai-manager-web（详见 src/bin/ai-manager-web.rs）
+[[bin]]
+name = "ai-manager-web"
+path = "src/bin/ai-manager-web.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -25,8 +30,9 @@ sha2 = "0.10"
 cbc = "0.1"
 # 重新封 Chromium 信封时的 nonce（系统 CSPRNG）
 getrandom = "0.2"
-# 只开用得到的特性：tray-icon 托盘、wry 默认 webview；不开 devtools 之外的花哨能力
-tauri = { version = "2", features = ["tray-icon"] }
+# 只开用得到的特性：tray-icon 托盘、wry 默认 webview；test 提供 mock 运行时
+# （网页调试壳用它拿 State 复用命令函数，主程序从不触达，LTO 会从产物里剥掉）
+tauri = { version = "2", features = ["tray-icon", "test"] }
 # 签到 / 积分的唯一网络库；Windows 上 native-tls = schannel，
 # 不引入 OpenSSL、也不用 rustls（那套会多背 1MB 以上）
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
@@ -34,6 +40,10 @@ chrono = { version = "0.4", features = ["serde", "clock"] }
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+# 网页调试壳（ai-manager-web bin）：hyper 已在依赖树（reqwest 传递），axum 只是薄封装
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+# SSE 事件流要把 broadcast Receiver 转成 Stream
+tokio-stream = { version = "0.1", features = ["sync"] }
 # 只开用得到的特性：windows crate 的元数据很大，全开会显著拖慢编译
 windows = { version = "0.58", features = [
     "Win32_Foundation",

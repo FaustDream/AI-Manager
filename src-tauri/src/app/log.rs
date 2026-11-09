@@ -921,6 +921,49 @@ pub fn stats(filter: &LogFilter) -> Result<Vec<LogStat>> {
     Ok(out)
 }
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 现存日志的时间跨度（RFC3339，含首尾）。
+///
+/// 日期选择器用它限定「能选的日期」：选到范围外只会得到空列表，不如直接不给选。
+/// 日志按大小轮转（`MAX_BYTES` × `KEEP`），没有固定保留天数，所以上界必须现算，
+/// 不能写死「最近 N 天」——那等于对用户撒谎。
+#[derive(Debug, Clone, Serialize)]
+pub struct LogSpan {
+    pub earliest: Option<String>,
+    pub latest: Option<String>,
+}
+
+/// 读当前 `app.jsonl` 的首尾两行。文件按时间追加，所以首行就是最早、末行就是最晚；
+/// 只取两端，不解析整份文件（`query` 已经够重了）。
+pub fn span() -> Result<LogSpan> {
+    let path = logs_dir().join("app.jsonl");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LogSpan {
+                earliest: None,
+                latest: None,
+            })
+        }
+        Err(e) => {
+            return Err(crate::app::error::AppError::new(
+                ErrorKind::Io,
+                format!("读取日志失败：{}（{e}）", path.display()),
+            ))
+        }
+    };
+    Ok(LogSpan {
+        earliest: text
+            .lines()
+            .find_map(|raw| serde_json::from_str::<Line>(raw).ok().map(|line| line.ts)),
+        latest: text
+            .lines()
+            .rev()
+            .find_map(|raw| serde_json::from_str::<Line>(raw).ok().map(|line| line.ts)),
+    })
+}
+
 fn matches_filter(line: &Line, filter: &LogFilter) -> bool {
     if let Some(level) = filter.level.as_deref().filter(|s| !s.is_empty()) {
         if line.level.as_str() != level {
@@ -1158,6 +1201,38 @@ mod tests {
         assert!(std::fs::read_to_string(dir.path().join("app.jsonl"))
             .unwrap()
             .contains("清空后仍可写"));
+    }
+
+    /// 日期选择器的可选范围来自真实首尾行：按大小轮转没有固定保留天数，不能写死。
+    #[test]
+    fn span_reads_first_and_last_line() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Debug, dir.path()).unwrap();
+        std::fs::write(
+            dir.path().join("app.jsonl"),
+            concat!(
+                r#"{"ts":"2026-11-01T08:00:00+08:00","level":"info","module":"a","message":"一"}"#,
+                "\n",
+                r#"{"ts":"2026-11-03T09:30:00+08:00","level":"info","module":"a","message":"三"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let span = span().unwrap();
+        assert_eq!(span.earliest.as_deref(), Some("2026-11-01T08:00:00+08:00"));
+        assert_eq!(span.latest.as_deref(), Some("2026-11-03T09:30:00+08:00"));
+    }
+
+    #[test]
+    fn span_is_empty_before_anything_is_logged() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Debug, dir.path()).unwrap();
+
+        let span = span().unwrap();
+        assert!(span.earliest.is_none() && span.latest.is_none());
     }
 
     /// 老日志行没有 schema 字段，不能因为加字段就读不出来。

@@ -162,20 +162,45 @@ pub fn read_skill(folder: &Path) -> SkillInfo {
     }
 }
 
+/// 只取描述，不算摘要：扫描平台自带技能时用——`read_skill` 会把整个目录读一遍算
+/// SHA-256，只为在列表里显示一句说明，代价太大。
+pub fn description(folder: &Path) -> String {
+    let text = std::fs::read_to_string(folder.join("SKILL.md")).unwrap_or_default();
+    frontmatter(&text).1
+}
+
 /// SKILL.md 的 frontmatter：`---` 之间 `key: value`，只取 name 与 description。
+///
+/// description 常写成 YAML 块标量（`description: |` + 缩进正文，官方技能里实测就有），
+/// 只按单行 `key: value` 读会得到一个字面量 `|`，列表里等于没说明。
 fn frontmatter(text: &str) -> (String, String) {
     let mut name = String::new();
     let mut description = String::new();
+    // 正在读的块标量键：只有 description 会用到，name 出现块写法也不该吞错字段
+    let mut block: Option<&'static str> = None;
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some("---") {
         return (name, description);
     }
     for line in lines {
-        let line = line.trim();
-        if line == "---" {
+        let trimmed = line.trim();
+        if trimmed == "---" {
             break;
         }
-        let Some((key, value)) = line.split_once(':') else {
+        let indented = line.starts_with(' ') || line.starts_with('\t');
+        if let Some(key) = block {
+            if indented {
+                if key == "description" && !trimmed.is_empty() {
+                    if !description.is_empty() {
+                        description.push(' ');
+                    }
+                    description.push_str(trimmed);
+                }
+                continue;
+            }
+            block = None;
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
             continue;
         };
         let value = value
@@ -183,9 +208,20 @@ fn frontmatter(text: &str) -> (String, String) {
             .trim_matches('"')
             .trim_matches('\'')
             .to_string();
+        // `|` / `>` 与它们的裁剪指示符形式：值在后续缩进行里
+        let block_scalar = matches!(value.as_str(), "|" | ">" | "|-" | ">-" | "|+" | ">+");
         match key.trim() {
             "name" => name = value,
-            "description" => description = value,
+            "description" => {
+                description = if block_scalar {
+                    String::new()
+                } else {
+                    value
+                };
+                if block_scalar {
+                    block = Some("description");
+                }
+            }
             _ => {}
         }
     }
@@ -608,6 +644,15 @@ mod tests {
         assert!(!ok.digest.is_empty());
         let broken = list.iter().find(|s| !s.valid).unwrap();
         assert!(broken.reason.contains("SKILL.md"));
+    }
+
+    /// 官方技能的 description 常是 YAML 块标量，按单行读只会得到一个 `|`。
+    #[test]
+    fn frontmatter_reads_block_scalar_description() {
+        let text = "---\nname: frontend-dev\ndescription: |\n  Builds landing pages,\n  dashboards.\nlicense: MIT\n---\n\n正文";
+        let (name, description) = frontmatter(text);
+        assert_eq!(name, "frontend-dev");
+        assert_eq!(description, "Builds landing pages, dashboards.");
     }
 
     #[test]
