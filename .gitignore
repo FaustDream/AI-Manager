@@ -41,3 +41,6 @@ wb_tool逆向/
 workbuddy-manager逆向/
 .screenshots/
 启动开发版.vbs
+
+# 截图用的隔离沙盒（AIMANAGER_DATA_DIR + 假 USERPROFILE，演示数据不入库）
+.sandbox/

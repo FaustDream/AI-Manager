@@ -1,0 +1,77 @@
+name: Bug 报告
+description: 程序行为和预期不符
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前先看 [CONTRIBUTING.md](https://github.com/FaustDream/AI-Manager/blob/main/CONTRIBUTING.zh-CN.md) 的三步自查——多数「账号全没了」其实是 `data/` 目录被移动导致的。
+
+        Filing in English is fine too. See [CONTRIBUTING.md](https://github.com/FaustDream/AI-Manager/blob/main/CONTRIBUTING.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本号
+      description: 设置页底部，或 exe 文件名里的版本
+      placeholder: "2.0.9"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 涉及的平台
+      multiple: true
+      options:
+        - Qoder（国内版）
+        - Qoder（国际版）
+        - WorkBuddy（国内版）
+        - WorkBuddy（国际版）
+        - ZCode
+        - Trae
+        - 与具体平台无关
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动到出错，一步一行。能稳定复现最好；不稳定也说明大概几次中一次。
+      placeholder: |
+        1. 打开账号中心
+        2. 点「切换」到第二个账号
+        3. 提示切换成功，但客户端里还是原账号
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望 vs 实际
+      value: |
+        期望：
+        实际：
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 日志页 → 导出，或 data/logs/ 下对应日期的文件。贴之前先删掉账号、token、手机号。
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已确认 data/ 目录在原位，没有移动、改名或删除
+          required: false
+        - label: 日志与截图里已去掉账号、token、手机号等敏感信息
+          required: true

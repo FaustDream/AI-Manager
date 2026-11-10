@@ -60,3 +60,19 @@ jobs:
 
       - name: 单元测试（纯函数）
         run: npm test
+
+  # 红线兜底：data/ 与 docs/ 只本机留存，靠 .gitignore 挡不住 `git add -f`
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 敏感目录未入库
+        run: |
+          leaked=$(git ls-files -- data data-v1-archive docs tools AGENTS.md .sandbox)
+          if [ -n "$leaked" ]; then
+            echo "$leaked"
+            echo "::error::以上路径应仅本机留存，禁止入库（见 .gitignore 与 AGENTS.md 红线）"
+            exit 1
+          fi
+          echo "OK：敏感目录未入库"

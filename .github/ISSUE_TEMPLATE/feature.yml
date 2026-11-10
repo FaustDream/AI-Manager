@@ -1,0 +1,50 @@
+name: 功能建议
+description: 想要一个现在没有的能力
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先说清楚取舍：这个项目偏「少而稳」，加功能的门槛比修 Bug 高。
+        描述「你现在怎么绕过去的」比描述「你希望有个按钮」有用得多。
+
+  - type: textarea
+    id: pain
+    attributes:
+      label: 你现在怎么解决的
+      description: 现在的绕法是什么，多花多少时间或几步操作
+      placeholder: 每次都要手动去客户端里改配置，五个客户端就是五遍
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你设想的做法
+      description: 有具体交互就写，没有就描述结果
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及模块
+      options:
+        - 仪表盘
+        - 账号中心
+        - 会话
+        - 技能 MCP
+        - 日志
+        - 设置
+        - 其他
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 搜过现有 Issue 与 CHANGELOG，没有重复
+          required: true

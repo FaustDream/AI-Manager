@@ -71,9 +71,20 @@ jobs:
           Copy-Item packaging\nsis\README.txt $stage
           Compress-Archive -Path "$stage\*" -DestinationPath "release\AI-Manager-$ver-windows-x64-portable.zip" -Force
 
+      - name: 生成校验和
+        run: |
+          Get-ChildItem release -File |
+            Where-Object { $_.Extension -in '.exe', '.zip' } |
+            ForEach-Object {
+              $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$h  $($_.Name)"
+            } | Set-Content release\SHA256SUMS.txt -Encoding ascii
+          Get-Content release\SHA256SUMS.txt
+
       - name: 挂到 Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             release/*.exe
             release/*.zip
+            release/SHA256SUMS.txt
