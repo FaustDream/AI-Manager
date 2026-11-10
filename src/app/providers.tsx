@@ -1,10 +1,10 @@
 // 全局 Provider：QueryClient（服务端状态）+ 事件桥（§6.3 的前端侧）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { listen } from '@/lib/events';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/components/ui/toast';
-import type { LoginOutcome, LogLine, RoundResult } from '@/lib/types';
+import type { LoginOutcome, LogLine, RoundResult, SessionScanReport } from '@/lib/types';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -17,6 +17,9 @@ const queryClient = new QueryClient({
  *  前端在这里统一接住，按能力失效对应查询——页面不用自己 listen。 */
 function EventBridges() {
   const qc = useQueryClient();
+  // 后台扫描每 5 分钟跑一次：同一个来源错误只提示一次，避免弹窗刷屏；
+  // 错误消失后清空，下一次再坏还能再提示。
+  const lastScanError = useRef<string | null>(null);
   useEffect(() => {
     const unbinds = [
       listen<RoundResult>('checkin:round', (e) => {
@@ -26,9 +29,16 @@ function EventBridges() {
         qc.invalidateQueries({ queryKey: ['detail'] });
         toast(`每日轮询：${e.payload.message}`);
       }),
-      listen<unknown>('session:scan', () => {
+      listen<SessionScanReport>('session:scan', (e) => {
         qc.invalidateQueries({ queryKey: ['sessions'] });
         qc.invalidateQueries({ queryKey: ['facets'] });
+        const first = e.payload?.errors?.[0];
+        if (!first) {
+          lastScanError.current = null;
+        } else if (first !== lastScanError.current) {
+          lastScanError.current = first;
+          toast(`会话扫描：${first}`);
+        }
       }),
       // 每小时积分轮询完成：账号列表的余额/配额可能变了
       listen<unknown>('credits:round', () => {

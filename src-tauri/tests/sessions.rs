@@ -368,6 +368,173 @@ async fn scan_is_incremental_and_picks_up_changes() {
     assert_eq!(rows.items[0].msgs, Some(3));
 }
 
+/// 搜索必须同时覆盖标题、来源与项目路径，且分页 total 与 keys 口径一致。
+#[test]
+fn search_covers_title_source_and_project() {
+    let paths = TestPaths::new();
+    let db = Db::open_at(&paths.join("app.db")).unwrap();
+    let store = SqliteSessions::new(&db);
+
+    let mut qoder = row(1, SessionState::Visible);
+    qoder.kind = "qoder".into();
+    qoder.source_key = "qoder_cn".into();
+    qoder.source_label = "Qoder CN".into();
+    qoder.title = "登录态排查".into();
+    qoder.cwd = "D:/work/login".into();
+
+    let mut idea = row(2, SessionState::Visible);
+    idea.kind = "codebuddy".into();
+    idea.source_key = "JetBrains".into();
+    idea.source_label = "CodeBuddy 插件".into();
+    idea.origin = "ide-plugin".into();
+    idea.title = "重构会话页".into();
+    idea.cwd = String::new();
+
+    store.replace_source("qoder_cn", &[qoder]).unwrap();
+    store.replace_source("JetBrains", &[idea]).unwrap();
+
+    let by_title = store
+        .page(
+            &Filter {
+                q: Some("登录态".into()),
+                ..Default::default()
+            },
+            None,
+            50,
+        )
+        .unwrap();
+    assert_eq!(by_title.total, 1);
+    assert_eq!(by_title.items[0].source_label, "Qoder CN");
+
+    let by_source = store
+        .page(
+            &Filter {
+                q: Some("CodeBuddy 插件".into()),
+                ..Default::default()
+            },
+            None,
+            50,
+        )
+        .unwrap();
+    assert_eq!(by_source.total, 1);
+    assert_eq!(by_source.items[0].session_id, "s0002");
+    assert_eq!(
+        store
+            .keys(&Filter {
+                q: Some("CodeBuddy 插件".into()),
+                ..Default::default()
+            })
+            .unwrap(),
+        vec!["codebuddy|JetBrains|u1|s0002".to_string()]
+    );
+
+    let by_project = store
+        .page(
+            &Filter {
+                q: Some("login".into()),
+                ..Default::default()
+            },
+            None,
+            50,
+        )
+        .unwrap();
+    assert_eq!(by_project.total, 1);
+    assert_eq!(by_project.items[0].session_id, "s0001");
+}
+
+/// 来源读取失败且没有解析出任何行时，必须保留上次索引，不能把列表清空。
+#[tokio::test]
+async fn failed_source_keeps_last_index() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let store = SqliteSessions::new(&db);
+    store
+        .replace_source("cn", &[row(1, SessionState::Visible)])
+        .unwrap();
+
+    // 让 workbuddy.db 存在但缺少 sessions 表：扫描必然报错且返回 0 行
+    let root = paths.join("home").join(".workbuddy");
+    std::fs::create_dir_all(&root).unwrap();
+    let conn = rusqlite::Connection::open(root.join("workbuddy.db")).unwrap();
+    conn.execute_batch("CREATE TABLE unrelated(id TEXT);")
+        .unwrap();
+    drop(conn);
+
+    let service = Service::new(
+        db.clone(),
+        Roots::at(
+            paths.join("home"),
+            paths.join("appdata"),
+            paths.join("local"),
+        ),
+    );
+    let report = service.scan().await.unwrap();
+    assert!(!report.errors.is_empty(), "损坏的库必须报错");
+
+    let page = store.page(&Filter::default(), None, 50).unwrap();
+    assert_eq!(page.total, 1, "读取失败不能把上次索引清空");
+    assert_eq!(page.items[0].session_id, "s0001");
+}
+
+/// IDEA 插件标签按 `origin=ide-plugin` 聚合，不能把 WorkBuddy 桌面会话混进来。
+#[test]
+fn origin_filter_collects_idea_plugin_sources() {
+    let paths = TestPaths::new();
+    let db = Db::open_at(&paths.join("app.db")).unwrap();
+    let store = SqliteSessions::new(&db);
+
+    let mut plugin = row(1, SessionState::Visible);
+    plugin.kind = "trae_plugin".into();
+    plugin.source_key = "trae_plugin_cn".into();
+    plugin.source_label = "Trae CN 插件".into();
+    plugin.origin = "ide-plugin".into();
+
+    let mut desktop = row(2, SessionState::Visible);
+    desktop.source_key = "cn".into();
+    desktop.source_label = "WorkBuddy 国内版".into();
+    desktop.origin = "desktop".into();
+
+    store.replace_source("trae_plugin_cn", &[plugin]).unwrap();
+    store.replace_source("cn", &[desktop]).unwrap();
+
+    let page = store
+        .page(
+            &Filter {
+                origin: Some("ide-plugin".into()),
+                ..Default::default()
+            },
+            None,
+            50,
+        )
+        .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].source_label, "Trae CN 插件");
+}
+
+/// 客户端卸载/目录消失后，索引里的旧行要清掉，不能留下点不动的幽灵行。
+#[tokio::test]
+async fn uninstalled_source_rows_are_dropped() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let store = SqliteSessions::new(&db);
+    let mut old = row(1, SessionState::Visible);
+    old.kind = "trae".into();
+    old.source_key = "Trae CN".into();
+    old.source_label = "Trae CN".into();
+    store.replace_source("Trae CN", &[old]).unwrap();
+
+    let service = Service::new(
+        db.clone(),
+        Roots::at(
+            paths.join("home"),
+            paths.join("appdata"),
+            paths.join("local"),
+        ),
+    );
+    service.scan().await.unwrap();
+    assert_eq!(store.page(&Filter::default(), None, 50).unwrap().total, 0);
+}
+
 /// 假 `~/.workbuddy`：库里有当前账号的会话 + projects 下的正文。
 fn fake_workbuddy(paths: &TestPaths) -> (Roots, std::path::PathBuf) {
     let home = paths.join("home");

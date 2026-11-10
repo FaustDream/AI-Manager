@@ -78,10 +78,13 @@ pub fn parse_key(key: &str) -> Result<Target> {
 
 pub fn load(roots: &Roots, target: &Target) -> Preview {
     if target.kind == "trae" {
-        return Preview {
-            note: "这条对话存在云端，本地只有输入历史，没有可读正文".into(),
-            ..Default::default()
-        };
+        return load_trae(roots, target);
+    }
+    if target.kind == "trae_plugin" {
+        return load_trae_plugin(roots, target);
+    }
+    if target.kind == "qoder_plugin" {
+        return load_qoder_plugin(roots, target);
     }
     match super::backend::backend_for(&target.kind) {
         Some(backend) => backend.load_preview(roots, target),
@@ -333,6 +336,96 @@ fn read_tail_messages(path: &Path, limit: usize) -> Vec<Message> {
         out = out.split_off(out.len() - limit);
     }
     out
+}
+
+// ------------------------------------------------------------------ Trae / Qoder 插件
+
+fn load_trae_plugin(roots: &Roots, target: &Target) -> Preview {
+    let Some(items) = crate::app::sessions::sources::trae_plugin::preview(
+        roots,
+        &target.source_key,
+        &target.session_id,
+    ) else {
+        return Preview {
+            note: "Trae IDEA 插件会话未解析到正文（主库为 SQLCipher，日志缓存可能已清理）".into(),
+            ..Default::default()
+        };
+    };
+    let messages = items
+        .into_iter()
+        .map(|(role, text, time)| Message {
+            role,
+            text: clip(&clean(&text)),
+            time,
+            id: String::new(),
+        })
+        .collect();
+    result(messages, false, "来源：Trae IDEA 插件运行日志")
+}
+
+fn load_qoder_plugin(roots: &Roots, target: &Target) -> Preview {
+    let cn = target.source_key == "qoder_plugin_cn";
+    let Some(items) = crate::app::sessions::sources::qoder_plugin::preview(
+        roots,
+        &target.source_key,
+        &target.session_id,
+    ) else {
+        return Preview {
+            note: "Qoder 插件会话正文已不存在".into(),
+            ..Default::default()
+        };
+    };
+    let messages = items
+        .into_iter()
+        .map(|(role, text, time)| Message {
+            role,
+            text: clip(&clean(&text)),
+            time,
+            id: String::new(),
+        })
+        .collect();
+    result(
+        messages,
+        false,
+        if cn {
+            "来源：Qoder CN 插件"
+        } else {
+            "来源：Qoder 插件"
+        },
+    )
+}
+
+fn load_trae(roots: &Roots, target: &Target) -> Preview {
+    let Some(items) =
+        crate::app::sessions::sources::trae::preview(roots, &target.source_key, &target.session_id)
+    else {
+        let root = roots.trae(target.source_key == "Trae CN");
+        let note = if root
+            .join("ModularData")
+            .join("ai-agent")
+            .join("database.db")
+            .exists()
+        {
+            "新版 Trae 会话库为加密库，暂不能读取正文"
+        } else {
+            "没有可读正文（会话可能已删除）"
+        };
+        return Preview {
+            note: note.into(),
+            ..Default::default()
+        };
+    };
+
+    let messages = items
+        .into_iter()
+        .map(|(role, text, time)| Message {
+            role,
+            text: clip(&clean(&text)),
+            time,
+            id: String::new(),
+        })
+        .collect();
+    result(messages, false, "")
 }
 
 // ------------------------------------------------------------------ CodeBuddy

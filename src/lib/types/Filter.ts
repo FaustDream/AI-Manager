@@ -4,4 +4,12 @@ import type { Sort } from "./Sort";
 /**
  * 列表筛选。三个下拉对应 §7 的草图，空值 = 不限。
  */
-export type Filter = { source: string | null, account: string | null, state: string | null, sort: Sort, };
+export type Filter = { source: string | null, account: string | null, state: string | null, 
+/**
+ * 标题 / 来源 / 项目路径的模糊搜索；空值 = 不限
+ */
+q: string | null, 
+/**
+ * 运行形态：`desktop` / `ide-plugin`。IDEA 插件标签用这个维度聚合各软件插件会话。
+ */
+origin: string | null, sort: Sort, };

@@ -9,7 +9,7 @@ use crate::app::error::ErrorKind;
 #[tauri::command]
 pub async fn session_scan(
     state: State<'_, AppState>,
-) -> std::result::Result<crate::app::sessions::ScanReport, String> {
+) -> std::result::Result<crate::app::sessions::SessionScanReport, String> {
     let service = state.sessions.clone();
     let report = match service.scan().await {
         Ok(report) => {

@@ -290,10 +290,21 @@ pub async fn dispatch<R: tauri::Runtime>(
 
         // ------------------------------------------------------------ hub
         "hub_snapshot" => to_json(cmd::hub::hub_snapshot(app.state::<AppState>()).await),
-        "hub_official_scan" => to_json(cmd::hub::hub_official_scan(app.state::<AppState>()).await),
         "hub_skill_import_many" => {
             let (target, names) = (arg(v, "target")?, arg(v, "names")?);
             to_json(cmd::hub::hub_skill_import_many(app.state::<AppState>(), target, names).await)
+        }
+        "hub_skill_import_local" => {
+            let path = arg(v, "path")?;
+            to_json(cmd::hub::hub_skill_import_local(app.state::<AppState>(), path).await)
+        }
+        "hub_skill_create" => {
+            let (name, text) = (arg(v, "name")?, arg(v, "text")?);
+            to_json(cmd::hub::hub_skill_create(app.state::<AppState>(), name, text).await)
+        }
+        "hub_mcp_claim" => {
+            let (name, source, targets) = (arg(v, "name")?, arg(v, "source")?, arg(v, "targets")?);
+            to_json(cmd::hub::hub_mcp_claim(app.state::<AppState>(), name, source, targets).await)
         }
         "hub_skill_deploy" => {
             let (name, targets, overwrite) =

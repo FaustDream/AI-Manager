@@ -8,7 +8,7 @@ use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::hub::targets;
 use crate::app::hub::{DeployReport, Hub};
 use crate::contracts::TargetKey;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -47,6 +47,84 @@ fn data_dir(hub: &Hub) -> PathBuf {
     hub.data_dir()
 }
 
+/// 技能的出身：分发视图要区分「个人技能」与「收录自某软件」，而磁盘上的
+/// 技能目录长得一模一样——只能另记一份索引。
+///
+/// 索引落在 `data/skills/.origin.json`：点开头（`scan` 会跳过），也不在某个
+/// 技能目录里（部署复制时不会被带进平台）。缺项一律按「个人」处理——
+/// 用户自己把目录拷进技能库，本来就是个人技能。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Origin {
+    /// `manual`（手动导入 / 自行创建）或 `official`（收录自某软件）
+    pub kind: String,
+    /// 收录来源的平台键；手动导入为空
+    pub from: String,
+}
+
+fn origin_file(hub: &Hub) -> PathBuf {
+    library(hub).join(".origin.json")
+}
+
+pub fn origins(hub: &Hub) -> std::collections::BTreeMap<String, Origin> {
+    std::fs::read_to_string(origin_file(hub))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// 记一条来源。写盘失败只记 Warn：来源是展示用的旁证，
+/// 不能因为它把一次已经成功的导入变成失败。
+pub fn set_origin(hub: &Hub, name: &str, kind: &str, from: &str) {
+    let mut map = origins(hub);
+    map.insert(
+        name.to_string(),
+        Origin {
+            kind: kind.to_string(),
+            from: from.to_string(),
+        },
+    );
+    let Ok(text) = serde_json::to_string_pretty(&map) else {
+        return;
+    };
+    if let Err(e) = crate::app::fsx::write_atomic(&origin_file(hub), text.as_bytes()) {
+        crate::app::log::log(
+            crate::app::log::Level::Warn,
+            "hub",
+            format!("记录技能来源失败（{name}）：{}", e.message),
+        );
+    }
+}
+
+/// 技能名要能当目录名用：带路径分隔符或通配符的名字会写到技能库外面去。
+fn check_name(name: &str) -> Result<()> {
+    let bad = name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.starts_with('.')
+        || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']);
+    if bad {
+        return Err(AppError::new(
+            ErrorKind::Invalid,
+            format!("「{name}」不能作为技能名（不要带路径分隔符或 . 开头）"),
+        ));
+    }
+    Ok(())
+}
+
+/// 技能目录里 SKILL.md 声明的名字，没有就退回目录名。
+fn declared_name(folder: &Path) -> String {
+    let text = std::fs::read_to_string(folder.join("SKILL.md")).unwrap_or_default();
+    let (meta, _) = frontmatter(&text);
+    if meta.trim().is_empty() {
+        folder
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        meta.trim().to_string()
+    }
+}
+
 /// 扫库：只认目录，且必须有 SKILL.md。
 pub fn scan(hub: &Hub) -> Vec<SkillInfo> {
     let root = library(hub);
@@ -77,9 +155,11 @@ pub struct InstalledSkill {
     /// 不在库里（平台自带或用户手工放置）：state = foreign
     pub in_library: bool,
     pub state: String,
+    /// SKILL.md 的 description：软件分组里要能一眼看出这条是干什么的
+    pub description: String,
 }
 
-/// 平台技能目录里**实际存在**的技能（平台页按这个展示，不列整个库）。
+/// 平台技能目录里**实际存在**的技能（软件分组按这个展示，不列整个库）。
 pub fn installed(hub: &Hub, key: TargetKey) -> Vec<InstalledSkill> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(hub.skill_dir(key)) else {
@@ -104,12 +184,15 @@ pub fn installed(hub: &Hub, key: TargetKey) -> Vec<InstalledSkill> {
                     name,
                     in_library: true,
                     state: state.into(),
+                    description: skill.description,
                 });
             }
             None => out.push(InstalledSkill {
                 name,
                 in_library: false,
                 state: "foreign".into(),
+                // 只读一句说明，不算摘要：分组里几十条，逐条算 SHA-256 太贵
+                description: description(&path),
             }),
         }
     }
@@ -536,6 +619,77 @@ pub fn import(hub: &Hub, key: TargetKey, name: &str) -> Result<SkillInfo> {
     std::fs::create_dir_all(library(hub))
         .map_err(|e| AppError::new(ErrorKind::Io, format!("建技能库失败：{e}")))?;
     copy_tree(&source, &dest)?;
+    let info = read_skill(&dest);
+    set_origin(hub, &info.name, "official", targets::key_name(key));
+    Ok(info)
+}
+
+/// 手动导入：把一个本地技能目录整份复制进技能库。
+///
+/// 目标目录名取 SKILL.md 里声明的 name（没有才退回目录名）：`read_skill` 用
+/// frontmatter 的 name 作为技能名，两者不一致时部署会按显示名找不到目录。
+pub fn import_local(hub: &Hub, path: &Path) -> Result<SkillInfo> {
+    if !path.is_dir() {
+        return Err(AppError::new(
+            ErrorKind::Invalid,
+            format!("{} 不是一个目录", path.display()),
+        ));
+    }
+    if !path.join("SKILL.md").is_file() {
+        return Err(AppError::new(
+            ErrorKind::Invalid,
+            "目录里没有 SKILL.md，不像是一个技能（技能目录的根上必须有它）",
+        ));
+    }
+    let name = declared_name(path);
+    check_name(&name)?;
+    // 防手滑选到整个盘：正常技能几十个文件，超过上限的目录基本不是技能
+    let (files, _) = walk_stats(path);
+    if files > MAX_FILES {
+        return Err(AppError::new(
+            ErrorKind::Invalid,
+            format!("这个目录有 {files} 个以上文件，不像是一个技能，没有导入"),
+        ));
+    }
+    let dest = library(hub).join(&name);
+    if dest.exists() {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            format!("库里已经有 {name}"),
+        ));
+    }
+    std::fs::create_dir_all(library(hub))
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("建技能库失败：{e}")))?;
+    copy_tree(path, &dest)?;
+    set_origin(hub, &name, "manual", "");
+    Ok(read_skill(&dest))
+}
+
+/// 手动创建：把一段 SKILL.md 正文落成库里的一个技能。
+///
+/// 正文没写 frontmatter 就补一段只有 name 的——各软件的技能列表靠它显示名字。
+pub fn create(hub: &Hub, name: &str, text: &str) -> Result<SkillInfo> {
+    let name = name.trim();
+    check_name(name)?;
+    if text.trim().is_empty() {
+        return Err(AppError::new(ErrorKind::Invalid, "SKILL.md 正文是空的"));
+    }
+    let dest = library(hub).join(name);
+    if dest.exists() {
+        return Err(AppError::new(
+            ErrorKind::Conflict,
+            format!("库里已经有 {name}"),
+        ));
+    }
+    std::fs::create_dir_all(&dest)
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("建技能目录失败：{e}")))?;
+    let body = if text.trim_start().starts_with("---") {
+        text.to_string()
+    } else {
+        format!("---\nname: {name}\n---\n\n{}", text.trim_start())
+    };
+    crate::app::fsx::write_atomic(&dest.join("SKILL.md"), body.as_bytes())?;
+    set_origin(hub, name, "manual", "");
     Ok(read_skill(&dest))
 }
 
@@ -760,8 +914,68 @@ mod tests {
         let imported = import(&hub, TargetKey::ZCode, "web-search").unwrap();
         assert_eq!(imported.name, "web-search");
         assert!(library(&hub).join("web-search").join("SKILL.md").exists());
+        // 从软件收进来的技能，出身记成「收录自 ZCode」
+        let origin = origins(&hub).get("web-search").cloned().unwrap();
+        assert_eq!(origin.kind, "official");
+        assert_eq!(origin.from, "zcode");
 
         let again = import(&hub, TargetKey::ZCode, "web-search").unwrap_err();
         assert_eq!(again.message, "库里已经有 web-search");
+    }
+
+    /// 手动导入本地目录：目标目录名取 SKILL.md 声明的 name，
+    /// 否则库里的「显示名」和「目录名」不一致，部署时按显示名找不到目录。
+    #[test]
+    fn local_folder_import_follows_the_declared_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path());
+        let src = dir.path().join("my-folder");
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        std::fs::write(
+            src.join("SKILL.md"),
+            "---\nname: pdf-reader\ndescription: 读 PDF\n---\n\n正文\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("assets").join("a.txt"), "x").unwrap();
+
+        let info = import_local(&hub, &src).unwrap();
+        assert_eq!(info.name, "pdf-reader");
+        assert!(library(&hub)
+            .join("pdf-reader")
+            .join("assets")
+            .join("a.txt")
+            .is_file());
+        assert_eq!(
+            origins(&hub).get("pdf-reader").map(|o| o.kind.clone()),
+            Some("manual".to_string())
+        );
+
+        // 再导一次同名：报冲突，不覆盖
+        let again = import_local(&hub, &src).unwrap_err();
+        assert_eq!(again.kind, ErrorKind::Conflict);
+
+        // 不是技能目录的路径要说清原因
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(import_local(&hub, &empty)
+            .unwrap_err()
+            .message
+            .contains("SKILL.md"));
+    }
+
+    #[test]
+    fn create_writes_skill_md_and_fills_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path());
+        let info = create(&hub, "my-skill", "## 用法\n随便写").unwrap();
+        assert!(info.valid);
+        assert_eq!(info.name, "my-skill");
+        let text =
+            std::fs::read_to_string(library(&hub).join("my-skill").join("SKILL.md")).unwrap();
+        assert!(text.starts_with("---\nname: my-skill\n---"), "{text}");
+
+        // 名字会变成目录名：带路径分隔符的一律拒
+        assert!(create(&hub, "../evil", "x").is_err());
+        assert!(create(&hub, "dup", "   ").is_err());
     }
 }

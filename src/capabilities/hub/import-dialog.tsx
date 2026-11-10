@@ -1,4 +1,4 @@
-// 「从软件收进技能库」对话框：选来源 → 勾选可导入项 → 批量入库。
+// 「从软件导入到分发库」对话框：选来源软件 → 勾选可导入项 → 批量入库。
 // 从 page.tsx 拆出（主页面过长）；交互与行为不变。
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
@@ -76,8 +76,8 @@ export function ImportDialog({
   return (
     <Dialog
       open={open}
-      title="从软件收进技能库"
-      subtitle="把各软件里已有、但库里没有的技能收进来，之后就能统一分发"
+      title="从软件导入到分发库"
+      subtitle="把各软件里已有、但分发库里没有的技能收进来（含软件自带的官方技能），之后就能统一分发"
       onClose={onClose}
       wide
       footer={
@@ -152,7 +152,7 @@ export function ImportDialog({
               ))}
             </div>
             <p className="text-xs text-muted">
-              已在库的同名技能会被跳过，不会覆盖库里现有版本。
+              已在库的同名技能会被跳过，不会覆盖分发库里现有版本；收进来的技能会记下来源。
             </p>
           </>
         )}

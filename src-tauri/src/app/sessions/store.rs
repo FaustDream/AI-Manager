@@ -100,6 +100,12 @@ pub struct Filter {
     pub account: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
+    /// 标题 / 来源 / 项目路径的模糊搜索；空值 = 不限
+    #[serde(default)]
+    pub q: Option<String>,
+    /// 运行形态：`desktop` / `ide-plugin`。IDEA 插件标签用这个维度聚合各软件插件会话。
+    #[serde(default)]
+    pub origin: Option<String>,
     #[serde(default)]
     pub sort: Sort,
 }
@@ -287,22 +293,27 @@ impl<'a> SqliteSessions<'a> {
         let source = Filter::clean(&filter.source);
         let account = Filter::clean(&filter.account);
         let state = Filter::clean(&filter.state);
+        let q = Filter::clean(&filter.q).map(|s| format!("%{s}%"));
+        let q = q.as_deref();
+        let origin = Filter::clean(&filter.origin);
         let col = sort.column();
         // 生效状态：已删除优先（客户端已经删了，归档与否没意义），其次看本地归档标记，
         // 其余沿用客户端给的 state。本地隐藏的行整行不出现。
         // ORDER BY 列名只能静态拼——三档都是白名单枚举，不存在注入面
         let sql = format!(
             "SELECT kind, source_key, source_label, account, session_id, title,
-                    last_at, msgs, size, state, has_body, slug, cwd
+                    last_at, msgs, size, state, has_body, slug, cwd, origin
              FROM (
                  SELECT s.kind, s.source_key, s.source_label, s.account, s.session_id, s.title,
-                        s.last_at, s.msgs, s.size, s.has_body, s.slug, s.cwd,
+                        s.last_at, s.msgs, s.size, s.has_body, s.slug, s.cwd, s.origin,
                         {} AS state
                  {}
              )
              WHERE (?1 IS NULL OR source_key = ?1)
                AND (?2 IS NULL OR account = ?2)
                AND (?3 IS NULL OR state = ?3)
+               AND (?7 IS NULL OR title LIKE ?7 OR source_label LIKE ?7 OR cwd LIKE ?7)
+               AND (?8 IS NULL OR origin = ?8)
                AND (?3 IS NOT NULL OR state <> 'archived')
                AND (?4 IS NULL OR {col} < ?4 OR ({col} = ?4 AND session_id < ?5))
              ORDER BY {col} DESC, session_id DESC
@@ -313,7 +324,7 @@ impl<'a> SqliteSessions<'a> {
         self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(
-                rusqlite::params![source, account, state, cur, cur_sid, limit + 1,],
+                rusqlite::params![source, account, state, cur, cur_sid, limit + 1, q, origin],
                 |row| {
                     let slug: String = row.get(11)?;
                     let cwd: String = row.get(12)?;
@@ -338,6 +349,7 @@ impl<'a> SqliteSessions<'a> {
                         has_body: row.get::<_, Option<i64>>(10)?.unwrap_or(0) != 0,
                         project: project_name(&slug, &cwd),
                         cwd,
+                        origin: row.get(13)?,
                     })
                 },
             )?;
@@ -359,7 +371,7 @@ impl<'a> SqliteSessions<'a> {
             } else {
                 None
             };
-            let total = count_with(conn, source, account, state)?;
+            let total = count_with(conn, source, account, state, q, origin)?;
             Ok(Page {
                 items,
                 next_cursor,
@@ -462,23 +474,31 @@ impl<'a> SqliteSessions<'a> {
         let source = Filter::clean(&filter.source);
         let account = Filter::clean(&filter.account);
         let state = Filter::clean(&filter.state);
+        let q = Filter::clean(&filter.q).map(|s| format!("%{s}%"));
+        let q = q.as_deref();
+        let origin = Filter::clean(&filter.origin);
         let sql = format!(
             "SELECT kind, source_key, account, session_id FROM ({})
              WHERE (?1 IS NULL OR source_key = ?1)
                AND (?2 IS NULL OR account = ?2)
                AND (?3 IS NULL OR state = ?3)
+               AND (?4 IS NULL OR title LIKE ?4 OR source_label LIKE ?4 OR cwd LIKE ?4)
+               AND (?5 IS NULL OR origin = ?5)
                AND (?3 IS NOT NULL OR state <> 'archived')",
             effective_state_sql()
         );
         self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(rusqlite::params![source, account, state], |row| {
-                let kind: String = row.get(0)?;
-                let source_key: String = row.get(1)?;
-                let account: String = row.get(2)?;
-                let session_id: String = row.get(3)?;
-                Ok(format!("{kind}|{source_key}|{account}|{session_id}"))
-            })?;
+            let rows = stmt.query_map(
+                rusqlite::params![source, account, state, q, origin],
+                |row| {
+                    let kind: String = row.get(0)?;
+                    let source_key: String = row.get(1)?;
+                    let account: String = row.get(2)?;
+                    let session_id: String = row.get(3)?;
+                    Ok(format!("{kind}|{source_key}|{account}|{session_id}"))
+                },
+            )?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -545,6 +565,7 @@ const EFFECTIVE_STATE_FROM: &str = "FROM session_index s
 fn effective_state_sql() -> String {
     format!(
         "SELECT s.kind, s.source_key, s.session_id, s.account, s.last_at,
+                s.title, s.source_label, s.cwd, s.origin,
                 {} AS state
          {}",
         EFFECTIVE_STATE_CASE, EFFECTIVE_STATE_FROM
@@ -556,18 +577,24 @@ fn count_with(
     source: Option<&str>,
     account: Option<&str>,
     state: Option<&str>,
+    q: Option<&str>,
+    origin: Option<&str>,
 ) -> Result<usize> {
     let sql = format!(
         "SELECT COUNT(*) FROM ({})
          WHERE (?1 IS NULL OR source_key = ?1)
            AND (?2 IS NULL OR account = ?2)
            AND (?3 IS NULL OR state = ?3)
+           AND (?4 IS NULL OR title LIKE ?4 OR source_label LIKE ?4 OR cwd LIKE ?4)
+           AND (?5 IS NULL OR origin = ?5)
            AND (?3 IS NOT NULL OR state <> 'archived')",
         effective_state_sql()
     );
-    let total: i64 = conn.query_row(&sql, rusqlite::params![source, account, state], |row| {
-        row.get(0)
-    })?;
+    let total: i64 = conn.query_row(
+        &sql,
+        rusqlite::params![source, account, state, q, origin],
+        |row| row.get(0),
+    )?;
     Ok(total as usize)
 }
 

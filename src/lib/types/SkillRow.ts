@@ -2,6 +2,14 @@
 
 export type SkillRow = { name: string, description: string, files: number, size: number, valid: boolean, reason: string, 
 /**
+ * 出身：`manual`（手动导入 / 自行创建）或 `official`（收录自某软件）
+ */
+origin: string, 
+/**
+ * 收录来源的平台键；手动导入为空。界面据此把「个人」和「收录自 Qoder CN」分开
+ */
+origin_target: string, 
+/**
  * [(平台键, synced|stale|missing)]
  */
 states: Array<[string, string]>, };

@@ -50,7 +50,7 @@ Commit messages are written in Chinese, with one of four prefixes, matching the 
 功能: 新增 xxx
 修复: xxx 判断错了
 测试: 补 xxx 用例
-发布: v2.0.9 —— 一句话主题
+发布: vX.Y.Z —— 一句话主题
 ```
 
 One commit, one concern. Unrelated refactors across modules belong in their own commit or PR — the worst review is a bug fix buried under ten unrelated edits.

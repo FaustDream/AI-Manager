@@ -5,4 +5,8 @@ export type InstalledSkill = { name: string,
  * 在技能库里：state 是与库对账的结果（synced/stale）；
  * 不在库里（平台自带或用户手工放置）：state = foreign
  */
-in_library: boolean, state: string, };
+in_library: boolean, state: string, 
+/**
+ * SKILL.md 的 description：软件分组里要能一眼看出这条是干什么的
+ */
+description: string, };

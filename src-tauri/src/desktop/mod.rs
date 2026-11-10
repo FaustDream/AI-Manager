@@ -114,6 +114,7 @@ pub fn run() -> tauri::Result<()> {
             let usage_db = state.db.clone();
             let sync_db = state.db.clone();
             let sched_db = state.db.clone();
+            let session_service = state.sessions.clone();
             // 应用配置：加载 data/config.toml（首次会把旧 kv 配置键迁移进来）
             crate::app::config::init(&state.db);
             // 清掉「待处理告警」下线后留在 kv 里的死键（通知签名 / 静默表）：
@@ -146,6 +147,7 @@ pub fn run() -> tauri::Result<()> {
             background::spawn_zcode_auto_claim(service);
             background::spawn_event_bridges(app.handle().clone());
             background::spawn_usage_scan(usage_db);
+            background::spawn_session_scan(session_service);
 
             // 启动本身也是一次「动作」：执行动作里能看到每次重启的时间点
             log::action("app.startup", "startup", true, 0, "外壳启动完成");
@@ -182,14 +184,16 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_refresh_all,
             commands::accounts::account_open_client,
             commands::hub::hub_snapshot,
-            commands::hub::hub_official_scan,
             commands::hub::hub_skill_deploy,
             commands::hub::hub_skill_remove,
             commands::hub::hub_skill_import,
+            commands::hub::hub_skill_import_local,
+            commands::hub::hub_skill_create,
             commands::hub::hub_skill_import_many,
             commands::hub::hub_mcp_import,
             commands::hub::hub_mcp_remove,
             commands::hub::hub_mcp_deploy,
+            commands::hub::hub_mcp_claim,
             commands::sessions::session_scan,
             commands::sessions::session_page,
             commands::sessions::session_keys,

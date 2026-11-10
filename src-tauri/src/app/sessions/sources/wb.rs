@@ -200,6 +200,7 @@ pub fn scan(ep: &Edition, cache: &mut MsgCache, errors: &mut Vec<String>) -> Vec
         row.size = size;
         row.state = state;
         row.has_body = !owned.is_empty();
+        row.origin = "desktop".into();
         out.push(row);
     }
     out

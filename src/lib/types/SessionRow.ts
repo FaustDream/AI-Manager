@@ -13,4 +13,8 @@ project: string,
 /**
  * 项目完整路径（界面放在 title 属性里，不占列宽）
  */
-cwd: string, last_at: string | null, msgs: number | null, size: number | null, state: SessionState, has_body: boolean, };
+cwd: string, 
+/**
+ * 运行形态：`desktop` / `ide-plugin`，用于 IDEA 插件标签聚合
+ */
+origin: string, last_at: string | null, msgs: number | null, size: number | null, state: SessionState, has_body: boolean, };

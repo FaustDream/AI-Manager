@@ -76,9 +76,19 @@ impl Roots {
         self.localappdata.join("CodeBuddyExtension").join("Data")
     }
 
-    /// Trae 只有云端会话，本地目录用来判断「装没装」
+    /// Trae 独立版本地目录
     pub fn trae(&self, cn: bool) -> PathBuf {
         self.appdata.join(if cn { "Trae CN" } else { "Trae" })
+    }
+
+    /// Qoder IDEA 插件与 Qoder CLI 共用的会话目录
+    pub fn qoder_plugin(&self, cn: bool) -> PathBuf {
+        self.home.join(if cn { ".qoder-cn" } else { ".qoder" })
+    }
+
+    /// Trae / MarsCode IDEA 插件的运行数据目录
+    pub fn trae_plugin(&self) -> PathBuf {
+        self.home.join(".marscode")
     }
 }
 

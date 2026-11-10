@@ -6,6 +6,9 @@
 
 pub mod codebuddy;
 pub mod others;
+pub mod qoder_plugin;
+pub mod trae;
+pub mod trae_plugin;
 pub mod wb;
 
 use crate::app::clients::Roots;
@@ -81,6 +84,15 @@ pub fn sources(roots: &Roots) -> Vec<SourceInfo> {
     for info in others::sources(roots) {
         out.push(info);
     }
+    for info in trae::sources(roots) {
+        out.push(info);
+    }
+    for info in qoder_plugin::sources(roots) {
+        out.push(info);
+    }
+    for info in trae_plugin::sources(roots) {
+        out.push(info);
+    }
     out
 }
 
@@ -99,6 +111,25 @@ pub fn scan_one(
         .find(|s| s.platform == key)
     {
         return Ok(codebuddy::scan(&src, errors));
+    }
+    if key == "Trae CN" || key == "Trae" {
+        let label = trae::EDITIONS
+            .iter()
+            .find(|(edition, _, _)| *edition == key)
+            .map(|(_, label, _)| *label)
+            .unwrap_or(key);
+        return Ok(trae::scan(roots, key, label, errors));
+    }
+    if key == "qoder_plugin_cn" || key == "qoder_plugin_intl" {
+        let label = qoder_plugin::EDITIONS
+            .iter()
+            .find(|(edition, _, _)| *edition == key)
+            .map(|(_, label, _)| *label)
+            .unwrap_or(key);
+        return Ok(qoder_plugin::scan(roots, key, label, errors));
+    }
+    if key == "trae_plugin_cn" {
+        return Ok(trae_plugin::scan(roots, key, "Trae CN 插件", errors));
     }
     Ok(others::scan_one(roots, key, errors))
 }

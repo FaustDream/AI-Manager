@@ -221,6 +221,36 @@ pub fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>) {
     });
 }
 
+/// 会话索引增量扫描：启动 8 秒后一次，之后每 5 分钟一次。
+///
+/// 不引文件监听：客户端写 WAL 时一次会话会产生大量事件，反而把扫描频率放大；
+/// 5 分钟轮询 + 手动刷新已经能覆盖「外部新增/删除后列表更新」，
+/// 且不新增 `notify` 依赖。
+pub fn spawn_session_scan(service: Arc<crate::app::sessions::Service>) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        loop {
+            let started = std::time::Instant::now();
+            match service.scan().await {
+                Ok(report) => {
+                    if report.scanned > 0 || report.archived > 0 || !report.errors.is_empty() {
+                        log::action(
+                            "session_scan",
+                            "schedule",
+                            report.errors.is_empty(),
+                            started.elapsed().as_millis() as u64,
+                            report.summary(),
+                        );
+                    }
+                    crate::app::events::emit("session:scan", &report);
+                }
+                Err(e) => log::fail("sessions", "session_scan", "定时会话扫描失败", e.evidence()),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5 * 60)).await;
+        }
+    });
+}
+
 /// 本地用量采集：启动 15 秒后跑一次，之后每 30 分钟增量扫一遍。
 ///
 /// 只读客户端落盘文件，慢一点没关系；失败只记日志，不影响任何业务。

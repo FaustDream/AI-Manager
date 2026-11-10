@@ -1,4 +1,4 @@
-; AI Manager 1.5.0 · NSIS 安装包脚本（免管理员 / per-user）
+; AI Manager · NSIS 安装包脚本（免管理员 / per-user）
 ;
 ; 为什么手写而不是 `cargo tauri build`：本机没有 `cargo tauri` 子命令（未安装 tauri-cli），
 ; 但 `%LOCALAPPDATA%\tauri\NSIS\makensis.exe` 已经被缓存好了，直接调 makensis 即可，
@@ -18,7 +18,7 @@
 Unicode true
 
 !define PRODUCT_NAME "AI Manager"
-!define PRODUCT_VERSION "2.0.9"
+!define PRODUCT_VERSION "2.0.10"
 !define PRODUCT_PUBLISHER "FaustDream"
 !define PRODUCT_EXE "ai-manager.exe"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\AI Manager"

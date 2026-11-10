@@ -444,6 +444,7 @@ fn contract_18_time_crosses_ipc_as_machine_readable() {
         title: "标题".into(),
         project: "项目".into(),
         cwd: "C:/project".into(),
+        origin: "desktop".into(),
         last_at: Some(
             chrono::Local
                 .with_ymd_and_hms(2026, 10, 30, 22, 0, 0)

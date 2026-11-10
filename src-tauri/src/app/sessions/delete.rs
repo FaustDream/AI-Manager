@@ -201,15 +201,16 @@ pub fn purge(roots: &Roots, db: &Db, keys: &[String], with_guard: bool) -> Resul
         .titles_of(&targets)
         .unwrap_or_default();
 
-    // Trae 是云端占位：远端删不掉，只能在本地记墓碑；索引行保留，靠 hidden 过滤。
+    // Trae 主库、Trae 插件日志、Qoder 插件 JSONL 都不适合由本工具直接删：
+    // 只在本地记墓碑，索引行保留，靠 hidden 过滤。
     let mut handled: Vec<preview::Target> = Vec::new();
-    let mut trae: Vec<String> = Vec::new();
+    let mut hidden: Vec<String> = Vec::new();
     for (key, target) in &targets {
-        if target.kind == "trae" {
+        if target.kind == "trae" || target.kind == "trae_plugin" || target.kind == "qoder_plugin" {
             match crate::app::sessions::marks::hide(db, std::slice::from_ref(key)) {
                 Ok(_) => {
                     report.deleted += 1;
-                    trae.push(key.clone());
+                    hidden.push(key.clone());
                 }
                 Err(e) => report
                     .errors
@@ -276,8 +277,8 @@ pub fn purge(roots: &Roots, db: &Db, keys: &[String], with_guard: bool) -> Resul
             let _ = db.kv_delete(&format!("sess_fp:{}", target.source_key));
         }
     }
-    // trae 的隐藏标记要保留：索引行还在，重扫时靠它把这一行挡掉
-    let _ = trae;
+    // 隐藏标记要保留：索引行还在，重扫时靠它把这一行挡掉
+    let _ = hidden;
 
     if with_guard {
         restart_clients(&closed, &mut report.warnings);

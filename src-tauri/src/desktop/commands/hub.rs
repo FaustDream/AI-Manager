@@ -24,18 +24,6 @@ pub async fn hub_snapshot(
         .map_err(err_text)
 }
 
-/// 官方自带收录扫描（只读）：平台自带技能 + 非本工具写入的 MCP 条目。
-#[tauri::command]
-
-pub async fn hub_official_scan(
-    state: State<'_, AppState>,
-) -> std::result::Result<crate::app::hub::OfficialScan, String> {
-    let hub = state.hub.clone();
-    crate::app::runtime::blocking(move || crate::app::hub::official_scan(&hub))
-        .await
-        .map_err(err_text)
-}
-
 /// 从某个平台批量把技能收进技能库（「从软件保存到库」）。
 #[tauri::command]
 
@@ -174,6 +162,91 @@ pub async fn hub_skill_import(
 pub struct McpImportReport {
     pub names: Vec<String>,
     pub report: crate::app::hub::DeployReport,
+}
+
+/// 手动导入：把一个本地技能目录复制进技能库。
+#[tauri::command]
+
+pub async fn hub_skill_import_local(
+    state: State<'_, AppState>,
+    path: String,
+) -> std::result::Result<crate::app::hub::skills::SkillInfo, String> {
+    let hub = state.hub.clone();
+    let folder = std::path::PathBuf::from(path.trim());
+    let info =
+        crate::app::runtime::blocking(move || crate::app::hub::skills::import_local(&hub, &folder))
+            .await
+            .map_err(err_text)?
+            .map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "hub",
+        format!("手动导入技能：{} · {}", info.name, info.summary()),
+    );
+    Ok(info)
+}
+
+/// 手动创建：把一段 SKILL.md 正文落成库里的一个技能。
+#[tauri::command]
+
+pub async fn hub_skill_create(
+    state: State<'_, AppState>,
+    name: String,
+    text: String,
+) -> std::result::Result<crate::app::hub::skills::SkillInfo, String> {
+    let hub = state.hub.clone();
+    let info =
+        crate::app::runtime::blocking(move || crate::app::hub::skills::create(&hub, &name, &text))
+            .await
+            .map_err(err_text)?
+            .map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "hub",
+        format!("新建技能：{} · {}", info.name, info.summary()),
+    );
+    Ok(info)
+}
+
+/// 把一条「软件自带」的 MCP 收进分发库（原位打标记，再按需写到其他平台）。
+#[tauri::command]
+
+pub async fn hub_mcp_claim(
+    state: State<'_, AppState>,
+    name: String,
+    source: String,
+    targets: Vec<String>,
+) -> std::result::Result<crate::app::hub::DeployReport, String> {
+    let hub = state.hub.clone();
+    let key = crate::app::hub::targets::from_key_name(&source).ok_or_else(|| {
+        err_text(AppError::new(
+            ErrorKind::Invalid,
+            format!("未知平台：{source}"),
+        ))
+    })?;
+    let keys = target_keys(&targets);
+    let report =
+        crate::app::runtime::blocking(move || crate::app::hub::mcp_claim(&hub, &name, key, &keys))
+            .await
+            .map_err(err_text)?
+            .map_err(err_text)?;
+    let level = if report.failed() == 0 {
+        Level::Info
+    } else if report.done() == 0 {
+        Level::Error
+    } else {
+        Level::Warn
+    };
+    let detail = report
+        .first_error()
+        .map(|e| format!(" · 首个失败={e}"))
+        .unwrap_or_default();
+    log::log(
+        level,
+        "hub",
+        format!("收录 MCP：{}{detail}", report.summary()),
+    );
+    Ok(report)
 }
 
 /// 粘贴一段 MCP 配置，写到选中的平台。

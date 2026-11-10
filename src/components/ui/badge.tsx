@@ -5,10 +5,12 @@ export function Tag({
   tone,
   children,
   className,
+  title,
 }: {
-  tone?: 'ok' | 'warn' | 'bad' | 'muted';
+  tone?: 'ok' | 'warn' | 'bad' | 'muted' | 'accent';
   children: ReactNode;
   className?: string;
+  title?: string;
 }) {
   return (
     <span
@@ -17,9 +19,11 @@ export function Tag({
         tone === 'ok' && 'border-ok text-ok',
         tone === 'warn' && 'border-warn text-warn',
         tone === 'bad' && 'border-bad text-bad',
+        tone === 'accent' && 'border-accent text-accent',
         (!tone || tone === 'muted') && 'border-line text-muted',
         className,
       )}
+      title={title}
     >
       {children}
     </span>

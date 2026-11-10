@@ -35,8 +35,6 @@ function GeneralPane() {
   const [theme, setTheme] = useState<ThemeChoice>('');
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [version, setVersion] = useState('');
-  // 技能页是否显示官方自带条目（kv ui.hub.show-official，缺省显示）
-  const [official, setOfficial] = useState(true);
 
   useEffect(() => {
     queryCmd('app_version').then(setVersion).catch(() => {});
@@ -46,9 +44,6 @@ function GeneralPane() {
     queryCmd('autostart_get')
       .then(setAutostart)
       .catch(() => setAutostart(false));
-    queryCmd('settings_get', { key: 'ui.hub.show-official' })
-      .then((v) => setOfficial(v !== false))
-      .catch(() => {});
   }, []);
 
   return (
@@ -98,26 +93,6 @@ function GeneralPane() {
                   toast(enabled ? '已开机自启（写 HKCU Run）' : '已关闭开机自启');
               }}
             />
-          </label>
-        </div>
-        <div>
-          <label className="flex items-center gap-4 text-sm">
-            <span className="w-24 text-muted">官方条目</span>
-            <Checkbox
-              checked={official}
-              onChange={async (e) => {
-                const on = e.target.checked;
-                setOfficial(on);
-                try {
-                  await queryCmd('settings_set', { key: 'ui.hub.show-official', value: on });
-                  toast(on ? '技能页将显示官方自带条目' : '技能页已隐藏官方自带条目');
-                } catch (err) {
-                  setOfficial(!on);
-                  toast(errMsg(err));
-                }
-              }}
-            />
-            <span className="text-xs text-muted">技能页显示各软件自带的技能与 MCP</span>
           </label>
         </div>
       </div>

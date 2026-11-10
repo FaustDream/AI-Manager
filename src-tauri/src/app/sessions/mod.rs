@@ -31,8 +31,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Default, Serialize)]
-pub struct ScanReport {
+pub struct SessionScanReport {
     /// 真去扫了的来源数
     pub scanned: usize,
     /// 因指纹没变被跳过的来源数
@@ -43,11 +45,12 @@ pub struct ScanReport {
     pub archived: usize,
     /// 客户端没装/没登录过的来源
     pub missing: usize,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub ms: u64,
     pub errors: Vec<String>,
 }
 
-impl ScanReport {
+impl SessionScanReport {
     pub fn summary(&self) -> String {
         let mut text = format!(
             "扫描 {} 个来源，跳过 {} 个，写入 {} 条，用时 {:.1}s",
@@ -85,12 +88,12 @@ impl Service {
     }
 
     /// 增量扫描：指纹没变的来源整源跳过，变了的重扫并整源替换。
-    pub async fn scan(&self) -> Result<ScanReport> {
+    pub async fn scan(&self) -> Result<SessionScanReport> {
         let db = self.db.clone();
         let roots = self.roots.clone();
         blocking(move || {
             let started = Instant::now();
-            let mut report = ScanReport::default();
+            let mut report = SessionScanReport::default();
             let store = SqliteSessions::new(&db);
             let infos = sources::sources(&roots);
             let mut seen = BTreeSet::new();
@@ -103,21 +106,43 @@ impl Service {
                 .unwrap_or_default();
 
             for info in &infos {
-                seen.insert(info.key.clone());
                 if !info.present {
                     report.missing += 1;
                     continue;
                 }
+                seen.insert(info.key.clone());
                 let kv_key = format!("sess_fp:{}", info.key);
                 if db.kv_get(&kv_key).ok().flatten().as_deref() == Some(info.fp.as_str()) {
                     report.skipped += 1;
                     continue;
                 }
-                let rows = sources::scan_one(&roots, &info.key, &mut cache, &mut report.errors)?;
-                report.rows += store.replace_source(&info.key, &rows)?;
-                report.scanned += 1;
-                // 写库失败时不要把指纹落下去，否则这个来源永远不会再被扫
-                db.kv_set(&kv_key, &info.fp)?;
+                let before_errors = report.errors.len();
+                let rows =
+                    match sources::scan_one(&roots, &info.key, &mut cache, &mut report.errors) {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            report.errors.push(format!("{}：{}", info.label, e.message));
+                            continue;
+                        }
+                    };
+                // 读取失败且没有解析出任何行：保留上次索引，也不落指纹，下一轮继续重试。
+                // 否则 Trae 加密库 / Qoder 库被锁时会把整源列表清空。
+                if rows.is_empty() && report.errors.len() > before_errors {
+                    continue;
+                }
+                match store.replace_source(&info.key, &rows) {
+                    Ok(count) => {
+                        report.rows += count;
+                        report.scanned += 1;
+                        // 写库失败时不要把指纹落下去，否则这个来源永远不会再被扫
+                        db.kv_set(&kv_key, &info.fp)?;
+                    }
+                    Err(e) => {
+                        report
+                            .errors
+                            .push(format!("{}：写入索引失败：{}", info.label, e.message));
+                    }
+                }
             }
 
             // 客户端卸载了：索引里留着的行会让页面出现点不动的幽灵行

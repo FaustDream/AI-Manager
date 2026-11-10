@@ -144,6 +144,8 @@ pub struct SessionRow {
     pub project: String,
     /// 项目完整路径（界面放在 title 属性里，不占列宽）
     pub cwd: String,
+    /// 运行形态：`desktop` / `ide-plugin`，用于 IDEA 插件标签聚合
+    pub origin: String,
     pub last_at: Option<DateTime<Local>>,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub msgs: Option<i64>,

@@ -8,25 +8,35 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { errText } from '@/lib/ipc';
 import { fmtSize, fmtTime } from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Checkbox, Select, SkeletonRows } from '@/components/ui/form';
+import { Checkbox, Select } from '@/components/ui/form';
 import { Notice, Tag } from '@/components/ui';
 import { DataTable, type Column } from '@/components/ui/table';
 import { toast } from '@/components/ui/toast';
-import { usePersistedFlag, usePersistedSet } from '@/lib/ui-state';
+import { usePersistedChoice, usePersistedFlag, usePersistedSet } from '@/lib/ui-state';
 import type { Facets, Filter, Message, Preview, SessionRow } from '@/lib/types';
 import {
   STATE_LABELS,
+  currentScope,
   groupActive,
   groupArchived,
+  isPluginFacet,
+  isPluginKey,
+  scopeSources,
   type ActiveGroup,
   type ArchiveGroup,
 } from './grouping';
 
 const PAGE_SIZE = 100;
+const ACTIVE_GROUPS: readonly ActiveGroup[] = [
+  'none', 'source', 'project', 'account', 'state',
+];
+const ARCHIVE_GROUPS: readonly ArchiveGroup[] = [
+  'none', 'source', 'project', 'account',
+];
 
 /** 主列表的列定义（C6）：加一列 = 加一行。 */
 const SESSION_COLUMNS: Column<SessionRow>[] = [
@@ -97,13 +107,21 @@ const rowKey = (r: SessionRow) => `${r.kind}|${r.source_key}|${r.account}|${r.se
 export default function SessionsPage() {
   const qc = useQueryClient();
   const [filter, setFilter] = useState<Filter>({
-    source: null, account: null, state: null, sort: 'last_at',
+    source: null, account: null, state: null, q: null, origin: null, sort: 'last_at',
   });
-  // 两个列表各自选中、各自分组、各自滚动，互不干扰
+  // 两个列表各自选中、各自分组、各自滚动，互不干扰；分组选择跨重启保持
   const [activeChecked, setActiveChecked] = useState<Set<string>>(new Set());
   const [archivedChecked, setArchivedChecked] = useState<Set<string>>(new Set());
-  const [activeGroup, setActiveGroup] = useState<ActiveGroup>('none');
-  const [archiveGroup, setArchiveGroup] = useState<ArchiveGroup>('none');
+  const [activeGroup, setActiveGroup] = usePersistedChoice<ActiveGroup>(
+    'sessions.active.group',
+    'source',
+    ACTIVE_GROUPS,
+  );
+  const [archiveGroup, setArchiveGroup] = usePersistedChoice<ArchiveGroup>(
+    'sessions.archive.group',
+    'source',
+    ARCHIVE_GROUPS,
+  );
   // 折叠状态落 localStorage：刷新页面、切走再回来都保持原样（分组键与区块开关分开存）
   const [activeCollapsed, setActiveCollapsed] = usePersistedSet('sessions.active.groups');
   const [archiveCollapsed, setArchiveCollapsed] = usePersistedSet('sessions.archive.groups');
@@ -115,6 +133,13 @@ export default function SessionsPage() {
     queryKey: ['facets'],
     queryFn: () => queryCmd('session_facets'),
   });
+
+  // 「来源」下拉的选项范围只跟着标签走（currentScope）：选了插件源也留在 IDEA 范围，
+  // 聚合项不消失、同组其他源也能直接切；其他软件范围只出它自己。
+  const scopedSources = useMemo(
+    () => scopeSources(facets.data?.sources ?? [], currentScope(filter)),
+    [facets.data, filter],
+  );
 
   // 活跃列表：默认永远排除已归档（后端 SQL 已按此口径）
   const filterKey = JSON.stringify(filter);
@@ -128,7 +153,9 @@ export default function SessionsPage() {
   const activeItems = activeQuery.data?.pages.flatMap((page) => page.items) ?? [];
 
   // 归档列表：独立的筛选（固定 state=archived）与分页游标
-  const archiveFilter: Filter = { source: null, account: null, state: 'archived', sort: 'last_at' };
+  const archiveFilter: Filter = {
+    source: null, account: null, state: 'archived', q: null, origin: null, sort: 'last_at',
+  };
   const archiveQuery = useInfiniteQuery({
     queryKey: ['sessions', 'archive', 'page'],
     queryFn: ({ pageParam }) =>
@@ -301,9 +328,12 @@ export default function SessionsPage() {
 
   const scan = () =>
     runBusy('scan', async () => {
-      if ((await runCmd('session_scan')) === undefined) return;
-      toast('会话扫描已开始（后台任务）');
-      setTimeout(() => qc.invalidateQueries({ queryKey: ['facets'] }), 3000);
+      const report = await runCmd('session_scan');
+      if (report === undefined) return;
+      // 来源错误由全局事件桥统一提示（并做去重），这里只报扫描结果
+      toast(`扫描完成：写入 ${report.rows} 条`);
+      qc.invalidateQueries({ queryKey: ['facets'] });
+      qc.invalidateQueries({ queryKey: ['sessions'] });
     });
 
   const activeTotal = activeQuery.data?.pages[0]?.total ?? 0;
@@ -324,27 +354,40 @@ export default function SessionsPage() {
           <span className="text-xs text-muted">共 {activeTotal} 条</span>
         </div>
 
-        {/* 来源标签栏：按软件分栏；删掉的会话不会再出现在对应软件里。 */}
+        {/* 来源标签栏：插件会话全部收进「IDEA 插件」聚合标签，各软件插件源不再单独成标签。 */}
         <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
           <button
             className={`rounded-md px-3 py-1 text-sm ${
-              filter.source === null
+              filter.source === null && filter.origin === null
                 ? 'bg-accent font-medium text-on-accent'
                 : 'text-muted hover:bg-hover hover:text-fg'
             }`}
-            onClick={() => setFilter((f) => ({ ...f, source: null }))}
+            onClick={() => setFilter((f) => ({ ...f, source: null, origin: null }))}
           >
             全部
           </button>
-          {(facets.data?.sources ?? []).map((s) => (
+          {(facets.data?.sources ?? []).some(isPluginFacet) && (
             <button
-              key={s.value}
               className={`rounded-md px-3 py-1 text-sm ${
-                filter.source === s.value
+                filter.origin === 'ide-plugin' || (filter.origin === null && isPluginKey(filter.source))
                   ? 'bg-accent font-medium text-on-accent'
                   : 'text-muted hover:bg-hover hover:text-fg'
               }`}
-              onClick={() => setFilter((f) => ({ ...f, source: s.value }))}
+              onClick={() => setFilter((f) => ({ ...f, source: null, origin: 'ide-plugin' }))}
+              title="聚合 Qoder / Qoder CN / Trae / CodeBuddy 的 IDEA 插件会话；子源可在「来源」下拉里单独筛"
+            >
+              IDEA 插件
+            </button>
+          )}
+          {(facets.data?.sources ?? []).filter((s) => !isPluginFacet(s)).map((s) => (
+            <button
+              key={s.value}
+              className={`rounded-md px-3 py-1 text-sm ${
+                filter.source === s.value && filter.origin === null
+                  ? 'bg-accent font-medium text-on-accent'
+                  : 'text-muted hover:bg-hover hover:text-fg'
+              }`}
+              onClick={() => setFilter((f) => ({ ...f, source: s.value, origin: null }))}
             >
               {s.label}
             </button>
@@ -352,6 +395,35 @@ export default function SessionsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3 text-sm">
+          {/* 来源筛选：选项范围只跟着标签走；IDEA 标签本身就是聚合视图，下拉只留各插件源的细筛。 */}
+          <label className="flex items-center gap-1 text-muted">
+            来源
+            <Select
+              value={filter.source ?? ''}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (value === '') {
+                  // 「全部」= 回到当前标签的默认视图：全部标签清筛选；
+                  // IDEA 标签回到聚合；单源标签留在它自己（结果集相同）。
+                  const scope = currentScope(filter);
+                  setFilter((f) => ({
+                    ...f,
+                    source: scope === 'all' || scope === 'ide-plugin' ? null : scope,
+                    origin: scope === 'ide-plugin' ? 'ide-plugin' : null,
+                  }));
+                } else {
+                  setFilter((f) => ({ ...f, source: value, origin: null }));
+                }
+              }}
+            >
+              <option value="">全部</option>
+              {scopedSources.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}（{s.count}）
+                </option>
+              ))}
+            </Select>
+          </label>
           <label className="flex items-center gap-1 text-muted">
             状态
             <Select
@@ -378,12 +450,22 @@ export default function SessionsPage() {
             </Select>
           </label>
           <label className="flex items-center gap-1 text-muted">
+            搜索
+            <input
+              className="w-48 rounded-md border border-line bg-transparent px-2 py-1 text-sm"
+              value={filter.q ?? ''}
+              onChange={(e) => setFilter((f) => ({ ...f, q: e.target.value || null }))}
+              placeholder="标题 / 项目 / 来源 / 插件"
+            />
+          </label>
+          <label className="flex items-center gap-1 text-muted">
             分组
             <Select
               value={activeGroup}
               onChange={(e) => setActiveGroup(e.target.value as ActiveGroup)}
             >
               <option value="none">不分组</option>
+              <option value="source">按软件</option>
               <option value="project">按项目</option>
               <option value="account">按账号</option>
               <option value="state">按状态</option>
@@ -729,7 +811,13 @@ export default function SessionsPage() {
       {/* ---------------------------------------------------------- 正文预览 */}
       <div className="max-h-[40%] flex-none overflow-auto rounded-lg border border-line bg-card p-3">
         {!selected && <p className="text-sm text-muted">点一行看正文预览。</p>}
-        {selected && preview.isLoading && <SkeletonRows rows={3} cols={1} />}
+        {selected && preview.isLoading && (
+          <div className="space-y-2 py-3">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-4 animate-pulse rounded bg-hover" />
+            ))}
+          </div>
+        )}
         {selected && preview.data && (
           <>
             <div className="mb-2 flex items-center gap-2">

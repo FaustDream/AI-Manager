@@ -32,7 +32,6 @@ import type {
   Filter,
   HubSnapshot,
   ImportReport,
-  OfficialScan,
   LogLine,
   LogFilter,
   LogSpan,
@@ -46,6 +45,7 @@ import type {
   RecentClaim,
   RoundResult,
   ScanReport,
+  SessionScanReport,
   UsageOverview,
   UsageScanReport,
   Schedule,
@@ -88,14 +88,16 @@ export interface CmdArgs {
   open_private_browser: { url: string };
   app_show_window: void;
   hub_snapshot: void;
-  hub_official_scan: void;
   hub_skill_import_many: { target: string; names: string[] };
   hub_skill_deploy: { name: string; targets: string[]; overwrite?: boolean | null };
   hub_skill_remove: { name: string; targets: string[] };
   hub_skill_import: { target: string; name: string };
+  hub_skill_import_local: { path: string };
+  hub_skill_create: { name: string; text: string };
   hub_mcp_import: { text: string; targets: string[] };
   hub_mcp_remove: { name: string; targets: string[] };
   hub_mcp_deploy: { name: string; targets: string[] };
+  hub_mcp_claim: { name: string; source: string; targets: string[] };
   session_scan: void;
   session_page: { cursor: string | null; limit: number; filter: Filter };
   session_preview: { key: string };
@@ -191,15 +193,17 @@ export interface CmdReturn {
   open_private_browser: string;
   app_show_window: void;
   hub_snapshot: HubSnapshot;
-  hub_official_scan: OfficialScan;
   hub_skill_import_many: ImportReport;
   hub_skill_deploy: DeployReport;
   hub_skill_remove: DeployReport;
   hub_skill_import: { name: string };
+  hub_skill_import_local: { name: string; description: string };
+  hub_skill_create: { name: string; description: string };
   hub_mcp_import: { names: string[]; report: DeployReport };
   hub_mcp_remove: DeployReport;
   hub_mcp_deploy: DeployReport;
-  session_scan: ScanReport;
+  hub_mcp_claim: DeployReport;
+  session_scan: SessionScanReport;
   session_page: Page<SessionRow>;
   session_preview: Preview;
   session_running_clients: string[];
@@ -318,14 +322,16 @@ const CMD_LABELS: Record<string, string> = {
   open_external: '打开外部链接',
   open_private_browser: '打开登录页（无痕）',
   hub_snapshot: '读取技能与 MCP',
-  hub_official_scan: '扫描官方自带技能与 MCP',
   hub_skill_import: '导入技能',
   hub_skill_import_many: '批量导入技能',
+  hub_skill_import_local: '手动导入技能（本地目录）',
+  hub_skill_create: '手动新建技能',
   hub_skill_deploy: '部署技能',
   hub_skill_remove: '移除技能',
   hub_mcp_import: '导入 MCP',
   hub_mcp_deploy: '部署 MCP',
   hub_mcp_remove: '移除 MCP',
+  hub_mcp_claim: '收录 MCP 到分发库',
   session_scan: '扫描会话',
   session_page: '读取会话列表',
   session_preview: '预览会话正文',
@@ -412,11 +418,14 @@ const KEY_ACTIONS = new Set<string>([
   'zcode_claim_run',
   'hub_skill_import',
   'hub_skill_import_many',
+  'hub_skill_import_local',
+  'hub_skill_create',
   'hub_skill_deploy',
   'hub_skill_remove',
   'hub_mcp_import',
   'hub_mcp_deploy',
   'hub_mcp_remove',
+  'hub_mcp_claim',
   'settings_set',
   'autostart_set',
   'log_level',

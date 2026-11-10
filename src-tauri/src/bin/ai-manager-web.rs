@@ -58,6 +58,7 @@ fn main() {
     background::spawn_zcode_auto_claim(checkin);
     background::spawn_source_bridges();
     background::spawn_usage_scan(db);
+    background::spawn_session_scan(state.sessions.clone());
 
     log::action("app.startup", "startup", true, 0, "网页调试模式已启动");
     println!("AI Manager 网页调试模式：");

@@ -1,6 +1,7 @@
-// hub 的展示件：平台选择器（已部署/已存在的平台锁定）与子标签页。
+// hub 的展示件：平台选择器（已部署/已存在的平台锁定）、子标签页、来源标签。
 // 从 page.tsx 拆出——纯展示、无业务状态，没有理由和页面状态机挤在一个文件里。
 import { Checkbox } from '@/components/ui/form';
+import { Tag } from '@/components/ui';
 import type { HubSnapshot } from '@/lib/types';
 
 export function TargetPicker({
@@ -59,6 +60,46 @@ export function TargetPicker({
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * 来源标签：个人技能 / 官方（收录自某软件 / 软件自带）。
+ *
+ * 需求要求两类来源不能混在一个无标识的列表里，所以每条都带一个标签：
+ * 个人用 accent 描边，官方一律灰色并写明出处。
+ */
+export function SourceTag({
+  kind,
+  from,
+  label,
+}: {
+  /** manual = 个人；official = 收录自某软件；builtin = 软件自带（不在分发库里） */
+  kind: 'manual' | 'official' | 'builtin';
+  /** 收录来源：平台键（界面自己换成平台名） */
+  from?: string;
+  /** 平台键 → 显示名 */
+  label?: (key: string) => string;
+}) {
+  if (kind === 'builtin') {
+    return (
+      <Tag tone="muted" className="shrink-0" title="这个软件自带或你自己放进来的，不在分发库里">
+        自带
+      </Tag>
+    );
+  }
+  if (kind === 'official') {
+    const name = from ? (label?.(from) ?? from) : '某软件';
+    return (
+      <Tag tone="muted" className="shrink-0" title={`从 ${name} 的官方技能收录进来`}>
+        收录·{name}
+      </Tag>
+    );
+  }
+  return (
+    <Tag tone="accent" className="shrink-0" title="手动导入或自行创建的个人技能">
+      个人
+    </Tag>
   );
 }
 

@@ -1,9 +1,8 @@
-//! WorkBuddy / CodeBuddy 之外的三个来源：Qoder 两版、ZCode、Trae。
+//! WorkBuddy / CodeBuddy / Trae 之外的来源：Qoder 两版、ZCode。
 //!
-//! 这三个客户端的会话正文都在各自的 SQLite 里，账号维度各不相同：
-//! Qoder 与 ZCode 的库**没有账号字段**（换号共用一份库），所以归属列留空、界面显示「本机」；
-//! Trae 的对话存在云端，本地只有输入历史，于是给已安装的版本各放一行占位，
-//! 状态标「云端」——比列表里空着更像「读到了，只是没有正文」。
+//! 这两个客户端的会话正文都在各自的 SQLite 里，且库**没有账号字段**
+//! （换号共用一份库），所以归属列留空、界面显示「本机」。
+//! Trae 的会话在 `state.vscdb`，单独走 `sources::trae`。
 //!
 //! 「存在但列表不显示」（孤儿）只在 ZCode 成立：客户端删主会话不带走挂在它
 //! 名下的子代理（`subagent_child`）与 IDE 侧聊（`selection_side_chat`）会话，
@@ -24,8 +23,6 @@ const QODER: [(&str, &str, bool); 2] = [
     ("qoder_intl", "Qoder 国际版", true),
 ];
 const ZCODE: (&str, &str) = ("zcode", "ZCode");
-const TRAE: [(&str, &str, bool); 2] =
-    [("Trae CN", "Trae CN", true), ("Trae", "Trae 国际版", false)];
 
 fn qoder_db(roots: &Roots, intl: bool) -> PathBuf {
     roots.qoder(intl).join("main.sqlite")
@@ -79,19 +76,6 @@ pub fn sources(roots: &Roots) -> Vec<SourceInfo> {
         fp: file_fp(&path),
         present: path.exists(),
     });
-    for (key, label, cn) in TRAE {
-        let present = roots.trae(cn).is_dir();
-        out.push(SourceInfo {
-            key: key.into(),
-            label: label.into(),
-            fp: if present {
-                "present".into()
-            } else {
-                "absent".into()
-            },
-            present,
-        });
-    }
     out
 }
 
@@ -101,9 +85,6 @@ pub fn scan_one(roots: &Roots, key: &str, errors: &mut Vec<String>) -> Vec<RawRo
     }
     if key == ZCODE.0 {
         return scan_zcode(&zcode_db(roots), errors);
-    }
-    if let Some((folder, label, _)) = TRAE.iter().find(|(k, _, _)| *k == key) {
-        return vec![placeholder(folder, label)];
     }
     Vec::new()
 }
@@ -210,6 +191,7 @@ fn scan_qoder(path: &Path, key: &str, label: &str, errors: &mut Vec<String>) -> 
         row.size = size;
         row.state = state_of(deleted, archived, false);
         row.has_body = msgs > 0;
+        row.origin = "desktop".into();
         out.push(row);
     }
     out
@@ -281,18 +263,10 @@ fn scan_zcode(path: &Path, errors: &mut Vec<String>) -> Vec<RawRow> {
         row.size = 0;
         row.state = state_of(deleted, archived, orphaned);
         row.has_body = msgs > 0;
+        row.origin = "desktop".into();
         out.push(row);
     }
     out
-}
-
-fn placeholder(folder: &str, label: &str) -> RawRow {
-    let mut row = RawRow::empty("trae", folder, label);
-    row.session_id = format!("cloud:{folder}");
-    row.title = "对话记录存在云端，本地没有可管理的正文".into();
-    row.state = SessionState::Cloud;
-    row.has_body = false;
-    row
 }
 
 #[cfg(test)]

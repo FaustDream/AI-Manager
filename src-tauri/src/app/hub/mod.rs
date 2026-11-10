@@ -298,6 +298,10 @@ pub struct SkillRow {
     pub size: i64,
     pub valid: bool,
     pub reason: String,
+    /// 出身：`manual`（手动导入 / 自行创建）或 `official`（收录自某软件）
+    pub origin: String,
+    /// 收录来源的平台键；手动导入为空。界面据此把「个人」和「收录自 Qoder CN」分开
+    pub origin_target: String,
     /// [(平台键, synced|stale|missing)]
     pub states: Vec<(String, &'static str)>,
 }
@@ -334,19 +338,29 @@ pub struct TargetInfo {
 }
 
 pub fn snapshot(hub: &Hub) -> HubSnapshot {
+    let origins = skills::origins(hub);
     let skills = skills::scan(hub)
         .into_iter()
-        .map(|info| SkillRow {
-            states: skills::states(hub, &info)
-                .into_iter()
-                .map(|(key, state)| (targets::key_name(key).to_string(), state))
-                .collect(),
-            name: info.name,
-            description: info.description,
-            files: info.files,
-            size: info.size,
-            valid: info.valid,
-            reason: info.reason,
+        .map(|info| {
+            let origin = origins.get(&info.name).cloned().unwrap_or_default();
+            SkillRow {
+                states: skills::states(hub, &info)
+                    .into_iter()
+                    .map(|(key, state)| (targets::key_name(key).to_string(), state))
+                    .collect(),
+                origin: if origin.kind.is_empty() {
+                    "manual".to_string()
+                } else {
+                    origin.kind
+                },
+                origin_target: origin.from,
+                name: info.name,
+                description: info.description,
+                files: info.files,
+                size: info.size,
+                valid: info.valid,
+                reason: info.reason,
+            }
         })
         .collect();
 
@@ -412,70 +426,51 @@ pub fn snapshot(hub: &Hub) -> HubSnapshot {
     }
 }
 
-/// 官方自带收录扫描：一次扫全部目标平台，列出「平台自带但还没收进技能库的技能」
-/// 与「各平台配置里非本工具写入的 MCP 条目」。只读——收录动作复用既有的导入命令。
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
-#[derive(Debug, Clone, Serialize)]
-pub struct OfficialScan {
-    pub skills: Vec<OfficialSkill>,
-    pub mcp: Vec<OfficialMcp>,
-}
-
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
-#[derive(Debug, Clone, Serialize)]
-pub struct OfficialSkill {
-    /// 平台键（与 TargetInfo.key 同一口径）
-    pub target: String,
-    pub label: String,
-    pub name: String,
-    /// SKILL.md 里的 description。列表要能一眼看出这是干什么的，
-    /// 只给名字等于把判断成本推给用户。
-    pub description: String,
-}
-
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
-#[derive(Debug, Clone, Serialize)]
-pub struct OfficialMcp {
-    pub source: String,
-    pub source_label: String,
-    pub name: String,
-    /// 平台配置里的原始条目体（command/args/env 原样）；收录时包成标准文本走既有导入
-    #[cfg_attr(feature = "ts", ts(type = "any"))]
-    pub server: serde_json::Value,
-}
-
-pub fn official_scan(hub: &Hub) -> OfficialScan {
-    let mut skills = Vec::new();
-    let mut mcp = Vec::new();
-    for target in targets::TARGETS {
-        let key = targets::key_name(target.key);
-        for inst in skills::installed(hub, target.key) {
-            if !inst.in_library {
-                let folder = hub.skill_dir(target.key).join(&inst.name);
-                skills.push(OfficialSkill {
-                    target: key.to_string(),
-                    label: target.label.to_string(),
-                    description: skills::description(&folder),
-                    name: inst.name,
-                });
-            }
-        }
-        let root = mcp::read_config(&hub.mcp_path(target.key));
-        for (name, body) in mcp::entries_of(&root, target.key) {
-            if !name.is_empty() && !hub.owns_mcp(&name, &body) {
-                mcp.push(OfficialMcp {
-                    source: key.to_string(),
-                    source_label: target.label.to_string(),
-                    name,
-                    server: body,
-                });
-            }
-        }
+/// 把一条「软件自带」的 MCP 收进分发库。
+///
+/// 收录 = 在它所在的平台原位补上归属标记（其余字段原样保留），从此它算本工具管的，
+/// 出现在分发库里；再按需写到选中的其他平台。跨平台写入仍走 `mcp_add` 的冲突检查。
+pub fn mcp_claim(
+    hub: &Hub,
+    name: &str,
+    source: TargetKey,
+    keys: &[TargetKey],
+) -> Result<DeployReport> {
+    let path = hub.mcp_path(source);
+    let mut root = mcp::read_config(&path);
+    let body = mcp::entries_of(&root, source)
+        .get(name)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorKind::Invalid,
+                format!("{} 上没有 MCP 条目 {name}", targets::label(source)),
+            )
+        })?;
+    if !mcp::mark_owned(&mut root, source, name) {
+        return Err(AppError::new(
+            ErrorKind::Invalid,
+            format!("{name} 的配置结构无法识别，没有收录"),
+        ));
     }
-    OfficialScan { skills, mcp }
+    let text = serde_json::to_string_pretty(&root)
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("序列化失败：{e}")))?;
+    crate::app::fsx::write_atomic(&path, text.as_bytes())?;
+
+    let entry = mcp::from_body(name, &body, source);
+    let others: Vec<TargetKey> = keys.iter().copied().filter(|k| *k != source).collect();
+    let mut report = mcp_add(hub, &entry, &others);
+    report.steps.insert(
+        0,
+        Step {
+            ok: true,
+            target: targets::key_name(source).to_string(),
+            message: "已收录进分发库".to_string(),
+            path: path.display().to_string(),
+            conflict: false,
+        },
+    );
+    Ok(report)
 }
 
 /// 写一条 MCP 到多个平台。冲突的平台不覆盖，交给界面列出来。
@@ -664,10 +659,9 @@ mod tests {
         assert!(second.summary().contains("1 个失败"));
     }
 
-    /// 官方分类只收「平台目录里有、技能库里没有」的技能：入库之后它就变成个人技能，
-    /// 不该再挂在官方分类下重复出现。
+    /// 收录过的技能变成个人条目后仍要记得出身：分发库靠它区分「个人」与「收录自某软件」。
     #[test]
-    fn official_scan_lists_only_skills_outside_the_library() {
+    fn imported_skill_keeps_its_origin() {
         let dir = tempfile::tempdir().unwrap();
         let hub = hub(dir.path());
         for name in ["built-in", "already"] {
@@ -681,16 +675,25 @@ mod tests {
         }
         skills::import(&hub, TargetKey::QoderCn, "already").unwrap();
 
-        let scan = official_scan(&hub);
-        let official: Vec<_> = scan
+        let snap = snapshot(&hub);
+        let taken = snap
             .skills
             .iter()
-            .filter(|skill| skill.target == "qoder_cn")
-            .collect();
-        assert_eq!(official.len(), 1, "已入库的技能不该再出现在官方分类");
-        assert_eq!(official[0].name, "built-in");
-        assert_eq!(official[0].description, "built-in 的说明");
-        assert_eq!(official[0].label, "Qoder CN");
+            .find(|skill| skill.name == "already")
+            .unwrap();
+        assert_eq!(taken.origin, "official");
+        assert_eq!(taken.origin_target, "qoder_cn");
+
+        // 平台目录里没入库的那条，只能在软件分组里看到，不进分发库
+        assert!(!snap.skills.iter().any(|skill| skill.name == "built-in"));
+        let group = snap.targets.iter().find(|t| t.key == "qoder_cn").unwrap();
+        let builtin = group
+            .installed
+            .iter()
+            .find(|s| s.name == "built-in")
+            .unwrap();
+        assert!(!builtin.in_library);
+        assert_eq!(builtin.description, "built-in 的说明");
     }
 
     #[test]
@@ -720,6 +723,52 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             original,
             "冲突时原文件一个字节都不能变"
+        );
+    }
+
+    /// 收录软件自带的 MCP：只补归属标记，用户自己写的字段一个都不能丢。
+    #[test]
+    fn claim_takes_over_a_foreign_entry_and_keeps_its_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path());
+        let path = hub.mcp_path(TargetKey::QoderCn);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"github":{"command":"uvx","url":"http://x","headers":{"X-Token":"t"}}}}"#,
+        )
+        .unwrap();
+
+        let report = mcp_claim(
+            &hub,
+            "github",
+            TargetKey::QoderCn,
+            &[TargetKey::QoderCn, TargetKey::ZCode],
+        )
+        .unwrap();
+        assert_eq!(report.done(), 2, "源平台打标记 + 目标平台写入");
+
+        let raw = mcp::read_config(&path);
+        let body = mcp::entries_of(&raw, TargetKey::QoderCn)
+            .get("github")
+            .cloned()
+            .unwrap();
+        assert!(mcp::written_by_us(&body));
+        assert_eq!(
+            body.get("headers")
+                .and_then(|v| v.get("X-Token"))
+                .and_then(|v| v.as_str()),
+            Some("t"),
+            "收录只加标记，其余字段原样保留"
+        );
+
+        // 收录后它进了分发库：两个平台都算本工具部署的
+        let snap = snapshot(&hub);
+        let row = snap.mcp.iter().find(|m| m.name == "github").unwrap();
+        assert!(!row.foreign);
+        assert_eq!(
+            row.targets,
+            vec!["qoder_cn".to_string(), "zcode".to_string()]
         );
     }
 

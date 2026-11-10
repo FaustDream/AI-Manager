@@ -53,6 +53,39 @@ export function usePersistedFlag(
   return [value, update];
 }
 
+/** 字符串枚举的持久化：值不在白名单里就回退默认值，避免旧版本脏值把 UI 卡死。 */
+export function parseChoice<T extends string>(
+  raw: string | null,
+  fallback: T,
+  values: readonly T[],
+): T {
+  if (!raw) return fallback;
+  return (values as readonly string[]).includes(raw) ? (raw as T) : fallback;
+}
+
+/** 持久化的单选值（分组/排序这类枚举）。 */
+export function usePersistedChoice<T extends string>(
+  key: string,
+  fallback: T,
+  values: readonly T[],
+): [T, (next: T) => void] {
+  const [value, setValue] = useState<T>(() =>
+    parseChoice(store()?.getItem(PREFIX + key) ?? null, fallback, values),
+  );
+  const update = useCallback(
+    (next: T) => {
+      setValue(next);
+      try {
+        store()?.setItem(PREFIX + key, next);
+      } catch {
+        /* 写不进去就只在本次会话生效 */
+      }
+    },
+    [key],
+  );
+  return [value, update];
+}
+
 /** 持久化的折叠键集合（分组折叠用）。 */
 export function usePersistedSet(key: string): [Set<string>, (next: Set<string>) => void] {
   const [value, setValue] = useState(() => parseSet(store()?.getItem(PREFIX + key) ?? null));

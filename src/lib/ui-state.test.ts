@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseFlag, parseSet } from './ui-state';
+import { parseChoice, parseFlag, parseSet } from './ui-state';
 
 describe('parseFlag', () => {
   it('缺省时用回退值', () => {
@@ -12,6 +12,19 @@ describe('parseFlag', () => {
     expect(parseFlag('true', false)).toBe(true);
     expect(parseFlag('0', true)).toBe(false);
     expect(parseFlag('随便写的', true)).toBe(false);
+  });
+});
+
+describe('parseChoice', () => {
+  const values = ['none', 'source', 'account'] as const;
+
+  it('缺省或脏值时回退默认值', () => {
+    expect(parseChoice(null, 'source', values)).toBe('source');
+    expect(parseChoice('旧版本的值', 'source', values)).toBe('source');
+  });
+
+  it('只接受白名单里的值', () => {
+    expect(parseChoice('account', 'source', values)).toBe('account');
   });
 });
 

@@ -16,6 +16,10 @@ struct TestCtx {
     handle: tauri::AppHandle<tauri::test::MockRuntime>,
 }
 
+/// `set_data_dir_for_test` 是进程级 override：并行测试会互相改目录，
+/// 导致 SQLite 锁到别人的临时库。这里用异步锁把整个用例串起来。
+static DATA_DIR_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn test_app() -> TestCtx {
     let dir = tempfile::tempdir().expect("tempdir");
     ai_manager::app::paths::set_data_dir_for_test(dir.path());
@@ -32,6 +36,7 @@ fn test_app() -> TestCtx {
 
 #[tokio::test]
 async fn dispatch_roundtrips_simple_commands() {
+    let _guard = DATA_DIR_LOCK.lock().await;
     let ctx = test_app();
     let data = dispatch(&ctx.handle, "app_version", &json!({}))
         .await
@@ -41,6 +46,7 @@ async fn dispatch_roundtrips_simple_commands() {
 
 #[tokio::test]
 async fn unknown_command_is_a_structured_error() {
+    let _guard = DATA_DIR_LOCK.lock().await;
     let ctx = test_app();
     let err = dispatch(&ctx.handle, "definitely_not_a_command", &json!({}))
         .await
@@ -54,6 +60,7 @@ async fn unknown_command_is_a_structured_error() {
 
 #[tokio::test]
 async fn missing_required_arg_fails_before_business_runs() {
+    let _guard = DATA_DIR_LOCK.lock().await;
     let ctx = test_app();
     let err = dispatch(&ctx.handle, "account_switch", &json!({}))
         .await
@@ -63,6 +70,7 @@ async fn missing_required_arg_fails_before_business_runs() {
 
 #[tokio::test]
 async fn session_page_reads_empty_index() {
+    let _guard = DATA_DIR_LOCK.lock().await;
     let ctx = test_app();
     let data = dispatch(
         &ctx.handle,
@@ -79,6 +87,7 @@ async fn session_page_reads_empty_index() {
 /// （rows.reduce is not a function，2026-11-08 网页版排查）。
 #[tokio::test]
 async fn result_commands_return_bare_payload() {
+    let _guard = DATA_DIR_LOCK.lock().await;
     let ctx = test_app();
     let data = dispatch(&ctx.handle, "account_list", &json!({}))
         .await
@@ -90,6 +99,7 @@ async fn result_commands_return_bare_payload() {
 /// 前端把错误当成功（ok:true + Err 载荷）。
 #[tokio::test]
 async fn result_command_failures_are_errors() {
+    let _guard = DATA_DIR_LOCK.lock().await;
     let ctx = test_app();
     let err = dispatch(
         &ctx.handle,
@@ -106,6 +116,8 @@ async fn result_command_failures_are_errors() {
 #[tokio::test]
 async fn http_layer_enforces_guard_and_envelope() {
     use ai_manager::desktop::web;
+
+    let _guard = DATA_DIR_LOCK.lock().await;
 
     let dir = tempfile::tempdir().expect("tempdir");
     ai_manager::app::paths::set_data_dir_for_test(dir.path());

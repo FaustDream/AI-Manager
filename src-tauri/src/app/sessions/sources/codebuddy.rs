@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 pub const PLATFORMS: [(&str, &str); 2] = [
     ("CodeBuddyIDE", "CodeBuddy IDE"),
-    ("JetBrains", "IDEA 插件"),
+    ("JetBrains", "CodeBuddy 插件"),
 ];
 
 pub struct CodeSource {
@@ -105,7 +105,9 @@ fn fingerprint(dirs: &[(String, PathBuf)]) -> String {
         }
     }
     parts.sort();
-    parts.join("|")
+    // v2：把 CodeBuddy JetBrains 的来源标签从「IDEA 插件」改成「CodeBuddy 插件」，
+    // 让已有索引强制重扫一次，避免旧标签继续混用。
+    format!("v2|{}", parts.join("|"))
 }
 
 pub fn scan(src: &CodeSource, errors: &mut Vec<String>) -> Vec<RawRow> {
@@ -165,6 +167,11 @@ pub fn scan(src: &CodeSource, errors: &mut Vec<String>) -> Vec<RawRow> {
                 row.size = size;
                 row.state = SessionState::Visible;
                 row.has_body = msgs > 0;
+                row.origin = if src.platform == "JetBrains" {
+                    "ide-plugin".into()
+                } else {
+                    "desktop".into()
+                };
                 out.push(row);
             }
         }

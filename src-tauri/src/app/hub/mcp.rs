@@ -178,6 +178,25 @@ pub fn written_by_us(body: &Value) -> bool {
     body.get(MARKER).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
+/// 原位补上归属标记（「收录进分发库」用）。
+///
+/// 刻意不走 `from_body` → `to_platform` 的归一化：用户自己写的 url / headers /
+/// 其他字段一律原样保留，只多一个 `_aimanager`。返回是否真的写进去了。
+pub fn mark_owned(root: &mut Value, key: TargetKey, name: &str) -> bool {
+    let mut node = root;
+    for part in container(key) {
+        let Some(next) = node.get_mut(*part) else {
+            return false;
+        };
+        node = next;
+    }
+    let Some(body) = node.get_mut(name).and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    body.insert(MARKER.into(), Value::Bool(true));
+    true
+}
+
 /// 读配置文件；不存在或坏掉都当空配置（写的时候会整体覆盖，坏文件先备份）。
 pub fn read_config(path: &std::path::Path) -> Value {
     let Ok(text) = std::fs::read_to_string(path) else {
