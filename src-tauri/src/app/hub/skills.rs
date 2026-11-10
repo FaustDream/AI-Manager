@@ -213,11 +213,7 @@ fn frontmatter(text: &str) -> (String, String) {
         match key.trim() {
             "name" => name = value,
             "description" => {
-                description = if block_scalar {
-                    String::new()
-                } else {
-                    value
-                };
+                description = if block_scalar { String::new() } else { value };
                 if block_scalar {
                     block = Some("description");
                 }
