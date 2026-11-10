@@ -1,7 +1,16 @@
 //! 性能与压力：千级数据、DPAPI、并发读写（九类测试 · 性能/压力/稳定性）。
 //!
 //! 阈值刻意宽松（本机 SSD 基准的 5–10 倍），只为兜住「量级劣化」这类回归，
-//! 不对毫秒级抖动报警——性能基线以打印输出为准，硬断言只守住底线。
+//! 不对毫秒级抖动报警——性能基线以打印输出为准。
+//!
+//! **绝对耗时断言默认不生效**：共享 runner 的冷盘、杀软扫描与 CPU 争抢会让
+//! 毫秒级断言随机翻车（CI 上 P-02 曾在 5s 预算下超时，把门禁染红）。默认只
+//! 打印基线，本地量化时显式开启：
+//!
+//! ```text
+//! PERF_GATE=1 cargo test --test performance -- --nocapture
+//! ```
+//!
 //! TestPaths 的进程级串行锁顺带把计时用例彼此隔开，避免并行测试互抢 CPU。
 
 mod support;
@@ -12,6 +21,20 @@ use ai_manager::app::secret;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use support::*;
+
+/// 性能断言开关：`PERF_GATE=1` 才把耗时预算当门禁。
+fn perf_gate() -> bool {
+    matches!(std::env::var("PERF_GATE").as_deref(), Ok("1"))
+}
+
+/// 超预算时的统一处理：门禁开着就失败，没开只记录。
+fn perf_check(ok: bool, msg: String) {
+    if perf_gate() {
+        assert!(ok, "{msg}");
+    } else if !ok {
+        println!("[PERF_GATE 未开启，仅记录] {msg}");
+    }
+}
 
 fn perf_identity(i: usize) -> AccountIdentity {
     AccountIdentity {
@@ -45,10 +68,13 @@ fn thousand_account_upsert_and_list() {
 
     assert_eq!(all.len(), 1000);
     println!("P-01 upsert×1000 = {upsert_ms}ms, list×1000 = {list_ms}ms");
-    assert!(list_ms < 2000, "list 1000 行耗时 {list_ms}ms，超出 2s 预算");
-    assert!(
+    perf_check(
+        list_ms < 2000,
+        format!("list 1000 行耗时 {list_ms}ms，超出 2s 预算"),
+    );
+    perf_check(
         upsert_ms < 15000,
-        "upsert 1000 行耗时 {upsert_ms}ms，超出 15s 预算"
+        format!("upsert 1000 行耗时 {upsert_ms}ms，超出 15s 预算"),
     );
 }
 
@@ -71,7 +97,10 @@ fn thousand_kv_roundtrips() {
 
     assert_eq!(db.kv_entries().unwrap().len(), 1000);
     println!("P-02 kv set+get ×1000 = {ms}ms");
-    assert!(ms < 5000, "kv 1000 轮读写耗时 {ms}ms，超出 5s 预算");
+    perf_check(
+        ms < 5000,
+        format!("kv 1000 轮读写耗时 {ms}ms，超出 5s 预算"),
+    );
 }
 
 /// P-03 DPAPI 加解密单次耗时。
@@ -90,10 +119,9 @@ fn dpapi_protect_unprotect_latency() {
         "P-03 DPAPI protect+unprotect 最差单次 = {}ms",
         worst.as_millis()
     );
-    assert!(
+    perf_check(
         worst.as_millis() < 100,
-        "DPAPI 单轮最差 {}ms，超出 100ms",
-        worst.as_millis()
+        format!("DPAPI 单轮最差 {}ms，超出 100ms", worst.as_millis()),
     );
 }
 
