@@ -18,7 +18,7 @@
 Unicode true
 
 !define PRODUCT_NAME "AI Manager"
-!define PRODUCT_VERSION "2.0.10"
+!define PRODUCT_VERSION "2.0.11"
 !define PRODUCT_PUBLISHER "FaustDream"
 !define PRODUCT_EXE "ai-manager.exe"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\AI Manager"
@@ -84,9 +84,11 @@ Section "AI Manager" SEC_MAIN
   CreateDirectory "$SMPROGRAMS\AI Manager"
   CreateShortCut "$SMPROGRAMS\AI Manager\AI Manager.lnk" "$INSTDIR\${PRODUCT_EXE}" "" "$INSTDIR\${PRODUCT_EXE}" 0
   CreateShortCut "$SMPROGRAMS\AI Manager\Uninstall AI Manager.lnk" "$INSTDIR\uninstall.exe"
-  ; 桌面图标必须带 "v2"：v1 用的是同一个文件名 `AI Manager.lnk`，重名会让安装覆盖
-  ; 掉 v1 的图标、卸载再把它整个删掉（实测过一次，用户迁移后 v1 就没有入口了）。
-  CreateShortCut "$DESKTOP\AI Manager v2.lnk" "$INSTDIR\${PRODUCT_EXE}" "" "$INSTDIR\${PRODUCT_EXE}" 0
+  ; 桌面图标固定叫 `AI Manager`。v1（同一文件名 `AI Manager.lnk`）已下线、安装包不再分发，
+  ; 同名只会覆盖那条指向旧 exe 的失效入口，不存在「装一个删掉另一个」的问题。
+  CreateShortCut "$DESKTOP\AI Manager.lnk" "$INSTDIR\${PRODUCT_EXE}" "" "$INSTDIR\${PRODUCT_EXE}" 0
+  ; 2.0.10 及更早的 v2 安装包建的是 `AI Manager v2.lnk`，升级上来时清掉，桌面别留两个图标。
+  Delete "$DESKTOP\AI Manager v2.lnk"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
@@ -114,6 +116,8 @@ Section "Uninstall"
   nsExec::Exec 'taskkill /F /IM "${PRODUCT_EXE}" /T'
   Pop $0
 
+  Delete "$DESKTOP\AI Manager.lnk"
+  ; 旧版（≤2.0.10）的图标名，卸载时一并清掉
   Delete "$DESKTOP\AI Manager v2.lnk"
   Delete "$SMPROGRAMS\AI Manager\AI Manager.lnk"
   Delete "$SMPROGRAMS\AI Manager\Uninstall AI Manager.lnk"
