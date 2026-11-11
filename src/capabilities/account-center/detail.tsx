@@ -24,7 +24,6 @@ import type {
   CodebuddyTargetStatus,
   RewardCredits,
 } from '@/lib/types';
-import { DailyCard } from './daily';
 import { TravelCard } from './travel';
 import { ReloginDialog } from './toolbar';
 import { DataTable, type Column } from '@/components/ui/table';
@@ -444,12 +443,9 @@ export function DetailPanel({
         </section>
       )}
 
-      {/* 猫猫旅行与每日活跃都只属于 WorkBuddy 国内版；国际版没有这两项 */}
+      {/* 猫猫旅行只属于 WorkBuddy 国内版；国际版没有这项 */}
       {account.platform === 'workbuddy' && !account.iid.endsWith('@intl') && account.has_secret && (
-        <>
-          <TravelCard account={account} />
-          <DailyCard account={account} />
-        </>
+        <TravelCard account={account} />
       )}
 
       <section className="border-t border-line px-3 py-2.5">
