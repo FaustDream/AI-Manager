@@ -41,7 +41,8 @@ import type {
   Preview,
   PurgeReport,
   RefreshReport,
-  RenewOutcome,
+  RefreshCredentialOutcome,
+  RefreshCredentialsReport,
   RestoreOutcome,
   RewardCredits,
   RecentClaim,
@@ -78,7 +79,8 @@ export interface CmdArgs {
   account_login_start: { platform: string };
   account_relogin_start: { iid: string };
   account_refresh_all: void;
-  account_renew: { iid: string };
+  account_refresh_credential: { iid: string };
+  account_refresh_credentials: { iids?: string[] | null };
   account_switch: { iid: string };
   account_switch_codebuddy: { iid: string; target: 'software' | 'idea' };
   account_codebuddy_targets: void;
@@ -185,7 +187,8 @@ export interface CmdReturn {
   account_login_start: LoginStart;
   account_relogin_start: LoginStart;
   account_refresh_all: RefreshReport;
-  account_renew: RenewOutcome;
+  account_refresh_credential: RefreshCredentialOutcome;
+  account_refresh_credentials: RefreshCredentialsReport;
   account_switch: SwitchResult;
   account_switch_codebuddy: SwitchResult;
   account_codebuddy_targets: CodebuddyTargetStatus[];
@@ -317,7 +320,8 @@ const CMD_LABELS: Record<string, string> = {
   account_login_start: '开始添加账号',
   account_relogin_start: '重新登录账号',
   account_refresh_all: '刷新账号状态',
-  account_renew: '续期凭据',
+  account_refresh_credential: '刷新凭据',
+  account_refresh_credentials: '批量刷新凭据',
   account_switch: '切换登录',
   account_switch_codebuddy: '切换 CodeBuddy 登录',
   account_codebuddy_targets: '读取 CodeBuddy 登录状态',

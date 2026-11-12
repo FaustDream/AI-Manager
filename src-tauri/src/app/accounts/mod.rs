@@ -6,10 +6,10 @@
 
 pub mod add;
 pub mod credential;
+pub mod credential_refresh;
 pub mod login;
 pub mod profile;
 pub mod refresh;
-pub mod renew;
 pub mod repo;
 pub mod scan;
 pub mod switch;
@@ -44,8 +44,11 @@ pub async fn load_credential(
     .await?
 }
 
+pub use credential_refresh::{
+    refresh_credential, refresh_credentials, RefreshCredentialOutcome, RefreshCredentialState,
+    RefreshCredentialsReport,
+};
 pub use refresh::{refresh_all, RefreshReport};
-pub use renew::{renew, RenewOutcome, RenewState};
 pub use scan::{scan_all, ScanReport};
 pub use switch::{current_iids, is_current, switch, switch_codebuddy, SwitchResult};
 pub use view::{AccountIdentity, AccountTable, AccountView};

@@ -28,7 +28,7 @@ pub fn scan_all(db: &Db) -> Result<ScanReport> {
     scan_providers(db, providers::all())
 }
 
-/// 只扫**一家**平台。凭据续期用：为了一个账号把六家客户端全读一遍没有意义，
+/// 只扫**一家**平台。刷新凭据用：为了一个账号把六家客户端全读一遍没有意义，
 /// 而且其它平台的扫描失败会混进错误列表里，把「这个账号续不了」的结论搅浑。
 pub fn scan_platform(db: &Db, client_key: &str) -> Result<ScanReport> {
     let provider = providers::for_platform(client_key).ok_or_else(|| {

@@ -12,6 +12,7 @@
 // 「状态」列已并入登录态与积分：它原来只区分「正常 / 查询失败」，
 // 而 error 从来没被填充过，等于永远显示「正常」——白占一列。
 import type { AccountView } from '@/lib/types';
+import type { IconName } from '@/components/ui/icons';
 import { daysUntil, fmtAmount, fmtFullDay, fmtTime } from '@/lib/format';
 
 export type Cell = {
@@ -20,6 +21,8 @@ export type Cell = {
   sub?: string;
   tone?: 'ok' | 'warn' | 'bad' | 'muted';
   title?: string;
+  /** 行内小图标（IconPark）。列定义只存名字，渲染时由页面取组件。 */
+  icon?: IconName;
 };
 
 export interface ColumnDefEx {
@@ -142,15 +145,16 @@ const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
 };
 
 const checkinCell = (a: AccountView): Cell => {
-  if (!a.requires_checkin) return { text: '免签到', tone: 'muted' };
-  if (a.checked_in === true) return { text: '已签', tone: 'ok' };
-  if (a.checked_in === false) return { text: '未签', tone: 'warn' };
-  if (a.next_at) return { text: `约 ${fmtTime(a.next_at)}`, tone: 'muted' };
+  if (!a.requires_checkin) return { text: '免签到', tone: 'muted', icon: 'forbid' };
+  if (a.checked_in === true) return { text: '已签', tone: 'ok', icon: 'check' };
+  if (a.checked_in === false) return { text: '未签', tone: 'warn', icon: 'clock' };
+  if (a.next_at) return { text: `约 ${fmtTime(a.next_at)}`, tone: 'muted', icon: 'clock' };
   // 「待查询」= 平台没给出今天的签到结论（活动未开放 / 这次查询失败），不是「没签」。
   // 点「刷新积分」会顺带重查一次状态，查到已签就自动变成「已签」。
   return {
     text: '待查询',
     tone: 'muted',
+    icon: 'loading',
     title: '平台没有返回今天的签到状态：可能活动未开放，或这次查询失败。点「刷新积分」或「签到」重试一次',
   };
 };

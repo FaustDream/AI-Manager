@@ -103,8 +103,8 @@ const FEATURES: &[FeatureDef] = &[
     },
     FeatureDef {
         key: "renew",
-        label: "凭据续期",
-        hint: "到期时先重扫客户端借它的续期，续不上才需要重新登录",
+        label: "凭据刷新",
+        hint: "每次重扫客户端，把最新凭据与有效期写回本地库；刷新后仍过期才需要重新登录",
     },
     FeatureDef {
         key: "sessions",
@@ -135,8 +135,8 @@ const fn no(note: &'static str) -> (Support, &'static str) {
     (Support::None, note)
 }
 
-/// 续期格子：四家都是同一条路，只有「客户端里也过期」这个共同限制
-const RENEW_NOTE: &str = "借客户端续期：重扫拿到客户端已续的新 token；客户端里也过期就只能重新登录";
+/// 刷新格子：四家都是同一条路，只有「客户端里也过期」这个共同限制
+const REFRESH_NOTE: &str = "每次重扫客户端写回最新凭据与有效期；客户端里也过期就只能重新登录";
 
 const PLATFORMS: &[PlatformDef] = &[
     PlatformDef {
@@ -150,7 +150,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full("资源包接口自带剩余量与到期时间"),
             no("签到型平台，没有额度窗口"),
             full(""),
-            part(RENEW_NOTE),
+            part(REFRESH_NOTE),
             full(""),
             full(""),
         ],
@@ -166,7 +166,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             no("不是额度型平台"),
             no("猫猫旅行仅国内版有"),
-            part(RENEW_NOTE),
+            part(REFRESH_NOTE),
             full(""),
             full(""),
         ],
@@ -182,7 +182,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             no("按积分计，没有额度窗口"),
             no("非 WorkBuddy 平台"),
-            part(RENEW_NOTE),
+            part(REFRESH_NOTE),
             full(""),
             full(""),
         ],
@@ -198,7 +198,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             no("按积分计，没有额度窗口"),
             no("非 WorkBuddy 平台"),
-            part(RENEW_NOTE),
+            part(REFRESH_NOTE),
             full(""),
             full(""),
         ],
@@ -214,7 +214,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full("额度型：显示各窗口已用百分比"),
             full(""),
             no("非 WorkBuddy 平台"),
-            part(RENEW_NOTE),
+            part(REFRESH_NOTE),
             full(""),
             full(""),
         ],

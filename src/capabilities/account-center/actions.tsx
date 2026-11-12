@@ -3,15 +3,18 @@
 // 这些动作都写客户端文件（失败要重做），所以一律先确认再执行；真正调用在 page 里，
 // 这里只负责「按什么条件可点、点了之后长什么样」。
 //
-// 布局用固定槽位而不是「按需插入」：按钮少一个，后面的按钮就会整体左移，
-// 十行看下来是锯齿。所以每个动作永远占住自己的位置，不可用时置灰而不是消失。
+// 操作列一律用**图标**（IconPark）：六个中文按钮挤在一起会把列撑到 290px，
+// 换成图标后只要 190px，文字说明交给 title 悬浮提示。每个动作永远占住自己的槽位，
+// 不可用时置灰而不是消失——少一个按钮后面的整体左移，十行看下来是锯齿。
+import type { ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Tag } from '@/components/ui';
+import { IconDelete, IconHistory, IconPower, IconSwitch } from '@/components/ui/icons';
 import type { AccountView } from '@/lib/types';
 
-/** 六个槽位的固定宽度（px）：当前标签 / 切换 / 恢复对话 / UID / 启用 / 删除。 */
-export const ACTION_SLOTS = [46, 40, 64, 32, 36, 36] as const;
+/** 五个槽位的固定宽度（px）：当前标签 / 切换 / 恢复对话 / 启停 / 删除。 */
+export const ACTION_SLOTS = [46, 28, 28, 28, 28] as const;
 /** 槽位间距（gap-1）与单元格左右内边距，算操作列总宽时要用。 */
 export const ACTION_GAPS = 4;
 export const ACTION_PAD = 16;
@@ -26,7 +29,7 @@ function RowAction({
   title,
   danger,
 }: {
-  children: string;
+  children: ReactNode;
   onClick: () => void;
   disabled?: boolean;
   title?: string;
@@ -34,12 +37,13 @@ function RowAction({
 }) {
   return (
     <button
-      className={`w-full rounded-sm py-px text-center text-xs transition-colors ${
+      type="button"
+      className={`flex h-6 w-7 items-center justify-center rounded-sm transition-colors ${
         disabled
           ? 'cursor-default text-muted opacity-40'
           : danger
             ? 'text-bad hover:bg-bad/10'
-            : 'text-accent hover:bg-accent/10 hover:underline'
+            : 'text-accent hover:bg-accent/10'
       }`}
       disabled={disabled}
       title={title}
@@ -57,7 +61,6 @@ export function RowActions({
   onSwitch,
   onRestore,
   onDelete,
-  onCopyUid,
   onToggleEnabled,
 }: {
   row: AccountView;
@@ -66,7 +69,6 @@ export function RowActions({
   onSwitch: () => void;
   onRestore: () => void;
   onDelete: () => void;
-  onCopyUid: () => void;
   onToggleEnabled: () => void;
 }) {
   const canRestore = row.platform === 'workbuddy';
@@ -95,7 +97,7 @@ export function RowActions({
                 : '把客户端登录态切换到这个账号'
           }
         >
-          切换
+          <IconSwitch size={15} />
         </RowAction>
         <RowAction
           onClick={onRestore}
@@ -108,24 +110,21 @@ export function RowActions({
                 : '把本机已有的历史会话关联到这个账号（只改归属，不动正文）'
           }
         >
-          恢复对话
-        </RowAction>
-        <RowAction onClick={onCopyUid} title="点击复制 UID">
-          UID
+          <IconHistory size={15} />
         </RowAction>
         <RowAction
           onClick={onToggleEnabled}
           disabled={busy}
           title={
             row.enabled
-              ? '停用后不参与自动签到、自动轮询与积分刷新；手动单账号操作仍可执行'
-              : '重新启用，参与自动签到与积分轮询'
+              ? '停用：不参与自动签到、自动轮询与积分刷新；手动单账号操作仍可执行'
+              : '启用：重新参与自动签到与积分轮询'
           }
         >
-          {row.enabled ? '停用' : '启用'}
+          <IconPower size={15} />
         </RowAction>
-        <RowAction danger onClick={onDelete} disabled={busy} title="只从本机账号库移除，不动客户端登录态">
-          删除
+        <RowAction danger onClick={onDelete} disabled={busy} title="删除：只从本机账号库移除，不动客户端登录态">
+          <IconDelete size={15} />
         </RowAction>
       </div>
     </div>

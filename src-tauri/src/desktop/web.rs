@@ -248,9 +248,13 @@ pub async fn dispatch<R: tauri::Runtime>(
         "account_refresh_all" => {
             to_json(cmd::accounts::account_refresh_all(app.state::<AppState>()).await)
         }
-        "account_renew" => {
+        "account_refresh_credential" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::accounts::account_renew(app.state::<AppState>(), iid).await)
+            to_json(cmd::accounts::account_refresh_credential(app.state::<AppState>(), iid).await)
+        }
+        "account_refresh_credentials" => {
+            let iids = arg(v, "iids")?;
+            to_json(cmd::accounts::account_refresh_credentials(app.state::<AppState>(), iids).await)
         }
         "account_switch" => {
             let iid = arg(v, "iid")?;

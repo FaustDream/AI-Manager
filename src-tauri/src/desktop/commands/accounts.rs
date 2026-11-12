@@ -277,38 +277,94 @@ pub async fn account_refresh_all(
     Ok(report)
 }
 
-/// 凭据续期：先借客户端的手续（重扫该平台拿客户端已续的新 token），
-/// 续不上再明确告诉用户「只能重新登录」。**不猜任何平台的 refresh 协议**。
+/// 刷新单个账号的凭据：**不管当前是否过期都重扫一次**，把客户端里的最新凭据
+/// 与有效期写回本地库；刷新完仍过期才明确告诉用户「只能重新登录」。
+/// **不猜任何平台的 refresh 协议**。
 ///
 /// 走阻塞线程：重扫要读客户端文件、解密凭据，是纯磁盘活。
 #[tauri::command]
 
-pub async fn account_renew(
+pub async fn account_refresh_credential(
     state: State<'_, AppState>,
     iid: String,
-) -> std::result::Result<crate::app::accounts::RenewOutcome, String> {
+) -> std::result::Result<crate::app::accounts::RefreshCredentialOutcome, String> {
     let db = state.db.clone();
     let target = iid.clone();
     let started = std::time::Instant::now();
-    let outcome = crate::app::runtime::blocking(move || crate::app::accounts::renew(&db, &target))
-        .await
-        .map_err(err_text)?;
+    let outcome = crate::app::runtime::blocking(move || {
+        crate::app::accounts::refresh_credential(&db, &target)
+    })
+    .await
+    .map_err(err_text)?;
     match &outcome {
         Ok(out) => log::action(
-            "account_renew",
+            "account_refresh_credential",
             "user",
-            out.state != crate::app::accounts::RenewState::NeedRelogin,
+            out.state != crate::app::accounts::RefreshCredentialState::NeedRelogin,
             started.elapsed().as_millis() as u64,
-            format!("续期 {iid}：{:?} · {}", out.state, out.message),
+            format!("刷新凭据 {iid}：{:?} · {}", out.state, out.message),
         ),
         Err(e) => log::fail(
             "accounts",
-            "account_renew",
-            format!("续期 {iid} 失败：{}", e.message),
+            "account_refresh_credential",
+            format!("刷新凭据 {iid} 失败：{}", e.message),
             serde_json::json!({ "kind": e.kind.as_str(), "iid": iid }).to_string(),
         ),
     }
     outcome.map_err(err_text)
+}
+
+/// 批量刷新凭据：按平台分组，每家客户端只重扫一次。
+/// `iids` 为空表示刷新库里全部账号。
+#[tauri::command]
+
+pub async fn account_refresh_credentials(
+    state: State<'_, AppState>,
+    iids: Option<Vec<String>>,
+) -> std::result::Result<crate::app::accounts::RefreshCredentialsReport, String> {
+    let db = state.db.clone();
+    let started = std::time::Instant::now();
+    let targets = match iids {
+        Some(list) => list,
+        // 没指定就刷全部：批量按钮的默认语义
+        None => crate::app::runtime::blocking({
+            let db = db.clone();
+            move || {
+                crate::app::accounts::repo::list(&db)
+                    .map(|rows| rows.into_iter().map(|r| r.iid).collect::<Vec<String>>())
+            }
+        })
+        .await
+        .map_err(err_text)?
+        .map_err(err_text)?,
+    };
+    let count = targets.len();
+    let report = crate::app::runtime::blocking(move || {
+        crate::app::accounts::refresh_credentials(&db, &targets)
+    })
+    .await
+    .map_err(err_text)?
+    .map_err(err_text)?;
+    log::action(
+        "account_refresh_credentials",
+        "user",
+        report.failed == 0,
+        started.elapsed().as_millis() as u64,
+        format!(
+            "批量刷新凭据：{count} 个账号 · 更新 {} · 已是最新 {} · 需重登 {} · 不支持 {} · 失败 {}{}",
+            report.refreshed,
+            report.up_to_date,
+            report.need_relogin,
+            report.unsupported,
+            report.failed,
+            if report.errors.is_empty() {
+                String::new()
+            } else {
+                format!(" | {}", report.errors.join("；"))
+            }
+        ),
+    );
+    Ok(report)
 }
 
 /// 切换登录。会写客户端登录态文件：失败一律带结构化 kind，界面按 kind 给话术。

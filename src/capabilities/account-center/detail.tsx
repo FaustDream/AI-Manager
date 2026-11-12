@@ -126,6 +126,16 @@ export function DetailPanel({
     retry: false,
   });
 
+  // UID 从操作列搬到这里：它属于「点开这个账号才关心」的元信息，不占列表宽度。
+  // 契约 17 仍然成立——列表不渲染 uid，只有详情面板打开时才按需取一次。
+  const uid = useQuery<string>({
+    queryKey: ['uid', account?.iid],
+    queryFn: () => queryCmd('account_uid', { iid: account!.iid }),
+    enabled: !!account,
+    retry: false,
+    staleTime: Infinity,
+  });
+
   if (!account) {
     return (
       <div className="rounded-lg border border-dashed border-line px-4 py-5 text-sm text-muted">
@@ -168,11 +178,11 @@ export function DetailPanel({
       refresh();
     });
 
-  // 凭据续期：先借客户端的手续（重扫该平台拿它已经续好的 token），
-  // 续不上才提示重新登录。判定由后端做，界面只负责把结论说清楚。
-  const renew = () =>
-    runBusy('renew', async () => {
-      const out = await runCmd('account_renew', { iid: account.iid });
+  // 刷新凭据：**不管当前是否过期都重扫一次**，把客户端里的最新凭据与有效期写回本地库。
+  // 判定由后端做（凭据真的变了才算刷新到新东西），界面只负责把结论说清楚。
+  const refreshCredential = () =>
+    runBusy('refresh-credential', async () => {
+      const out = await runCmd('account_refresh_credential', { iid: account.iid });
       if (out === undefined) return;
       toast(out.message);
       refresh();
@@ -314,16 +324,16 @@ export function DetailPanel({
             重新登录
           </Button>
         )}
-        {/* 凭据续期：不用重新登录就能续上的那条路（借客户端已经续好的 token） */}
+        {/* 刷新凭据：不管当前是否过期都重扫一次，把最新凭据与有效期写回本地库 */}
         <Button
           size="sm"
           variant="ghost"
-          onClick={renew}
-          loading={busy === 'renew'}
+          onClick={refreshCredential}
+          loading={busy === 'refresh-credential'}
           disabled={!!busy || !account.has_secret}
-          title="重扫客户端取它已经续好的凭据；续不上会明确告诉你只能重新登录"
+          title="重扫客户端并写回最新凭据与有效期；刷新后仍过期才需要重新登录"
         >
-          续期
+          刷新凭据
         </Button>
         <Button
           size="sm"
@@ -550,6 +560,22 @@ export function DetailPanel({
           <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
             <dt className="text-muted">平台</dt>
             <dd>{account.platform_label}</dd>
+            {/* UID 只在这里出现：列表不渲染它，点开账号才按需取一次（契约 17） */}
+            <dt className="text-muted">UID</dt>
+            <dd className="truncate">
+              <button
+                type="button"
+                className="max-w-full truncate font-mono text-fg2 hover:text-accent hover:underline"
+                title={uid.data ? '点击复制 UID' : undefined}
+                onClick={async () => {
+                  if (!uid.data) return;
+                  await navigator.clipboard.writeText(uid.data);
+                  toast('UID 已复制');
+                }}
+              >
+                {uid.data ?? (uid.isLoading ? '读取中…' : '—')}
+              </button>
+            </dd>
             <dt className="text-muted">凭据</dt>
             <dd className="truncate" title={account.source || undefined}>
               {account.has_secret ? `已保存${account.source ? `（${account.source}）` : ''}` : '未保存'}

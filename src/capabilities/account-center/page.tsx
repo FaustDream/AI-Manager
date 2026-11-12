@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { errKind, errText } from '@/lib/ipc';
 import { Select, SkeletonRows, StateBlock } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
+import { ICONS } from '@/components/ui/icons';
 import { fmtMs } from '@/lib/format';
 import type { AccountView } from '@/lib/types';
 import { attentionRank, COLUMNS, type Cell } from './columns';
@@ -17,6 +18,8 @@ import { AddAccountDialog, AccountToolbar } from './toolbar';
 import { useRowDrag } from './use-row-drag';
 
 function CellView({ cell }: { cell: Cell }) {
+  // 图标由列定义给名字，这里才取组件——列定义是纯数据，不碰 JSX
+  const Icon = cell.icon ? ICONS[cell.icon] : null;
   return (
     <span
       title={cell.title}
@@ -24,7 +27,10 @@ function CellView({ cell }: { cell: Cell }) {
         cell.tone === 'ok' ? 'text-ok' : cell.tone === 'warn' ? 'text-warn' : cell.tone === 'bad' ? 'text-bad' : cell.tone === 'muted' ? 'text-muted' : ''
       }
     >
-      <span className="block truncate leading-tight">{cell.text}</span>
+      <span className="flex min-w-0 items-center gap-1 leading-tight">
+        {Icon && <Icon size={13} className="shrink-0" />}
+        <span className="truncate">{cell.text}</span>
+      </span>
       {cell.sub && <span className="block truncate text-xs leading-tight text-muted">{cell.sub}</span>}
     </span>
   );
@@ -233,8 +239,41 @@ export default function AccountCenterPage() {
       ]);
     });
 
-  const batchCheckin = () =>
-    runBusy('checkin', async () => {
+  // 批量刷新凭据：对当前筛选出的账号逐个重扫并写回**最新凭据与有效期**。
+  // 与「刷新账号状态」的分工：那个是全量重扫 + 校正 + 更新当前登录标记；
+  // 这个是针对当前筛选的一批账号，逐个给出「更新了 / 已是最新 / 需重登」的结论。
+  // 不管是否过期都会刷——平台侧的有效期可能已经被客户端续过。
+  const batchRefreshCredentials = () =>
+    runBusy('refresh-credentials', async () => {
+      const iids = visible.map((r) => r.iid);
+      if (iids.length === 0) {
+        toast('当前筛选下没有账号');
+        return;
+      }
+      const report = await runCmd('account_refresh_credentials', { iids });
+      if (report === undefined) return;
+      const parts = [
+        report.refreshed > 0 ? `更新 ${report.refreshed}` : '',
+        report.up_to_date > 0 ? `已是最新 ${report.up_to_date}` : '',
+        report.need_relogin > 0 ? `需重登 ${report.need_relogin}` : '',
+        report.unsupported > 0 ? `不支持 ${report.unsupported}` : '',
+        report.failed > 0 ? `失败 ${report.failed}` : '',
+      ].filter(Boolean);
+      const head = `刷新凭据完成：${report.total} 个账号 · ${parts.join(' · ') || '无需处理'} · ${fmtMs(report.ms)}`;
+      toast(
+        report.errors.length === 0
+          ? head
+          : `${head}\n${report.errors.slice(0, 2).join('\n')}${
+              report.errors.length > 2 ? `\n…另 ${report.errors.length - 2} 条见日志` : ''
+            }`,
+      );
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['accounts'] }),
+        qc.invalidateQueries({ queryKey: ['detail'] }),
+      ]);
+    });
+
+  const batchCheckin = () =>    runBusy('checkin', async () => {
       const iids = rows
         .filter((r) => r.requires_checkin && r.has_secret && r.enabled && r.checked_in !== true)
         .map((r) => r.iid);
@@ -378,17 +417,6 @@ export default function AccountCenterPage() {
     
   };
 
-  /** 列表里不渲染 uid（契约 17），只有点这一下才按需取一次。 */
-  const copyUid = async (row: AccountView) => {
-    
-      const uid = await runCmd('account_uid', { iid: row.iid });
-
-      if (uid === undefined) return;
-      await navigator.clipboard.writeText(uid);
-      toast('UID 已复制');
-    
-  };
-
   const table = useMemo(() => COLUMNS, []);
 
   return (
@@ -398,6 +426,7 @@ export default function AccountCenterPage() {
         onAdd={() => setAddOpen(true)}
         onRefresh={refreshCredits}
         onRefreshState={refreshState}
+        onRefreshCredentials={batchRefreshCredentials}
         onCheckin={batchCheckin}
         onDiagnose={batchDiagnose}
       />
@@ -542,7 +571,6 @@ export default function AccountCenterPage() {
                     busy={!!busy}
                     onSwitch={() => setSwitchTarget(row)}
                     onRestore={() => setRestoreTarget(row)}
-                    onCopyUid={() => void copyUid(row)}
                     onToggleEnabled={() => void toggleEnabled(row)}
                     onDelete={() => void removeAccount(row)}
                   />
