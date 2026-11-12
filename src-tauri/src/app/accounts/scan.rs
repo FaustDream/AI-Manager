@@ -25,11 +25,27 @@ pub struct ScanReport {
 }
 
 pub fn scan_all(db: &Db) -> Result<ScanReport> {
+    scan_providers(db, providers::all())
+}
+
+/// 只扫**一家**平台。凭据续期用：为了一个账号把六家客户端全读一遍没有意义，
+/// 而且其它平台的扫描失败会混进错误列表里，把「这个账号续不了」的结论搅浑。
+pub fn scan_platform(db: &Db, client_key: &str) -> Result<ScanReport> {
+    let provider = providers::for_platform(client_key).ok_or_else(|| {
+        crate::app::error::AppError::new(
+            crate::app::error::ErrorKind::Unsupported,
+            format!("{client_key} 不是已知平台"),
+        )
+    })?;
+    scan_providers(db, vec![provider])
+}
+
+fn scan_providers(db: &Db, providers: Vec<Box<dyn providers::Provider>>) -> Result<ScanReport> {
     let mut report = ScanReport::default();
     let known: std::collections::HashSet<String> =
         repo::list(db)?.into_iter().map(|v| v.iid).collect();
 
-    for provider in providers::all() {
+    for provider in providers {
         let label = provider.label();
         let platform = provider.platform();
         let mut added = 0usize;

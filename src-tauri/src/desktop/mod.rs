@@ -4,7 +4,7 @@
 //! 命令的「类型」由 ts-rs 生成，「名单」由 `generate_handler!` 保证（架构 D8）。
 //!
 //! 两条 P1 就得立住的规矩：
-//!   - 关窗口 = 隐藏，不退出；退出只走托盘菜单或 `app_quit`
+//!   - 关闭按钮的行为由配置决定：`tray` 隐藏到托盘（默认），`exit` 直接退出
 //!   - 数据库调用一律 `spawn_blocking`，否则界面会在等结果期间变灰
 
 use crate::app::db::Db;
@@ -182,6 +182,7 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_login_start,
             commands::accounts::account_relogin_start,
             commands::accounts::account_refresh_all,
+            commands::accounts::account_renew,
             commands::accounts::account_open_client,
             commands::hub::hub_snapshot,
             commands::hub::hub_skill_deploy,
@@ -237,6 +238,7 @@ pub fn run() -> tauri::Result<()> {
             commands::settings::network_selfcheck,
             commands::settings::config_set,
             commands::system::system_health,
+            commands::system::platform_capabilities,
             commands::system::diagnose_bundle,
             commands::system::update_check,
             commands::system::config_snapshot_list,
@@ -423,19 +425,75 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 关窗口 = 收到托盘，不退出进程（工作台要常驻）
+/// 关闭按钮的行为由 `data/config.toml` 的 `[window] close_action` 决定：
+/// `tray` 收进托盘（默认，定时任务继续跑），`exit` 直接退出进程。
+///
+/// **hide 不能留在事件回调里同步做**：正式版实测「点 X 窗口留在原地，既不关也不
+/// 消失」——`prevent_close()` 生效了，隐藏却没落到窗口上。这里把隐藏动作放到回调
+/// 之外执行，并在 Tauri 的 `hide()` 之后再补一次系统调用，两条都走不通才记警告。
 fn hook_window(app: &mut tauri::App) {
     let Some(window) = app.get_webview_window("main") else {
+        // 拿不到主窗口就没人拦关闭：留痕，别让「点了没反应」变成无解之谜
+        log::log(Level::Warn, "app", "没有找到主窗口，关闭按钮行为未接管");
         return;
     };
-    let handle = window.clone();
+    let handle = app.handle().clone();
+    let win = window.clone();
     window.on_window_event(move |event| {
-        if let WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
-            let _ = handle.hide();
+        let WindowEvent::CloseRequested { api, .. } = event else {
+            return;
+        };
+        // 两条路都要拦：exit 走 app.exit，避免「先销毁窗口再退出」中间态
+        api.prevent_close();
+        match crate::app::config::get().window.close_action {
+            crate::app::config::CloseAction::Exit => {
+                let app = handle.clone();
+                std::thread::spawn(move || {
+                    log::flush();
+                    app.exit(0);
+                });
+            }
+            crate::app::config::CloseAction::Tray => {
+                let target = win.clone();
+                std::thread::spawn(move || {
+                    // 失败必须留证据：静默失败就退化成「点 X 没反应」，那是这个 bug 的原始形态
+                    if let Err(e) = target.hide() {
+                        log::log(
+                            Level::Warn,
+                            "app",
+                            format!("收进托盘失败（{e}），改走系统调用"),
+                        );
+                    }
+                    // 再补一次系统调用。tao 把可见性记在 `WindowFlags` 里，`apply_diff`
+                    // 只在标志变化时才真的调 `ShowWindow`；标志一旦与真实 HWND 不同步，
+                    // `hide()` 就成了空操作。对已隐藏的窗口重复 SW_HIDE 没有副作用。
+                    hide_native(&target);
+                });
+            }
         }
     });
 }
+
+/// 直接对 HWND 调 `ShowWindow(SW_HIDE)`。
+/// 只作为 `hide()` 之后的补刀：它绕过 tao 的标志位，能修「标志没变所以被跳过」的情况。
+///
+/// 注意句柄要过一手 `isize`：tauri 依赖的 `windows` 版本与本 crate 的不同，
+/// 两边的 `HWND` 是不同类型，直接传会报 `Param<HWND>` 不满足。
+#[cfg(windows)]
+fn hide_native(window: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    if let Ok(hwnd) = window.hwnd() {
+        let raw = hwnd.0 as isize;
+        unsafe {
+            // 返回值是「之前是否可见」，不是成功与否，忽略
+            let _ = ShowWindow(HWND(raw as *mut core::ffi::c_void), SW_HIDE);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn hide_native(_window: &tauri::WebviewWindow) {}
 
 /// 第二个实例启动时，把已有窗口叫到前台。
 /// 不做 IPC 握手（要多一套进程间通道），只做「窗口还在就激活」的尽力而为。

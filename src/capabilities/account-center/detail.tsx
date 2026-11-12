@@ -168,6 +168,17 @@ export function DetailPanel({
       refresh();
     });
 
+  // 凭据续期：先借客户端的手续（重扫该平台拿它已经续好的 token），
+  // 续不上才提示重新登录。判定由后端做，界面只负责把结论说清楚。
+  const renew = () =>
+    runBusy('renew', async () => {
+      const out = await runCmd('account_renew', { iid: account.iid });
+      if (out === undefined) return;
+      toast(out.message);
+      refresh();
+      qc.invalidateQueries({ queryKey: ['accounts'] });
+    });
+
   const openAlias = () => {
     setAliasDraft(account.alias ?? '');
     setAliasOpen(true);
@@ -303,6 +314,17 @@ export function DetailPanel({
             重新登录
           </Button>
         )}
+        {/* 凭据续期：不用重新登录就能续上的那条路（借客户端已经续好的 token） */}
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={renew}
+          loading={busy === 'renew'}
+          disabled={!!busy || !account.has_secret}
+          title="重扫客户端取它已经续好的凭据；续不上会明确告诉你只能重新登录"
+        >
+          续期
+        </Button>
         <Button
           size="sm"
           variant="ghost"

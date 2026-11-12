@@ -7,6 +7,7 @@
 pub mod accounts;
 pub mod activity;
 pub mod browser;
+pub mod capability;
 pub mod checkin;
 pub mod clients;
 pub mod clock;

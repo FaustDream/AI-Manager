@@ -8,6 +8,7 @@ import { toast } from '@/components/ui/toast';
 import { call, errKind, errText } from './ipc';
 import type {
   AppConfig,
+  CapabilityMatrix,
   SelfcheckReport,
   AccountDetail,
   AccountView,
@@ -40,6 +41,7 @@ import type {
   Preview,
   PurgeReport,
   RefreshReport,
+  RenewOutcome,
   RestoreOutcome,
   RewardCredits,
   RecentClaim,
@@ -76,6 +78,7 @@ export interface CmdArgs {
   account_login_start: { platform: string };
   account_relogin_start: { iid: string };
   account_refresh_all: void;
+  account_renew: { iid: string };
   account_switch: { iid: string };
   account_switch_codebuddy: { iid: string; target: 'software' | 'idea' };
   account_codebuddy_targets: void;
@@ -124,6 +127,7 @@ export interface CmdArgs {
   credit_claims_recent: { limit?: number | null };
   credit_flow: { days?: number | null };
   system_health: void;
+  platform_capabilities: void;
   usage_scan: void;
   usage_overview: { days?: number | null };
   diagnose_bundle: void;
@@ -181,6 +185,7 @@ export interface CmdReturn {
   account_login_start: LoginStart;
   account_relogin_start: LoginStart;
   account_refresh_all: RefreshReport;
+  account_renew: RenewOutcome;
   account_switch: SwitchResult;
   account_switch_codebuddy: SwitchResult;
   account_codebuddy_targets: CodebuddyTargetStatus[];
@@ -229,6 +234,7 @@ export interface CmdReturn {
   credit_claims_recent: RecentClaim[];
   credit_flow: CreditFlowReport;
   system_health: HealthReport;
+  platform_capabilities: CapabilityMatrix;
   usage_scan: UsageScanReport;
   usage_overview: UsageOverview;
   diagnose_bundle: string;
@@ -311,6 +317,7 @@ const CMD_LABELS: Record<string, string> = {
   account_login_start: '开始添加账号',
   account_relogin_start: '重新登录账号',
   account_refresh_all: '刷新账号状态',
+  account_renew: '续期凭据',
   account_switch: '切换登录',
   account_switch_codebuddy: '切换 CodeBuddy 登录',
   account_codebuddy_targets: '读取 CodeBuddy 登录状态',
@@ -360,6 +367,7 @@ const CMD_LABELS: Record<string, string> = {
   log_span: '读取日志时间范围',
   log_stats: '日志聚合',
   system_health: '读取健康报告',
+  platform_capabilities: '读取平台能力',
   usage_scan: '扫描本地用量',
   usage_overview: '读取用量总览',
   diagnose_bundle: '导出诊断包',

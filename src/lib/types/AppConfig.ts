@@ -4,5 +4,6 @@ import type { CheckinConfig } from "./CheckinConfig";
 import type { DashboardConfig } from "./DashboardConfig";
 import type { NetworkConfig } from "./NetworkConfig";
 import type { UsageConfig } from "./UsageConfig";
+import type { WindowConfig } from "./WindowConfig";
 
-export type AppConfig = { checkin: CheckinConfig, network: NetworkConfig, usage: UsageConfig, activity: ActivityConfig, dashboard: DashboardConfig, };
+export type AppConfig = { checkin: CheckinConfig, network: NetworkConfig, usage: UsageConfig, activity: ActivityConfig, dashboard: DashboardConfig, window: WindowConfig, };

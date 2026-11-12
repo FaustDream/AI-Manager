@@ -277,6 +277,40 @@ pub async fn account_refresh_all(
     Ok(report)
 }
 
+/// 凭据续期：先借客户端的手续（重扫该平台拿客户端已续的新 token），
+/// 续不上再明确告诉用户「只能重新登录」。**不猜任何平台的 refresh 协议**。
+///
+/// 走阻塞线程：重扫要读客户端文件、解密凭据，是纯磁盘活。
+#[tauri::command]
+
+pub async fn account_renew(
+    state: State<'_, AppState>,
+    iid: String,
+) -> std::result::Result<crate::app::accounts::RenewOutcome, String> {
+    let db = state.db.clone();
+    let target = iid.clone();
+    let started = std::time::Instant::now();
+    let outcome = crate::app::runtime::blocking(move || crate::app::accounts::renew(&db, &target))
+        .await
+        .map_err(err_text)?;
+    match &outcome {
+        Ok(out) => log::action(
+            "account_renew",
+            "user",
+            out.state != crate::app::accounts::RenewState::NeedRelogin,
+            started.elapsed().as_millis() as u64,
+            format!("续期 {iid}：{:?} · {}", out.state, out.message),
+        ),
+        Err(e) => log::fail(
+            "accounts",
+            "account_renew",
+            format!("续期 {iid} 失败：{}", e.message),
+            serde_json::json!({ "kind": e.kind.as_str(), "iid": iid }).to_string(),
+        ),
+    }
+    outcome.map_err(err_text)
+}
+
 /// 切换登录。会写客户端登录态文件：失败一律带结构化 kind，界面按 kind 给话术。
 #[tauri::command]
 

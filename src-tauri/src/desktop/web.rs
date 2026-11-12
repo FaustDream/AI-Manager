@@ -248,6 +248,10 @@ pub async fn dispatch<R: tauri::Runtime>(
         "account_refresh_all" => {
             to_json(cmd::accounts::account_refresh_all(app.state::<AppState>()).await)
         }
+        "account_renew" => {
+            let iid = arg(v, "iid")?;
+            to_json(cmd::accounts::account_renew(app.state::<AppState>(), iid).await)
+        }
         "account_switch" => {
             let iid = arg(v, "iid")?;
             to_json(cmd::accounts::account_switch(app.state::<AppState>(), iid).await)
@@ -504,6 +508,7 @@ pub async fn dispatch<R: tauri::Runtime>(
             )
         }
         "diagnose_bundle" => to_json(cmd::system::diagnose_bundle(app.state::<AppState>()).await),
+        "platform_capabilities" => to_json(Ok(cmd::system::platform_capabilities())),
         "update_check" => to_json(cmd::system::update_check().await),
         "config_snapshot_list" => {
             to_json(cmd::system::config_snapshot_list(app.state::<AppState>()).await)

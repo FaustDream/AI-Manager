@@ -10,19 +10,34 @@ import { numOr } from '@/lib/num';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Checkbox, Input, Select, SkeletonRows } from '@/components/ui/form';
+import { DataTable, type Column } from '@/components/ui/table';
 import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { saveTheme, type ThemeChoice } from '@/lib/theme';
 import { HistoryPane } from './history';
-import type { AppConfig, HealthReport, RuleKind, Schedule, ScheduleAction, SelfcheckReport, SpaceEntry, SpaceReport } from '@/lib/types';
+import type {
+  AppConfig,
+  CapabilityMatrix,
+  CapabilityRow,
+  CloseAction,
+  HealthReport,
+  RuleKind,
+  Schedule,
+  ScheduleAction,
+  SelfcheckReport,
+  SpaceEntry,
+  SpaceReport,
+  Support,
+} from '@/lib/types';
 
-// 设置页按「改什么」自上而下：通用 → 配置 → 自检 → 运行与存储 → 维护 → 可追溯。
+// 设置页按「改什么」自上而下：通用 → 配置 → 平台能力 → 自检 → 运行与存储 → 维护 → 可追溯。
 // 不做左右分栏——左栏只有两个开关却占掉三分之一宽度，右侧表格反而挤。
 export default function SettingsPage() {
   return (
     <div className="flex flex-col gap-3">
       <GeneralPane />
       <ConfigPane />
+      <CapabilityPane />
       <SelfcheckPane />
       <RuntimePane />
       <MaintenancePane />
@@ -244,6 +259,23 @@ function ConfigPane() {
             <span className="text-xs text-muted">每 15 分钟探测一轮，领取要过浏览器验证码</span>
           </label>
         </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-28 shrink-0 text-muted">关闭按钮</span>
+            <Select
+              value={draft.window.close_action}
+              onChange={(e) => patch({ window: { ...draft.window, close_action: e.target.value as CloseAction } })}
+            >
+              <option value="tray">最小化到托盘（继续跑定时任务）</option>
+              <option value="exit">直接退出程序</option>
+            </Select>
+          </label>
+          <p className="mt-1 pl-32 text-xs text-muted">
+            {draft.window.close_action === 'tray'
+              ? '点 X 后窗口收进托盘，进程常驻；要退出请右键托盘图标 →「退出」。'
+              : '点 X 直接结束进程，定时签到不会继续跑；需要常驻请改回托盘。'}
+          </p>
+        </div>
       </div>
       <div className="mt-3 flex items-center gap-2">
         <Button
@@ -271,6 +303,86 @@ function ConfigPane() {
   );
 }
 
+
+/**
+ * 「平台能力」：一张矩阵说清哪家能做什么、哪家做不了、为什么。
+ *
+ * 数据来自后端 `app/capability.rs` 的唯一真源表——前端不判断平台，
+ * 只把 state 渲染成符号。这样「平台限制」和「本应用还没做」不会再被混为一谈。
+ */
+const SUPPORT_MARK: Record<Support, { mark: string; cls: string; label: string }> = {
+  full: { mark: '✓', cls: 'text-ok', label: '支持' },
+  partial: { mark: '△', cls: 'text-warn', label: '部分支持' },
+  none: { mark: '—', cls: 'text-muted', label: '不支持' },
+};
+
+function CapabilityPane() {
+  const matrix = useQuery<CapabilityMatrix>({
+    queryKey: ['capabilities'],
+    queryFn: () => queryCmd('platform_capabilities'),
+    // 静态表：一次进程生命周期内不会变，没必要反复拉
+    staleTime: Infinity,
+  });
+  const data = matrix.data;
+
+  const columns: Column<CapabilityRow>[] = data
+    ? [
+        {
+          key: 'platform',
+          header: '平台',
+          width: 150,
+          cell: (row) => <span className="whitespace-nowrap font-medium">{row.label}</span>,
+        },
+        ...data.features.map((feature, index) => ({
+          key: feature.key,
+          header: <span title={feature.hint}>{feature.label}</span>,
+          width: 82,
+          cell: (row: CapabilityRow) => {
+            const cell = row.cells[index];
+            const meta = SUPPORT_MARK[cell.state];
+            return (
+              <span
+                className={`cursor-help ${meta.cls}`}
+                title={cell.note || `${meta.label}：${feature.hint}`}
+              >
+                {meta.mark}
+              </span>
+            );
+          },
+        })),
+      ]
+    : [];
+
+  return (
+    <div className="rounded-lg border border-line bg-card p-4">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <h2 className="text-sm font-semibold">平台能力</h2>
+        <span className="flex-1" />
+        <span className="flex items-center gap-3 text-xs text-muted">
+          <span className="text-ok">✓ 支持</span>
+          <span className="text-warn">△ 部分支持</span>
+          <span>— 不支持</span>
+        </span>
+      </div>
+      <p className="mb-2 text-xs text-muted">
+        悬停任意格子看具体限制。「不支持」是平台本身的约束（登录态设备绑定、没有签到玩法等），
+        不是本应用没做——需要去客户端操作的那几项，格子里会写清走哪条路。
+      </p>
+      {!data && <SkeletonRows rows={4} cols={6} />}
+      {data && (
+        <div className="overflow-x-auto">
+          <DataTable
+            dense
+            columns={columns}
+            rows={data.platforms}
+            rowKey={(row) => row.key}
+            empty={null}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * 「网络自检」：国际版链路排障的第一入口（口径与 tools/intl-doctor.ps1 一致）。

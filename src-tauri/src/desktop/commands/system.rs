@@ -45,6 +45,13 @@ fn tray_tooltip(report: &crate::app::health::HealthReport) -> String {
     parts.join(" · ")
 }
 
+/// 平台能力矩阵：纯内存表，不读盘、不联网，同步返回。
+/// 界面用它把「平台限制」和「本应用还没做」区分开，用户不用点按钮试错。
+#[tauri::command]
+pub fn platform_capabilities() -> crate::app::capability::CapabilityMatrix {
+    crate::app::capability::matrix()
+}
+
 /// 导出诊断包，返回文件路径。前端只负责提示「在哪」。
 #[tauri::command]
 pub async fn diagnose_bundle(state: State<'_, AppState>) -> std::result::Result<String, String> {

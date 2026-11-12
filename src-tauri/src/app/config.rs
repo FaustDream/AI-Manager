@@ -61,6 +61,28 @@ pub struct ActivityConfig {
     pub zcode_auto_claim: bool,
 }
 
+/// 点主窗口关闭按钮时的行为。存配置文件而不是 kv：它是运行行为，
+/// 和签到并发、超时一样属于「应用怎么跑」，改完要能被 `data/config.toml` 解释。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseAction {
+    /// 收进系统托盘，进程常驻（定时任务继续跑）
+    #[default]
+    Tray,
+    /// 直接退出进程
+    Exit,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowConfig {
+    pub close_action: CloseAction,
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,6 +108,17 @@ pub struct AppConfig {
     pub activity: ActivityConfig,
     #[serde(default)]
     pub dashboard: DashboardConfig,
+    #[serde(default)]
+    pub window: WindowConfig,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        // 默认收托盘：定时签到靠常驻进程跑，一关就退等于把自动签到关掉
+        Self {
+            close_action: CloseAction::Tray,
+        }
+    }
 }
 
 impl Default for CheckinConfig {
@@ -165,6 +198,10 @@ zcode_auto_claim = false
 [dashboard]
 # 积分数据多少分钟没刷新就自动补刷一轮
 stale_refresh_min = 10
+
+[window]
+# 点关闭按钮：tray = 收进托盘继续常驻；exit = 直接退出
+close_action = "tray"
 "#;
 
 static CONFIG: RwLock<Option<AppConfig>> = RwLock::new(None);
