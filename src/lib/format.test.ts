@@ -47,9 +47,17 @@ describe('fmtSize / fmtAmount / fmtDelta', () => {
     expect(fmtAmount(null)).toBe('—');
   });
 
+  it('整数也补两位小数：平台积分带分，界面要和它对得上账', () => {
+    expect(fmtAmount(2446)).toBe('2446.00');
+    expect(fmtAmount(0)).toBe('0.00');
+    expect(fmtAmount(1417.84)).toBe('1417.84');
+    expect(fmtAmount(-3)).toBe('-3.00');
+  });
+
   it('增量带正号', () => {
-    expect(fmtDelta(3)).toBe('+3');
-    expect(fmtDelta(-3)).toBe('-3');
+    expect(fmtDelta(3)).toBe('+3.00');
+    expect(fmtDelta(-3)).toBe('-3.00');
+    expect(fmtDelta(2.5)).toBe('+2.50');
     expect(fmtDelta(null)).toBe('—');
   });
 });

@@ -18,8 +18,9 @@ describe('积分 / 配额列', () => {
     expect(cell.title).toContain('HTTP 401');
   });
 
-  it('没有失败时正常显示余额', () => {
-    expect(credit.cell(account(), {}).text).toBe('60');
+  it('没有失败时正常显示余额（固定两位小数，和平台侧对齐）', () => {
+    expect(credit.cell(account(), {}).text).toBe('60.00');
+    expect(credit.cell(account({ balance: 60.5 }), {}).text).toBe('60.50');
   });
 
   it('额度型账号查询失败时仍显示剩余百分比', () => {

@@ -1,4 +1,4 @@
-AI Manager 2.0.13 · 免安装版（Windows x64）
+AI Manager 2.0.14 · 免安装版（Windows x64）
 ==========================================
 
 一、怎么用
@@ -38,6 +38,6 @@ AI Manager 2.0.13 · 免安装版（Windows x64）
 
 四、校验
 --------
-版本：2.0.13    产物：AI-Manager-2.0.13-windows-x64-portable.zip
-安装版请用 AI-Manager-2.0.13-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
+版本：2.0.14    产物：AI-Manager-2.0.14-windows-x64-portable.zip
+安装版请用 AI-Manager-2.0.14-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
 免管理员，卸载同样保留 data\）。
