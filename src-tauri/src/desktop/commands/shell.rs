@@ -82,5 +82,9 @@ pub fn open_private_browser(url: String) -> std::result::Result<String, String> 
 #[tauri::command]
 
 pub fn app_show_window(window: tauri::Window) {
+    // 自启静默启动时，前端首屏渲染完也不弹窗——保持托盘
+    if crate::desktop::START_MINIMIZED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let _ = window.show();
 }

@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { confirmAction } from '@/components/ui/confirm';
 import { Dialog } from '@/components/ui/dialog';
-import { SkeletonRows } from '@/components/ui/form';
+import { SkeletonBlock } from '@/components/ui/form';
 import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
@@ -130,7 +130,7 @@ export function HistoryPane() {
         wide
         footer={<Button onClick={() => setListOpen(false)}>关闭</Button>}
       >
-        {history.isLoading && <SkeletonRows rows={3} cols={3} />}
+        {history.isLoading && <SkeletonBlock rows={3} />}
         {!history.isLoading && (history.data ?? []).length === 0 && (
           <p className="text-sm text-muted">
             还没有配置变更记录：改定时任务或设置后，这里会出现可回滚的快照。

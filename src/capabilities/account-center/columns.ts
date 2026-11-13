@@ -16,6 +16,7 @@ import type { IconName } from '@/components/ui/icons';
 import { daysUntil, fmtAmount, fmtFullDay, fmtTime } from '@/lib/format';
 
 export type Cell = {
+  /** 主行文字。空串 = 只画图标：状态已由图标表达，文字只在 title 里留一份 */
   text: string;
   /** 第二行小字：日期、原因这类补充信息，主行放结论 */
   sub?: string;
@@ -46,26 +47,57 @@ export const FAIL_LABEL: Record<string, string> = {
   invalid: '配置无效',
 };
 
+/**
+ * 环境性失败：网络不通 / 平台限流。
+ *
+ * 这类问题跟凭据、跟账号都没有关系（换台机器、等十分钟自己就好），
+ * 所以**不参与「这个账号坏了」的判定**——不染红凭据列，也不进「需处理」排序。
+ * 后端自 2.0.16 起干脆不把它们写进账号健康；这里再兜一层，
+ * 是为了让修复前落库的 `io` 记录也不再显示成红字。
+ */
+const TRANSIENT_FAIL = new Set(['io', 'rate_limited']);
+
 /** 账号级健康标记：停用 / 最近失败，叠加在登录态单元格上。 */
 const decorateHealth = (a: AccountView, cell: Cell): Cell => {
-  const notes: string[] = [];
-  if (!a.enabled) notes.push('已停用');
-  if (a.last_fail_kind) {
-    const label = FAIL_LABEL[a.last_fail_kind] ?? a.last_fail_kind;
-    notes.push(`最近失败：${label}${a.last_fail_at ? `（${fmtTime(a.last_fail_at)}）` : ''}`);
+  if (!a.enabled) {
+    return {
+      ...cell,
+      sub: '已停用',
+      tone: 'muted',
+      title: [
+        '已停用：不参与自动签到、自动轮询与积分刷新；手动单账号操作仍可执行',
+        cell.title,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    };
   }
-  if (notes.length === 0) return cell;
+  if (!a.last_fail_kind) return cell;
+
+  const label = FAIL_LABEL[a.last_fail_kind] ?? a.last_fail_kind;
+  const at = a.last_fail_at ? fmtTime(a.last_fail_at) : '';
+
+  // 网络 / 限流：只做一句不打扰的说明，不改颜色——凭据本身没有任何问题
+  if (TRANSIENT_FAIL.has(a.last_fail_kind)) {
+    return {
+      ...cell,
+      sub: `上次查询${label}，与凭据无关`,
+      title: [
+        `上次查询失败是${label}${at ? `（${at}）` : ''}，属于环境问题，与凭据无关；下一轮会自动重试。`,
+        a.last_ok_at ? `上次成功：${fmtTime(a.last_ok_at)}` : '',
+        cell.title,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    };
+  }
+
   return {
     ...cell,
-    sub: notes.join(' · '),
-    tone: !a.enabled ? 'muted' : 'bad',
+    sub: `最近失败：${label}${at ? `（${at}）` : ''}`,
+    tone: 'bad',
     title: [
-      !a.enabled ? '已停用：不参与自动签到、自动轮询与积分刷新；手动单账号操作仍可执行' : '',
-      a.last_fail_kind
-        ? `最近失败（${FAIL_LABEL[a.last_fail_kind] ?? a.last_fail_kind}），上次成功：${
-            a.last_ok_at ? fmtTime(a.last_ok_at) : '无记录'
-          }`
-        : '',
+      `最近失败（${label}），上次成功：${a.last_ok_at ? fmtTime(a.last_ok_at) : '无记录'}`,
       cell.title,
     ]
       .filter(Boolean)
@@ -145,14 +177,24 @@ const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
 };
 
 const checkinCell = (a: AccountView): Cell => {
-  if (!a.requires_checkin) return { text: '免签到', tone: 'muted', icon: 'forbid' };
-  if (a.checked_in === true) return { text: '已签', tone: 'ok', icon: 'check' };
-  if (a.checked_in === false) return { text: '未签', tone: 'warn', icon: 'clock' };
-  if (a.next_at) return { text: `约 ${fmtTime(a.next_at)}`, tone: 'muted', icon: 'clock' };
+  // 图标已经把「签没签到」说完了，主行不再重复写字：文字进 title，鼠标悬停仍读得到。
+  // 唯一保留文字的是「约 HH:MM」——那是下次自动签到的时间，不是签到状态本身。
+  if (!a.requires_checkin)
+    return { text: '', tone: 'muted', icon: 'forbid', title: '这个平台不需要签到' };
+  if (a.checked_in === true) return { text: '', tone: 'ok', icon: 'check', title: '今天已签到' };
+  if (a.checked_in === false)
+    return { text: '', tone: 'warn', icon: 'clock', title: '今天还没签到' };
+  if (a.next_at)
+    return {
+      text: `约 ${fmtTime(a.next_at)}`,
+      tone: 'muted',
+      icon: 'clock',
+      title: '下次自动签到时间',
+    };
   // 「待查询」= 平台没给出今天的签到结论（活动未开放 / 这次查询失败），不是「没签」。
-  // 点「刷新积分」会顺带重查一次状态，查到已签就自动变成「已签」。
+  // 点「刷新积分」会顺带重查一次状态，查到已签就自动变成已签。
   return {
-    text: '待查询',
+    text: '',
     tone: 'muted',
     icon: 'loading',
     title: '平台没有返回今天的签到状态：可能活动未开放，或这次查询失败。点「刷新积分」或「签到」重试一次',
@@ -187,7 +229,8 @@ export function attentionRank(a: AccountView, now = Date.now()): number {
   if (a.has_secret && a.expires_at !== null && a.expires_at < now) return 0;
   const days = daysUntil(a.expires_at);
   if (a.has_secret && days !== null && days <= 3) return 1;
-  if (a.last_fail_kind) return 1;
+  // 网络 / 限流不需要用户动手处理，别把它排进「需处理」
+  if (a.last_fail_kind && !TRANSIENT_FAIL.has(a.last_fail_kind)) return 1;
   if (!a.has_secret || !a.enabled) return 3;
   return 2;
 }

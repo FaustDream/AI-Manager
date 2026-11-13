@@ -29,6 +29,20 @@ function reportText(steps: Step[]): string {
     .join('\n');
 }
 
+/**
+ * 单元格内的单行截断片段。
+ *
+ * 不直接给 `td` 加 `max-w-*`：在 `table-layout: auto` 下浏览器**忽略单元格的
+ * max-width**，内容照样把列撑宽或折行。限宽必须落在内层元素上，省略号才生效。
+ */
+function Clip({ text, max }: { text: string; max: string }) {
+  return (
+    <span className={`inline-block ${max} truncate align-bottom`} title={text}>
+      {text}
+    </span>
+  );
+}
+
 // 状态矩阵列头的平台代码：3 字符内，与点阵共用同一网格严格对齐（悬停有全称）
 const CODE: Record<string, string> = {
   qoder_cn: 'QCN',
@@ -211,14 +225,26 @@ export default function HubPage() {
       refresh();
     });
 
-  // 骨架行必须待在 <tbody> 里：直接返回 <tr> 会被浏览器搬出表格，控制台报 hydration 错
+  // 首次读取要扫各软件的技能目录（~0.8s），这段时间把页面骨架先撑起来：
+  // 顶部标签条 + 一张卡片的形状，比孤零零几行骨架更容易让人知道「正在读哪一页」。
   if (hub.isLoading) {
     return (
-      <table className="w-full border-collapse">
-        <tbody>
-          <SkeletonRows rows={4} cols={3} />
-        </tbody>
-      </table>
+      <div className="flex flex-col gap-3" aria-busy="true">
+        <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="skeleton-in h-7 w-24 rounded-md bg-hover" />
+          ))}
+        </div>
+        <p className="skeleton-in text-xs text-muted">正在读取各软件的技能目录…</p>
+        <div className="rounded-lg border border-line bg-card p-3">
+          <div className="mb-2 h-4 w-28 animate-pulse rounded bg-hover" />
+          <table className="w-full border-collapse">
+            <tbody>
+              <SkeletonRows rows={5} cols={4} />
+            </tbody>
+          </table>
+        </div>
+      </div>
     );
   }
   if (hub.isError) {
@@ -292,11 +318,6 @@ export default function HubPage() {
 
       {tab === 'distribute' && (
         <>
-          <Notice>
-            这里是<strong>分发中心</strong>：把分发库里的技能与 MCP 部署到各个软件。
-            它不是全部技能的汇总——各软件自带的技能请到对应软件标签页里看。
-          </Notice>
-
           {conflicts.length > 0 && (
             <Notice tone="warn">
               {conflicts.length} 个技能的平台副本与库不一致（启动自动同步会在下次启动时刷新已部署的平台）。
@@ -351,10 +372,10 @@ export default function HubPage() {
                   {
                     key: 'name',
                     header: '技能',
-                    className: 'text-sm whitespace-nowrap',
+                    className: 'text-sm',
                     cell: (skill) => (
                       <>
-                        {skill.name}
+                        <Clip text={skill.name} max="max-w-[220px]" />
                         {!skill.valid && <Tag tone="bad">{skill.reason}</Tag>}
                       </>
                     ),
@@ -374,10 +395,8 @@ export default function HubPage() {
                   {
                     key: 'desc',
                     header: '说明',
-                    truncate: true,
-                    className: 'max-w-[380px] text-xs text-muted',
-                    title: (skill) => skill.description,
-                    cell: (skill) => skill.description,
+                    className: 'text-xs text-muted',
+                    cell: (skill) => <Clip text={skill.description} max="max-w-[360px]" />,
                   },
                   {
                     key: 'size',
@@ -454,8 +473,18 @@ export default function HubPage() {
               <DataTable
                 dense
                 columns={[
-                  { key: 'name', header: '名称', className: 'text-sm', cell: (row) => row.name },
-                  { key: 'command', header: '命令', className: 'font-mono text-xs text-muted', cell: (row) => row.command },
+                  {
+                    key: 'name',
+                    header: '名称',
+                    className: 'text-sm',
+                    cell: (row) => <Clip text={row.name} max="max-w-[200px]" />,
+                  },
+                  {
+                    key: 'command',
+                    header: '命令',
+                    className: 'font-mono text-xs text-muted',
+                    cell: (row) => <Clip text={row.command} max="max-w-[360px]" />,
+                  },
                   {
                     key: 'state',
                     header: '状态',
@@ -466,7 +495,7 @@ export default function HubPage() {
                     key: 'targets',
                     header: '已分发到',
                     className: 'text-xs text-muted',
-                    cell: (row) => row.targets.map(labelOf).join('、') || '—',
+                    cell: (row) => <Clip text={row.targets.map(labelOf).join('、') || '—'} max="max-w-[200px]" />,
                   },
                   {
                     key: 'ops',
@@ -573,7 +602,7 @@ export default function HubPage() {
                         const info = libraryByName.get(inst.name);
                         return (
                           <>
-                            {inst.name}
+                            <Clip text={inst.name} max="max-w-[360px]" />
                             {info && !info.valid && <Tag tone="bad">{info.reason}</Tag>}
                             {inst.description && (
                               <span className="block max-w-[420px] truncate text-xs text-muted" title={inst.description}>
@@ -678,7 +707,7 @@ export default function HubPage() {
                       className: 'text-sm',
                       cell: (inst) => (
                         <>
-                          {inst.name}
+                          <Clip text={inst.name} max="max-w-[360px]" />
                           {inst.description && (
                             <span className="block max-w-[420px] truncate text-xs text-muted" title={inst.description}>
                               {inst.description}
@@ -730,8 +759,18 @@ export default function HubPage() {
                 <DataTable
                   dense
                   columns={[
-                    { key: 'name', header: '名称', className: 'text-sm', cell: (row) => row.name },
-                    { key: 'command', header: '命令', className: 'font-mono text-xs text-muted', cell: (row) => row.command },
+                    {
+                      key: 'name',
+                      header: '名称',
+                      className: 'text-sm',
+                      cell: (row) => <Clip text={row.name} max="max-w-[200px]" />,
+                    },
+                    {
+                      key: 'command',
+                      header: '命令',
+                      className: 'font-mono text-xs text-muted',
+                      cell: (row) => <Clip text={row.command} max="max-w-[360px]" />,
+                    },
                     {
                       key: 'state',
                       header: '状态',
@@ -796,14 +835,19 @@ export default function HubPage() {
                       className: 'text-sm',
                       cell: (row) => (
                         <>
-                          {row.name}
+                          <Clip text={row.name} max="max-w-[200px]" />
                           <span className="ml-2 inline-block align-middle">
                             <SourceTag kind="builtin" />
                           </span>
                         </>
                       ),
                     },
-                    { key: 'command', header: '命令', className: 'font-mono text-xs text-muted', cell: (row) => row.command },
+                    {
+                      key: 'command',
+                      header: '命令',
+                      className: 'font-mono text-xs text-muted',
+                      cell: (row) => <Clip text={row.command} max="max-w-[360px]" />,
+                    },
                     {
                       key: 'state',
                       header: '状态',

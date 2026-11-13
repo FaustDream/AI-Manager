@@ -237,6 +237,14 @@ pub async fn dispatch<R: tauri::Runtime>(
             to_json(cmd::accounts::account_delete(app.state::<AppState>(), iid).await)
         }
         "account_scan" => to_json(cmd::accounts::account_scan(app.state::<AppState>()).await),
+        "account_add_cookie" => {
+            let (platform, cookie, name) =
+                (arg(v, "platform")?, arg(v, "cookie")?, arg(v, "name")?);
+            to_json(
+                cmd::accounts::account_add_cookie(app.state::<AppState>(), platform, cookie, name)
+                    .await,
+            )
+        }
         "account_login_start" => {
             let platform = arg(v, "platform")?;
             to_json(cmd::accounts::account_login_start(app.state::<AppState>(), platform).await)

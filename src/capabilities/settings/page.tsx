@@ -7,9 +7,9 @@ import { useEffect, useState } from 'react';
 
 import { fmtSize, fmtTime } from '@/lib/format';
 import { numOr } from '@/lib/num';
-import { Button } from '@/components/ui/button';
+import { Button, cn } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
-import { Checkbox, Input, Select, SkeletonRows } from '@/components/ui/form';
+import { Checkbox, Input, Select, SkeletonBlock, SkeletonRows } from '@/components/ui/form';
 import { DataTable, type Column } from '@/components/ui/table';
 import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
@@ -30,18 +30,64 @@ import type {
   Support,
 } from '@/lib/types';
 
-// 设置页按「改什么」自上而下：通用 → 配置 → 平台能力 → 自检 → 运行与存储 → 维护 → 可追溯。
-// 不做左右分栏——左栏只有两个开关却占掉三分之一宽度，右侧表格反而挤。
+// 设置页分四个标签页，按「要不要动手」排序：需要用户操作的放前面，只需查看的放后面。
+//   常规 / 定时任务 / 维护 = 动手改设置、管任务、清回收站；
+//   诊断与记录 = 平台能力矩阵、网络自检、历史，以查看为主。
+type TabKey = 'general' | 'schedule' | 'maintenance' | 'diagnostics';
+
 export default function SettingsPage() {
+  const [tab, setTab] = useState<TabKey>('general');
   return (
     <div className="flex flex-col gap-3">
-      <GeneralPane />
-      <ConfigPane />
-      <CapabilityPane />
-      <SelfcheckPane />
-      <RuntimePane />
-      <MaintenancePane />
-      <HistoryPane />
+      <TabBar tab={tab} onChange={setTab} />
+      {tab === 'general' && (
+        <>
+          <GeneralPane />
+          <ConfigPane />
+        </>
+      )}
+      {tab === 'schedule' && <ScheduleCard />}
+      {tab === 'maintenance' && (
+        <>
+          <ArchiveEntryPane />
+          <RuntimePane />
+          <MaintenancePane />
+        </>
+      )}
+      {tab === 'diagnostics' && (
+        <>
+          <LimitsPane />
+          <CapabilityPane />
+          <SelfcheckPane />
+          <HistoryPane />
+        </>
+      )}
+    </div>
+  );
+}
+
+function TabBar({ tab, onChange }: { tab: TabKey; onChange: (t: TabKey) => void }) {
+  const tabs: { key: TabKey; label: string }[] = [
+    { key: 'general', label: '常规' },
+    { key: 'schedule', label: '定时任务' },
+    { key: 'maintenance', label: '维护' },
+    { key: 'diagnostics', label: '诊断与记录' },
+  ];
+  return (
+    <div className="flex flex-wrap gap-1 rounded-lg border border-line bg-card p-1">
+      {tabs.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          onClick={() => onChange(t.key)}
+          className={cn(
+            'rounded-md px-4 py-1.5 text-sm transition-colors',
+            tab === t.key ? 'bg-accent text-white' : 'text-fg2 hover:bg-hover',
+          )}
+        >
+          {t.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -276,6 +322,16 @@ function ConfigPane() {
               : '点 X 直接结束进程，定时签到不会继续跑；需要常驻请改回托盘。'}
           </p>
         </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-28 shrink-0 text-muted">自启最小化</span>
+            <Checkbox
+              checked={draft.window.start_minimized}
+              onChange={(e) => patch({ window: { ...draft.window, start_minimized: e.target.checked } })}
+            />
+            <span className="text-xs text-muted">开机自启启动时收进托盘，不弹主窗口</span>
+          </label>
+        </div>
       </div>
       <div className="mt-3 flex items-center gap-2">
         <Button
@@ -303,6 +359,81 @@ function ConfigPane() {
   );
 }
 
+
+/**
+ * 「已知限制」：平台侧的硬约束，本应用改不了的，集中说清楚。
+ * 口径与 `app/capability.rs` 的矩阵一致，但这里给的是人话 + 替代做法：
+ * 用户在「添加账号」里找不到 Trae 时，第一反应是「是不是坏了」，这里要能直接回答。
+ */
+const KNOWN_LIMITS: { scope: string; title: string; detail: string; workaround?: string }[] = [
+  {
+    scope: 'Trae',
+    title: '登录态只读：不能添加 / 切换账号',
+    detail:
+      '登录态与设备绑定、加密只读。写回去会把 Trae 客户端登出，所以本应用不提供「添加账号」「切换登录」。',
+    workaround:
+      '在 Trae 客户端换号登录一次，再启动本应用（或点账号中心刷新），扫描会自动入库。旧账号记录会保留，但无法一键切回。',
+  },
+  {
+    scope: 'Trae',
+    title: '新版会话库加密',
+    detail: '新版会话库是 SQLCipher 加密，本应用只能读旧版 state.vscdb，或从插件运行日志解析。',
+    workaround: '需要完整会话时，在 Trae 里导出，或保留旧版数据。',
+  },
+  {
+    scope: 'WorkBuddy 国际版',
+    title: '没有签到玩法，也不显示批次到期',
+    detail: '国际版只有积分查询；批次到期接口不提供可靠字段，所以国际版不显示到期日。',
+  },
+  {
+    scope: 'ZCode',
+    title: '额度型平台，不是积分余额',
+    detail: '显示各额度窗口的已用百分比；活动奖励要在账号详情页手动领取。',
+  },
+  {
+    scope: 'CodeBuddy',
+    title: '账号体系跟随 WorkBuddy',
+    detail: '不单独登录；用 WorkBuddy 国内版档案切换 CodeBuddy IDE 与插件，不支持国际版账号。',
+  },
+  {
+    scope: '通用',
+    title: '客户端里也过期的凭据',
+    detail: '「刷新凭据」只重扫客户端本地登录态；客户端自己也过期了，只能去重新登录一次。',
+  },
+];
+
+function LimitsPane() {
+  return (
+    <div className="rounded-lg border border-line bg-card p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="text-sm font-semibold">已知限制</h2>
+        <span className="flex-1" />
+        <span className="text-xs text-muted">平台侧约束，本应用无法绕过</span>
+      </div>
+      <p className="mb-3 text-xs text-muted">
+        下面这些是平台本身的硬限制（登录态设备绑定、接口不提供、加密格式等），不是本应用没做。
+        遇到对应情况时，按「怎么做」处理即可。
+      </p>
+      <div className="flex flex-col gap-2">
+        {KNOWN_LIMITS.map((item) => (
+          <div key={`${item.scope}-${item.title}`} className="rounded-md border border-line px-3 py-2">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="rounded bg-hover px-1.5 text-xs text-fg2">{item.scope}</span>
+              <span className="text-sm font-medium">{item.title}</span>
+            </div>
+            <p className="mt-1 text-xs text-muted">{item.detail}</p>
+            {item.workaround && (
+              <p className="mt-1 text-xs">
+                <span className="text-muted">怎么做：</span>
+                {item.workaround}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /**
  * 「平台能力」：一张矩阵说清哪家能做什么、哪家做不了、为什么。
@@ -368,7 +499,13 @@ function CapabilityPane() {
         悬停任意格子看具体限制。「不支持」是平台本身的约束（登录态设备绑定、没有签到玩法等），
         不是本应用没做——需要去客户端操作的那几项，格子里会写清走哪条路。
       </p>
-      {!data && <SkeletonRows rows={4} cols={6} />}
+      {!data && (
+        <table className="w-full border-collapse">
+          <tbody>
+            <SkeletonRows rows={5} cols={6} />
+          </tbody>
+        </table>
+      )}
       {data && (
         <div className="overflow-x-auto">
           <DataTable
@@ -517,7 +654,7 @@ function RuntimePane() {
       )}
 
       <div className="mt-2 border-t border-line pt-1">
-        {space.isLoading && <SkeletonRows rows={4} cols={2} />}
+        {space.isLoading && <SkeletonBlock rows={3} />}
         {(space.data?.entries ?? []).map((entry) => (
           <div
             key={entry.name}
@@ -534,6 +671,44 @@ function RuntimePane() {
   );
 }
 
+/** 已归档会话的入口：归档列表已拆成独立页（manifest.hidden，不占顶部导航），从设置进入。 */
+function ArchiveEntryPane() {
+  // 带上条数：自动归档是按时间静默跑的，不在这儿显示条数，用户根本不知道它有没有生效
+  const archived = useQuery({
+    queryKey: ['sessions', 'archive', 'entry-total'],
+    queryFn: () =>
+      queryCmd('session_page', {
+        cursor: null,
+        limit: 1,
+        filter: { source: null, account: null, state: 'archived', q: null, origin: null, sort: 'last_at' },
+      }),
+  });
+  const total = archived.data?.total ?? 0;
+  return (
+    <div className="rounded-lg border border-line bg-card p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-sm font-semibold">已归档会话</h2>
+        <span className="text-xs text-muted">
+          {archived.isLoading ? '统计中…' : total > 0 ? `已归档 ${total} 条` : '还没有归档的会话'}
+        </span>
+        <span className="flex-1" />
+        <Button
+          size="sm"
+          onClick={() =>
+            window.dispatchEvent(new CustomEvent('aim:navigate', { detail: 'sessions-archive' }))
+          }
+        >
+          打开已归档会话
+        </Button>
+      </div>
+      <p className="mt-1 text-xs text-muted">
+        归档只写本地标记、不删文件；在独立页里可以预览、取消归档或彻底删除，支持一键全选与 Ctrl 多选。
+        自动归档按「最后活动时间」算（不是创建时间）：超过设定天数没动过、且还出现在会话列表里的，会被收进来。
+      </p>
+    </div>
+  );
+}
+
 function MaintenancePane() {
   const qc = useQueryClient();
   const { busy, run: runBusy } = useBusy();
@@ -545,8 +720,6 @@ function MaintenancePane() {
   const [trashOpen, setTrashOpen] = useState(false);
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <ScheduleCard />
-
       {/* 摘要行：批次明细与逐批删除收进对话框，设置页不再被回收站列表撑高 */}
       <div className="rounded-lg border border-line bg-card p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -658,9 +831,13 @@ function MaintenancePane() {
 
 /** 规则人话：与后端 `Schedule::rule_text()` 同一口径。 */
 function ruleText(schedule: Schedule): string {
-  return schedule.kind === 'daily'
-    ? `每天 ${schedule.at ?? '--:--'}`
-    : `每 ${schedule.hours ?? 0} 小时`;
+  if (schedule.kind === 'daily') return `每天 ${schedule.at ?? '--:--'}`;
+  // minutes 优先，没有才回落到 hours：老配置只有 hours
+  const minutes = schedule.minutes ?? (schedule.hours ?? 0) * 60;
+  if (minutes <= 0) return '每隔 --';
+  return minutes >= 60 && minutes % 60 === 0
+    ? `每 ${minutes / 60} 小时`
+    : `每 ${minutes} 分钟`;
 }
 
 function shortTs(ts: string | null): string {
@@ -683,7 +860,9 @@ function ScheduleCard() {
   const [kind, setKind] = useState<RuleKind>('daily');
   const [name, setName] = useState('');
   const [at, setAt] = useState('08:30');
-  const [hours, setHours] = useState('6');
+  // 间隔拆成「数值 + 单位」：积分要跟得紧，小时粒度不够用
+  const [every, setEvery] = useState('5');
+  const [unit, setUnit] = useState<'minute' | 'hour'>('minute');
   const [editing, setEditing] = useState<Schedule | null>(null);
 
   const edit = (item: Schedule) => {
@@ -692,14 +871,22 @@ function ScheduleCard() {
     setKind(item.kind);
     setName(item.name);
     setAt(item.at ?? '08:30');
-    setHours(String(item.hours ?? 6));
+    const minutes = item.minutes ?? (item.hours ?? 0) * 60;
+    if (minutes > 0 && minutes % 60 === 0) {
+      setUnit('hour');
+      setEvery(String(minutes / 60));
+    } else {
+      setUnit('minute');
+      setEvery(String(minutes || 5));
+    }
   };
 
   const resetForm = () => {
     setEditing(null);
     setName('');
     setAt('08:30');
-    setHours('6');
+    setEvery('5');
+    setUnit('minute');
   };
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['schedules'] });
@@ -714,7 +901,9 @@ function ScheduleCard() {
           action,
           kind,
           at: kind === 'daily' ? at : null,
-          hours: kind === 'every' ? Number(hours) || 0 : null,
+          // 只传当前单位那一项：后端按「分钟优先」折算，另一项由它清空
+          minutes: kind === 'every' && unit === 'minute' ? Number(every) || 0 : null,
+          hours: kind === 'every' && unit === 'hour' ? Number(every) || 0 : null,
         },
       });
       if (saved === undefined) return;
@@ -764,7 +953,7 @@ function ScheduleCard() {
         <h2 className="text-sm font-semibold">定时任务</h2>
       </div>
 
-      {list.isLoading && <SkeletonRows rows={2} cols={3} />}
+      {list.isLoading && <SkeletonBlock rows={3} />}
       {(list.data ?? []).length === 0 && <p className="text-sm text-muted">还没有定时任务。</p>}
 
       {(list.data ?? []).map((item) => (
@@ -840,18 +1029,28 @@ function ScheduleCard() {
             title="每天触发的时刻"
           />
         ) : (
-          <Input
-            className="w-20"
-            type="number"
-            aria-label="间隔小时"
-            min={1}
-            max={168}
-            value={hours}
-            onChange={(e) => setHours(e.target.value)}
-            title="间隔小时数（1–168）"
-          />
+          <>
+            <Input
+              className="w-20"
+              type="number"
+              aria-label="间隔数值"
+              min={1}
+              max={unit === 'hour' ? 168 : 10080}
+              value={every}
+              onChange={(e) => setEvery(e.target.value)}
+              title={unit === 'hour' ? '间隔小时数（1–168）' : '间隔分钟数（1–10080）'}
+            />
+            <Select
+              aria-label="间隔单位"
+              value={unit}
+              disabled={!!busy}
+              onChange={(e) => setUnit(e.target.value as 'minute' | 'hour')}
+            >
+              <option value="minute">分钟</option>
+              <option value="hour">小时</option>
+            </Select>
+          </>
         )}
-        {kind === 'every' && <span className="text-xs text-muted">小时</span>}
         <Button size="sm" variant="primary" loading={busy === 'schedule-add'} disabled={!!busy} onClick={add}>
           {editing ? '保存' : '添加'}
         </Button>

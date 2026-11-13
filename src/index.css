@@ -85,9 +85,21 @@ body {
 }
 .view-enter { animation: fade-up 180ms ease-out; }
 
+/*
+ * 骨架延迟淡入：本地接口常在 20~50ms 内返回，骨架一闪而过反而像是「页面抖了一下」。
+ * 120ms 之后才开始显形——数据先到的话，这一帧直接被真实内容替换，用户根本看不到骨架。
+ */
+@keyframes skeleton-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.skeleton-in { animation: skeleton-in 160ms ease-out 120ms both; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 1ms !important;
     transition-duration: 1ms !important;
   }
+  /* 减少动效时不玩「延迟淡入」：等 120ms 再瞬间出现只会更别扭 */
+  .skeleton-in { animation-delay: 0ms !important; }
 }

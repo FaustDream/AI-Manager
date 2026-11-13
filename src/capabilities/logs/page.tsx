@@ -1,15 +1,14 @@
 // 日志：全部日志 / 执行动作双视图、增强筛选、实时跟随与导出。
 // 执行动作不再单独成页——两者本来就是同一份 app.jsonl，只是看的角度不同。
-// 按类型分窗：错误/警告进独立对话框（进页默认展开），成功日志在主列表默认折叠；
-// 两条窗口都是日志页的一部分，内容不出页面。
+// 按类型分窗：错误/警告收进列表上方的「异常区」（可折叠，正文完整展开），
+// 成功日志在主列表默认折叠；两块内容都在页面里，不再用弹窗盖住日志列表。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { errText } from '@/lib/ipc';
 import { Button, cn } from '@/components/ui/button';
 import { confirmAction } from '@/components/ui/confirm';
-import { Dialog } from '@/components/ui/dialog';
-import { Input, Select, SkeletonRows, StateBlock } from '@/components/ui/form';
+import { Input, Select, SkeletonBlock, SkeletonRows, StateBlock } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { Tag } from '@/components/ui';
 import { fmtAmount, fmtMs, fmtTime } from '@/lib/format';
@@ -32,6 +31,8 @@ const OUTCOME: Record<string, { text: string; className: string }> = {
   ok: { text: '成功', className: 'text-ok' },
   skip: { text: '跳过', className: 'text-muted' },
   fail: { text: '失败', className: 'text-bad' },
+  // 网络不通 / 平台限流：不是账号坏了，别用失败色去催人处理
+  retry: { text: '待重试', className: 'text-warn' },
   partial: { text: '部分成功', className: 'text-warn' },
 };
 
@@ -55,7 +56,8 @@ function LogsPane() {
   const [limit, setLimit] = useState(300);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
-  // 异常窗口：不再「进页就弹」，只对还没提示过的错误弹一次（见下面的水位）。
+  // 异常区：错误/警告在日志列表上方单独成块，**不再用弹窗盖住页面**。
+  // 默认收起；只有「比水位更新」的错误出现时才自动展开一次（原「进页弹一次」的触发方式保留）。
   const [alertsOpen, setAlertsOpen] = useState(false);
   // 提示水位 = 上次弹窗时窗口里最新那条错误的时间（毫秒）。
   // null = 还没从设置里读回来：读到之前不弹，避免拿 0 当基准把旧错误全弹一遍。
@@ -195,6 +197,12 @@ function LogsPane() {
     () => rows.filter((line) => line.level === 'warn' || line.level === 'error'),
     [rows],
   );
+  // 异常区标题上的分项计数：错误 / 警告分开说，「12 条异常」里到底有没有真错误一目了然
+  const errorCount = useMemo(
+    () => alertRows.filter((line) => line.level === 'error').length,
+    [alertRows],
+  );
+  const warnCount = alertRows.length - errorCount;
 
   // 水位从 kv 读回：读失败按 0 处理（宁可多弹一次，也不能把错误吞掉）
   useEffect(() => {
@@ -218,19 +226,19 @@ function LogsPane() {
     void queryCmd('settings_set', { key: ALERT_SEEN_KEY, value: at }).catch(() => {});
   }, []);
 
-  // 关窗即视为「窗口里的内容已看过」：期间新到的错误一并推进水位，
-  // 否则刚关窗就会被下一条新错误立刻再弹一次。
-  const closeAlerts = () => {
+  // 收起异常区即视为「这一批看过了」：期间新到的错误一并推进水位，
+  // 否则刚收起就会被下一条新错误立刻再展开一次。
+  const collapseAlerts = () => {
     setAlertsOpen(false);
     markSeen(newestAlertAt(alertRows));
   };
 
-  // 只对「比水位更新」的错误弹，且同一时刻只弹一次：
-  // 打开后立刻推进水位，同一批日志不会再触发；重复渲染、重复取数也进不来。
+  // 只在「比水位更新」的错误出现时自动展开一次：同一批不会再展开第二次，
+  // 重复渲染、重复取数也进不来。触发方式与原来的弹窗一致，只是不再遮挡列表。
   useEffect(() => {
     if (seenAt === null || alertsOpen || alertRows.length === 0) return;
-    // 「最近领取」是用户主动切过去看的视图，弹窗不盖在它上面；
-    // 切回日志视图时若仍有未提示的错误，这里会补弹。
+    // 「最近领取」是用户主动切过去看的视图，不该被异常区打断；
+    // 切回日志视图时若仍有未提示的错误，这里会补展开。
     if (view === 'claims') return;
     if (!shouldAlert(alertRows, seenRef.current)) return;
     setAlertsOpen(true);
@@ -245,15 +253,9 @@ function LogsPane() {
 
   return (
     <div className="flex h-[calc(100vh-7.5rem)] flex-col gap-2">
-      <div
-        ref={listRef}
-        className="min-h-0 flex-1 overflow-auto rounded-lg border border-line bg-card"
-        onScroll={() => {
-          const el = listRef.current;
-          if (el) nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-        }}
-      >
-        <div className="sticky top-0 z-10 border-b border-line bg-bg">
+      {/* 工具栏：视图 / 筛选 / 日期 / 计数。放在滚动容器外面——筛选条件不该跟着日志滚走，
+          异常区也因此能固定在列表上方，不会被「自动滚到底部」推出视野。 */}
+      <div className="rounded-lg border border-line bg-card">
           <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
             <div className="flex items-center gap-1 rounded-md border border-line p-0.5">
               <Button
@@ -289,8 +291,8 @@ function LogsPane() {
                 variant={view === 'claims' ? 'primary' : 'ghost'}
                 onClick={() => {
                   setView('claims');
-                  // 异常窗口是日志视角的附属窗口，切到领取视图时不能盖在表格上
-                  closeAlerts();
+                  // 异常区是日志视角的附属块，切到领取视图时收起来，别占着列表上方
+                  setAlertsOpen(false);
                 }}
                 title="本工具实际领取过的积分（签到 / 活动 / 猫猫旅行）"
               >
@@ -447,6 +449,7 @@ function LogsPane() {
                     <option value="ok">成功</option>
                     <option value="skip">跳过</option>
                     <option value="fail">失败</option>
+                    <option value="retry">待重试</option>
                     <option value="partial">部分成功</option>
                   </Select>
                   <Select
@@ -483,8 +486,14 @@ function LogsPane() {
                 </span>
                 <button
                   className="cursor-pointer text-warn hover:underline"
-                  onClick={() => setAlertsOpen(true)}
-                  title="在异常窗口里查看全部错误与警告"
+                  onClick={() => {
+                    // 收起时推进「已看过」水位，避免下一条新错误立刻又把它展开
+                    if (alertsOpen) collapseAlerts();
+                    else setAlertsOpen(true);
+                    // 异常区在列表顶部，滚下去时点了要能看见
+                    listRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  title={alertsOpen ? '收起异常区' : '在列表上方展开异常区（错误与警告全文）'}
                 >
                   异常 {stats.abnormal}
                 </button>
@@ -512,8 +521,54 @@ function LogsPane() {
               </>
             )}
           </div>
-        </div>
+      </div>
 
+        {/* 异常区：错误与警告单独一块，正文完整展开。
+            这就是原来那个弹窗的全部内容，挪到页面里之后不再遮住日志列表——
+            边看日志边对照异常，比「弹窗—关掉—再看」少一步。 */}
+        {view !== 'claims' && alertRows.length > 0 && (
+          <div className="rounded-lg border border-line bg-card">
+            <button
+              className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-1.5 text-xs hover:bg-hover"
+              onClick={() => (alertsOpen ? collapseAlerts() : setAlertsOpen(true))}
+              aria-expanded={alertsOpen}
+              title={alertsOpen ? '收起异常区' : '展开异常区（正文完整显示）'}
+            >
+              <span className="font-medium text-warn">
+                异常 {alertRows.length}
+                <span className="ml-1 font-normal text-muted">
+                  （错误 {errorCount} · 警告 {warnCount}）
+                </span>
+              </span>
+              <span className="text-muted">
+                {defaultWindow ? '今天' : `${dayFrom} ~ ${dayTo}`} · 正文完整展开
+              </span>
+              <span className="flex-1" />
+              <span className="text-muted">{alertsOpen ? '收起 ▴' : '展开 ▾'}</span>
+            </button>
+            {alertsOpen && (
+              <div className="max-h-[38vh] overflow-y-auto border-t border-line">
+                {alertRows.map((line, i) => (
+                  <LogRow
+                    key={`${line.ts}-${line.module}-${line.action ?? ''}-alert-${i}`}
+                    line={line}
+                    forceExpanded
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 日志列表：页面上唯一会滚动的区域；「滚到底部」跟的是它 */}
+        <div
+          ref={listRef}
+          className="min-h-0 flex-1 overflow-auto rounded-lg border border-line bg-card"
+          onScroll={() => {
+            const el = listRef.current;
+            if (el) nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          }}
+        >
         <div className="p-2">
           {view === 'claims' ? (
             <ClaimsTable
@@ -537,7 +592,7 @@ function LogsPane() {
             />
           ) : (
             <>
-              {query.isLoading && <SkeletonRows rows={8} cols={1} />}
+              {query.isLoading && <SkeletonBlock rows={8} />}
               {query.isError && (
                 <StateBlock
                   kind="error"
@@ -587,41 +642,6 @@ function LogsPane() {
           回到底部
         </button>
       </div>
-
-      {/* 异常窗口：错误/警告独立输出，只有「比水位更新」的错误才会自动弹一次，
-          条目完整展示不折叠。对话框只是日志页内的一扇窗——关掉后数据仍在主列表与导出里。 */}
-      <Dialog
-        open={alertsOpen}
-        title={`异常窗口 · 错误与警告 ${alertRows.length} 条`}
-        subtitle="只收错误与警告，正文默认完整展开；成功与普通日志在主列表查看"
-        onClose={closeAlerts}
-        wide
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setView('all');
-                setMinLevel('warn');
-                closeAlerts();
-              }}
-            >
-              在列表中筛选
-            </Button>
-            <Button onClick={closeAlerts}>关闭</Button>
-          </>
-        }
-      >
-        {alertRows.length === 0 ? (
-          <p className="py-6 text-center text-sm text-muted">当前筛选范围内没有错误或警告。</p>
-        ) : (
-          <div className="max-h-[60vh] overflow-y-auto rounded-md border border-line">
-            {alertRows.map((line, i) => (
-              <LogRow key={`${line.ts}-${line.module}-${line.action ?? ''}-alert-${i}`} line={line} forceExpanded />
-            ))}
-          </div>
-        )}
-      </Dialog>
     </div>
   );
 }
@@ -654,7 +674,16 @@ function ClaimsTable({
   error: string | null;
   onRetry: () => void;
 }) {
-  if (loading) return <SkeletonRows rows={8} cols={4} />;
+  // 骨架行必须在表格里：这个组件整体返回 <tr>，外面得给它一层 table
+  if (loading) {
+    return (
+      <table className="w-full border-collapse">
+        <tbody>
+          <SkeletonRows rows={8} cols={5} />
+        </tbody>
+      </table>
+    );
+  }
   if (error) return <StateBlock kind="error" title="读领取记录失败" detail={error} onRetry={onRetry} />;
   if (rows.length === 0) {
     return (
@@ -682,14 +711,14 @@ function ClaimsTable({
             onClick={() => goAccount(claim.iid)}
             title="跳到账号中心"
           >
-            <td className="py-1 tabular-nums text-muted">{fmtTime(claim.claimed_at)}</td>
+            <td className="whitespace-nowrap py-1 tabular-nums text-muted">{fmtTime(claim.claimed_at)}</td>
             <td className="truncate py-1">{claim.name}</td>
-            <td className="py-1">
+            <td className="whitespace-nowrap py-1">
               <Tag tone={claim.source === 'travel' ? 'ok' : 'muted'}>
                 {CLAIM_SOURCE[claim.source] ?? claim.source}
               </Tag>
             </td>
-            <td className="py-1 pr-4 text-right tabular-nums">
+            <td className="whitespace-nowrap py-1 pr-4 text-right tabular-nums">
               {claim.amount === null ? '—' : `+${fmtAmount(claim.amount)}`}
             </td>
             <td className="max-w-[420px] truncate py-1 pl-1 text-fg2" title={claim.description}>
@@ -906,7 +935,16 @@ function StatTable({
   onRetry: () => void;
   onPick: (stat: LogStat) => void;
 }) {
-  if (loading) return <SkeletonRows rows={6} cols={4} />;
+  // 同上：组件整体返回 <tr>，骨架自带一层 table 才画得出来
+  if (loading) {
+    return (
+      <table className="w-full border-collapse">
+        <tbody>
+          <SkeletonRows rows={6} cols={6} />
+        </tbody>
+      </table>
+    );
+  }
   if (error) return <StateBlock kind="error" title="聚合失败" detail={error} onRetry={onRetry} />;
   if (stats.length === 0) {
     return <p className="py-6 text-center text-sm text-muted">没有可聚合的日志。</p>;
@@ -933,8 +971,8 @@ function StatTable({
               onClick={() => onPick(stat)}
               title="点击回到明细，并按这一类的模块与动作筛选"
             >
-              <td className="py-1 font-semibold tabular-nums">{stat.occurrences}</td>
-              <td className="py-1">
+              <td className="whitespace-nowrap py-1 font-semibold tabular-nums">{stat.occurrences}</td>
+              <td className="whitespace-nowrap py-1">
                 <span
                   className={cn(
                     'rounded px-1 text-[10px] font-semibold uppercase',
@@ -952,10 +990,10 @@ function StatTable({
                 {stat.action ?? stat.module}
                 {stat.action && <span className="ml-1 text-muted">{stat.module}</span>}
               </td>
-              <td className={cn('py-1', outcome?.className ?? 'text-muted')}>
+              <td className={cn('whitespace-nowrap py-1', outcome?.className ?? 'text-muted')}>
                 {outcome?.text ?? '—'}
               </td>
-              <td className="py-1 tabular-nums text-muted">{shortTs(stat.last_ts)}</td>
+              <td className="whitespace-nowrap py-1 tabular-nums text-muted">{shortTs(stat.last_ts)}</td>
               <td className="max-w-[420px] truncate py-1 text-fg2" title={stat.sample}>
                 {stat.sample}
               </td>

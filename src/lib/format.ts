@@ -16,19 +16,26 @@ export function fmtSize(bytes: number | null | undefined): string {
 }
 
 /**
- * 积分 / 金额：**固定两位小数**，整数也补 `.00`。
+ * 积分 / 金额：**整数不带小数，非整数保留至多两位**（与后端 `trim_f64` 同一口径）。
  *
- * 曾经是「整数就不带小数」（`100` 而不是 `100.00`），但平台侧的积分本身就是
- * 带分的实数（库里 `credit_snapshots.balance` 是 REAL，例如 1417.84），
- * 省掉小数位会让界面和平台对不上账——用户没法确认「9683」到底是 9683 还是 9683.4。
- * 过万/过亿仍换中文单位：列宽有限，`12345.67` 直出会把表格撑开。
+ * 两轮教训合成这一版：
+ *   - 早先「整数不带小数」是对的，但实现把带分的实数（1417.84）也省成整数，对不上账；
+ *   - 2.0.14 改成「固定两位小数」，1417.84 是对了，整数却全变成 9683.00——小数位全是 0，
+ *     一眼看去像脏数据。
+ *   - 现在：整数显示 `9683`，带分显示 `1417.84`，两种都对。过万/过亿仍换中文单位。
  */
 export function fmtAmount(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';
   const abs = Math.abs(value);
-  if (abs >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
-  if (abs >= 1e4) return `${(value / 1e4).toFixed(2)}万`;
-  return value.toFixed(2);
+  if (abs >= 1e8) return `${trimAmount(value / 1e8)}亿`;
+  if (abs >= 1e4) return `${trimAmount(value / 1e4)}万`;
+  return trimAmount(value);
+}
+
+/// 整数不带小数位；非整数保留至多两位（去掉末尾多余的 0）。
+function trimAmount(n: number): string {
+  if (Number.isInteger(n)) return String(n);
+  return String(Number(n.toFixed(2)));
 }
 
 export function fmtDelta(value: number | null | undefined): string {

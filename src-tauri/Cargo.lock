@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "ai-manager"
-version = "2.0.15"
+version = "2.0.16"
 dependencies = [
  "aes-gcm",
  "async-trait",

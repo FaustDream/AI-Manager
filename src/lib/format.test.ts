@@ -41,23 +41,24 @@ describe('fmtSize / fmtAmount / fmtDelta', () => {
   });
 
   it('金额过万/过亿换中文单位', () => {
-    expect(fmtAmount(12.5)).toBe('12.50');
-    expect(fmtAmount(12_000)).toBe('1.20万');
-    expect(fmtAmount(120_000_000)).toBe('1.20亿');
+    expect(fmtAmount(12.5)).toBe('12.5');
+    expect(fmtAmount(12_000)).toBe('1.2万');
+    expect(fmtAmount(120_000_000)).toBe('1.2亿');
     expect(fmtAmount(null)).toBe('—');
   });
 
-  it('整数也补两位小数：平台积分带分，界面要和它对得上账', () => {
-    expect(fmtAmount(2446)).toBe('2446.00');
-    expect(fmtAmount(0)).toBe('0.00');
+  it('整数不带小数、带分保留两位：两全其美', () => {
+    expect(fmtAmount(2446)).toBe('2446');
+    expect(fmtAmount(0)).toBe('0');
     expect(fmtAmount(1417.84)).toBe('1417.84');
-    expect(fmtAmount(-3)).toBe('-3.00');
+    expect(fmtAmount(-3)).toBe('-3');
+    expect(fmtAmount(9683.4)).toBe('9683.4');
   });
 
   it('增量带正号', () => {
-    expect(fmtDelta(3)).toBe('+3.00');
-    expect(fmtDelta(-3)).toBe('-3.00');
-    expect(fmtDelta(2.5)).toBe('+2.50');
+    expect(fmtDelta(3)).toBe('+3');
+    expect(fmtDelta(-3)).toBe('-3');
+    expect(fmtDelta(2.5)).toBe('+2.5');
     expect(fmtDelta(null)).toBe('—');
   });
 });

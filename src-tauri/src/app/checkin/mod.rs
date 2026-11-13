@@ -577,7 +577,7 @@ impl Service {
                         service.health_fail(&iid, e.kind).await;
                         let subject = name.unwrap_or_else(|| platform_scope(&iid));
                         log::item(
-                            Item::new("刷新积分", &subject, Outcome::Fail)
+                            Item::new("刷新积分", &subject, Outcome::of_error(e.kind))
                                 .step("查询积分")
                                 .evidence(e.evidence())
                                 .batch(&batch)
@@ -622,7 +622,7 @@ impl Service {
             format!(" | 失败明细: {}", failures.join("；"))
         };
         // 批次收尾：界面上的「N 个查询失败」必须能和日志对上账。
-        // 定时触发且全绿时不记：每小时一条「N 个账号全部成功」只是心跳，
+        // 定时触发且全绿时不记：默认 5 分钟一轮，全绿时每条都记等于刷屏，
         // 由调度器按「有没有失败」决定是否落记录。
         if trigger != "schedule" || failed > 0 {
             log::action(
@@ -675,6 +675,11 @@ impl Service {
     }
 
     async fn health_fail(&self, iid: &str, kind: ErrorKind) {
+        // 断网 / 限流不算账号坏：不落健康标记，否则账号中心会一路红到下次成功。
+        // 这类失败仍会进动作日志（记为「待重试」），可查但不误导。
+        if kind.is_transient() {
+            return;
+        }
         let db = self.db.clone();
         let key = iid.to_string();
         let now = self.clock.now().timestamp_millis();
@@ -1030,7 +1035,7 @@ impl Service {
                 record(
                     &subject,
                     "提交签到",
-                    Outcome::Fail,
+                    Outcome::of_error(e.kind),
                     &e.message,
                     &format!(
                         "平台={} 账号={iid} 重试={attempts}/3 · {}",

@@ -25,6 +25,7 @@ pub mod net;
 pub mod paths;
 pub mod platform;
 pub mod process;
+pub mod products;
 pub mod providers;
 pub mod runtime;
 pub mod schedule;

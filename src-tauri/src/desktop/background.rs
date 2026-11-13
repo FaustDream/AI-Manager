@@ -115,8 +115,9 @@ pub fn spawn_scheduler(
 /// 一次定时执行的结论。
 ///
 /// `changed` 是这次优化新加的判断依据：**没产生任何变化的轮询不写日志**。
-/// 积分刷新每小时一次、旅行轮询每小时一次，全绿时逐条记录只是心跳噪声；
-/// 「定时任务到底跑没跑」由「定时任务」页的 last_run 回答，日志只留变化与失败。
+/// 积分刷新与旅行轮询都是「按用户配的间隔」在跑（默认积分 5 分钟、旅行 1 小时），
+/// 全绿时逐条记录只是心跳噪声；「定时任务到底跑没跑」由「定时任务」页的 last_run 回答，
+/// 日志只留变化与失败。
 pub(crate) struct ScheduleOutcome {
     pub ok: bool,
     pub detail: String,
@@ -150,7 +151,7 @@ pub(crate) async fn execute_schedule(
             ScheduleOutcome {
                 ok: failed == 0,
                 detail: format!("{total} 个账号，失败 {failed}"),
-                // 全绿没有可看的信息：余额数字在账号列表上，日志里不必每小时重复一遍
+                // 全绿没有可看的信息：余额数字在账号列表上，日志里不必每 5 分钟重复一遍
                 changed: failed > 0,
             }
         }

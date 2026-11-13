@@ -73,10 +73,12 @@ pub(crate) fn backend_for(kind: &str) -> Option<&'static dyn SessionBackend> {
 }
 
 /// 客户端平台键 → 显示名（关客户端报告、日志用）。
+/// WorkBuddy 两版的名字统一由 `app::products` 给，避免这里和账号中心各叫各的。
 pub(crate) fn label(platform: &str) -> String {
+    if let Some(product) = crate::app::products::Product::from_account_key(platform) {
+        return product.label().to_string();
+    }
     match platform {
-        "workbuddy" => "WorkBuddy 国内版".into(),
-        "workbuddy_intl" => "WorkBuddy 国际版".into(),
         "qoder" => "Qoder CN".into(),
         "qoder_intl" => "Qoder 国际版".into(),
         "zcode" => "ZCode".into(),

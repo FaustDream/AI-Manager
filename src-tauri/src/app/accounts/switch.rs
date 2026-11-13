@@ -199,7 +199,7 @@ pub fn switch(db: &Db, roots: &Roots, iid: &str) -> Result<SwitchResult> {
     Ok(SwitchResult { message })
 }
 
-/// 用 WorkBuddy **国内版**账号的档案切换 CodeBuddy 家族客户端（软件 / IDEA 插件）的登录。
+/// 用 WorkBuddy **国内版**账号的档案切换 CodeBuddy 家族客户端（CodeBuddy IDE / 插件）的登录。
 ///
 /// 三端同号、但切换分开做：这个入口只动目标客户端的凭证落点，不碰 WorkBuddy
 /// 自己的登录态（那走上面的 `switch`）。

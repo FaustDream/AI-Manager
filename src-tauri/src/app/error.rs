@@ -35,6 +35,22 @@ pub enum ErrorKind {
     Unsupported,
 }
 
+impl ErrorKind {
+    /// 环境性失败：本机网络不通 / 平台限流。
+    ///
+    /// 跟账号、凭据都没有关系——网恢复了自己就好。所以这类失败**不算账号坏**：
+    /// 不写账号健康标记（否则账号中心会一路红到下次成功），日志里也只记「待重试」。
+    pub fn is_transient(self) -> bool {
+        matches!(self, Self::Io | Self::RateLimited)
+    }
+
+    /// 同一判定的字符串版本：`accounts.last_fail_kind` 存的是文本，
+    /// 读历史数据（含修复前写下的 `io`）时用它。
+    pub fn is_transient_text(kind: &str) -> bool {
+        matches!(kind, "io" | "rate_limited")
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AppError {
     pub kind: ErrorKind,

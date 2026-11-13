@@ -38,20 +38,42 @@ export function Checkbox({ className, ...props }: InputHTMLAttributes<HTMLInputE
   return <input type="checkbox" className={cn('accent-[var(--color-accent)]', className)} {...props} />;
 }
 
-/** 三态骨架：列表加载中的占位行。 */
+/** 表格骨架：只能放在 `<table><tbody>` 里（返回的是 `<tr>`／`<td>`）。 */
 export function SkeletonRows({ rows = 5, cols = 4 }: { rows?: number; cols?: number }) {
   return (
     <>
       {Array.from({ length: rows }, (_, r) => (
         <tr key={r}>
           {Array.from({ length: cols }, (_, c) => (
-            <td key={c} className="border-b border-line px-2.5 py-3">
+            <td key={c} className="skeleton-in border-b border-line px-2.5 py-3">
               <span className="block h-3 animate-pulse rounded-sm bg-hover" />
             </td>
           ))}
         </tr>
       ))}
     </>
+  );
+}
+
+/**
+ * 非表格场景的骨架（日志行、卡片列表、对话框内容）。
+ *
+ * 和 `SkeletonRows` 分开是必要的：`<tr>` 塞进 `<div>` 不会按表格渲染，
+ * 浏览器只画出几个行盒——看起来就是「加载时一片空白」，比不放骨架还糟。
+ */
+export function SkeletonBlock({
+  rows = 4,
+  className,
+}: {
+  rows?: number;
+  className?: string;
+}) {
+  return (
+    <div className={cn('skeleton-in space-y-2', className)} aria-busy="true">
+      {Array.from({ length: rows }, (_, index) => (
+        <div key={index} className="h-4 animate-pulse rounded-sm bg-hover" />
+      ))}
+    </div>
   );
 }
 

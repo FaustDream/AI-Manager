@@ -1,8 +1,12 @@
 //! 进程检测、静默启动、单实例、开机自启。全部走 Windows API。
 //!
-//! 两条硬要求：
+//! 三条硬要求：
 //!   - **外部命令不得弹控制台**（契约 20 / AGENTS 红线 11）：CreateProcessW 必须带
 //!     `CREATE_NO_WINDOW`，且 STARTUPINFO 用 SW_HIDE 双保险。
+//!   - **GUI 客户端不得继承本进程的控制台**：非 hidden 启动（`start_detached`、浏览器）
+//!     必须带 `DETACHED_PROCESS`。否则 AI Manager 一旦从终端/控制台被拉起，被它启动的
+//!     WorkBuddy 会绑定同一个控制台，终端一关客户端就跟着 STATUS_CONTROL_C_EXIT 退出
+//!     （反复重启根因之一，见 docs/workbuddy-反复重启排查.md §2.3）。
 //!   - **单实例句柄持有到进程退出**（AGENTS §6）：不手工 CloseHandle，
 //!     否则互斥体可能提前释放，第二次启动就能进来。
 
@@ -19,8 +23,8 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::System::Threading::{
     CreateMutexW, CreateProcessW, OpenProcess, TerminateProcess, CREATE_NO_WINDOW,
-    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_TERMINATE, STARTF_USESHOWWINDOW,
-    STARTUPINFOW,
+    CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    PROCESS_TERMINATE, STARTF_USESHOWWINDOW, STARTUPINFOW,
 };
 
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -94,6 +98,7 @@ pub fn kill_by_name(name: &str) -> Result<usize> {
 
 /// 正常启动一个 GUI 程序（客户端）。**不能用 SW_HIDE**：
 /// 窗口出来就是隐藏的，用户以为没启动。
+/// 走 `DETACHED_PROCESS`：客户端不继承本进程的控制台，关终端不会连累它。
 pub fn start_detached(exe: &Path) -> Result<()> {
     spawn(exe, false)
 }
@@ -245,11 +250,7 @@ pub fn spawn_with_args(exe: &Path, args: &[&str], hidden: bool) -> Result<()> {
     let mut info = PROCESS_INFORMATION::default();
     unsafe {
         // 传了环境块就必须声明它是 Unicode 块，否则 CreateProcessW 直接报参数错误
-        let mut flags = if hidden {
-            CREATE_NO_WINDOW
-        } else {
-            Default::default()
-        };
+        let mut flags = base_flags(hidden);
         if env_ptr.is_some() {
             flags |= CREATE_UNICODE_ENVIRONMENT;
         }
@@ -270,6 +271,23 @@ pub fn spawn_with_args(exe: &Path, args: &[&str], hidden: bool) -> Result<()> {
         let _ = CloseHandle(info.hThread);
     }
     Ok(())
+}
+
+/// 启动外部进程用的基础创建标志。单抽出来是为了能测——标志拼错只会在真机上表现为
+/// 「从终端拉起 AI Manager 后，被它启动的客户端一关终端就跟着退出」。
+///
+/// - `hidden`（控制台应用静默执行）：`CREATE_NO_WINDOW`，既不继承本进程控制台也不弹窗。
+/// - 非 `hidden`（GUI 客户端 / 浏览器）：`DETACHED_PROCESS`。GUI 程序本来不需要控制台，
+///   但若不显式脱离，`CreateProcessW` 会把它挂到父进程的控制台上；父进程的控制台被
+///   关闭时，GUI 程序会收到 CTRL_CLOSE_EVENT，以 STATUS_CONTROL_C_EXIT（0xC000013A）
+///   退出。两者不能同时给——微软文档明确 `CREATE_NO_WINDOW` 与 `DETACHED_PROCESS`
+///   并用时前者会被忽略，所以这里二选一。
+fn base_flags(hidden: bool) -> PROCESS_CREATION_FLAGS {
+    if hidden {
+        CREATE_NO_WINDOW
+    } else {
+        DETACHED_PROCESS
+    }
 }
 
 /// 复制当前环境并剔掉指定变量（大小写不敏感），返回 Windows 要求的 UTF-16 块：
@@ -405,7 +423,9 @@ pub fn set_autostart(enabled: bool, exe: &Path) -> Result<()> {
 
     let name = HSTRING::from(AUTOSTART_NAME);
     let result = if enabled {
-        let value = HSTRING::from(format!("\"{}\"", exe.display()));
+        // 带 --autostart：开机自启启动时进程据此识别「这是自启拉起」，
+        // 配合配置「自启后最小化到托盘」决定是否弹主窗口（见 desktop/mod.rs）。
+        let value = HSTRING::from(format!("\"{}\" --autostart", exe.display()));
         let wide = value.as_wide();
         let bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2) };
@@ -492,5 +512,27 @@ mod tests {
         let second = acquire_single_instance(name).expect("第二次调用本身不该报错");
         assert!(second.is_none(), "已有实例时第二次必须返回 None");
         // 注意：句柄故意不关闭，进程退出后系统自动回收互斥体
+    }
+
+    /// GUI 客户端（非 hidden）必须带 `DETACHED_PROCESS`：否则继承父进程控制台，
+    /// 控制台关闭时客户端会跟着 STATUS_CONTROL_C_EXIT 退出（反复重启根因）。
+    #[test]
+    fn gui_spawn_detaches_from_parent_console() {
+        assert!(
+            base_flags(false).contains(DETACHED_PROCESS),
+            "GUI 客户端启动必须脱离父进程控制台"
+        );
+        assert!(
+            !base_flags(false).contains(CREATE_NO_WINDOW),
+            "GUI 客户端不能带 CREATE_NO_WINDOW（它会让窗口隐藏，用户以为没启动）"
+        );
+    }
+
+    /// 控制台应用静默执行（hidden）走 `CREATE_NO_WINDOW`，且不与 `DETACHED_PROCESS`
+    /// 混用（微软文档：两者并用时 CREATE_NO_WINDOW 被忽略）。
+    #[test]
+    fn hidden_spawn_suppresses_console() {
+        assert!(base_flags(true).contains(CREATE_NO_WINDOW));
+        assert!(!base_flags(true).contains(DETACHED_PROCESS));
     }
 }

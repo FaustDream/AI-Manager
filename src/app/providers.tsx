@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { listen } from '@/lib/events';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/components/ui/toast';
+import { queryCmd } from '@/lib/cmd';
 import type { LoginOutcome, LogLine, RoundResult, SessionScanReport } from '@/lib/types';
 
 const queryClient = new QueryClient({
@@ -40,7 +41,8 @@ function EventBridges() {
           toast(`会话扫描：${first}`);
         }
       }),
-      // 每小时积分轮询完成：账号列表的余额/配额可能变了
+      // 积分轮询完成（默认每 5 分钟，间隔在「设置 → 定时任务」改）：
+      // 账号列表的余额/配额可能变了，静默重取，不弹 toast
       listen<unknown>('credits:round', () => {
         qc.invalidateQueries({ queryKey: ['accounts'] });
         qc.invalidateQueries({ queryKey: ['detail'] });
@@ -99,7 +101,14 @@ function EventBridges() {
         qc.setQueryData<LogLine[]>(['log-live'], (old) => [...(old ?? []).slice(-299), e.payload]);
       }),
     ];
+    // 启动就把唯一一个「重」查询预热掉：技能库要遍历各软件的技能目录（实测 ~0.85s），
+    // 其余查询都在 20ms 内。等用户点开「技能」再去读，那半秒多的骨架就躲不掉了。
+    // 延 200ms 是让首屏那几条毫秒级查询先跑完，别在启动瞬间跟它们抢。
+    const warm = window.setTimeout(() => {
+      void qc.prefetchQuery({ queryKey: ['hub'], queryFn: () => queryCmd('hub_snapshot') });
+    }, 200);
     return () => {
+      window.clearTimeout(warm);
       unbinds.forEach((p) => p.then((fn) => fn()).catch(() => {}));
     };
   }, [qc]);

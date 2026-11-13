@@ -1,13 +1,17 @@
 {
   "name": "ai-manager-ui",
   "private": true,
-  "version": "2.0.15",
+  "version": "2.0.16",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/wb-heavy-run.ps1 -Task cargo-test -Wait",
+    "test:rust:lib": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/wb-heavy-run.ps1 -Task cargo-test-lib -Wait",
+    "check:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/wb-heavy-run.ps1 -Task cargo-clippy -Wait",
+    "fmt:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/wb-heavy-run.ps1 -Task cargo-fmt -Wait"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",

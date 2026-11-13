@@ -88,6 +88,7 @@ export interface CmdArgs {
   account_uid: { iid: string };
   account_current: void;
   account_add_prepare: { platform: string };
+  account_add_cookie: { platform: string; cookie: string; name: string };
   account_open_client: { platform: string };
   open_external: { url: string };
   open_private_browser: { url: string };
@@ -196,6 +197,7 @@ export interface CmdReturn {
   account_uid: string;
   account_current: string[];
   account_add_prepare: AddOutcome;
+  account_add_cookie: string;
   account_open_client: boolean;
   open_external: void;
   open_private_browser: string;
@@ -329,6 +331,7 @@ const CMD_LABELS: Record<string, string> = {
   account_uid: '复制账号 UID',
   account_current: '读取当前登录',
   account_add_prepare: '打开客户端登录页',
+  account_add_cookie: '用 Cookie 添加账号',
   account_open_client: '打开客户端',
   open_external: '打开外部链接',
   open_private_browser: '打开登录页（无痕）',

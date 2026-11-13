@@ -14,7 +14,13 @@ at: string | null,
 /**
  * `kind = every` 时的间隔小时数
  */
-hours: number | null, enabled: boolean, 
+hours: number | null, 
+/**
+ * `kind = every` 时的间隔分钟数。与 `hours` 二选一，**分钟优先**：
+ * 积分/用量这种要跟得紧的任务按分钟配，签到这种一天一次仍按小时。
+ * 老配置只有 `hours`，读出来照旧走小时，行为不变。
+ */
+minutes: number | null, enabled: boolean, 
 /**
  * 上次真正跑起来的时刻（RFC3339）。`every` 用它推下一次，也用来判「今天跑过没」
  */

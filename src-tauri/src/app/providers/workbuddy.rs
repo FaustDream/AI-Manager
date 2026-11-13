@@ -681,4 +681,22 @@ mod tests {
             "没有档案时一个字节都不能写"
         );
     }
+
+    /// 回归：切换守卫只认本版本的 exe，不能把 CodeBuddy IDE 当成「WorkBuddy 在运行」。
+    ///
+    /// `switch_to` 的守卫若带上 `CodeBuddy CN.exe`，用户开着 IDE 就永远切不了号，
+    /// 报错却是「请先关闭 WorkBuddy 国内版 客户端再切换」——指错人。
+    #[test]
+    fn switch_guard_only_watches_its_own_client() {
+        assert_eq!(
+            WorkBuddyProvider::new(false).process_names(),
+            &["WorkBuddy.exe"],
+            "国内版只该看 WorkBuddy.exe，CodeBuddy IDE 是另一个产品"
+        );
+        assert_eq!(
+            WorkBuddyProvider::new(true).process_names(),
+            &["WorkBuddyAI.exe"],
+            "国际版只该看 WorkBuddyAI.exe"
+        );
+    }
 }

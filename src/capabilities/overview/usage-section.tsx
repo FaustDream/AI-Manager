@@ -181,7 +181,7 @@ export function UsageSection() {
                   const share = data.total.tokens === 0 ? 0 : (app.tokens / data.total.tokens) * 100;
                   return (
                     <tr key={app.platform} className="border-t border-line/60">
-                      <td className="py-1">{appLabel(app.platform)}</td>
+                      <td className="whitespace-nowrap py-1">{appLabel(app.platform)}</td>
                       <td
                         className="py-1 text-right tabular-nums"
                         title={fmtTokensExact(app.tokens)}
@@ -233,7 +233,7 @@ export function UsageSection() {
                     const share = data.total.tokens === 0 ? 0 : (day.tokens / data.total.tokens) * 100;
                     return (
                       <tr key={day.date} className="border-t border-line/60">
-                        <td className="py-1 tabular-nums">{day.date}</td>
+                        <td className="whitespace-nowrap py-1 tabular-nums">{day.date}</td>
                         <td
                           className="py-1 text-right tabular-nums"
                           title={fmtTokensExact(day.tokens)}

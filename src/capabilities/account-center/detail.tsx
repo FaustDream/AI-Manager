@@ -31,10 +31,23 @@ import type { CreditClaim } from '@/lib/types';
 
 const claimSources: Record<string, string> = { checkin: '签到', activity: '活动', travel: '猫猫旅行' };
 const claimColumns: Column<CreditClaim>[] = [
-  { key: 'date', header: '日期', width: 160, cell: (row) => fmtTime(row.claimed_at) },
-  { key: 'source', header: '来源', width: 100, cell: (row) => claimSources[row.source] ?? row.source },
+  { key: 'date', header: '日期', width: 160, truncate: true, cell: (row) => fmtTime(row.claimed_at) },
+  {
+    key: 'source',
+    header: '来源',
+    width: 100,
+    truncate: true,
+    title: (row) => claimSources[row.source] ?? row.source,
+    cell: (row) => claimSources[row.source] ?? row.source,
+  },
   { key: 'amount', header: '积分', width: 100, align: 'right', cell: (row) => row.amount == null ? '未提供' : fmtAmount(row.amount) },
-  { key: 'description', header: '描述', cell: (row) => row.description },
+  {
+    key: 'description',
+    header: '描述',
+    truncate: true,
+    title: (row) => row.description,
+    cell: (row) => row.description,
+  },
 ];
 
 function Stat({
@@ -110,7 +123,7 @@ export function DetailPanel({
     refetchInterval: 15_000,
   });
 
-  // CodeBuddy 软件 / IDEA 插件现在登的是谁——切换前后都给个明确状态。
+  // CodeBuddy IDE / CodeBuddy 插件现在登的是谁——切换前后都给个明确状态。
   // 这两个客户端只服务国内版：国际版账号连状态都不查（查了也没有可切的东西）。
   const codebuddyTargets = useQuery<CodebuddyTargetStatus[]>({
     queryKey: ['codebuddy-targets'],
@@ -233,14 +246,14 @@ export function DetailPanel({
       
     });
 
-  // 三端同号、分开切换：这两个按钮只动 CodeBuddy 软件 / IDEA 插件的登录，
+  // 三端同号、分开切换：这两个按钮只动 CodeBuddy IDE / CodeBuddy 插件的登录，
   // 用这个账号的 WorkBuddy 档案写入（列表上的「切换登录」只切 WorkBuddy 本体）。
   // 只对国内版开放：CodeBuddy 系客户端没有国际版授权域，切过去也登不上。
   const canSwitchCodebuddy =
     account.platform === 'workbuddy' && !account.iid.endsWith('@intl');
   const switchCodebuddy = (target: 'software' | 'idea') =>
     runBusy(`switch-${target}`, async () => {
-      const label = target === 'software' ? 'CodeBuddy 软件' : 'IDEA 插件';
+      const label = target === 'software' ? 'CodeBuddy IDE' : 'CodeBuddy 插件';
       const ok = await confirmAction({
         title: `切换 ${label} 登录`,
         message:
@@ -374,18 +387,18 @@ export function DetailPanel({
               onClick={() => switchCodebuddy('software')}
               loading={busy === 'switch-software'}
               disabled={!!busy}
-              title="把 CodeBuddy 软件的登录切成这个账号"
+              title="把 CodeBuddy IDE 的登录切成这个账号"
             >
-              切换 CodeBuddy 软件
+              切换 CodeBuddy IDE
             </Button>
             <Button
               size="sm"
               onClick={() => switchCodebuddy('idea')}
               loading={busy === 'switch-idea'}
               disabled={!!busy}
-              title="把 IDEA 里 CodeBuddy 插件的登录切成这个账号"
+              title="把 IntelliJ IDEA 里 CodeBuddy 插件的登录切成这个账号"
             >
-              切换 IDEA 插件
+              切换 CodeBuddy 插件
             </Button>
           </>
         )}
@@ -531,15 +544,15 @@ export function DetailPanel({
                   days === null ? '长期' : days < 0 ? '已过期' : days === 0 ? '今天到期' : `剩 ${days} 天`;
                 return (
                   <tr key={`${lot.lot_key || lot.label}-${index}`} className="border-t border-line/60">
-                    <td className="py-1 tabular-nums">{fmtDay(lot.expires_at)}</td>
-                    <td className="py-1 tabular-nums">{fmtAmount(lot.amount)}</td>
+                    <td className="whitespace-nowrap py-1 tabular-nums">{fmtDay(lot.expires_at)}</td>
+                    <td className="whitespace-nowrap py-1 tabular-nums">{fmtAmount(lot.amount)}</td>
                     <td className="truncate py-1">
                       <span>{lot.label || (lot.lot_key ? '签到发放' : '平台批次')}</span>
                       {lot.granted_at && (
                         <span className="ml-2 text-xs text-muted">{fmtDay(lot.granted_at)} 发放</span>
                       )}
                     </td>
-                    <td className="py-1 text-right">
+                    <td className="whitespace-nowrap py-1 text-right">
                       <Tag tone={tone}>{text}</Tag>
                     </td>
                   </tr>
@@ -714,12 +727,12 @@ export function DetailPanel({
                 <tbody>
                   {reward.data.packages.map((pkg) => (
                     <tr key={pkg.name} className="border-t border-line/60">
-                      <td className="py-1">{pkg.name}</td>
-                      <td className="py-1 text-right tabular-nums">
+                      <td className="max-w-[200px] truncate py-1" title={pkg.name}>{pkg.name}</td>
+                      <td className="whitespace-nowrap py-1 text-right tabular-nums">
                         {fmtAmount(pkg.remain)} / {fmtAmount(pkg.size)}
                       </td>
-                      <td className="py-1 text-right tabular-nums">{pkg.count}</td>
-                      <td className="py-1 text-right tabular-nums">
+                      <td className="whitespace-nowrap py-1 text-right tabular-nums">{pkg.count}</td>
+                      <td className="whitespace-nowrap py-1 text-right tabular-nums">
                         {pkg.expires_at ? fmtDay(pkg.expires_at) : '—'}
                       </td>
                     </tr>

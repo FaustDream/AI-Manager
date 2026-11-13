@@ -27,10 +27,13 @@ impl WorkBuddyProvider {
             auth_dir: default_auth_dir(),
             data_root: default_data_root(intl),
             pack_root: paths::data_dir().join("profiles"),
+            // **只认本产品自己的 exe**，名字统一从 `app::products` 取。
+            // `CodeBuddy CN.exe` / `CodeBuddy.exe` 属于 CodeBuddy IDE（另一个产品），
+            // 混进来会让开着 IDE 的用户永远切不了号，报错还指错人。
             processes: if intl {
-                &["WorkBuddyAI.exe"]
+                crate::app::products::Product::WorkBuddyIntl.processes()
             } else {
-                &["WorkBuddy.exe", "CodeBuddy CN.exe", "CodeBuddy.exe"]
+                crate::app::products::Product::WorkBuddyCn.processes()
             },
         }
     }

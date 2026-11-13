@@ -270,12 +270,20 @@ fn logout_zcode() -> Result<()> {
 }
 
 /// 客户端进程名。
+///
+/// WorkBuddy 国内版**只有 `WorkBuddy.exe`**：`CodeBuddy CN.exe` / `CodeBuddy.exe` 是
+/// CodeBuddy IDE 的进程名，另一个产品。把它们列进来有两处硬伤：
+///   - `wait_until_gone` 永远等不到「进程没了」，添加账号直接失败；
+///   - `client_exe` 找不到安装位置时用它兜底，会顺手杀掉用户正在写代码的 IDE。
+///
+/// 四家产品的进程名统一由 `app::products` 提供，这里只做平台键 → 产品的翻译。
 pub fn process_names(platform: &str) -> &'static [&'static str] {
+    if let Some(product) = crate::app::products::Product::from_account_key(platform) {
+        return product.processes();
+    }
     match platform {
         "qoder" => &["Qoder CN.exe"],
         "qoder_intl" => &["Qoder.exe"],
-        "workbuddy" => &["WorkBuddy.exe", "CodeBuddy CN.exe", "CodeBuddy.exe"],
-        "workbuddy_intl" => &["WorkBuddyAI.exe"],
         "zcode" => &["ZCode.exe", "zcode.exe"],
         _ => &[],
     }
@@ -331,6 +339,12 @@ pub fn close_client(platform: &str) -> Result<bool> {
 }
 
 fn candidates(platform: &str) -> Vec<PathBuf> {
+    // WorkBuddy 两版与 CodeBuddy IDE 的安装位统一从产品表展开：
+    // 认错产品的代价是「点添加账号却关掉了你正在写代码的 IDE」。
+    if let Some(product) = crate::app::products::Product::from_account_key(platform) {
+        return install_paths(product);
+    }
+
     let local = std::env::var("LOCALAPPDATA").ok().map(PathBuf::from);
     let pf = std::env::var("ProgramFiles").ok().map(PathBuf::from);
     let programs = local.as_ref().map(|p| p.join("Programs"));
@@ -358,35 +372,6 @@ fn candidates(platform: &str) -> Vec<PathBuf> {
             push(programs.as_ref().map(|p| p.join("Qoder").join("Qoder.exe")));
             push(local.as_ref().map(|p| p.join("Qoder").join("Qoder.exe")));
         }
-        "workbuddy" => {
-            push(Some(PathBuf::from(r"C:\App\WB\CN\WorkBuddy.exe")));
-            push(
-                programs
-                    .as_ref()
-                    .map(|p| p.join("WorkBuddy").join("WorkBuddy.exe")),
-            );
-            push(
-                programs
-                    .as_ref()
-                    .map(|p| p.join("CodeBuddy CN").join("CodeBuddy CN.exe")),
-            );
-            push(
-                pf.as_ref()
-                    .map(|p| p.join("WorkBuddy").join("WorkBuddy.exe")),
-            );
-        }
-        "workbuddy_intl" => {
-            push(Some(PathBuf::from(r"C:\App\WB\AI\WorkBuddyAI.exe")));
-            push(
-                programs
-                    .as_ref()
-                    .map(|p| p.join("WorkBuddyAI").join("WorkBuddyAI.exe")),
-            );
-            push(
-                pf.as_ref()
-                    .map(|p| p.join("WorkBuddyAI").join("WorkBuddyAI.exe")),
-            );
-        }
         "zcode" => {
             push(pf.as_ref().map(|p| p.join("ZCode").join("ZCode.exe")));
             push(programs.as_ref().map(|p| p.join("ZCode").join("ZCode.exe")));
@@ -395,6 +380,25 @@ fn candidates(platform: &str) -> Vec<PathBuf> {
         _ => {}
     }
     out
+}
+
+/// 把产品表里的安装位置候选展开成绝对路径（按表里的顺序，先命中先得）。
+fn install_paths(product: crate::app::products::Product) -> Vec<PathBuf> {
+    use crate::app::products::Install;
+
+    let local = std::env::var("LOCALAPPDATA").ok().map(PathBuf::from);
+    let pf = std::env::var("ProgramFiles").ok().map(PathBuf::from);
+    product
+        .installs()
+        .iter()
+        .filter_map(|install| match install {
+            Install::Abs(path) => Some(PathBuf::from(path)),
+            Install::UserPrograms(dir, exe) => local
+                .as_ref()
+                .map(|p| p.join("Programs").join(dir).join(exe)),
+            Install::ProgramFiles(dir, exe) => pf.as_ref().map(|p| p.join(dir).join(exe)),
+        })
+        .collect()
 }
 
 /// 各平台客户端数据目录（与 Provider 用的是同一套路径，集中在这里免得两处漂移）。
@@ -503,5 +507,47 @@ mod tests {
     fn missing_client_is_reported_not_panicked() {
         // 用一个绝不可能存在的平台组合验证「找不到就报错」
         assert!(client_exe("qoder_intl_none").is_none());
+    }
+
+    /// 回归（正式版实测）：WorkBuddy 国内版的进程名表里不能出现 CodeBuddy IDE 的进程名。
+    ///
+    /// 故障链：开着 CodeBuddy IDE 切 WorkBuddy 账号 → `close_client` 按安装路径只查
+    /// `WorkBuddy.exe`，判定「本来就没开」→ `providers::switch` 的守卫用这张表又看到
+    /// `CodeBuddy CN.exe` 在跑 → 失败在「写入登录态」，原因「请先关闭 WorkBuddy 国内版
+    /// 客户端再切换」。用户关掉 WorkBuddy 也没用，因为挡路的是 IDE。
+    #[test]
+    fn workbuddy_process_names_exclude_codebuddy_ide() {
+        for platform in ["workbuddy", "workbuddy_intl"] {
+            let names = process_names(platform);
+            assert!(
+                !names
+                    .iter()
+                    .any(|n| n.to_ascii_lowercase().contains("codebuddy")),
+                "{platform} 的进程名表混进了 CodeBuddy IDE：{names:?}"
+            );
+        }
+        assert_eq!(process_names("workbuddy"), &["WorkBuddy.exe"]);
+    }
+
+    /// 安装位同样不许串：WorkBuddy 两版的候选里不能出现 CodeBuddy IDE 的安装路径。
+    ///
+    /// 认错的后果不是报错，是「点添加账号，结果关掉/启动了用户正在写代码的 IDE」。
+    #[test]
+    fn workbuddy_install_candidates_never_point_at_codebuddy_ide() {
+        for platform in ["workbuddy", "workbuddy_intl"] {
+            for path in candidates(platform) {
+                let text = path.to_string_lossy().to_lowercase();
+                assert!(
+                    !text.contains("codebuddy"),
+                    "{platform} 的安装位指到了 IDE：{text}"
+                );
+            }
+        }
+        // 进程名表与产品表同源，别再各写一份
+        for platform in ["workbuddy", "workbuddy_intl"] {
+            let product = crate::app::products::Product::from_account_key(platform).unwrap();
+            assert_eq!(process_names(platform), product.processes());
+            assert_eq!(candidates(platform).len(), product.installs().len());
+        }
     }
 }

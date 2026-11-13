@@ -5,6 +5,7 @@
 //! 切换登录在 `app/providers/*::switch_to`，编排在 `switch`。
 
 pub mod add;
+pub mod cookie;
 pub mod credential;
 pub mod credential_refresh;
 pub mod login;

@@ -108,6 +108,36 @@ pub async fn account_scan(
         .map_err(err_text)
 }
 
+/// 用 Cookie 添加账号（豆包这类「没有可借用登录流程」的平台）。
+///
+/// 返回新账号的 iid：同一份 Cookie 重复添加会落回同一行，界面按 iid 就能判重。
+#[tauri::command]
+pub async fn account_add_cookie(
+    state: State<'_, AppState>,
+    platform: String,
+    cookie: String,
+    name: String,
+) -> std::result::Result<String, String> {
+    let db = state.db.clone();
+    let identity = crate::app::runtime::blocking(move || {
+        crate::app::accounts::cookie::add(&db, &platform, &cookie, &name)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)?;
+    crate::app::log::action(
+        "添加账号",
+        "user",
+        true,
+        0,
+        format!(
+            "用 Cookie 添加账号：{}（{}）",
+            identity.name, identity.platform_label
+        ),
+    );
+    Ok(identity.iid)
+}
+
 /// 浏览器登录第一步：申请登录地址 → 后台等登录完成。
 /// **不自动打开浏览器**：界面自己给出链接和「在浏览器打开」，避免一次点击弹两个窗口。
 /// 登录成功后由后台任务入库并 emit `account:login`，界面据此刷新。

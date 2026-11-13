@@ -345,10 +345,11 @@ async fn wait_workbuddy(db: &Db, platform: &str, ticket: &str) -> Result<LoginOu
 }
 
 fn wb_label(intl: bool) -> &'static str {
+    // 显示名只从产品表取，别在登录流程里再抄一份
     if intl {
-        "WorkBuddy 国际版"
+        crate::app::products::Product::WorkBuddyIntl.label()
     } else {
-        "WorkBuddy 国内版"
+        crate::app::products::Product::WorkBuddyCn.label()
     }
 }
 

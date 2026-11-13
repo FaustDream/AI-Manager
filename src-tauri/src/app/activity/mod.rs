@@ -461,7 +461,9 @@ impl Service {
                     round.failed += 1;
                 }
                 Outcome::Skip => round.waiting += 1,
-                Outcome::Fail => round.failed += 1,
+                // Retry = 环境性失败（断网/限流）。旅行任务目前不会产出这一档，
+                // 但计数口径要和失败一致：没做成就是没做成，不能算全绿。
+                Outcome::Fail | Outcome::Retry => round.failed += 1,
             }
             // 只为「有变化」或「失败」留逐项记录：旅行中、今日上限这类正常等待
             // 每小时都会出现一次，逐条记等于把日志变成心跳，反而盖住真正需要看的失败。

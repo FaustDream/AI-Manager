@@ -98,8 +98,16 @@ pub fn is_archived(db: &Db, key: &str) -> Result<bool> {
     })
 }
 
-/// 到点自动归档：最后活动早于 `days` 天的可见会话打上归档标记，返回新增条数。
+/// 到点自动归档：最后活动早于 `days` 天的会话打上归档标记，返回新增条数。
 /// `days = 0` 表示关闭（用户选「不自动归档」）。
+///
+/// 判定依据是 `last_at`（**最后活动时间**，也就是列表里显示的时间），不是创建时间：
+/// 归档要回答的是「很久没动过了」，一个天天在用的老会话当然不该被收走。
+///
+/// 覆盖范围是「还会出现在主列表里的行」——除了客户端已删除（`deleted`，那类直接彻底
+/// 删除即可）之外的 `visible` / `orphan` / `cloud` / `old_account` 都算。早先只认
+/// `visible`，结果 ZCode 那批父会话已消失的 `orphan` 行永远留在列表里，看起来像
+/// 「自动归档没生效」。
 pub fn auto_archive(db: &Db, days: u32) -> Result<usize> {
     if days == 0 {
         return Ok(0);
@@ -113,7 +121,7 @@ pub fn auto_archive(db: &Db, days: u32) -> Result<usize> {
              FROM session_index s
              LEFT JOIN session_marks m
                ON m.source_key = s.source_key AND m.session_id = s.session_id
-             WHERE COALESCE(s.state, 'visible') = 'visible'
+             WHERE COALESCE(s.state, 'visible') <> 'deleted'
                AND s.last_at IS NOT NULL AND s.last_at > 0 AND s.last_at < ?1
                AND m.archived_at IS NULL",
             rusqlite::params![cutoff, now],
@@ -185,10 +193,16 @@ mod tests {
         seed(&db, "qoder_cn", "old", old, "visible");
         seed(&db, "qoder_cn", "new", now, "visible");
         seed(&db, "qoder_cn", "gone", old, "deleted");
-        assert_eq!(auto_archive(&db, 30).unwrap(), 1);
+        // 孤儿（父会话已消失的内部会话）同样会出现在主列表里，老的也要收走
+        seed(&db, "qoder_cn", "orphan", old, "orphan");
+        // 云端占位同理：列表里能看到，就该跟着归档
+        seed(&db, "qoder_cn", "cloud", old, "cloud");
+        assert_eq!(auto_archive(&db, 30).unwrap(), 3);
         assert!(is_archived(&db, "qoder|qoder_cn||old").unwrap());
         assert!(!is_archived(&db, "qoder|qoder_cn||new").unwrap());
         assert!(!is_archived(&db, "qoder|qoder_cn||gone").unwrap());
+        assert!(is_archived(&db, "qoder|qoder_cn||orphan").unwrap());
+        assert!(is_archived(&db, "qoder|qoder_cn||cloud").unwrap());
         // 关掉自动归档就不动任何东西
         assert_eq!(auto_archive(&db, 0).unwrap(), 0);
     }

@@ -1,13 +1,15 @@
 //! CodeBuddy 家族两个客户端的登录态写入面：用 WorkBuddy 账号档案切换它们的登录。
 //!
-//! 取证结论（2026-11 实机，见 data/backups/switch-exp-* 的对照实验）：
-//! 两端存的都是同一份**转换版会话 JSON**（票据解密后的 `auth`/`account`/`accounts`
-//! 加上插件 `attachOldSessionProperties` 的拍平字段），差异只在落点：
-//!   - 「CodeBuddy 软件」（VSCode-fork）：`%APPDATA%\CodeBuddy CN\User\globalStorage\state.vscdb`
+//! **两个目标不是同一个产品，落点也完全不同**（显示名以 `app::products` 为准）：
+//!   - `CodeBuddy IDE`（VSCode-fork）：`%APPDATA%\CodeBuddy CN\User\globalStorage\state.vscdb`
 //!     的 `secret://…planning-genie.new.accessTokencn` 键；值是 Node Buffer-JSON
 //!     （`{"type":"Buffer","data":[…]}`）包着的 `v10` 信封，主密钥在 `Local State`。
-//!   - 「IDEA 插件」（JetBrains 宿主）：`%APPDATA%\JetBrains\*\options\secret-storage.xml`
+//!   - `CodeBuddy 插件`（JetBrains 宿主）：`%APPDATA%\JetBrains\*\options\secret-storage.xml`
 //!     的 `<Entry key="Tencent-Cloud.coding-copilot.new.accessToken">`，值是 XML 转义的明文 JSON。
+//!
+//! 取证结论（2026-11 实机，见 data/backups/switch-exp-* 的对照实验）：
+//! 两端存的都是同一份**转换版会话 JSON**（票据解密后的 `auth`/`account`/`accounts`
+//! 加上插件 `attachOldSessionProperties` 的拍平字段），差异只在落点。
 //!
 //! 拍平规则必须与插件的 `attachOldSessionProperties` 逐字段一致（`account.id`/`label`、
 //! 顶层 `id`/`token`/`accessToken`（`uid+token` 形态）/`converted`），否则插件走旧格式
@@ -41,17 +43,40 @@ impl Target {
     }
 
     fn label(self) -> &'static str {
+        // 显示名统一由产品表给：同一个东西在界面/日志里叫两个名字，就是下一次混淆的开始
         match self {
-            Self::Software => "CodeBuddy 软件",
-            Self::IdeaPlugin => "IDEA 插件",
+            Self::Software => crate::app::products::Product::CodeBuddyIde.label(),
+            Self::IdeaPlugin => crate::app::products::Product::CodeBuddyIdea.label(),
         }
     }
 
     /// 需要检查是否在运行的进程名。在跑就不能写：两端都会在退出时把内存态刷回磁盘。
-    fn processes(self) -> &'static [&'static str] {
+    ///
+    /// CodeBuddy IDE 是固定 exe；插件**没有自己的进程**，宿主是装了插件的那个
+    /// JetBrains IDE（`idea64.exe` / `goland64.exe` …），必须按本机实际安装情况现算——
+    /// 写死 `idea64.exe` 会漏掉 GoLand / PyCharm，而漏判的结果是「切了没生效」。
+    fn host_processes(self, roots: &Roots) -> Vec<String> {
         match self {
-            Self::Software => &["CodeBuddy CN.exe", "CodeBuddy.exe"],
-            Self::IdeaPlugin => &["idea64", "idea"],
+            Self::Software => crate::app::products::Product::CodeBuddyIde
+                .processes()
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+            Self::IdeaPlugin => {
+                let mut out: Vec<String> = Vec::new();
+                for xml in idea_stores(roots) {
+                    let Some(stem) = host_stem_of(&xml) else {
+                        continue;
+                    };
+                    // JetBrains 的 exe 是 `<词干>.exe` / `<词干>64.exe`
+                    for exe in [format!("{stem}.exe"), format!("{stem}64.exe")] {
+                        if !out.contains(&exe) {
+                            out.push(exe);
+                        }
+                    }
+                }
+                out
+            }
         }
     }
 
@@ -79,6 +104,13 @@ impl Target {
         }
     }
 }
+
+/// CodeBuddy 插件在 JetBrains 侧的落点：插件目录名与凭据条目前缀（实机取证值）。
+///
+/// 两处都用它判断「这个 IDE 到底装没装插件」——只看 `secret-storage.xml` 会把
+/// 用户所有 JetBrains 产品都算进来。
+const PLUGIN_DIR: &str = "coding-copilot-jetbrains";
+const PLUGIN_ENTRY_KEY: &str = "Tencent-Cloud.coding-copilot";
 
 /// 账号作用域的产品/模型缓存键：切号后必须清掉，否则客户端仍拿着旧账号的
 /// 模型清单与能力（权限），要等自然过期才刷新。两端用同一组键名（实机取证）。
@@ -164,7 +196,10 @@ fn software_vscdb(roots: &Roots) -> PathBuf {
         .join("CodeBuddy CN/User/globalStorage/state.vscdb")
 }
 
-/// 本机所有 IDE 的 secret-storage.xml（装了插件才有）。
+/// 本机所有**装了 CodeBuddy 插件**的 IDE 的 secret-storage.xml。
+///
+/// 判据是插件本体或凭据条目，不是「有没有 secret-storage.xml」——任何 JetBrains IDE
+/// 跑一次都会生成那个文件，按它写等于把 WorkBuddy 的令牌撒进用户所有 IDE 的密钥库。
 fn idea_stores(roots: &Roots) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(dirs) = std::fs::read_dir(roots.appdata.join("JetBrains")) else {
@@ -172,11 +207,24 @@ fn idea_stores(roots: &Roots) -> Vec<PathBuf> {
     };
     for dir in dirs.flatten() {
         let xml = dir.path().join("options").join("secret-storage.xml");
-        if xml.is_file() {
+        if !xml.is_file() {
+            continue;
+        }
+        let has_plugin = dir.path().join("plugins").join(PLUGIN_DIR).is_dir();
+        let has_entry = std::fs::read_to_string(&xml)
+            .map(|text| text.contains(PLUGIN_ENTRY_KEY))
+            .unwrap_or(false);
+        if has_plugin || has_entry {
             out.push(xml);
         }
     }
     out
+}
+
+/// `…\JetBrains\IntelliJIdea2026.3\options\secret-storage.xml` → `idea`
+fn host_stem_of(store: &Path) -> Option<&'static str> {
+    let product_dir = store.parent()?.parent()?.file_name()?;
+    crate::app::products::host_stem(&product_dir.to_string_lossy())
 }
 
 /// 目标客户端**当前**登录账号的 uid（会话保留的来源）。读不到返回 None。
@@ -210,25 +258,43 @@ fn read_software_session(roots: &Roots) -> Option<Value> {
     serde_json::from_slice(&plain).ok()
 }
 
-/// 读 IDEA 插件 secret-storage.xml 里的会话（明文 Entry）。
+/// 读插件在 secret-storage.xml 里的会话（明文 Entry）。
+///
+/// 多个 IDE 都装了插件时取**最近写过**的那份：同一台机器上可能在不同 IDE 登了不同账号，
+/// 遍历顺序随机会让「当前登录是谁」变成抽奖——切完把会话归到错的账号名下。
 fn read_idea_session(roots: &Roots) -> Option<Value> {
-    let jb = roots.appdata.join("JetBrains");
-    let dirs = std::fs::read_dir(jb).ok()?;
-    for dir in dirs.flatten() {
-        let xml = dir.path().join("options/secret-storage.xml");
+    let mut stores = idea_stores(roots);
+    stores.sort_by_key(|path| std::cmp::Reverse(mtime_ms(path)));
+
+    let marker = format!("key=\"{PLUGIN_ENTRY_KEY}.new.accessToken\" value=\"");
+    for xml in stores {
         let Ok(text) = std::fs::read_to_string(&xml) else {
             continue;
         };
-        let marker = "key=\"Tencent-Cloud.coding-copilot.new.accessToken\" value=\"";
-        let at = text.find(marker)?;
+        // 这个 IDE 装了插件但没登过 CodeBuddy：换下一个。
+        // 早先这里是 `?`——一个空 store 就把整次读取结束掉，另一台已登录的 IDE 永远读不到。
+        let Some(at) = text.find(&marker) else {
+            continue;
+        };
         let value_start = at + marker.len();
-        let value_end = value_start + text[value_start..].find('"')?;
-        let raw = unescape_xml(&text[value_start..value_end]);
+        let Some(len) = text[value_start..].find('"') else {
+            continue;
+        };
+        let raw = unescape_xml(&text[value_start..value_start + len]);
         if let Ok(doc) = serde_json::from_str::<Value>(&raw) {
             return Some(doc);
         }
     }
     None
+}
+
+fn mtime_ms(path: &Path) -> u128 {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|delta| delta.as_millis())
+        .unwrap_or(0)
 }
 
 fn unescape_xml(s: &str) -> String {
@@ -563,7 +629,11 @@ pub fn switch_target(
     edition: &str,
     target: Target,
 ) -> Result<SwitchOutcome> {
-    switch_target_with(roots, uid, name, edition, target, target.processes())
+    // 在跑就不能写：先按本机实际安装情况算出「谁在占着这些文件」。
+    // 插件没有自己的进程，宿主是装了插件的那个 JetBrains IDE。
+    let processes = target.host_processes(roots);
+    let refs: Vec<&str> = processes.iter().map(String::as_str).collect();
+    switch_target_with(roots, uid, name, edition, target, &refs)
 }
 
 fn switch_target_with(
@@ -808,6 +878,13 @@ mod tests {
             .path()
             .join("JetBrains/IntelliJIdea2026.2/options/secret-storage.xml");
         std::fs::create_dir_all(xml.parent().unwrap()).unwrap();
+        // 插件装着、还没登录——这是「首次切换」的真实形态：有插件目录、没有凭据条目。
+        // 只有 secret-storage.xml 的 IDE 不算 CodeBuddy 宿主，不会被写。
+        std::fs::create_dir_all(
+            dir.path()
+                .join("JetBrains/IntelliJIdea2026.2/plugins/coding-copilot-jetbrains"),
+        )
+        .unwrap();
         std::fs::write(
             &xml,
             r#"<application>
@@ -878,6 +955,112 @@ mod tests {
     #[test]
     fn xml_escape_is_reversible_enough_for_attributes() {
         assert_eq!(xml_escape(r#"a"b&c<d>"#), "a&quot;b&amp;c&lt;d&gt;");
+    }
+
+    /// 回归：插件的「在运行」判据必须是带 `.exe` 的宿主进程名。
+    ///
+    /// 早先写的是 `["idea64", "idea"]`，而 `process_running` 比对的是任务管理器里的
+    /// `szExeFile`（`idea64.exe`），永远匹配不上——守卫形同虚设，写进去的登录态
+    /// 会被 IDE 退出时回写覆盖，用户看到的就是「切了没生效」。
+    #[test]
+    fn idea_plugin_guard_uses_full_exe_names() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let roots = roots(&dir);
+        let host = roots.appdata.join("JetBrains/IntelliJIdea2026.3");
+        std::fs::create_dir_all(host.join("options")).unwrap();
+        std::fs::create_dir_all(host.join("plugins/coding-copilot-jetbrains")).unwrap();
+        std::fs::write(
+            host.join("options/secret-storage.xml"),
+            b"<Scores></Scores>",
+        )
+        .unwrap();
+
+        let names = Target::IdeaPlugin.host_processes(&roots);
+        assert!(names.iter().any(|n| n == "idea64.exe"), "{names:?}");
+        assert!(names.iter().any(|n| n == "idea.exe"), "{names:?}");
+        assert!(
+            names.iter().all(|n| n.to_lowercase().ends_with(".exe")),
+            "必须是 exe 全名：{names:?}"
+        );
+        // CodeBuddy IDE 是固定进程名，不受 JetBrains 目录影响
+        assert_eq!(
+            Target::Software.host_processes(&roots),
+            vec!["CodeBuddy CN.exe", "CodeBuddy.exe"]
+        );
+    }
+
+    /// 只碰装了插件的 IDE。
+    ///
+    /// 任何 JetBrains IDE 跑一次都会生成 `secret-storage.xml`；按「有这个文件」就写，
+    /// 等于把 WorkBuddy 的令牌撒进用户所有 IDE 的密钥库（GoLand / PyCharm 都会中招）。
+    #[test]
+    fn idea_stores_only_touch_ides_with_the_plugin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let roots = roots(&dir);
+        let jb = roots.appdata.join("JetBrains");
+
+        // 没装插件：只有 IDE 自己的密钥库
+        std::fs::create_dir_all(jb.join("GoLand2026.1/options")).unwrap();
+        std::fs::write(
+            jb.join("GoLand2026.1/options/secret-storage.xml"),
+            b"<Scores></Scores>",
+        )
+        .unwrap();
+        // 装了插件
+        std::fs::create_dir_all(jb.join("IntelliJIdea2026.3/options")).unwrap();
+        std::fs::create_dir_all(jb.join("IntelliJIdea2026.3/plugins/coding-copilot-jetbrains"))
+            .unwrap();
+        std::fs::write(
+            jb.join("IntelliJIdea2026.3/options/secret-storage.xml"),
+            b"<Scores></Scores>",
+        )
+        .unwrap();
+
+        let stores = idea_stores(&roots);
+        assert_eq!(stores.len(), 1, "{stores:?}");
+        assert!(stores[0].starts_with(jb.join("IntelliJIdea2026.3")));
+    }
+
+    /// 回归：装了插件但没登过 CodeBuddy 的 IDE 不能把整次读取结束掉。
+    ///
+    /// 旧实现在循环里用 `?`——第一个 store 没有条目就直接 return None，
+    /// 另一台已经登录的 IDE 永远读不到，状态显示「未登录」、切换也不迁移会话。
+    #[test]
+    fn read_idea_session_skips_hosts_without_a_ticket() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let roots = roots(&dir);
+        let jb = roots.appdata.join("JetBrains");
+        let doc = json!({"account": {"uid": "u-9"}, "auth": {"domain": "www.workbuddy.cn"}});
+        let entry = format!(
+            r#"<Scores><Entry key="{}.new.accessToken" value="{}" /></Scores>"#,
+            PLUGIN_ENTRY_KEY,
+            xml_escape(&serde_json::to_string(&doc).unwrap())
+        );
+
+        // IntelliJ 有票据（更旧）；PyCharm 装了插件没登录（更新，会被先读到）
+        for (name, body, secs_ago) in [
+            ("IntelliJIdea2026.3", entry, 600u64),
+            ("PyCharm2026.1", "<Scores></Scores>".to_string(), 0u64),
+        ] {
+            let host = jb.join(name);
+            std::fs::create_dir_all(host.join("options")).unwrap();
+            std::fs::create_dir_all(host.join("plugins/coding-copilot-jetbrains")).unwrap();
+            let xml = host.join("options/secret-storage.xml");
+            std::fs::write(&xml, body).unwrap();
+            set_mtime(&xml, secs_ago);
+        }
+
+        let session = read_idea_session(&roots).expect("应跳过空 store 读到 IntelliJ 的票据");
+        assert_eq!(
+            session.pointer("/account/uid").and_then(|v| v.as_str()),
+            Some("u-9")
+        );
+    }
+
+    fn set_mtime(path: &Path, secs_ago: u64) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        let time = std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago);
+        file.set_modified(time).unwrap();
     }
 
     /// 会话保留：源树整棵挪到目标账号名下，源不留残骸、目标已有的文件不被覆盖。

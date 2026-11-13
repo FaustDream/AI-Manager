@@ -213,4 +213,24 @@ mod tests {
         assert!(mcp_file(home, appdata, TargetKey::TraeCn).ends_with("Trae CN/User/mcp.json"));
         assert!(mcp_file(home, appdata, TargetKey::ZCode).ends_with(".zcode/cli/config.json"));
     }
+
+    /// 技能 / MCP 的部署目标按版本分开，显示名与产品表必须一致——
+    /// 名字对不上时用户会以为「装到了国际版」，实际落在国内版目录。
+    #[test]
+    fn workbuddy_labels_match_the_product_table() {
+        use crate::app::products::Product;
+        for (key, product) in [
+            (TargetKey::WorkBuddy, Product::WorkBuddyCn),
+            (TargetKey::WorkBuddyIntl, Product::WorkBuddyIntl),
+        ] {
+            let target = TARGETS.iter().find(|t| t.key == key).unwrap();
+            assert_eq!(target.label, product.label(), "{key:?} 显示名不一致");
+        }
+        // 两个版本的技能目录不能是同一个
+        let home = Path::new("C:/Users/x");
+        assert_ne!(
+            skill_dir(home, TargetKey::WorkBuddy),
+            skill_dir(home, TargetKey::WorkBuddyIntl)
+        );
+    }
 }

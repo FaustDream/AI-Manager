@@ -486,15 +486,28 @@ pub enum Outcome {
     Ok,
     Skip,
     Fail,
+    /// 没做成，但原因在外部（网络不通 / 平台限流）：跟账号无关，下一轮自动重试。
+    /// 单独成一档是为了让日志别把一次断网染成红色「失败」——那种红没有任何可操作性。
+    Retry,
     Partial,
 }
 
 impl Outcome {
+    /// 按错误类别给结果：环境性失败记「待重试」，账号/凭据类失败才是「失败」。
+    pub fn of_error(kind: crate::app::error::ErrorKind) -> Self {
+        if kind.is_transient() {
+            Self::Retry
+        } else {
+            Self::Fail
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
             Self::Skip => "skip",
             Self::Fail => "fail",
+            Self::Retry => "retry",
             Self::Partial => "partial",
         }
     }
@@ -504,6 +517,7 @@ impl Outcome {
             Self::Ok => "成功",
             Self::Skip => "跳过",
             Self::Fail => "失败",
+            Self::Retry => "待重试",
             Self::Partial => "部分成功",
         }
     }
@@ -511,7 +525,7 @@ impl Outcome {
     fn level(self) -> Level {
         match self {
             Self::Ok | Self::Skip => Level::Info,
-            Self::Fail | Self::Partial => Level::Warn,
+            Self::Fail | Self::Retry | Self::Partial => Level::Warn,
         }
     }
 }

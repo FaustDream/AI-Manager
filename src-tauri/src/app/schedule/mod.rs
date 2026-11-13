@@ -3,8 +3,8 @@
 //! 存 kv（`schedules`）而不是新建表：这是一份几十行的配置，不是业务数据，
 //! 加表就要加迁移，而迁移的代价远大于它带来的收益。
 //!
-//! **触发规则只有两种**：每天固定时刻、每隔 N 小时。够用且能被用户一眼看懂；
-//! cron 表达式对「给账号签个到」这件事是过度设计。
+//! **触发规则只有两种**：每天固定时刻、每隔 N 分钟（整小时仍按「每 N 小时」显示）。
+//! 够用且能被用户一眼看懂；cron 表达式对「给账号签个到」这件事是过度设计。
 //!
 //! **定点执行的唯一入口**：所有「每天 HH:mm」都必须走 `RuleKind::Daily`，
 //! 由本模块的 `due()` 与 `desktop/mod.rs::spawn_scheduler` 统一消费；
@@ -63,7 +63,7 @@ impl ScheduleAction {
 pub enum RuleKind {
     /// 每天 `at`（`HH:mm`）触发一次
     Daily,
-    /// 每隔 `hours` 小时触发一次
+    /// 每隔 `minutes`（分钟，整小时用 `hours`）触发一次
     Every,
 }
 
@@ -83,6 +83,12 @@ pub struct Schedule {
     /// `kind = every` 时的间隔小时数
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub hours: Option<u32>,
+    /// `kind = every` 时的间隔分钟数。与 `hours` 二选一，**分钟优先**：
+    /// 积分/用量这种要跟得紧的任务按分钟配，签到这种一天一次仍按小时。
+    /// 老配置只有 `hours`，读出来照旧走小时，行为不变。
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    #[serde(default)]
+    pub minutes: Option<u32>,
     pub enabled: bool,
     /// 上次真正跑起来的时刻（RFC3339）。`every` 用它推下一次，也用来判「今天跑过没」
     pub last_run: Option<String>,
@@ -98,7 +104,21 @@ impl Schedule {
             RuleKind::Daily => {
                 format!("每天 {}", self.at.clone().unwrap_or_else(|| "--:--".into()))
             }
-            RuleKind::Every => format!("每 {} 小时", self.hours.unwrap_or(0)),
+            RuleKind::Every => match self.interval_minutes() {
+                // 整小时读成「每 N 小时」更自然（老的 hours 配置正好走这一支）
+                Some(m) if m >= 60 && m % 60 == 0 => format!("每 {} 小时", m / 60),
+                Some(m) => format!("每 {m} 分钟"),
+                None => "每隔 --".into(),
+            },
+        }
+    }
+
+    /// 间隔多少分钟。`minutes` 优先，没有才回落到 `hours`。
+    fn interval_minutes(&self) -> Option<i64> {
+        match (self.minutes, self.hours) {
+            (Some(m), _) if m > 0 => Some(m as i64),
+            (_, Some(h)) if h > 0 => Some(h as i64 * 60),
+            _ => None,
         }
     }
 
@@ -124,10 +144,7 @@ impl Schedule {
                         .single()
                 }
             }
-            RuleKind::Every => {
-                let hours = self.hours.filter(|h| *h > 0)?;
-                Some(self.anchor(now) + Duration::hours(hours as i64))
-            }
+            RuleKind::Every => Some(self.anchor(now) + Duration::minutes(self.interval_minutes()?)),
         }
     }
 
@@ -192,16 +209,31 @@ impl Schedule {
                 })?;
                 self.at = Some(at);
                 self.hours = None;
+                self.minutes = None;
             }
             RuleKind::Every => {
-                let hours = self.hours.unwrap_or(0);
-                if hours == 0 || hours > 24 * 7 {
+                // 老界面只传 hours、新界面传 minutes：先统一折算成分钟再校验。
+                // 存回时整小时仍补 hours，旧界面/旧配置读到的口径不变。
+                let minutes = match (
+                    self.minutes.filter(|m| *m > 0),
+                    self.hours.filter(|h| *h > 0),
+                ) {
+                    (Some(minutes), _) => minutes,
+                    (None, Some(hours)) => hours.saturating_mul(60),
+                    (None, None) => 0,
+                };
+                if minutes == 0 || minutes > 24 * 60 * 7 {
                     return Err(AppError::new(
                         ErrorKind::Invalid,
-                        "间隔要在 1 小时到 168 小时之间",
+                        "间隔要在 1 分钟到 10080 分钟（7 天）之间",
                     ));
                 }
-                self.hours = Some(hours);
+                self.minutes = Some(minutes);
+                self.hours = if minutes % 60 == 0 {
+                    Some(minutes / 60)
+                } else {
+                    None
+                };
                 self.at = None;
             }
         }
@@ -232,7 +264,13 @@ impl ScheduleAction {
     }
 }
 
-/// 只补缺失任务和首次锚点，已存在的任务（包括用户停用的）绝不被偏好覆盖。
+/// 默认积分刷新间隔（分钟）。改这里就等于改「新装用户多久看到一次新余额」。
+///
+/// 取 5 分钟而不是 10：余额变化本身是几分钟级的（签到/旅行到账），
+/// 而一轮刷新只有十几个轻量 GET（并发 3），五分钟完全扛得住。
+/// 用户嫌吵或撞上限流，在设置里改回小时即可。
+const SEED_CREDITS_MINUTES: u32 = 5;
+
 pub fn list(db: &Db) -> Result<Vec<Schedule>> {
     let _guard = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     load(db, Local::now())
@@ -263,6 +301,9 @@ fn load(db: &Db, now: DateTime<Local>) -> Result<Vec<Schedule>> {
             task.created_at = Some(now.to_rfc3339());
             dirty = true;
         }
+        if tighten_legacy_credits(task) {
+            dirty = true;
+        }
     }
     let prefs = travel_store::all(db);
     if prefs.values().any(|p| p.enabled) {
@@ -286,6 +327,28 @@ fn load(db: &Db, now: DateTime<Local>) -> Result<Vec<Schedule>> {
     Ok(list)
 }
 
+/// 旧版「积分刷新」按小时（默认 1 小时）配下的任务，读到就收紧到 `SEED_CREDITS_MINUTES`。
+///
+/// 判定必须窄：只认**默认种子那两个 id**（`credits-hourly` / `credits-10min`），
+/// 且必须是全局、`every`、启用、间隔正好 60 分钟。用户自己改过的 id 与间隔一律不动——
+/// 他能改成 3 小时，说明已经知道这里可配，再替他改就是抢方向盘。
+fn tighten_legacy_credits(task: &mut Schedule) -> bool {
+    let legacy = task.action == ScheduleAction::CreditsRound
+        && task.account_iid.is_none()
+        && task.kind == RuleKind::Every
+        && task.enabled
+        && matches!(task.id.as_str(), "credits-hourly" | "credits-10min")
+        && task.minutes.is_none()
+        && task.hours == Some(1);
+    if !legacy {
+        return false;
+    }
+    task.minutes = Some(SEED_CREDITS_MINUTES);
+    task.hours = None;
+    task.id = format!("credits-{SEED_CREDITS_MINUTES}min");
+    true
+}
+
 fn travel_task(iid: &str, name: &str, now: DateTime<Local>) -> Schedule {
     Schedule {
         id: format!("travel-account:{iid}"),
@@ -295,6 +358,7 @@ fn travel_task(iid: &str, name: &str, now: DateTime<Local>) -> Schedule {
         kind: RuleKind::Every,
         at: None,
         hours: Some(1),
+        minutes: None,
         enabled: true,
         last_run: None,
         created_at: Some(now.to_rfc3339()),
@@ -325,11 +389,14 @@ pub fn sync_travel_prefs(
     Ok(saved)
 }
 
-/// 默认两条：每天 08:30 签到、每小时刷一次积分。
+/// 默认两条：每天 08:30 签到、每 `SEED_CREDITS_MINUTES` 分钟刷一次积分。
 ///
-/// 这是升级前写死在 `desktop/mod.rs` 的行为，搬到配置里但默认值不变——
-/// 用户不该因为一次升级就「签到突然不跑了」。签到的「每天」带补跑语义，
-/// 所以升级后第一次启动仍会像以前一样在启动后不久跑一轮。
+/// 积分默认给到分钟级：一小时的间隔让列表里的余额看起来永远是旧的，
+/// 而积分接口本身很轻（一轮十几个账号两秒多），五分钟完全扛得住。
+/// 用户嫌吵或撞上限流，在设置里改回小时即可。
+///
+/// 签到的默认值沿用升级前写死在 `desktop/mod.rs` 的行为——用户不该因为一次
+/// 升级就「签到突然不跑了」；「每天」带补跑语义，升级后首次启动仍会补跑一轮。
 fn seed() -> Vec<Schedule> {
     vec![
         Schedule {
@@ -341,18 +408,20 @@ fn seed() -> Vec<Schedule> {
             kind: RuleKind::Daily,
             at: Some("08:30".into()),
             hours: None,
+            minutes: None,
             enabled: true,
             last_run: None,
         },
         Schedule {
-            id: "credits-hourly".into(),
+            id: format!("credits-{SEED_CREDITS_MINUTES}min"),
             name: "积分刷新".into(),
             action: ScheduleAction::CreditsRound,
             account_iid: None,
             created_at: None,
             kind: RuleKind::Every,
             at: None,
-            hours: Some(1),
+            hours: None,
+            minutes: Some(SEED_CREDITS_MINUTES),
             enabled: true,
             last_run: None,
         },
@@ -491,6 +560,7 @@ mod tests {
             kind: RuleKind::Daily,
             at: Some(at.into()),
             hours: None,
+            minutes: None,
             enabled: true,
             last_run: None,
         }
@@ -524,6 +594,7 @@ mod tests {
             kind: RuleKind::Every,
             at: None,
             hours: Some(2),
+            minutes: None,
             enabled: true,
             last_run: None,
         };
@@ -534,6 +605,53 @@ mod tests {
         schedule.last_run = Some(at(2026, 11, 4, 9, 0).to_rfc3339());
         assert_eq!(schedule.next_run(now).unwrap(), at(2026, 11, 4, 11, 0));
         assert!(schedule.due(at(2026, 11, 4, 11, 0)), "到点就要跑");
+    }
+
+    /// 分钟级间隔：积分要跟得紧，interval 直接按分钟算，不被小时粒度卡住。
+    #[test]
+    fn every_supports_minute_intervals() {
+        let mut schedule = Schedule {
+            id: "m".into(),
+            name: "积分".into(),
+            action: ScheduleAction::CreditsRound,
+            account_iid: None,
+            created_at: None,
+            kind: RuleKind::Every,
+            at: None,
+            hours: None,
+            minutes: Some(10),
+            enabled: true,
+            last_run: None,
+        };
+        let now = at(2026, 11, 4, 10, 0);
+        assert_eq!(schedule.next_run(now).unwrap(), at(2026, 11, 4, 10, 10));
+        assert_eq!(schedule.rule_text(), "每 10 分钟");
+
+        schedule.last_run = Some(at(2026, 11, 4, 10, 0).to_rfc3339());
+        assert!(schedule.due(at(2026, 11, 4, 10, 10)));
+        assert!(!schedule.due(at(2026, 11, 4, 10, 9)), "差一分钟不该跑");
+
+        // 整小时仍读成「每 N 小时」，老的 hours 配置和新的 minutes=60 是同一件事
+        schedule.minutes = Some(120);
+        assert_eq!(schedule.rule_text(), "每 2 小时");
+    }
+
+    /// 老界面只传 hours：normalize 折算成 minutes 落库，同时把 hours 补回来。
+    #[test]
+    fn normalize_bridges_hours_and_minutes() {
+        let mut by_hours = daily("08:30");
+        by_hours.kind = RuleKind::Every;
+        by_hours.hours = Some(2);
+        let out = by_hours.normalize(at(2026, 11, 4, 10, 0)).unwrap();
+        assert_eq!(out.minutes, Some(120));
+        assert_eq!(out.hours, Some(2), "整小时要回填，旧界面读到的口径不变");
+
+        let mut by_minutes = daily("08:30");
+        by_minutes.kind = RuleKind::Every;
+        by_minutes.minutes = Some(7);
+        let out = by_minutes.normalize(at(2026, 11, 4, 10, 0)).unwrap();
+        assert_eq!(out.minutes, Some(7));
+        assert_eq!(out.hours, None, "不是整小时就不编一个 hours 出来");
     }
 
     /// 每天固定时刻：错过要点就补跑，但今天跑过就不再跑。
@@ -740,6 +858,9 @@ mod tests {
         let mut task = travel_tasks(&db).pop().expect("旧版已开启偏好应补齐任务");
         task.enabled = false;
         task.hours = Some(6);
+        // 落库前 normalize 会把小时折算成分钟并一起存：预期值要跟它对齐，
+        // 否则断言比的是「未归一化的输入」而不是「读回来的配置」
+        task.minutes = Some(360);
         save(&db, task.clone()).unwrap();
         assert_eq!(travel_tasks(&db), vec![task.clone()]);
         assert_eq!(
@@ -987,6 +1108,53 @@ mod tests {
         let prefs = travel_store::prefs_of(&db, "workbuddy:u1");
         assert!(!prefs.enabled);
         assert_eq!(prefs.location_id, Some(3));
+    }
+
+    /// 老库里默认那条「每小时刷积分」读到就收紧到分钟级——否则改代码对它无效。
+    /// 反之：用户自己配的间隔、关掉的任务、别的任务一律不动。
+    #[test]
+    fn legacy_hourly_credits_seed_is_tightened_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let legacy = serde_json::to_value(Schedule {
+            id: "credits-hourly".into(),
+            name: "积分刷新".into(),
+            action: ScheduleAction::CreditsRound,
+            account_iid: None,
+            created_at: None,
+            kind: RuleKind::Every,
+            at: None,
+            hours: Some(1),
+            minutes: None,
+            enabled: true,
+            last_run: None,
+        })
+        .unwrap();
+        // 用户自己改过的同类任务：3 小时、自定 id，必须原样保留
+        let mut custom = legacy.clone();
+        custom["id"] = "credits-mine".into();
+        custom["hours"] = 3.into();
+        // 用户停用的默认任务：不擅自恢复成更快的频率
+        let mut disabled = legacy.clone();
+        disabled["id"] = "credits-off".into();
+        disabled["enabled"] = false.into();
+        db.kv_set(
+            KV_KEY,
+            &serde_json::json!([legacy, custom, disabled]).to_string(),
+        )
+        .unwrap();
+
+        let tasks = list(&db).unwrap();
+        let tightened = tasks.iter().find(|s| s.minutes.is_some()).unwrap();
+        assert_eq!(tightened.id, format!("credits-{SEED_CREDITS_MINUTES}min"));
+        assert_eq!(tightened.minutes, Some(SEED_CREDITS_MINUTES));
+        assert_eq!(tightened.hours, None);
+        let custom = tasks.iter().find(|s| s.id == "credits-mine").unwrap();
+        assert_eq!(custom.hours, Some(3));
+        assert_eq!(custom.minutes, None);
+        let off = tasks.iter().find(|s| s.id == "credits-off").unwrap();
+        assert_eq!(off.hours, Some(1));
+        assert!(!off.enabled);
     }
 
     #[test]

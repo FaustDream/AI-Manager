@@ -140,14 +140,14 @@ export function CreditPlatformSplit({
                       current && 'bg-hover',
                     )}
                   >
-                    <td className="py-1">
-                      <span className="flex items-center gap-1.5">
+                    <td className="py-1 whitespace-nowrap">
+                      <span className="flex min-w-0 items-center gap-1.5">
                         <span
                           className="inline-block h-2 w-2 shrink-0 rounded-sm"
                           style={{ background: PALETTE[index % PALETTE.length] }}
                         />
                         <span className="truncate">{row.label}</span>
-                        <span className="text-muted">{row.accounts} 个账号</span>
+                        <span className="shrink-0 text-muted">{row.accounts} 个账号</span>
                       </span>
                     </td>
                     <td

@@ -25,10 +25,11 @@ impl Provider for WorkBuddyProvider {
     }
 
     fn label(&self) -> &'static str {
+        // 显示名只从产品表取：账号表、日志、界面上的名字必须完全一致
         if self.intl {
-            "WorkBuddy 国际版"
+            crate::app::products::Product::WorkBuddyIntl.label()
         } else {
-            "WorkBuddy 国内版"
+            crate::app::products::Product::WorkBuddyCn.label()
         }
     }
 

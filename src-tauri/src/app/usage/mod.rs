@@ -79,7 +79,7 @@ pub fn coverage() -> Vec<SourceCoverage> {
         },
         SourceCoverage {
             platform: "codebuddy".into(),
-            label: "CodeBuddy（IDE / IDEA 插件）".into(),
+            label: "CodeBuddy（IDE / 插件）".into(),
             level: "full".into(),
             note:
                 "history/*/index.json 的 requests[].usage；按用户轮次聚合（一轮可能多次模型调用）"

@@ -45,6 +45,11 @@ pub mod background;
 pub mod commands;
 pub mod web;
 
+/// 本次启动是否「自启 + 配置最小化到托盘」：置真则主窗口不主动显示，常驻托盘跑定时任务。
+/// `app_show_window` 命令与启动兜底都读它，避免把本该静默的启动又弹出来。
+pub(crate) static START_MINIMIZED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 // ------------------------------------------------------------------ 启动
 
 /// 开发版（debug）必须连前端 dev server；连不上就**在进 WebView 之前**说清楚。
@@ -117,6 +122,14 @@ pub fn run() -> tauri::Result<()> {
             let session_service = state.sessions.clone();
             // 应用配置：加载 data/config.toml（首次会把旧 kv 配置键迁移进来）
             crate::app::config::init(&state.db);
+            // 自启 + 配置「自启后最小化到托盘」：主窗口不主动显示，常驻托盘跑定时任务。
+            // 判断要放在 config::init 之后——`get()` 之前拿到的是默认值。
+            let start_minimized = std::env::args().any(|a| a == "--autostart")
+                && crate::app::config::get().window.start_minimized;
+            START_MINIMIZED.store(start_minimized, std::sync::atomic::Ordering::Relaxed);
+            if start_minimized {
+                log::log(Level::Info, "app", "自启启动：按配置最小化到托盘");
+            }
             // 清掉「待处理告警」下线后留在 kv 里的死键（通知签名 / 静默表）：
             // 功能已整体移除，留着只会让后面查 kv 的人困惑。启动时顺手清一次。
             let dead_kv_db = state.db.clone();
@@ -134,6 +147,10 @@ pub fn run() -> tauri::Result<()> {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(5));
+                    // 自启静默启动时不兜底弹窗：保持托盘
+                    if START_MINIMIZED.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
                     if let Some(window) = handle.get_webview_window("main") {
                         if !window.is_visible().unwrap_or(true) {
                             let _ = window.show();
@@ -172,6 +189,7 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_reorder,
             commands::accounts::account_delete,
             commands::accounts::account_scan,
+            commands::accounts::account_add_cookie,
             commands::accounts::account_switch,
             commands::accounts::account_switch_codebuddy,
             commands::accounts::account_codebuddy_targets,

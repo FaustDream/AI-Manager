@@ -17,6 +17,13 @@ import { OPS_WIDTH, RestoreDialog, RowActions, SwitchDialog } from './actions';
 import { AddAccountDialog, AccountToolbar } from './toolbar';
 import { useRowDrag } from './use-row-drag';
 
+/// 打开列表时补刷余额的陈旧阈值：超过它就当场刷一轮。
+/// 取 90 秒 —— 后台默认 5 分钟一跳，用户在两次轮询之间打开页面时，
+/// 90 秒内的数据已经够新，没必要为一个刚看过的数字再打一轮接口。
+const LOOK_REFRESH_MS = 90 * 1000;
+/// 模块级节流：组件重挂载（切页回来）不该重新触发一轮
+let lastLookRefresh = 0;
+
 function CellView({ cell }: { cell: Cell }) {
   // 图标由列定义给名字，这里才取组件——列定义是纯数据，不碰 JSX
   const Icon = cell.icon ? ICONS[cell.icon] : null;
@@ -29,7 +36,7 @@ function CellView({ cell }: { cell: Cell }) {
     >
       <span className="flex min-w-0 items-center gap-1 leading-tight">
         {Icon && <Icon size={13} className="shrink-0" />}
-        <span className="truncate">{cell.text}</span>
+        {cell.text && <span className="truncate">{cell.text}</span>}
       </span>
       {cell.sub && <span className="block truncate text-xs leading-tight text-muted">{cell.sub}</span>}
     </span>
@@ -93,6 +100,31 @@ export default function AccountCenterPage() {
     sessionStorage.removeItem('aim.focusAccount');
     setSelected(iid);
   }, []);
+
+  // 打开页面就把「看起来是旧的」余额刷一遍：后台轮询默认 5 分钟一跳，
+  // 而用户真正会盯着看的就是这个列表——等他打开时补一发，比调快全局频率省得多。
+  // 用模块级时间戳节流，来回切页面不会每次都打一轮接口。
+  useEffect(() => {
+    if (rows.length === 0) return;
+    const iids = rows.filter((r) => r.has_secret && r.enabled).map((r) => r.iid);
+    if (iids.length === 0) return;
+    const newest = rows.reduce<number>(
+      (max, r) => Math.max(max, r.last_ok_at ?? 0),
+      0,
+    );
+    // 刚刷过（或刚从后台轮询收到）就什么都不做
+    if (Date.now() - newest < LOOK_REFRESH_MS || Date.now() - lastLookRefresh < LOOK_REFRESH_MS) {
+      return;
+    }
+    lastLookRefresh = Date.now();
+    void runCmd('checkin_credits', { iids, trigger: 'auto' }, { onError: () => {} }).then(
+      (out) => {
+        if (out === undefined) return;
+        void qc.invalidateQueries({ queryKey: ['accounts'] });
+        void qc.invalidateQueries({ queryKey: ['detail'] });
+      },
+    );
+  }, [rows, qc]);
 
   // ---- 列宽：持久化在 kv ui.columns（v1 同键） ----
   useEffect(() => {

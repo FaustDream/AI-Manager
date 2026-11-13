@@ -171,8 +171,12 @@ pub fn report(db: &Db) -> Result<HealthReport> {
             }
         }
 
-        // 失败：只有「失败晚于最近一次成功」才算当前状态
-        let failing = row.last_fail_kind.is_some()
+        // 失败：只有「失败晚于最近一次成功」才算当前状态。
+        // 断网 / 限流是环境问题，不进「账号异常」计数——修复前写下的历史记录也照此过滤。
+        let failing = row
+            .last_fail_kind
+            .as_deref()
+            .is_some_and(|kind| !crate::app::error::ErrorKind::is_transient_text(kind))
             && row.last_fail_at.unwrap_or(0) >= row.last_ok_at.unwrap_or(0);
         if failing {
             health.failing += 1;

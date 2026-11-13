@@ -18,6 +18,7 @@ use crate::types::{ActionResult, CreditSnapshot, StatusResult};
 use async_trait::async_trait;
 
 pub mod codebuddy;
+pub mod doubao;
 pub mod hints;
 pub mod qoder;
 pub mod trae;
@@ -25,6 +26,7 @@ pub mod workbuddy;
 pub mod zclaim;
 pub mod zcode;
 
+pub use doubao::DoubaoProvider;
 pub use qoder::QoderProvider;
 pub use trae::TraeProvider;
 pub use workbuddy::WorkBuddyProvider;
@@ -173,6 +175,9 @@ fn make(client_key: &str) -> Option<Box<dyn Provider>> {
         "workbuddy_intl" => Some(Box::new(WorkBuddyProvider::new(true))),
         "zcode" => Some(Box::new(ZCodeProvider::new())),
         "trae" => Some(Box::new(TraeProvider::new())),
+        // 豆包没有可读的本地登录态：账号靠「粘贴 Cookie」添加（accounts::cookie），
+        // 扫描恒为 0。列在这里是为了让签到 / 刷新积分能找到实现。
+        "doubao" => Some(Box::new(DoubaoProvider::new())),
         _ => None,
     }
 }
@@ -186,6 +191,7 @@ pub fn all() -> Vec<Box<dyn Provider>> {
         "workbuddy_intl",
         "zcode",
         "trae",
+        "doubao",
     ]
     .iter()
     .filter_map(|key| make(key))

@@ -220,6 +220,22 @@ const PLATFORMS: &[PlatformDef] = &[
         ],
     },
     PlatformDef {
+        key: "doubao",
+        label: "豆包",
+        cells: &[
+            no("豆包登录走字节 SSO，没有可回调的授权码；改用「粘贴 Cookie」添加"),
+            no("电脑版登录态在 Chromium 加密库里，格式随客户端版本变，不解析"),
+            no("本工具不写豆包客户端的 Cookie 库，没有可回写的登录态"),
+            full("个人账号的「天天领额度」，多账号各签各的"),
+            part("显示累计体验额度；剩余次数以客户端为准"),
+            no("按额度发放，不是窗口型"),
+            no("非 WorkBuddy 平台"),
+            part("Cookie 过期只能重新粘贴；有效期由字节控制，接口不返回"),
+            no("会话在云端，本地没有可读的会话库"),
+            no("豆包没有技能 / MCP 概念"),
+        ],
+    },
+    PlatformDef {
         key: "trae",
         label: "Trae",
         cells: &[
@@ -241,7 +257,7 @@ const PLATFORMS: &[PlatformDef] = &[
         cells: &[
             no("账号体系跟随 WorkBuddy，不单独登录"),
             no("登录态来自 WorkBuddy 档案"),
-            full("用 WorkBuddy 国内版档案切换软件与 IDEA 插件"),
+            full("用 WorkBuddy 国内版档案切换 CodeBuddy IDE 与插件"),
             no("没有签到玩法"),
             no("本应用不采集它的积分"),
             no("不是额度型平台"),

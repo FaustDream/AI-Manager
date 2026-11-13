@@ -81,6 +81,8 @@ pub enum CloseAction {
 #[serde(default)]
 pub struct WindowConfig {
     pub close_action: CloseAction,
+    /// 开机自启启动时自动收进托盘（不弹主窗口），定时任务照常跑
+    pub start_minimized: bool,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -117,6 +119,7 @@ impl Default for WindowConfig {
         // 默认收托盘：定时签到靠常驻进程跑，一关就退等于把自动签到关掉
         Self {
             close_action: CloseAction::Tray,
+            start_minimized: false,
         }
     }
 }
@@ -202,6 +205,8 @@ stale_refresh_min = 10
 [window]
 # 点关闭按钮：tray = 收进托盘继续常驻；exit = 直接退出
 close_action = "tray"
+# 开机自启启动时自动最小化到托盘（不弹主窗口）
+start_minimized = false
 "#;
 
 static CONFIG: RwLock<Option<AppConfig>> = RwLock::new(None);
