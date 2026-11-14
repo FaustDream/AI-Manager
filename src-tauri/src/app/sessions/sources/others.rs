@@ -13,7 +13,7 @@
 
 use crate::app::clients::Roots;
 use crate::app::sessions::sources::SourceInfo;
-use crate::app::sessions::store::RawRow;
+use crate::app::sessions::store::{RawRow, UNNAMED_TITLE};
 use crate::types::SessionState;
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
@@ -184,7 +184,7 @@ fn scan_qoder(path: &Path, key: &str, label: &str, errors: &mut Vec<String>) -> 
         row.session_id = sid;
         row.title = title
             .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| "（未命名会话）".into());
+            .unwrap_or_else(|| UNNAMED_TITLE.into());
         row.cwd = cwd.unwrap_or_default();
         row.last_at = normalize_ms(updated.unwrap_or(0));
         row.msgs = msgs;
@@ -254,7 +254,7 @@ fn scan_zcode(path: &Path, errors: &mut Vec<String>) -> Vec<RawRow> {
         row.session_id = sid;
         row.title = title
             .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| "（未命名会话）".into());
+            .unwrap_or_else(|| UNNAMED_TITLE.into());
         row.cwd = directory.unwrap_or_default();
         row.last_at = normalize_ms(updated.unwrap_or(0));
         row.msgs = msgs;

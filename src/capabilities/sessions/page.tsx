@@ -46,7 +46,7 @@ const PURGEABLE = new Set(['deleted', 'cloud', 'old_account', 'orphan']);
 export default function SessionsPage() {
   const qc = useQueryClient();
   const [filter, setFilter] = useState<Filter>({
-    source: null, account: null, state: null, q: null, origin: null, sort: 'last_at',
+    source: null, account: null, state: null, q: null, origin: null, unnamed: false, sort: 'last_at',
   });
   // 活跃列表的选中与分组；分组选择跨重启保持
   const [activeChecked, setActiveChecked] = useState<Set<string>>(new Set());
@@ -312,6 +312,18 @@ export default function SessionsPage() {
               ))}
             </Select>
           </label>
+          {/* 未命名快筛：与来源 / 状态 / 搜索叠加使用；角标数与活跃列表同口径（不含已归档） */}
+          <button
+            className={`rounded-md px-2 py-1 text-sm ${
+              filter.unnamed
+                ? 'bg-accent font-medium text-on-accent'
+                : 'border border-line text-muted hover:bg-hover hover:text-fg'
+            }`}
+            onClick={() => setFilter((f) => ({ ...f, unnamed: !f.unnamed }))}
+            title="只看标题是「（未命名会话）」占位文案的会话，可与来源 / 状态 / 搜索叠加"
+          >
+            未命名{facets.data?.unnamed ? `（${facets.data.unnamed}）` : ''}
+          </button>
           <label className="flex items-center gap-1 text-muted">
             状态
             <Select

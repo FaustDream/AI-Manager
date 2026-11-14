@@ -10,6 +10,10 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use chrono::{Local, TimeZone};
 
+/// 标题的统一兜底：各来源扫不出标题时都写这一个字面量，列表的「未命名」筛选
+/// 也按它匹配（SQL 与扫描器共用一份常量，改了这处两边同步）。
+pub const UNNAMED_TITLE: &str = "（未命名会话）";
+
 /// 会话行的内部形态：时间用毫秒，状态用枚举。落表前才转字符串。
 #[derive(Debug, Clone)]
 pub struct RawRow {
@@ -106,6 +110,9 @@ pub struct Filter {
     /// 运行形态：`desktop` / `ide-plugin`。IDEA 插件标签用这个维度聚合各软件插件会话。
     #[serde(default)]
     pub origin: Option<String>,
+    /// 只看「未命名」会话（标题是占位文案 UNNAMED_TITLE 或空）。false = 不限。
+    #[serde(default)]
+    pub unnamed: bool,
     #[serde(default)]
     pub sort: Sort,
 }
@@ -113,6 +120,16 @@ pub struct Filter {
 impl Filter {
     fn clean(value: &Option<String>) -> Option<&str> {
         value.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// 「未命名」筛选的 SQL 片段：开了就只留占位标题与空标题的行。
+    /// 字面量是编译期常量且不含引号，静态拼进去没有注入面。
+    fn unnamed_clause(unnamed: bool) -> String {
+        if unnamed {
+            format!("AND (title = '{UNNAMED_TITLE}' OR TRIM(title) = '')")
+        } else {
+            String::new()
+        }
     }
 }
 
@@ -133,6 +150,9 @@ pub struct Facets {
     pub sources: Vec<FacetItem>,
     pub accounts: Vec<FacetItem>,
     pub states: Vec<FacetItem>,
+    /// 「未命名」会话数（与活跃列表同口径：不含已归档 / 已隐藏），给筛选 chip 当角标。
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub unnamed: usize,
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub total: usize,
 }
@@ -296,6 +316,7 @@ impl<'a> SqliteSessions<'a> {
         let q = Filter::clean(&filter.q).map(|s| format!("%{s}%"));
         let q = q.as_deref();
         let origin = Filter::clean(&filter.origin);
+        let unnamed_clause = Filter::unnamed_clause(filter.unnamed);
         let col = sort.column();
         // 生效状态：已删除优先（客户端已经删了，归档与否没意义），其次看本地归档标记，
         // 其余沿用客户端给的 state。本地隐藏的行整行不出现。
@@ -314,11 +335,12 @@ impl<'a> SqliteSessions<'a> {
                AND (?3 IS NULL OR state = ?3)
                AND (?7 IS NULL OR title LIKE ?7 OR source_label LIKE ?7 OR cwd LIKE ?7)
                AND (?8 IS NULL OR origin = ?8)
+               {}
                AND (?3 IS NOT NULL OR state <> 'archived')
                AND (?4 IS NULL OR {col} < ?4 OR ({col} = ?4 AND session_id < ?5))
              ORDER BY {col} DESC, session_id DESC
              LIMIT ?6",
-            EFFECTIVE_STATE_CASE, EFFECTIVE_STATE_FROM
+            EFFECTIVE_STATE_CASE, EFFECTIVE_STATE_FROM, unnamed_clause
         );
 
         self.db.read(|conn| {
@@ -371,7 +393,7 @@ impl<'a> SqliteSessions<'a> {
             } else {
                 None
             };
-            let total = count_with(conn, source, account, state, q, origin)?;
+            let total = count_with(conn, source, account, state, q, origin, filter.unnamed)?;
             Ok(Page {
                 items,
                 next_cursor,
@@ -437,6 +459,15 @@ impl<'a> SqliteSessions<'a> {
                 facets.states.push(item?);
             }
 
+            // 「未命名」角标：与活跃列表同口径（不含已归档 / 已隐藏）
+            let sql = format!(
+                "SELECT COUNT(*) FROM ({})
+                 WHERE state <> 'archived' AND (title = ?1 OR TRIM(title) = '')",
+                effective_state_sql()
+            );
+            facets.unnamed =
+                conn.query_row(&sql, [UNNAMED_TITLE], |r| r.get::<_, i64>(0))? as usize;
+
             facets.total = facets.sources.iter().map(|s| s.count).sum();
             Ok(facets)
         })
@@ -484,8 +515,10 @@ impl<'a> SqliteSessions<'a> {
                AND (?3 IS NULL OR state = ?3)
                AND (?4 IS NULL OR title LIKE ?4 OR source_label LIKE ?4 OR cwd LIKE ?4)
                AND (?5 IS NULL OR origin = ?5)
+               {}
                AND (?3 IS NOT NULL OR state <> 'archived')",
-            effective_state_sql()
+            effective_state_sql(),
+            Filter::unnamed_clause(filter.unnamed)
         );
         self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql)?;
@@ -579,6 +612,7 @@ fn count_with(
     state: Option<&str>,
     q: Option<&str>,
     origin: Option<&str>,
+    unnamed: bool,
 ) -> Result<usize> {
     let sql = format!(
         "SELECT COUNT(*) FROM ({})
@@ -587,8 +621,10 @@ fn count_with(
            AND (?3 IS NULL OR state = ?3)
            AND (?4 IS NULL OR title LIKE ?4 OR source_label LIKE ?4 OR cwd LIKE ?4)
            AND (?5 IS NULL OR origin = ?5)
+           {}
            AND (?3 IS NOT NULL OR state <> 'archived')",
-        effective_state_sql()
+        effective_state_sql(),
+        Filter::unnamed_clause(unnamed)
     );
     let total: i64 = conn.query_row(
         &sql,
@@ -679,5 +715,56 @@ mod tests {
         // 都没有就留空，界面显示「—」
         assert_eq!(project_name("", ""), "");
         assert_eq!(project_name("", "   "), "");
+    }
+
+    /// 「未命名」筛选：占位标题与空标题都算，正常标题被滤掉；page / keys / facets
+    /// 三条路共用同一份 SQL 条件，口径必须一致。
+    #[test]
+    fn unnamed_filter_matches_placeholder_and_empty_titles() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let store = SqliteSessions::new(&db);
+
+        let row = |sid: &str, title: &str, last_at: i64| {
+            let mut row = RawRow::empty("qoder", "qoder_cn", "Qoder CN");
+            row.session_id = sid.into();
+            row.title = title.into();
+            row.last_at = last_at;
+            row
+        };
+        store
+            .replace_source(
+                "qoder_cn",
+                &[
+                    row("s1", "正常标题", 3),
+                    row("s2", UNNAMED_TITLE, 2),
+                    row("s3", "", 1),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .page(&Filter::default(), None, 100)
+                .unwrap()
+                .items
+                .len(),
+            3
+        );
+
+        let unnamed = Filter {
+            unnamed: true,
+            ..Default::default()
+        };
+        let page = store.page(&unnamed, None, 100).unwrap();
+        let ids = page
+            .items
+            .iter()
+            .map(|row| row.session_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["s2", "s3"]);
+        assert_eq!(page.total, 2);
+        assert_eq!(store.keys(&unnamed).unwrap().len(), 2);
+        assert_eq!(store.facets().unwrap().unnamed, 2);
     }
 }

@@ -6,7 +6,7 @@
 
 use crate::app::clients::Roots;
 use crate::app::sessions::sources::MsgCache;
-use crate::app::sessions::store::RawRow;
+use crate::app::sessions::store::{RawRow, UNNAMED_TITLE};
 use crate::types::SessionState;
 
 use rusqlite::Connection;
@@ -193,7 +193,7 @@ pub fn scan(ep: &Edition, cache: &mut MsgCache, errors: &mut Vec<String>) -> Vec
         let mut row = RawRow::empty("workbuddy", ep.key, ep.label);
         row.account = account;
         row.session_id = item.id;
-        row.title = item.title.unwrap_or_else(|| "（未命名会话）".into());
+        row.title = item.title.unwrap_or_else(|| UNNAMED_TITLE.into());
         row.cwd = item.cwd;
         row.last_at = item.last;
         row.msgs = msgs;

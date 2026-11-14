@@ -680,7 +680,7 @@ function ArchiveEntryPane() {
       queryCmd('session_page', {
         cursor: null,
         limit: 1,
-        filter: { source: null, account: null, state: 'archived', q: null, origin: null, sort: 'last_at' },
+        filter: { source: null, account: null, state: 'archived', q: null, origin: null, unnamed: false, sort: 'last_at' },
       }),
   });
   const total = archived.data?.total ?? 0;

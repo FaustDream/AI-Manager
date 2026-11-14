@@ -5,7 +5,7 @@
 //! 消息条数就是文件数——不用解析内容。
 
 use crate::app::clients::Roots;
-use crate::app::sessions::store::RawRow;
+use crate::app::sessions::store::{RawRow, UNNAMED_TITLE};
 use crate::types::SessionState;
 use std::path::{Path, PathBuf};
 
@@ -156,7 +156,7 @@ pub fn scan(src: &CodeSource, errors: &mut Vec<String>) -> Vec<RawRow> {
                     .get("name")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
-                    .unwrap_or("（未命名会话）")
+                    .unwrap_or(UNNAMED_TITLE)
                     .to_string();
                 row.last_at = iso_ms(
                     conv.get("lastMessageAt")

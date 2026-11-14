@@ -6,7 +6,7 @@
 
 use crate::app::clients::Roots;
 use crate::app::sessions::sources::SourceInfo;
-use crate::app::sessions::store::RawRow;
+use crate::app::sessions::store::{RawRow, UNNAMED_TITLE};
 use crate::types::SessionState;
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OpenFlags};
@@ -173,7 +173,7 @@ fn parse_session(item: &Value, key: &str, label: &str) -> Option<RawRow> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| messages.and_then(|items| items.iter().find_map(first_user_text)))
-        .unwrap_or_else(|| "（未命名会话）".into());
+        .unwrap_or_else(|| UNNAMED_TITLE.into());
     let updated = item
         .get("updatedAt")
         .or_else(|| item.get("createdAt"))

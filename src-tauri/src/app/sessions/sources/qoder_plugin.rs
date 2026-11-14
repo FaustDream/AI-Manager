@@ -10,7 +10,7 @@
 
 use crate::app::clients::Roots;
 use crate::app::sessions::sources::SourceInfo;
-use crate::app::sessions::store::RawRow;
+use crate::app::sessions::store::{RawRow, UNNAMED_TITLE};
 use crate::types::SessionState;
 use serde_json::Value;
 use std::fs::File;
@@ -155,13 +155,13 @@ fn scan_file(path: &Path, key: &str, label: &str) -> Result<Option<RawRow>, Stri
     let mut row = RawRow::empty("qoder_plugin", key, label);
     row.session_id = session_id;
     row.title = if title.is_empty() {
-        "（未命名会话）".into()
+        UNNAMED_TITLE.into()
     } else {
         title
             .lines()
             .map(str::trim)
             .find(|l| !l.is_empty() && !l.starts_with('#'))
-            .unwrap_or("（未命名会话）")
+            .unwrap_or(UNNAMED_TITLE)
             .chars()
             .take(100)
             .collect()

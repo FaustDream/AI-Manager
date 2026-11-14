@@ -19,7 +19,7 @@ const ARCHIVE_GROUPS: readonly ArchiveGroup[] = ['none', 'source', 'project', 'a
 
 /** 归档列表的固定筛选：整页只含已归档会话。 */
 const ARCHIVE_FILTER: Filter = {
-  source: null, account: null, state: 'archived', q: null, origin: null, sort: 'last_at',
+  source: null, account: null, state: 'archived', q: null, origin: null, unnamed: false, sort: 'last_at',
 };
 
 export default function ArchivedSessionsPage() {

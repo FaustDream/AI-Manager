@@ -12,4 +12,8 @@ q: string | null,
 /**
  * 运行形态：`desktop` / `ide-plugin`。IDEA 插件标签用这个维度聚合各软件插件会话。
  */
-origin: string | null, sort: Sort, };
+origin: string | null, 
+/**
+ * 只看「未命名」会话（标题是占位文案 UNNAMED_TITLE 或空）。false = 不限。
+ */
+unnamed: boolean, sort: Sort, };
