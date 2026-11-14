@@ -810,7 +810,7 @@ mod tests {
             std::fs::create_dir_all(&storage_dir).unwrap();
             std::fs::write(
                 storage_dir.join("storage.json"),
-                serde_json::to_vec(&json!({ AUTH_KEY: seal(&payload) })).unwrap(),
+                serde_json::to_vec(&json!({ AUTH_KEY: seal(payload) })).unwrap(),
             )
             .unwrap();
         }
