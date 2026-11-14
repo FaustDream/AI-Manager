@@ -94,8 +94,11 @@ pub fn run() -> tauri::Result<()> {
     let instance = match process::acquire_single_instance("AIManager.SingleInstance") {
         Ok(Some(instance)) => Some(instance),
         Ok(None) => {
-            // 已有实例在跑：把它的窗口叫到前面，然后自己退出
-            focus_existing();
+            // 自启拉起时已有实例在跑：静默退出。手动启动才把已有窗口叫到前台——
+            // 否则托盘常驻期间再被自启拉起一次，收进托盘的主窗口会被强行弹上桌面
+            if !std::env::args().any(|a| a == "--autostart") {
+                focus_existing();
+            }
             return Ok(());
         }
         Err(e) => {
@@ -124,12 +127,25 @@ pub fn run() -> tauri::Result<()> {
             crate::app::config::init(&state.db);
             // 自启 + 配置「自启后最小化到托盘」：主窗口不主动显示，常驻托盘跑定时任务。
             // 判断要放在 config::init 之后——`get()` 之前拿到的是默认值。
-            let start_minimized = std::env::args().any(|a| a == "--autostart")
-                && crate::app::config::get().window.start_minimized;
+            let autostart_launch = std::env::args().any(|a| a == "--autostart");
+            let start_minimized =
+                autostart_launch && crate::app::config::get().window.start_minimized;
             START_MINIMIZED.store(start_minimized, std::sync::atomic::Ordering::Relaxed);
-            if start_minimized {
-                log::log(Level::Info, "app", "自启启动：按配置最小化到托盘");
+            // 两个分支都留痕：用户报「自启还弹窗」时，日志直接给出当时的判定依据
+            if autostart_launch {
+                if start_minimized {
+                    log::log(Level::Info, "app", "自启启动：按配置最小化到托盘");
+                } else {
+                    log::log(
+                        Level::Info,
+                        "app",
+                        "自启启动：未开「自启最小化」，正常显示主窗口",
+                    );
+                }
             }
+            // 旧版本写进注册表的 Run 值可能缺 --autostart 参数：开机拉起就识别不出
+            // 自启场景，「自启最小化」随之失效。顺手把格式修成当前写法。
+            process::repair_autostart();
             // 清掉「待处理告警」下线后留在 kv 里的死键（通知签名 / 静默表）：
             // 功能已整体移除，留着只会让后面查 kv 的人困惑。启动时顺手清一次。
             let dead_kv_db = state.db.clone();

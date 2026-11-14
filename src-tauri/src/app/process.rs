@@ -387,19 +387,49 @@ pub fn acquire_single_instance(name: &str) -> Result<Option<SingleInstance>> {
     Ok(Some(SingleInstance { _handle: handle }))
 }
 
-/// 开机自启现在是否开着（注册表里有没有我们这一项）。
+/// 开机自启现在是否开着：Run 值存在**且带 `--autostart` 参数**。
+///
+/// 只查「值存在」不够——旧版本写的是裸 exe 路径，那种值开机拉起识别不出
+/// 「这是自启」，「自启最小化」随之失效（见 `repair_autostart`）。
 pub fn autostart_enabled() -> bool {
-    let subkey = HSTRING::from(RUN_KEY);
-    let name = HSTRING::from(AUTOSTART_NAME);
-    let mut hkey = HKEY::default();
-    let status = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &subkey, 0, KEY_READ, &mut hkey) };
-    if status.0 != 0 {
-        return false;
+    reg_read_string(HKEY_CURRENT_USER, RUN_KEY, AUTOSTART_NAME)
+        .is_some_and(|value| is_autostart_command(&value))
+}
+
+/// Run 值是否为当前写法（带 `--autostart` 参数）。
+fn is_autostart_command(value: &str) -> bool {
+    value.contains("--autostart")
+}
+
+/// 自愈旧格式的 Run 值：存在但缺 `--autostart` 就按当前写法重写。
+///
+/// 老版本写入的值开机拉起不带参数，`desktop::run()` 识别不出自启场景，
+/// 「自启最小化」永远不生效。启动时顺手修一次，下一次开机就正常。
+pub fn repair_autostart() {
+    let Some(value) = reg_read_string(HKEY_CURRENT_USER, RUN_KEY, AUTOSTART_NAME) else {
+        return; // 没开自启：没有值可修
+    };
+    if is_autostart_command(&value) {
+        return;
     }
-    let mut size = 0u32;
-    let value = unsafe { RegQueryValueExW(hkey, &name, None, None, None, Some(&mut size)) };
-    let _ = unsafe { RegCloseKey(hkey) };
-    value.0 == 0
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    match set_autostart(true, &exe) {
+        Ok(()) => crate::app::log::log(
+            crate::app::log::Level::Info,
+            "app",
+            format!(
+                "开机自启 Run 值是旧格式（缺 --autostart），已按当前写法重写：{}",
+                exe.display()
+            ),
+        ),
+        Err(e) => crate::app::log::log(
+            crate::app::log::Level::Warn,
+            "app",
+            format!("开机自启 Run 值是旧格式且重写失败：{}", e.message),
+        ),
+    }
 }
 
 pub fn set_autostart(enabled: bool, exe: &Path) -> Result<()> {
@@ -534,5 +564,14 @@ mod tests {
     fn hidden_spawn_suppresses_console() {
         assert!(base_flags(true).contains(CREATE_NO_WINDOW));
         assert!(!base_flags(true).contains(DETACHED_PROCESS));
+    }
+
+    /// 旧版本写的 Run 值只有裸 exe 路径，那种值开机拉起识别不出「这是自启」；
+    /// 只有带 `--autostart` 的当前写法才算数。
+    #[test]
+    fn autostart_command_requires_flag() {
+        assert!(is_autostart_command(r#""C:\x\ai-manager.exe" --autostart"#));
+        assert!(!is_autostart_command(r#""C:\x\ai-manager.exe""#));
+        assert!(!is_autostart_command(""));
     }
 }
