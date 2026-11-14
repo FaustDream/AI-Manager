@@ -545,7 +545,7 @@ impl Provider for ZCodeProvider {
         let identity = AccountIdentity {
             iid: format!("zcode:{account_id}"),
             platform: "zcode".into(),
-            platform_label: family_label(&provider),
+            platform_label: family_label(&provider).to_string(),
             account_id,
             name,
             expires_at,
@@ -630,10 +630,7 @@ impl ZCodeProvider {
         let jwt = field("zcodejwttoken");
         add(jwt.as_deref());
         // 族口径与 identity 一致：active_provider 解不出就按键推断，别再各写各的默认值
-        let provider = creds
-            .as_ref()
-            .map(family_of)
-            .unwrap_or_else(|| "bigmodel".into());
+        let provider = creds.map(family_of).unwrap_or_else(|| "bigmodel".into());
         for key in [
             format!("oauth:{provider}:access_token"),
             "oauth:bigmodel:access_token".to_string(),

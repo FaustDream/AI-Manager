@@ -504,7 +504,8 @@ pub async fn account_current() -> std::result::Result<Vec<String>, String> {
 
 pub async fn account_switchable() -> std::result::Result<Vec<String>, String> {
     crate::app::runtime::blocking(move || {
-        crate::app::accounts::switch::switchable_iids(&crate::app::db::Db::open())
+        let db = crate::app::db::Db::open()?;
+        crate::app::accounts::switch::switchable_iids(&db)
     })
     .await
     .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
