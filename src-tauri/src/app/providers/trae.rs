@@ -184,8 +184,13 @@ impl Provider for TraeProvider {
     }
 
     fn scan(&self, sink: &mut Sink<'_>) -> Result<usize> {
-        let mut count = 0;
-        let mut seen = std::collections::HashSet::new();
+        // 同一个账号可能同时装在两个客户端目录（Trae CN / TRAE SOLO CN），两份
+        // 登录态 userId 相同 → 同一个 iid。若按文件顺序「后写的赢」，旧目录里
+        // 过期的登录会把新目录刚重登的凭据覆盖掉（实测：SOLO 里 9 月就过期的
+        // 旧登录，每次扫描都覆盖 Trae CN 新重登的凭据——用户怎么重登、怎么刷新，
+        // 账号行永远显示过期）。所以按 iid 聚合，只保留**到期时间最晚**的一份。
+        let mut candidates: std::collections::HashMap<String, (ScannedAccount, i64)> =
+            std::collections::HashMap::new();
         // 读到了登录态字段却没能解出可用凭据的份数；正常机器是 0
         let mut unreadable = 0usize;
         for path in self.storage_files() {
@@ -209,9 +214,6 @@ impl Provider for TraeProvider {
                 unreadable += 1;
                 continue;
             };
-            if !seen.insert(token.to_string()) {
-                continue;
-            }
             let account = auth.get("account").cloned().unwrap_or_default();
             let account_id = auth
                 .get("userId")
@@ -270,8 +272,18 @@ impl Provider for TraeProvider {
                 requires_checkin: true,
                 has_secret: true,
             };
-            sink(ScannedAccount::new(identity, &cred)?)?;
-            count += 1;
+            let scanned = ScannedAccount::new(identity, &cred)?;
+            let rank = expires_at.unwrap_or(0);
+            match candidates.get(&scanned.identity.iid) {
+                Some((_, best)) if *best >= rank => {}
+                _ => {
+                    candidates.insert(scanned.identity.iid.clone(), (scanned, rank));
+                }
+            }
+        }
+        let count = candidates.len();
+        for (_, (scanned, _)) in std::mem::take(&mut candidates) {
+            sink(scanned)?;
         }
         // 一份都没产出却有解不开的登录态：必须报错而不是静默返回 0。
         // 否则用户在客户端里重登之后，「刷新凭据」只会说「已是最新」，平台查询
@@ -773,6 +785,49 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
         assert_eq!(rows.len(), 1);
+    }
+
+    /// 同一账号装在两个客户端目录（Trae CN 重登到 11 月，SOLO 里还是 9 月就过期
+    /// 的旧登录）：扫描必须只产出一份，且取**到期最晚**的凭据——否则旧目录每次
+    /// 扫描都覆盖新目录刚重登的凭据，用户怎么重登、怎么刷新，账号行永远显示过期。
+    #[test]
+    fn duplicate_iid_keeps_the_freshest_credential() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let fresh = json!({
+            "token": "tok-fresh-000000000000000001",
+            "userId": "u1",
+            "account": {"username": "某人"},
+            "expiredAt": "2026-11-28T02:04:41.638Z",
+        });
+        let stale = json!({
+            "token": "tok-stale-000000000000000001",
+            "userId": "u1",
+            "account": {"username": "某人"},
+            "expiredAt": "2026-09-26T18:58:59.097Z",
+        });
+        for (client_dir, payload) in [("Trae CN", &fresh), ("TRAE SOLO CN", &stale)] {
+            let storage_dir = dir.path().join(client_dir).join("User/globalStorage");
+            std::fs::create_dir_all(&storage_dir).unwrap();
+            std::fs::write(
+                storage_dir.join("storage.json"),
+                serde_json::to_vec(&json!({ AUTH_KEY: seal(&payload) })).unwrap(),
+            )
+            .unwrap();
+        }
+
+        let mut rows = Vec::new();
+        TraeProvider::at(dir.path().to_path_buf())
+            .scan(&mut |acc| {
+                rows.push(acc);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1, "同一个账号不该产出两行");
+        assert_eq!(
+            rows[0].identity.expires_at,
+            crate::app::timeutil::parse_ts(&json!("2026-11-28T02:04:41.638Z")),
+            "必须保留到期最晚的那份凭据"
+        );
     }
 
     /// 过期凭据必须在发请求之前就拦下：Trae 对死 token 返回 200 + 通用拒绝文案，
