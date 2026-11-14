@@ -1,7 +1,7 @@
 {
   "name": "ai-manager-ui",
   "private": true,
-  "version": "2.0.16",
+  "version": "2.0.17",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,6 +17,7 @@
     "@tanstack/react-query": "^5.62.0",
     "@tauri-apps/api": "^2.2.0",
     "clsx": "^2.1.1",
+    "echarts": "^6.1.0",
     "lucide-react": "^0.469.0",
     "motion": "^11.15.0",
     "react": "^19.0.0",

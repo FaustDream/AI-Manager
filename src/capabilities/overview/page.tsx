@@ -1,21 +1,21 @@
-// 仪表盘 = 健康中心 + 积分 + 用量，一页看完「有没有事要处理」「钱进出了多少」「Token 花在哪」。
+// 仪表盘 = 积分 + 用量，一页看完「钱进出了多少」「Token 花在哪」。
 //
-// 三块都读本地库，只有刷新积分/扫描文件/跑一轮这几个动作会打平台接口。
-// 顺序按「要不要动手」排：账号结论 → 积分收支（含按软件拆分）→ 用量统计。
-// 运行细节（存储占用、定时任务）与领取明细分别归设置页与日志页，这里不再重复。
+// 两块都读本地库，只有补刷积分/扫描文件这几个动作会打平台接口。
+// 账号健康摘要（启用/已签/到期/失败）与页头动作条已撤：这些动作账号中心、
+// 顶栏与命令面板里都有，结论以账号中心为准，这里不再重复一份。
+// 运行细节（存储占用、定时任务）与领取明细分别归设置页与日志页。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cn } from '@/components/ui/button';
 import { Input, StateBlock } from '@/components/ui/form';
-import { toast } from '@/components/ui/toast';
-import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
+import { queryCmd, runCmd } from '@/lib/cmd';
 import { fmtAmount } from '@/lib/format';
 import { errText } from '@/lib/ipc';
 import { CreditFlowChart } from '@/components/credit-flow';
 import { CreditPlatformSplit } from '@/components/credit-platforms';
 import { CreditTrend } from '@/components/credit-trend';
 import type { AccountView, AppConfig, CreditFlowReport, HealthReport, TrendPoint } from '@/lib/types';
-import { Metric, SectionTitle } from './metric';
+import { SectionTitle } from './metric';
 import { UsageSection } from './usage-section';
 
 const NAV_EVENT = 'aim:navigate';
@@ -32,7 +32,6 @@ function go(id: string, iid?: string) {
 
 export default function OverviewPage() {
   const qc = useQueryClient();
-  const { busy, run } = useBusy();
   const [days, setDays] = useState(30);
   // 两种视角共存：收支看「进出」，余额看「存量走势」，默认收支
   const [chartMode, setChartMode] = useState<'flow' | 'balance'>('flow');
@@ -40,7 +39,6 @@ export default function OverviewPage() {
   const [customOpen, setCustomOpen] = useState(false);
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
-  const [bundlePath, setBundlePath] = useState<string | null>(null);
 
   const health = useQuery<HealthReport>({
     queryKey: ['health'],
@@ -147,7 +145,6 @@ export default function OverviewPage() {
 
   const autoRefreshing = useRef(false);
   const lastAutoTry = useRef(0);
-  const [refreshing, setRefreshing] = useState(false);
 
   // 积分不是实时接口：超过 10 分钟就自动刷一轮，否则「已用掉的积分」会一直挂在告警里
   useEffect(() => {
@@ -159,10 +156,9 @@ export default function OverviewPage() {
     if (iids.length === 0) return;
     autoRefreshing.current = true;
     lastAutoTry.current = Date.now();
-    setRefreshing(true);
     void (async () => {
       try {
-        // 自动刷新失败不弹 toast：错误会体现在「积分数据 N 分钟前」上，不打断用户；
+        // 自动刷新失败不弹 toast：失败细节在动作日志里，别为后台补刷打断用户；
         // trigger=auto 与手动按钮区分，动作日志里显示「自动」而不是「手动」
         await runCmd('checkin_credits', { iids, trigger: 'auto' }, { onError: () => {} });
         await Promise.all([
@@ -172,147 +168,12 @@ export default function OverviewPage() {
         ]);
       } finally {
         autoRefreshing.current = false;
-        setRefreshing(false);
       }
     })();
   }, [report, rows, qc, staleAfterMs]);
 
-  const refreshCredits = () =>
-    run('credits', async () => {
-      const iids = rows.filter((row) => row.has_secret && row.enabled).map((row) => row.iid);
-      if (iids.length === 0) {
-        toast('没有可刷新的账号');
-        return;
-      }
-      await runCmd('checkin_credits', { iids });
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ['accounts'] }),
-        qc.invalidateQueries({ queryKey: ['health'] }),
-          qc.invalidateQueries({ queryKey: ['flow'] }),
-      ]);
-      toast('积分已刷新');
-    });
-
-  const runRound = () =>
-    run('round', async () => {
-      if ((await runCmd('daily_run_now')) === undefined) return;
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ['accounts'] }),
-        qc.invalidateQueries({ queryKey: ['detail'] }),
-        qc.invalidateQueries({ queryKey: ['health'] }),
-      ]);
-    });
-
-  const batchDiagnose = () =>
-    run('diagnose', async () => {
-      const iids = rows.filter((r) => r.has_secret && r.enabled).map((r) => r.iid);
-      if (iids.length === 0) {
-        toast('没有可诊断的账号（需要凭据且已启用）');
-        return;
-      }
-      const result = await runCmd('account_batch_diagnose', { iids });
-      if (result === undefined) return;
-      const head = `批量诊断：${result.total} 个账号 · 成功 ${result.ok} · 失败 ${result.failed.length}`;
-      toast(
-        result.failed.length === 0
-          ? head
-          : `${head}\n${result.failed.slice(0, 2).join('\n')}${
-              result.failed.length > 2 ? `\n…另 ${result.failed.length - 2} 条见日志` : ''
-            }`,
-      );
-      await qc.invalidateQueries({ queryKey: ['accounts'] });
-    });
-
-  const exportBundle = () =>
-    run('bundle', async () => {
-      const path = await runCmd('diagnose_bundle');
-      if (path === undefined) return;
-      setBundlePath(path);
-      toast(`诊断包已导出：${path}`);
-    });
-
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <h1 className="text-lg font-semibold">仪表盘</h1>
-        {report && (
-          <span className="text-xs text-muted">
-            积分数据 {ago(report.credits_at)}
-            {refreshing && ' · 正在刷新…'}
-          </span>
-        )}
-        <span className="flex-1" />
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={refreshCredits}
-          loading={busy === 'credits'}
-          disabled={!!busy || refreshing}
-          title="重新查一遍各账号的积分与批次（会调用平台接口）"
-        >
-          刷新积分
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => health.refetch()} disabled={!!busy}>
-          刷新
-        </Button>
-        <Button
-          size="sm"
-          onClick={batchDiagnose}
-          loading={busy === 'diagnose'}
-          disabled={!!busy || rows.length === 0}
-          title="对全部启用且有凭据的账号做一次只读诊断（并发 3）"
-        >
-          批量诊断
-        </Button>
-        <Button
-          size="sm"
-          onClick={exportBundle}
-          loading={busy === 'bundle'}
-          disabled={!!busy}
-          title="把日志、账号状态（脱敏）、配置打包成一个 JSON，便于排查或求助"
-        >
-          导出诊断包
-        </Button>
-        <Button
-          size="sm"
-          variant="primary"
-          onClick={runRound}
-          loading={busy === 'round'}
-          disabled={!!busy}
-          title="立即跑一轮签到轮询（会真的调用平台接口）"
-        >
-          跑一轮
-        </Button>
-      </div>
-
-      {bundlePath && (
-        <div className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-1.5 text-xs">
-          <span className="text-muted">最近导出</span>
-          <span className="truncate font-mono" title={bundlePath}>
-            {bundlePath}
-          </span>
-          <span className="flex-1" />
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              void navigator.clipboard.writeText(bundlePath);
-              toast('路径已复制');
-            }}
-          >
-            复制路径
-          </Button>
-        </div>
-      )}
-
-      {health.isLoading && (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="h-[92px] animate-pulse rounded-lg bg-hover" />
-          ))}
-        </div>
-      )}
-
       {health.isError && (
         <div className="rounded-lg border border-line bg-card">
           <StateBlock
@@ -341,50 +202,6 @@ export default function OverviewPage() {
 
       {report && report.accounts.total > 0 && (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Metric
-              label="启用账号"
-              value={`${report.accounts.enabled} / ${report.accounts.total}`}
-              hint={`停用 ${report.accounts.total - report.accounts.enabled} · 无凭据 ${report.accounts.no_secret}`}
-              onClick={() => go('account-center')}
-            />
-            <Metric
-              label="今日已签"
-              value={`${report.accounts.checked_today}`}
-              hint={
-                report.accounts.checked_today === 0
-                  ? '还没有账号完成签到'
-                  : `覆盖 ${report.accounts.checked_today} 个账号`
-              }
-              tone={report.accounts.checked_today > 0 ? 'ok' : undefined}
-              onClick={() => go('account-center')}
-            />
-            <Metric
-              label="到期风险"
-              value={`${report.accounts.expired + report.accounts.expiring}`}
-              hint={`已过期 ${report.accounts.expired} · 3 天内 ${report.accounts.expiring}`}
-              tone={
-                report.accounts.expired > 0
-                  ? 'bad'
-                  : report.accounts.expiring > 0
-                    ? 'warn'
-                    : undefined
-              }
-              onClick={() => go('account-center')}
-            />
-            <Metric
-              label="最近失败"
-              value={`${report.accounts.failing}`}
-              hint={
-                report.accounts.failing > 0
-                  ? '失败晚于最近一次成功，需要看一眼'
-                  : '全部账号最近一次查询正常'
-              }
-              tone={report.accounts.failing > 0 ? 'bad' : 'ok'}
-              onClick={() => go('account-center')}
-            />
-          </div>
-
           <section className="rounded-lg border border-line bg-card p-3">
             <SectionTitle
               right={
@@ -519,16 +336,6 @@ export default function OverviewPage() {
       <UsageSection />
     </div>
   );
-}
-
-/** 「3 分钟前」这类相对时间：积分数据的陈旧程度比绝对时间更直观。 */
-function ago(ms: number | null): string {
-  if (ms === null) return '从未刷新';
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return '刚刚';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return `${Math.floor(diff / 86_400_000)} 天前`;
 }
 
 /** 自定义区间裁剪：`open` 为假时原样放行（预设区间由后端按 days 截好）。 */

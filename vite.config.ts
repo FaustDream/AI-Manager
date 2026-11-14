@@ -33,5 +33,15 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'chrome120',
+    // echarts 按需注册后单 chunk 仍 ~600KB（min）——已是三种图 + 六个组件的地板价，
+    // 不再往下拆；放宽告警阈值免得每次构建都报
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        // echarts 单独成包：只有仪表盘页 import 它，主包与其他页面不加载这块；
+        // 独立 chunk 也让升级 echarts 时其余页面缓存不失效
+        manualChunks: { echarts: ['echarts'] },
+      },
+    },
   },
 });
