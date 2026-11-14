@@ -744,8 +744,12 @@ impl ZCodeProvider {
             return Err(AppError::new(ErrorKind::Provider, "没有可用的登录凭据"));
         }
         // 族感知：z.ai 族（zai/zai_cn）的 token 在 BigModel 监控接口上只会 401 或
-        // 「没有资格」，直接走余额通道——省一轮注定失败的请求，也不往错误列表里塞脏数据
-        if cred.meta_str("provider") != Some("bigmodel") {
+        // 「没有资格」，直接走余额通道——省一轮注定失败的请求，也不往错误列表里塞脏数据。
+        // 只认**显式**的族标记：缺省（旧数据）保持 bigmodel 通道，行为不回退。
+        if matches!(
+            cred.meta_str("provider").as_deref(),
+            Some("zai") | Some("zai_cn")
+        ) {
             return self.quota_from_balance_channel(cred, http, &tokens).await;
         }
         let mut errors: Vec<String> = Vec::new();
@@ -1400,6 +1404,43 @@ mod tests {
         let (id, name, _, _, _) = identity(&c);
         assert_eq!(id, format!("{}@zai", &sha256_hex(token.as_bytes())[..12]));
         assert_eq!(name, "ZCode 账号");
+    }
+
+    /// z.ai 族凭据直接走余额通道：BigModel 监控接口一次都不该被请求（此前每轮
+    /// 都先撞 401/无资格，把「没有套餐」误导成「查询失败」）
+    #[tokio::test]
+    async fn zai_family_quota_goes_straight_to_balance() {
+        let http = crate::app::net::MockHttp::new();
+        http.on(
+            &format!("{BALANCE_URL}?app_version={APP_VERSION}"),
+            200,
+            r#"{"code":0,"balances":[{"total_units":100.0,"used_units":40.0}]}"#,
+        );
+        let mut cred = Credential {
+            token: "tok-0123456789-abcdefghijklmnop".into(),
+            ..Default::default()
+        };
+        cred.put("provider", json!("zai_cn"));
+        cred.put(
+            "credentials",
+            json!({
+                "zcodejwttoken": "tok-0123456789-abcdefghijklmnop",
+                "oauth:zai_cn:access_token": "tok-0123456789-zyxwvutsrqponml",
+            }),
+        );
+
+        let quota = ZCodeProvider::new().credits(&cred, &http).await.unwrap();
+
+        assert_eq!(
+            http.call_count(LIMIT_URL),
+            0,
+            "z.ai 族不该请求 BigModel 监控接口"
+        );
+        assert_eq!(
+            http.call_count(&format!("{BALANCE_URL}?app_version={APP_VERSION}")),
+            1
+        );
+        assert!(quota.summary.contains("剩"), "{}", quota.summary);
     }
 
     #[test]
