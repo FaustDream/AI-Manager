@@ -97,7 +97,7 @@ pub fn relogin_platform(db: &Db, iid: &str) -> Result<String> {
     if key == "zcode" {
         if let Ok(Some(bytes)) = repo::secret_of(db, iid) {
             if let Ok(cred) = Credential::parse(&bytes) {
-                match cred.meta_str("provider").as_deref() {
+                match cred.meta_str("provider") {
                     Some("zai") => return Ok("zcode_zai".to_string()),
                     Some("zai_cn") => return Ok("zcode_zai_cn".to_string()),
                     _ => {}
@@ -112,7 +112,7 @@ pub async fn start(platform: &str) -> Result<Pending> {
     match platform {
         "workbuddy" | "workbuddy_intl" => start_workbuddy(platform).await,
         "qoder" | "qoder_intl" => start_qoder(platform).await,
-        "zcode" | "zcode_zai" | "zcode_zai_cn" => start_zcode(&zcode_variant(platform)).await,
+        "zcode" | "zcode_zai" | "zcode_zai_cn" => start_zcode(zcode_variant(platform)).await,
         other => Err(AppError::new(
             ErrorKind::Unsupported,
             format!("{other} 不支持浏览器登录"),
@@ -894,7 +894,7 @@ fn assemble_zcode_config(family: &str, jwt: &str, api_key: &str) -> Value {
         "builtin:zai"
     };
     let mut provider = Map::new();
-    provider.insert(format!("{prefix}"), entry(plain.0, key, plain.1));
+    provider.insert(prefix.to_string(), entry(plain.0, key, plain.1));
     provider.insert(
         format!("{prefix}-coding-plan"),
         entry(coding.0, key, coding.1),

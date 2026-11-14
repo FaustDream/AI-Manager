@@ -6,6 +6,7 @@
 //!     （keyring v3 后端，目标名 `<sha256(credentials.json 路径)hex>.<服务名>`），
 //!     env 源密钥 = sha256(共享串)。payload 同为 base64url `nonce.tag.cipher` 三段，
 //!     AES-256-GCM 12/16/无 AAD。
+//!
 //! 因此**原始密文可以原样搬运**：换账号只需要把那两份 JSON 写回去，
 //! 不需要解密再重新加密——这也避免了「重新加密后密钥不一致」这类问题。
 //!
@@ -246,8 +247,10 @@ fn v2_os_key(creds_path: &Path) -> Option<Vec<u8>> {
         std::slice::from_raw_parts(cred.CredentialBlob, cred.CredentialBlobSize as usize)
     };
     let units: Vec<u16> = blob
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     let text = String::from_utf16_lossy(&units);
     unsafe { CredFree(cred_ptr.cast()) };
@@ -400,7 +403,7 @@ fn family_of(creds: &Value) -> String {
         }
     }
     for fam in FAMILIES {
-        if creds.get(&format!("oauth:{fam}:access_token")).is_some() {
+        if creds.get(format!("oauth:{fam}:access_token")).is_some() {
             return fam.to_string();
         }
     }
@@ -742,7 +745,7 @@ impl ZCodeProvider {
         }
         // 族感知：z.ai 族（zai/zai_cn）的 token 在 BigModel 监控接口上只会 401 或
         // 「没有资格」，直接走余额通道——省一轮注定失败的请求，也不往错误列表里塞脏数据
-        if cred.meta_str("provider").as_deref() != Some("bigmodel") {
+        if cred.meta_str("provider") != Some("bigmodel") {
             return self.quota_from_balance_channel(cred, http, &tokens).await;
         }
         let mut errors: Vec<String> = Vec::new();

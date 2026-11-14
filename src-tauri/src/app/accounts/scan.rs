@@ -100,14 +100,14 @@ fn cleanup_legacy_zcode_rows(db: &Db) {
         let Some(raw) = cred.meta_json("credentials") else {
             continue;
         };
-        if crate::app::providers::zcode::identity(&raw).0 == current {
-            if repo::delete(db, &row.iid).unwrap_or(false) {
-                crate::app::log::log(
-                    crate::app::log::Level::Info,
-                    "accounts",
-                    "已清理历史缺陷留下的重复行「zcode:ZCode 账号」（同一登录已用正确身份入库）",
-                );
-            }
+        if crate::app::providers::zcode::identity(raw).0 == current
+            && repo::delete(db, &row.iid).unwrap_or(false)
+        {
+            crate::app::log::log(
+                crate::app::log::Level::Info,
+                "accounts",
+                "已清理历史缺陷留下的重复行「zcode:ZCode 账号」（同一登录已用正确身份入库）",
+            );
         }
     }
 }
