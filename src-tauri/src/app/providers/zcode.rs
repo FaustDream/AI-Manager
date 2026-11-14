@@ -1267,7 +1267,7 @@ mod tests {
         let (cipher, tag) = sealed.split_at(sealed.len() - 16);
         let fingerprint = &sha256_hex(key)[..24];
         format!(
-            "{PREFIX_V2}os:{fingerprint}.{}.{}.{}",
+            "{PREFIX_V2}os:{fingerprint}:{}.{}.{}",
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce),
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(tag),
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(cipher),
@@ -1322,7 +1322,9 @@ mod tests {
             pinned_source(&dir.path().join("credentials.json")).as_deref(),
             Some("env")
         );
-        assert_eq!(pinned_source(&dir.path().join("missing.json")), None);
+        // 空目录：没有 credential-source 就是不钉模式
+        let empty = tempfile::TempDir::new().unwrap();
+        assert_eq!(pinned_source(&empty.path().join("credentials.json")), None);
     }
 
     #[test]
