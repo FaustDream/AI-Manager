@@ -158,6 +158,11 @@ fn judge(
         if let Some(e) = scan_error {
             message.push_str(&format!("；重扫报错：{e}"));
         }
+        // 重扫之后这条还是过期的，而客户端里登录的是另一个有效账号：
+        // 那是重登换发了 userId，旧行成了孤儿——「去重新登录」的指引是错的，把实情说明白
+        if let Some(hint) = orphan_login_hint(db, iid) {
+            message.push_str(&format!("；{hint}"));
+        }
         return Ok(RefreshCredentialOutcome::new(
             RefreshCredentialState::NeedRelogin,
             message,
@@ -186,6 +191,33 @@ fn judge(
         "客户端里就是最新的一份，有效期保持原值".into(),
         after_exp,
     ))
+}
+
+/// 同平台有另一条凭据仍有效的账号 → 客户端当前登录的不是这一条。
+///
+/// 重新登录会换发 userId（新身份新行），旧行就成了永远续不上的孤儿；
+/// 这时「去客户端重新登录」的指引是错的——客户端里登录的明明是另一个账号。
+/// 只在重扫**之后**判断（`scan_platform` 刚落完库），DB 就是客户端的当前实况。
+fn orphan_login_hint(db: &Db, iid: &str) -> Option<String> {
+    let (platform, _) = iid.split_once(':')?;
+    for row in repo::list(db).ok()? {
+        if row.platform != platform || row.iid == iid || !row.has_secret {
+            continue;
+        }
+        let Ok(Some(bytes)) = repo::secret_of(db, &row.iid) else {
+            continue;
+        };
+        let Ok(cred) = Credential::parse(&bytes) else {
+            continue;
+        };
+        if cred.expires_ms().is_some_and(|ms| ms > now_ms()) {
+            return Some(format!(
+                "客户端当前登录的是「{}」，凭据有效；这条是旧登录态，确认不再使用可在账号中心删除",
+                row.display_name()
+            ));
+        }
+    }
+    None
 }
 
 /// 刷新一个账号的凭据。会读客户端文件并解密凭据，调用方负责放到阻塞线程里。
@@ -367,6 +399,53 @@ mod tests {
         assert_eq!(out.state, RefreshCredentialState::NeedRelogin);
         assert!(out.message.contains("客户端"), "{}", out.message);
         assert!(!out.message.contains("重新登录"), "{}", out.message);
+    }
+
+    /// 重登换发了 userId 后，客户端里登录的是另一个有效账号、旧行永远续不上：
+    /// 这时不能只说「去客户端登录」，要直接点明这条是旧登录态（孤儿行）。
+    /// 直调 judge 而非 refresh_credential——后者会真扫本机客户端目录，结果随环境漂。
+    #[test]
+    fn orphan_hint_names_the_currently_logged_in_account() {
+        let (_dir, db) = setup();
+        seed(&db, "trae:old");
+        save(&db, "trae:old", &cred("old-tk", "2000-01-01T00:00:00Z"));
+        seed(&db, "trae:new");
+        save(
+            &db,
+            "trae:new",
+            &cred("new-tk", &iso_from_ms(now_ms() + 10 * DAY_MS)),
+        );
+
+        let before = snapshot(&db, "trae:old").unwrap();
+        let out = judge(&db, "trae:old", &before, None).unwrap();
+
+        assert_eq!(out.state, RefreshCredentialState::NeedRelogin);
+        assert!(
+            out.message.contains("客户端当前登录的是"),
+            "{}",
+            out.message
+        );
+        assert!(out.message.contains("测试账号"), "{}", out.message);
+    }
+
+    /// 同平台没有别的有效账号时不能乱提示：客户端里可能真就是这份旧凭据
+    #[test]
+    fn no_orphan_hint_when_no_other_valid_account() {
+        let (_dir, db) = setup();
+        seed(&db, "trae:old");
+        save(&db, "trae:old", &cred("old-tk", "2000-01-01T00:00:00Z"));
+        seed(&db, "trae:other");
+        save(&db, "trae:other", &cred("tk", "2000-01-01T00:00:00Z"));
+
+        let before = snapshot(&db, "trae:old").unwrap();
+        let out = judge(&db, "trae:old", &before, None).unwrap();
+
+        assert_eq!(out.state, RefreshCredentialState::NeedRelogin);
+        assert!(
+            !out.message.contains("客户端当前登录的是"),
+            "{}",
+            out.message
+        );
     }
 
     #[test]

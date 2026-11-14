@@ -186,6 +186,8 @@ impl Provider for TraeProvider {
     fn scan(&self, sink: &mut Sink<'_>) -> Result<usize> {
         let mut count = 0;
         let mut seen = std::collections::HashSet::new();
+        // 读到了登录态字段却没能解出可用凭据的份数；正常机器是 0
+        let mut unreadable = 0usize;
         for path in self.storage_files() {
             let Ok(raw) = std::fs::read(&path) else {
                 continue;
@@ -196,10 +198,15 @@ impl Provider for TraeProvider {
             let Some(encrypted) = storage.get(AUTH_KEY).and_then(|v| v.as_str()) else {
                 continue;
             };
-            let Ok(auth) = decrypt_auth(encrypted) else {
-                continue;
+            let auth = match decrypt_auth(encrypted) {
+                Ok(auth) => auth,
+                Err(_) => {
+                    unreadable += 1;
+                    continue;
+                }
             };
             let Some(token) = auth.get("token").and_then(|v| v.as_str()) else {
+                unreadable += 1;
                 continue;
             };
             if !seen.insert(token.to_string()) {
@@ -265,6 +272,17 @@ impl Provider for TraeProvider {
             };
             sink(ScannedAccount::new(identity, &cred)?)?;
             count += 1;
+        }
+        // 一份都没产出却有解不开的登录态：必须报错而不是静默返回 0。
+        // 否则用户在客户端里重登之后，「刷新凭据」只会说「已是最新」，平台查询
+        // 继续拿着库里那份过期 token 被拒，界面永远挂着误导的「平台错误」。
+        if count == 0 && unreadable > 0 {
+            return Err(AppError::new(
+                ErrorKind::Crypto,
+                format!(
+                    "读到 {unreadable} 份 Trae 登录态但解密失败：客户端可能更新了加密格式，请带日志反馈"
+                ),
+            ));
         }
         Ok(count)
     }
@@ -422,12 +440,43 @@ impl TraeProvider {
         req
     }
 
+    /// 凭据过期就不发请求。死 token 在 Trae 上拿到的是 HTTP 200 + `code != 0`
+    /// 的通用拒绝文案（"We're sorry, ..."），既不是 401 也读不出凭据语义——
+    /// 与其让用户对着「平台错误」猜，不如直接说清「凭据过期了、去哪修」。
+    fn ensure_cred_usable(&self, cred: &Credential) -> Result<()> {
+        let Some(exp) = cred.expires_ms() else {
+            return Ok(()); // 没有可信的到期时间：让平台自己回答
+        };
+        if exp > crate::app::timeutil::now_ms() {
+            return Ok(());
+        }
+        let when = chrono::DateTime::from_timestamp_millis(exp)
+            .map(|d| {
+                d.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "未知时间".into());
+        Err(AppError::new(
+            ErrorKind::AuthExpired,
+            format!("凭据已于 {when} 过期：请在 Trae 客户端重新登录，然后点「刷新凭据」"),
+        ))
+    }
+
     async fn call(&self, cred: &Credential, http: &dyn Http, path: &str) -> Result<Value> {
+        self.ensure_cred_usable(cred)?;
         let url = format!("{API_BASE}/{path}");
         let resp = http.send(self.post(cred, &url, REQ_SOURCE)).await?;
         if resp.status >= 400 {
+            // 401 = 凭据被服务端明确拒绝，归「登录失效」，与其他平台一致；
+            // 其余 4xx/5xx 才算平台侧问题（403 可能是 WAF 拦截，不能咬定凭据坏了）
+            let kind = if resp.status == 401 {
+                ErrorKind::AuthExpired
+            } else {
+                ErrorKind::Provider
+            };
             return Err(AppError::new(
-                ErrorKind::Provider,
+                kind,
                 format!("HTTP {}（登录态可能过期）", resp.status),
             ));
         }
@@ -440,6 +489,7 @@ impl TraeProvider {
         cred: &Credential,
         http: &dyn Http,
     ) -> Result<(String, Option<f64>, Option<Vec<CreditLot>>)> {
+        self.ensure_cred_usable(cred)?;
         let data = http
             .send(self.post(cred, USAGE_URL, REQ_SOURCE))
             .await?
@@ -674,5 +724,100 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].identity.iid, "trae:u1");
         assert_eq!(rows[0].identity.name, "某人");
+    }
+
+    /// 客户端更新了加密格式时，扫描必须报错而不是静默返回 0——
+    /// 否则「刷新凭据」只会说「已是最新」，用户不知道软件根本没读到新登录态。
+    #[test]
+    fn unreadable_login_state_is_a_scan_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let storage_dir = dir.path().join("Trae CN/User/globalStorage");
+        std::fs::create_dir_all(&storage_dir).unwrap();
+        std::fs::write(
+            storage_dir.join("storage.json"),
+            serde_json::to_vec(&json!({ AUTH_KEY: "!!!not-a-real-ciphertext!!!" })).unwrap(),
+        )
+        .unwrap();
+
+        let err = TraeProvider::at(dir.path().to_path_buf())
+            .scan(&mut |_| Ok(()))
+            .unwrap_err();
+        assert!(err.message.contains("解密失败"), "实际：{}", err.message);
+    }
+
+    /// 一份能读、一份读不出：部分成功仍算成功（坏的那份可能是残留目录），
+    /// 但不能把能读到的那份也丢了。
+    #[test]
+    fn partial_unreadable_login_state_still_returns_what_it_read() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let payload = json!({"token": "tk", "userId": "u1"});
+        for (client_dir, encrypted) in [
+            ("Trae CN", seal(&payload)),
+            ("TRAE SOLO CN", "!!!not-a-real-ciphertext!!!".to_string()),
+        ] {
+            let storage_dir = dir.path().join(client_dir).join("User/globalStorage");
+            std::fs::create_dir_all(&storage_dir).unwrap();
+            std::fs::write(
+                storage_dir.join("storage.json"),
+                serde_json::to_vec(&json!({ AUTH_KEY: encrypted })).unwrap(),
+            )
+            .unwrap();
+        }
+
+        let mut rows = Vec::new();
+        let count = TraeProvider::at(dir.path().to_path_buf())
+            .scan(&mut |acc| {
+                rows.push(acc);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(rows.len(), 1);
+    }
+
+    /// 过期凭据必须在发请求之前就拦下：Trae 对死 token 返回 200 + 通用拒绝文案，
+    /// 那条路读不出「凭据坏了」的语义。报「登录失效」并直接给出补救动作。
+    #[tokio::test]
+    async fn expired_credential_fails_fast_as_auth_expired() {
+        let http = crate::app::net::MockHttp::new();
+        let cred = Credential {
+            token: "tk".into(),
+            expires_at: iso_from_ms(crate::app::timeutil::now_ms() - 86_400_000),
+            ..Default::default()
+        };
+        let err = TraeProvider::at(std::env::temp_dir())
+            .status(&cred, &http)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::AuthExpired);
+        assert!(err.message.contains("过期"), "实际：{}", err.message);
+        assert!(err.message.contains("重新登录"), "实际：{}", err.message);
+        assert!(
+            http.calls().is_empty(),
+            "过期预检必须发生在任何网络请求之前"
+        );
+    }
+
+    /// HTTP 401 = 服务端明确拒绝这份凭据，归「登录失效」，与其他平台一致；
+    /// 不再落成「平台错误」误导排障方向。
+    #[tokio::test]
+    async fn http_401_maps_to_auth_expired() {
+        let http = crate::app::net::MockHttp::new();
+        http.on(
+            &format!("{API_BASE}/status"),
+            401,
+            r#"{"message": "unauthorized"}"#,
+        );
+        let cred = Credential {
+            token: "tk".into(),
+            expires_at: iso_from_ms(crate::app::timeutil::now_ms() + 86_400_000),
+            ..Default::default()
+        };
+        let err = TraeProvider::at(std::env::temp_dir())
+            .status(&cred, &http)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::AuthExpired);
+        assert!(err.message.contains("HTTP 401"), "实际：{}", err.message);
     }
 }
