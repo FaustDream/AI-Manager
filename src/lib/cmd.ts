@@ -87,6 +87,7 @@ export interface CmdArgs {
   account_restore_sessions: { iid: string };
   account_uid: { iid: string };
   account_current: void;
+  account_switchable: void;
   account_add_prepare: { platform: string };
   account_add_cookie: { platform: string; cookie: string; name: string };
   account_open_client: { platform: string };
@@ -196,6 +197,7 @@ export interface CmdReturn {
   account_restore_sessions: RestoreOutcome;
   account_uid: string;
   account_current: string[];
+  account_switchable: string[];
   account_add_prepare: AddOutcome;
   account_add_cookie: string;
   account_open_client: boolean;

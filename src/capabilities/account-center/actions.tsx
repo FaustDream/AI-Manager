@@ -57,6 +57,7 @@ function RowAction({
 export function RowActions({
   row,
   isCurrent,
+  switchable,
   busy,
   onSwitch,
   onRestore,
@@ -65,6 +66,8 @@ export function RowActions({
 }: {
   row: AccountView;
   isCurrent: boolean;
+  /** 现在能否切到客户端：网页登录的账号没有登录态档案，禁用并说明 */
+  switchable: boolean;
   busy: boolean;
   onSwitch: () => void;
   onRestore: () => void;
@@ -88,13 +91,15 @@ export function RowActions({
         </span>
         <RowAction
           onClick={onSwitch}
-          disabled={!row.has_secret || isCurrent || busy}
+          disabled={!row.has_secret || isCurrent || busy || !switchable}
           title={
             isCurrent
               ? '已经是客户端当前登录的账号'
               : !row.has_secret
                 ? '这个账号没有保存登录凭据，先在客户端登录一次再扫描'
-                : '把客户端登录态切换到这个账号'
+                : !switchable
+                  ? '网页登录的账号不能切换客户端：请在客户端里登录一次该账号（添加账号 → 改用客户端登录），之后即可切换'
+                  : '把客户端登录态切换到这个账号'
           }
         >
           <IconSwitch size={15} />

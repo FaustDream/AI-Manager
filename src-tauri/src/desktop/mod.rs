@@ -212,6 +212,7 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_restore_sessions,
             commands::accounts::account_uid,
             commands::accounts::account_current,
+            commands::accounts::account_switchable,
             commands::accounts::account_add_prepare,
             commands::accounts::account_login_start,
             commands::accounts::account_relogin_start,

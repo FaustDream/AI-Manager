@@ -68,6 +68,13 @@ pub fn switch(db: &Db, roots: &Roots, iid: &str) -> Result<SwitchResult> {
             .ms(started.elapsed().as_millis() as u64),
     );
 
+    // 切换能力预检：必须在**关客户端之前**拦下切不了的账号，不然用户只会
+    // 平白被关一次软件，然后才在报错里学到「这个账号切不了」
+    if let Err(e) = precheck_switch(iid, &cred) {
+        fail("切换能力预检", &e, "处置=未关客户端、未写任何文件");
+        return Err(e);
+    }
+
     // 切换前先记下客户端当前登录的账号：切换后它就是「这些会话的旧主人」。
     // 必须写在 providers::switch 之前，之后读到的已经是新账号了。
     let previous = if providers::platform_of(iid) == Some("workbuddy") {
@@ -287,6 +294,68 @@ pub fn current_iids() -> Vec<String> {
     out
 }
 
+/// 切换能力预检：这个账号能不能被切到客户端。判据与 `providers::switch` 各家
+/// 自己的卫语句一致，但提前到**关客户端之前**执行——WorkBuddy 的档案只能来自
+/// 客户端登录（Chromium 会话 + 服务端签发的 sessionState），网页登录造不出来。
+fn precheck_switch(iid: &str, cred: &Credential) -> Result<()> {
+    let key = providers::client_key_of(iid);
+    match key {
+        "workbuddy" | "workbuddy_intl" => {
+            let provider =
+                crate::app::providers::workbuddy::WorkBuddyProvider::new(key == "workbuddy_intl");
+            if provider.pack_ready(uid_of(iid)) {
+                Ok(())
+            } else {
+                Err(AppError::new(
+                    ErrorKind::SessionStateMissing,
+                    "本机没有这个账号完整的登录态档案，无法切换。网页登录只能签到与查积分；\
+                     要切换，请在客户端里登录一次该账号（账号中心 → 添加账号 → 选 WorkBuddy → \
+                     登录失败时的「改用客户端登录」），档案会在那次流程里保存。",
+                ))
+            }
+        }
+        // Qoder 写回只要重封 auth.v1.dat，但缺 refresh token 的凭据会被客户端立刻登出
+        "qoder" | "qoder_intl" => {
+            if cred.refresh().trim().is_empty() {
+                Err(AppError::new(
+                    ErrorKind::Invalid,
+                    "这个账号没有 refresh token，写回客户端会被立刻登出，无法切换",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        // ZCode 写回的是整份客户端凭据包，没带包就无从写起
+        "zcode" => {
+            if cred.meta_json("credentials").is_some() {
+                Ok(())
+            } else {
+                Err(AppError::new(
+                    ErrorKind::Invalid,
+                    "这个账号没有保存客户端凭据包，无法切换登录态",
+                ))
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// 现在能被切到客户端的账号 iid 集合。界面据此禁用切换按钮并说明原因，
+/// 而不是让用户点了才在报错里学一次。判据与 `precheck_switch` 同源。
+pub fn switchable_iids(db: &Db) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for row in repo::list(db)?.into_iter().filter(|r| r.has_secret) {
+        let cred = match repo::secret_of(db, &row.iid)?.map(|bytes| Credential::parse(&bytes)) {
+            Some(Ok(cred)) => cred,
+            _ => continue,
+        };
+        if precheck_switch(&row.iid, &cred).is_ok() {
+            out.push(row.iid);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,5 +425,19 @@ mod tests {
         seed(&db, "trae:u1");
         // Trae 客户端目录由环境变量决定；无论如何不该 panic，也不该说「是当前」
         assert!(!is_current(&db, "trae:u1").unwrap());
+    }
+
+    /// 预检要在**关客户端之前**拦下切不了的账号：workbuddy 无档案、qoder 缺
+    /// refresh token、zcode 缺凭据包，三家的网页登录凭据都过不了预检
+    #[test]
+    fn precheck_refuses_web_login_credential_shapes() {
+        let plain = Credential {
+            token: "t".into(),
+            ..Default::default()
+        };
+        // CI / 干净机器上不存在 workbuddy 档案目录，必然 Err
+        assert!(precheck_switch("workbuddy:someone", &plain).is_err());
+        assert!(precheck_switch("qoder:a", &plain).is_err());
+        assert!(precheck_switch("zcode:a", &plain).is_err());
     }
 }

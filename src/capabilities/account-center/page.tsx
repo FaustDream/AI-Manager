@@ -53,6 +53,11 @@ export default function AccountCenterPage() {
     queryKey: ['current'],
     queryFn: () => queryCmd('account_current'),
   });
+  // 现在能被切到客户端的账号：网页登录的账号没有登录态档案，切按钮直接禁用
+  const switchable = useQuery<string[]>({
+    queryKey: ['switchable'],
+    queryFn: () => queryCmd('account_switchable'),
+  });
 
   const [selected, setSelected] = useState<string | null>(null);
   const [widths, setWidths] = useState<Record<string, number>>({});
@@ -77,6 +82,7 @@ export default function AccountCenterPage() {
 
   const selectedRow = rows.find((r) => r.iid === selected) ?? null;
   const currentSet = useMemo(() => new Set(current.data ?? []), [current.data]);
+  const switchableSet = useMemo(() => new Set(switchable.data ?? []), [switchable.data]);
 
   // 「添加账号」里每个平台已有几个号：WorkBuddy 国内/国际共用 platform 键，
   // 按 iid 的 @intl 后缀拆开，否则两版会被算成同一个平台。
@@ -266,6 +272,7 @@ export default function AccountCenterPage() {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['accounts'] }),
         qc.invalidateQueries({ queryKey: ['current'] }),
+        qc.invalidateQueries({ queryKey: ['switchable'] }),
         qc.invalidateQueries({ queryKey: ['detail'] }),
         qc.invalidateQueries({ queryKey: ['codebuddy-targets'] }),
       ]);
@@ -367,6 +374,7 @@ export default function AccountCenterPage() {
   const afterAddScanned = () => {
     qc.invalidateQueries({ queryKey: ['accounts'] });
     qc.invalidateQueries({ queryKey: ['current'] });
+    qc.invalidateQueries({ queryKey: ['switchable'] });
     qc.invalidateQueries({ queryKey: ['facets'] });
     qc.invalidateQueries({ queryKey: ['sessions'] });
   };
@@ -388,6 +396,7 @@ export default function AccountCenterPage() {
         toast(r.message);
         // 切换会改写客户端登录态，也会把旧账号的会话关联过来：列表、当前账号、会话页都要刷
         qc.invalidateQueries({ queryKey: ['current'] });
+        qc.invalidateQueries({ queryKey: ['switchable'] });
         qc.invalidateQueries({ queryKey: ['accounts'] });
         qc.invalidateQueries({ queryKey: ['detail'] });
         qc.invalidateQueries({ queryKey: ['sessions'] });
@@ -600,6 +609,7 @@ export default function AccountCenterPage() {
                   <RowActions
                     row={row}
                     isCurrent={isCurrent}
+                    switchable={switchableSet.has(row.iid)}
                     busy={!!busy}
                     onSwitch={() => setSwitchTarget(row)}
                     onRestore={() => setRestoreTarget(row)}

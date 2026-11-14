@@ -499,6 +499,18 @@ pub async fn account_current() -> std::result::Result<Vec<String>, String> {
         .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))
 }
 
+/// 现在能被切到客户端的账号 iid 集合。界面据此禁用「切不了」的切换按钮并说明原因。
+#[tauri::command]
+
+pub async fn account_switchable() -> std::result::Result<Vec<String>, String> {
+    crate::app::runtime::blocking(move || {
+        crate::app::accounts::switch::switchable_iids(&crate::app::db::Db::open())
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)
+}
+
 /// 添加账号第一步：退出该平台登录态并启动客户端。
 /// 第二步是用户自己在客户端里登录，然后点「扫描客户端」——见 `accounts::add` 的说明。
 #[tauri::command]
