@@ -48,6 +48,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",      # DPAPI：CryptProtectData / CryptUnprotectData
+    "Win32_Security_Credentials",       # 凭据管理器：读 ZCode 客户端 v2:os 的密钥条目
     "Win32_System_Diagnostics_ToolHelp",# 进程快照：检测客户端是否运行
     "Win32_System_Threading",           # CreateProcessW：静默启动，不弹控制台
     "Win32_System_Console",             # AttachConsole：release 无控制台，CLI 输出接父控制台

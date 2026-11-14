@@ -3,6 +3,7 @@
 //! 顺序原则的原因：先把凭据加密写进去，再处理下一个，这样内存里同时存在的
 //! 明文 token 始终只有一个（v1 是整包解密，所有 token 同时在内存）。
 
+use crate::app::accounts::credential::Credential;
 use crate::app::accounts::{repo, AccountIdentity};
 use crate::app::db::Db;
 use crate::app::error::Result;
@@ -68,7 +69,47 @@ fn scan_providers(db: &Db, providers: Vec<Box<dyn providers::Provider>>) -> Resu
         }
     }
 
+    cleanup_legacy_zcode_rows(db);
     Ok(report)
+}
+
+/// 清理历史缺陷留下的「zcode:ZCode 账号」垃圾行。
+///
+/// 旧版两个缺陷共同造出这种行：客户端 3.18 的 v2 加密解不开 → identity 全兜底 →
+/// 「ZCode 账号」同时成了显示名和 account_id，每次扫描都会再插一行。修复后同一份
+/// 登录会以正确身份入库，垃圾行留着只会一直「查不出积分」。**只删能确认与客户端
+/// 当前登录是同一份的**（identity 解出来相等），其余保留给用户手动处理。
+fn cleanup_legacy_zcode_rows(db: &Db) {
+    const LEGACY_IID: &str = "zcode:ZCode 账号";
+    let Ok(rows) = repo::list(db) else {
+        return;
+    };
+    let current = providers::for_platform("zcode").and_then(|p| p.current_id());
+    let Some(current) = current else {
+        return;
+    };
+    for row in rows.iter().filter(|r| r.iid == LEGACY_IID && r.has_secret) {
+        let bytes = match repo::secret_of(db, &row.iid) {
+            Ok(Some(bytes)) => bytes,
+            _ => continue,
+        };
+        let cred = match Credential::parse(&bytes) {
+            Ok(cred) => cred,
+            Err(_) => continue,
+        };
+        let Some(raw) = cred.meta_json("credentials") else {
+            continue;
+        };
+        if crate::app::providers::zcode::identity(&raw).0 == current {
+            if repo::delete(db, &row.iid).unwrap_or(false) {
+                crate::app::log::log(
+                    crate::app::log::Level::Info,
+                    "accounts",
+                    "已清理历史缺陷留下的重复行「zcode:ZCode 账号」（同一登录已用正确身份入库）",
+                );
+            }
+        }
+    }
 }
 
 fn persist(db: &Db, scanned: ScannedAccount, user_platform: &str) -> Result<()> {

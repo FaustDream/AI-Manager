@@ -1,6 +1,11 @@
 //! ZCode：登录态就是一份 JSON（`credentials.json` + `config.json`），整份存、整份写回。
 //!
-//! 字段值带 `enc:v1:` 前缀，密钥由「平台 + 家目录 + 用户名」推导（不落盘、不随账号变）。
+//! 字段值带 `enc:v1:` 或 `enc:v2:` 前缀（客户端 3.18 起 v1 整体迁移成 v2）：
+//!   - v1：密钥由「平台 + 家目录 + 用户名」推导（不落盘、不随账号变）；
+//!   - v2：`enc:v2:<os|env>:<指纹24hex>:<payload>`，os 源密钥放在 Windows 凭据管理器
+//!     （keyring v3 后端，目标名 `<sha256(credentials.json 路径)hex>.<服务名>`），
+//!     env 源密钥 = sha256(共享串)。payload 同为 base64url `nonce.tag.cipher` 三段，
+//!     AES-256-GCM 12/16/无 AAD。
 //! 因此**原始密文可以原样搬运**：换账号只需要把那两份 JSON 写回去，
 //! 不需要解密再重新加密——这也避免了「重新加密后密钥不一致」这类问题。
 //!
@@ -15,7 +20,7 @@ use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, paths, process};
 use crate::types::{CreditSnapshot, StatusResult};
 use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Key};
+use aes_gcm::Aes256Gcm;
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{json, Map, Value};
@@ -23,6 +28,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 const PREFIX: &str = "enc:v1:";
+const PREFIX_V2: &str = "enc:v2:";
+/// 客户端把 v2:os 密钥存进 Windows 凭据管理器用的服务名（asar 逆向得出）
+const KEYRING_SERVICE: &str = "ZCode Credential Encryption";
 
 pub struct ZCodeProvider {
     /// ZCode 的 dataBaseDir（`~/.zcode` 的父目录）
@@ -163,7 +171,7 @@ impl Default for ZCodeProvider {
 
 // ------------------------------------------------------------------ 加解密
 
-/// 客户端推导密钥的口径：`zcode-credential-fallback:win32:{家目录}:{用户名}`。
+/// v1 密钥口径：`zcode-credential-fallback:win32:{家目录}:{用户名}`。
 /// 不能换成 DPAPI——那是本工具自己的账号库在用，与 ZCode 无关。
 fn secret() -> String {
     if let Ok(env) = std::env::var("ZCODE_CREDENTIAL_SECRET") {
@@ -180,9 +188,13 @@ fn secret() -> String {
     )
 }
 
-fn key() -> Key<Aes256Gcm> {
-    let digest = Sha256::digest(secret().as_bytes());
-    *Key::<Aes256Gcm>::from_slice(&digest)
+fn sha256_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 fn b64(text: &str) -> Result<Vec<u8>> {
@@ -191,12 +203,135 @@ fn b64(text: &str) -> Result<Vec<u8>> {
         .map_err(|e| AppError::new(ErrorKind::Invalid, format!("不是合法 base64url：{e}")))
 }
 
-/// 解开一个 `enc:v1:` 字段；非加密值原样返回。
-pub fn decrypt(value: &str) -> Option<String> {
-    let Some(body) = value.strip_prefix(PREFIX) else {
-        return Some(value.to_string());
+/// v1 是客户端 3.18 之前的旧格式，只解不写——新写盘一律是 v2，客户端自己会迁移。
+fn v1_key() -> [u8; 32] {
+    Sha256::digest(secret().as_bytes()).into()
+}
+
+/// v2:env 的共享串：`ZCODE_CREDENTIAL_SECRET` 环境变量，或凭据同目录的
+/// `credential-secret` 文件（客户端要求 32-4096 字节）。密钥 = sha256(共享串)。
+fn v2_env_secret(creds_dir: &Path) -> Option<Vec<u8>> {
+    if let Ok(env) = std::env::var("ZCODE_CREDENTIAL_SECRET") {
+        if !env.is_empty() {
+            return Some(env.into_bytes());
+        }
+    }
+    let raw = std::fs::read(creds_dir.join("credential-secret")).ok()?;
+    if !(32..=4096).contains(&raw.len()) {
+        return None;
+    }
+    Some(raw)
+}
+
+/// v2:os 的密钥：Windows 凭据管理器（客户端用 keyring v3 的 Windows 后端）。
+/// 目标名 = `<sha256(credentials.json 绝对路径) hex>.<服务名>`——**user 在前、
+/// 服务在后**（2026-11-14 本机实测）；Blob 是 43 位 base64url 文本，以 UTF-16LE
+/// 存放，解出 32 字节原始密钥（不是 sha256，密钥就是这 32 字节本身）。
+#[cfg(windows)]
+fn v2_os_key(creds_path: &Path) -> Option<Vec<u8>> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Security::Credentials::CRED_TYPE_GENERIC;
+    use windows::Win32::Security::Credentials::{CredFree, CredReadW, CREDENTIALW};
+
+    let user = sha256_hex(creds_path.to_string_lossy().as_bytes());
+    let target = format!("{user}.{KEYRING_SERVICE}");
+    let wide: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut cred_ptr: *mut CREDENTIALW = std::ptr::null_mut();
+    unsafe { CredReadW(PCWSTR(wide.as_ptr()), CRED_TYPE_GENERIC, 0, &mut cred_ptr) }.ok()?;
+    if cred_ptr.is_null() {
+        return None;
+    }
+    let cred = unsafe { &*cred_ptr };
+    let blob = unsafe {
+        std::slice::from_raw_parts(cred.CredentialBlob, cred.CredentialBlobSize as usize)
     };
-    let parts: Vec<&str> = body.split('.').collect();
+    let units: Vec<u16> = blob
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let text = String::from_utf16_lossy(&units);
+    unsafe { CredFree(cred_ptr.cast()) };
+    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text.trim())
+        .ok()?;
+    if key.len() != 32 {
+        return None;
+    }
+    Some(key)
+}
+
+#[cfg(not(windows))]
+fn v2_os_key(_creds_path: &Path) -> Option<Vec<u8>> {
+    None
+}
+
+/// 客户端在凭据同目录留的 `credential-source` 文件钉死了密钥模式（"os" 或 "env"）。
+/// 客户端规则：值里声明的源必须与实际加载的源一致，否则按凭据不可用处理。
+fn pinned_source(creds_path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(creds_path.parent()?.join("credential-source")).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// 生产密钥解析：按值的 source 段取 v2 密钥。
+fn resolve_v2_key(source: &str, creds_path: &Path) -> Option<Vec<u8>> {
+    if let Some(pinned) = pinned_source(creds_path) {
+        if pinned != source {
+            return None;
+        }
+    }
+    match source {
+        "os" => v2_os_key(creds_path),
+        "env" => {
+            let secret = v2_env_secret(creds_path.parent()?)?;
+            Some(Sha256::digest(&secret).to_vec())
+        }
+        _ => None,
+    }
+}
+
+/// 解开一个加密字段。`enc:v1:` 与 `enc:v2:<source>:<指纹>:<payload>` 都认；
+/// 非加密值原样返回（客户端就是混着存的）。
+pub fn decrypt(value: &str) -> Option<String> {
+    decrypt_with(value, &resolve_v2_key)
+}
+
+/// resolver 可注入的版本：单元测试用它假装一个凭据管理器。
+pub fn decrypt_with(
+    value: &str,
+    resolve: &dyn Fn(&str, &Path) -> Option<Vec<u8>>,
+) -> Option<String> {
+    let creds_path = default_data_root()
+        .join(".zcode")
+        .join("v2")
+        .join("credentials.json");
+    if let Some(body) = value.strip_prefix(PREFIX) {
+        return open_triple(body, &v1_key());
+    }
+    if let Some(rest) = value.strip_prefix(PREFIX_V2) {
+        let mut segs = rest.splitn(3, ':');
+        let source = segs.next().unwrap_or("");
+        let fingerprint = segs.next().unwrap_or("");
+        let payload = segs.next().unwrap_or("");
+        if fingerprint.len() != 24 || !fingerprint.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let key = resolve(source, &creds_path)?;
+        // 指纹 = sha256(密钥) 的前 24 个 hex：对不上说明不是这把钥匙，别硬解
+        if &sha256_hex(&key)[..24] != fingerprint {
+            return None;
+        }
+        return open_triple(payload, &key);
+    }
+    Some(value.to_string())
+}
+
+fn open_triple(payload: &str, key: &[u8]) -> Option<String> {
+    let parts: Vec<&str> = payload.split('.').collect();
     if parts.len() != 3 {
         return None;
     }
@@ -204,7 +339,7 @@ pub fn decrypt(value: &str) -> Option<String> {
     let tag = b64(parts[1]).ok()?;
     let mut cipher = b64(parts[2]).ok()?;
     cipher.extend_from_slice(&tag);
-    let plain = Aes256Gcm::new(&key())
+    let plain = Aes256Gcm::new(aes_gcm::Key::<Aes256Gcm>::from_slice(key))
         .decrypt(aes_gcm::Nonce::from_slice(&nonce), cipher.as_ref())
         .ok()?;
     String::from_utf8(plain).ok()
@@ -244,18 +379,64 @@ fn is_logged_in(creds: &Value) -> bool {
     oauth || !token.is_empty()
 }
 
-/// 账号身份。返回 (account_id, 昵称, 到期 ms, provider, email)
+/// 三个登录族。zai_cn = z.ai 中国区（授权必须走服务端下发 URL，客户端源码同口径）。
+const FAMILIES: [&str; 3] = ["bigmodel", "zai", "zai_cn"];
+
+/// 列表首列的平台标签按族区分，智谱与国际/中国 z.ai 一眼可分。
+pub fn family_label(family: &str) -> &'static str {
+    match family {
+        "zai" => "ZCode z.ai",
+        "zai_cn" => "ZCode z.ai CN",
+        _ => "ZCode",
+    }
+}
+
+/// 登录族：`oauth:active_provider` 解出来直接用；缺了按存在的 access_token 键推断；
+/// 再兜 bigmodel（存量行为）。identity 与 candidate_tokens 共用这一个口径。
+fn family_of(creds: &Value) -> String {
+    if let Some(active) = field(creds, "oauth:active_provider") {
+        if FAMILIES.contains(&active.as_str()) {
+            return active;
+        }
+    }
+    for fam in FAMILIES {
+        if creds.get(&format!("oauth:{fam}:access_token")).is_some() {
+            return fam.to_string();
+        }
+    }
+    "bigmodel".to_string()
+}
+
+/// 账号身份。返回 (account_id, 昵称, 到期 ms, 族, email)
+///
+/// account_id 不再落到显示名占位串：user_id → access_token JWT sub →
+/// zcodejwttoken JWT sub → email → token 指纹。否则一次匿名登录就会
+/// 生成 `zcode:ZCode 账号` 这种永续的重复行。zai/zai_cn 族加区域后缀——
+/// 不同族的 uid 可能相同（zai_cn 与 bigmodel 关联账号实测同 uid），不加会互相覆盖。
 pub fn identity(creds: &Value) -> (String, String, Option<i64>, String, String) {
-    let provider = field(creds, "oauth:active_provider").unwrap_or_else(|| "bigmodel".into());
-    let info = json_field(creds, &format!("oauth:{provider}:user_info")).unwrap_or(Value::Null);
+    let family = family_of(creds);
+    let info = json_field(creds, &format!("oauth:{family}:user_info")).unwrap_or(Value::Null);
     let mut user_id = info.get("id").and_then(|v| match v {
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
         _ => None,
     });
     if user_id.is_none() {
-        let access = field(creds, &format!("oauth:{provider}:access_token")).unwrap_or_default();
+        let access = field(creds, &format!("oauth:{family}:access_token")).unwrap_or_default();
         let payload = jwt_payload(&access);
+        user_id = payload
+            .get("user_id")
+            .or_else(|| payload.get("sub"))
+            .and_then(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            });
+    }
+    if user_id.is_none() {
+        let payload = field(creds, "zcodejwttoken")
+            .map(|t| jwt_payload(&t))
+            .unwrap_or_default();
         user_id = payload
             .get("user_id")
             .or_else(|| payload.get("sub"))
@@ -288,6 +469,7 @@ pub fn identity(creds: &Value) -> (String, String, Option<i64>, String, String) 
         .trim()
         .to_string();
     let name = if name.is_empty() {
+        // 只做显示兜底，绝不进 account_id
         "ZCode 账号".to_string()
     } else {
         name
@@ -296,16 +478,27 @@ pub fn identity(creds: &Value) -> (String, String, Option<i64>, String, String) 
     let expires = field(creds, "zcodejwttoken")
         .and_then(|token| jwt_payload(&token).get("exp").and_then(|v| v.as_i64()))
         .map(|sec| sec * 1000);
-    let account_id = if !user_id.as_deref().unwrap_or("").is_empty() {
+    let base = if !user_id.as_deref().unwrap_or("").is_empty() {
         user_id.unwrap()
     } else if !email.is_empty() {
         email.clone()
-    } else if !name.is_empty() {
-        name.clone()
     } else {
-        "unknown".to_string()
+        // 最后兜底：token 指纹。同一份 token 稳定对应同一行，重登同一账号不会刷出新行
+        let token = field(creds, "zcodejwttoken")
+            .or_else(|| field(creds, &format!("oauth:{family}:access_token")))
+            .unwrap_or_default();
+        if token.is_empty() {
+            "unknown".to_string()
+        } else {
+            sha256_hex(token.as_bytes())[..12].to_string()
+        }
     };
-    (account_id, name, expires, provider, email)
+    let account_id = match family.as_str() {
+        "zai" => format!("{base}@zai"),
+        "zai_cn" => format!("{base}@zai_cn"),
+        _ => base,
+    };
+    (account_id, name, expires, family, email)
 }
 
 #[async_trait]
@@ -352,7 +545,7 @@ impl Provider for ZCodeProvider {
         let identity = AccountIdentity {
             iid: format!("zcode:{account_id}"),
             platform: "zcode".into(),
-            platform_label: "ZCode".into(),
+            platform_label: family_label(&provider),
             account_id,
             name,
             expires_at,
@@ -436,11 +629,16 @@ impl ZCodeProvider {
         };
         let jwt = field("zcodejwttoken");
         add(jwt.as_deref());
-        let provider = field("oauth:active_provider").unwrap_or_else(|| "zai".into());
+        // 族口径与 identity 一致：active_provider 解不出就按键推断，别再各写各的默认值
+        let provider = creds
+            .as_ref()
+            .map(family_of)
+            .unwrap_or_else(|| "bigmodel".into());
         for key in [
             format!("oauth:{provider}:access_token"),
             "oauth:bigmodel:access_token".to_string(),
             "oauth:zai:access_token".to_string(),
+            "oauth:zai_cn:access_token".to_string(),
         ] {
             let value = field(&key);
             add(value.as_deref());
@@ -545,6 +743,11 @@ impl ZCodeProvider {
         if tokens.is_empty() {
             return Err(AppError::new(ErrorKind::Provider, "没有可用的登录凭据"));
         }
+        // 族感知：z.ai 族（zai/zai_cn）的 token 在 BigModel 监控接口上只会 401 或
+        // 「没有资格」，直接走余额通道——省一轮注定失败的请求，也不往错误列表里塞脏数据
+        if cred.meta_str("provider").as_deref() != Some("bigmodel") {
+            return self.quota_from_balance_channel(cred, http, &tokens).await;
+        }
         let mut errors: Vec<String> = Vec::new();
         let mut auth_fail = 0;
         let mut no_plan = false;
@@ -599,16 +802,8 @@ impl ZCodeProvider {
 
         let all_auth_failed = auth_fail >= tokens.len() && !no_plan;
         if !all_auth_failed {
-            for token in &tokens {
-                let url = format!("{BALANCE_URL}?app_version={APP_VERSION}");
-                match self
-                    .get(http, &url, &Self::zai_headers(cred, token, None))
-                    .await
-                {
-                    Ok(data) if business_ok(&data) => return Ok(quota_from_balance(&data)),
-                    Ok(_) => {}
-                    Err(e) => errors.push(e.message),
-                }
+            if let Ok(view) = self.quota_from_balance_channel(cred, http, &tokens).await {
+                return Ok(view);
             }
         }
         if no_plan || all_auth_failed {
@@ -622,6 +817,34 @@ impl ZCodeProvider {
                 },
                 windows: std::collections::HashMap::new(),
             });
+        }
+        Err(AppError::new(
+            ErrorKind::Provider,
+            errors
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "额度查询失败".into()),
+        ))
+    }
+
+    /// z.ai 族（zai/zai_cn）的额度：只有余额通道。所有 token 试一遍，全失败才报错。
+    async fn quota_from_balance_channel(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+        tokens: &[String],
+    ) -> Result<QuotaView> {
+        let mut errors: Vec<String> = Vec::new();
+        for token in tokens {
+            let url = format!("{BALANCE_URL}?app_version={APP_VERSION}");
+            match self
+                .get(http, &url, &Self::zai_headers(cred, token, None))
+                .await
+            {
+                Ok(data) if business_ok(&data) => return Ok(quota_from_balance(&data)),
+                Ok(_) => {}
+                Err(e) => errors.push(e.message),
+            }
         }
         Err(AppError::new(
             ErrorKind::Provider,
@@ -1023,12 +1246,28 @@ mod tests {
 
     fn seal(value: &str) -> String {
         let nonce = [3u8; 12];
-        let sealed = Aes256Gcm::new(&key())
+        let sealed = Aes256Gcm::new(aes_gcm::Key::<Aes256Gcm>::from_slice(&v1_key()))
             .encrypt(aes_gcm::Nonce::from_slice(&nonce), value.as_bytes())
             .unwrap();
         let (cipher, tag) = sealed.split_at(sealed.len() - 16);
         format!(
             "{PREFIX}{}.{}.{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(tag),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(cipher),
+        )
+    }
+
+    /// 按客户端 v2 格式造一份值：`enc:v2:<source>:<指纹>:<nonce.tag.cipher>`
+    fn seal_v2(value: &str, key: &[u8; 32]) -> String {
+        let nonce = [5u8; 12];
+        let sealed = Aes256Gcm::new(aes_gcm::Key::<Aes256Gcm>::from_slice(key))
+            .encrypt(aes_gcm::Nonce::from_slice(&nonce), value.as_bytes())
+            .unwrap();
+        let (cipher, tag) = sealed.split_at(sealed.len() - 16);
+        let fingerprint = &sha256_hex(key)[..24];
+        format!(
+            "{PREFIX_V2}os:{fingerprint}.{}.{}.{}",
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce),
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(tag),
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(cipher),
@@ -1050,6 +1289,40 @@ mod tests {
         assert!(value.starts_with(PREFIX));
         assert_eq!(decrypt(&value).unwrap(), "17679130626");
         assert_eq!(decrypt("plain").unwrap(), "plain");
+    }
+
+    /// 客户端 3.18 起把值整体迁到 `enc:v2:os:`。密钥经注入的 resolver 提供
+    ///（模拟凭据管理器），指纹校验必须拦下拿错钥匙的情况。
+    #[test]
+    fn v2_values_roundtrip_with_fingerprint_check() {
+        let key = [7u8; 32];
+        let value = seal_v2("zai_cn", &key);
+        assert!(value.starts_with(PREFIX_V2));
+        let resolve = |source: &str, _path: &Path| {
+            if source == "os" {
+                Some(key.to_vec())
+            } else {
+                None
+            }
+        };
+        assert_eq!(decrypt_with(&value, &resolve).unwrap(), "zai_cn");
+
+        // 指纹 = sha256(密钥) 前 24 hex：换一把钥匙必须解不开，而不是解出乱码
+        let other = [9u8; 32];
+        let wrong = |_source: &str, _path: &Path| Some(other.to_vec());
+        assert!(decrypt_with(&value, &wrong).is_none());
+    }
+
+    /// credential-source 文件钉死密钥模式：内容就是 "os" 或 "env" 一行
+    #[test]
+    fn pinned_source_is_read_from_credentials_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("credential-source"), "env\n").unwrap();
+        assert_eq!(
+            pinned_source(&dir.path().join("credentials.json")).as_deref(),
+            Some("env")
+        );
+        assert_eq!(pinned_source(&dir.path().join("missing.json")), None);
     }
 
     #[test]
@@ -1078,6 +1351,53 @@ mod tests {
             name, "17679130626",
             "昵称是手机号；脱敏在视图层做，这里保留原值"
         );
+    }
+
+    /// z.ai 中国族的登录：user_info 里有真实昵称，account_id 带 @zai_cn 后缀——
+    /// 同一个人在智谱和 z.ai 的 uid 相同（实测），不加后缀两个账号会互相覆盖
+    #[test]
+    fn zai_cn_identity_gets_region_suffix() {
+        let c = json!({
+            "oauth:active_provider": seal("zai_cn"),
+            "oauth:zai_cn:user_info": seal(&json!({"id": "62951787128479523", "displayName": "旅行者0626", "email": "17679130626@phone.local"}).to_string()),
+            "oauth:zai_cn:access_token": seal("tok"),
+        });
+        let (id, name, _, family, _) = identity(&c);
+        assert_eq!(family, "zai_cn");
+        assert_eq!(id, "62951787128479523@zai_cn");
+        assert_eq!(name, "旅行者0626");
+        assert_eq!(family_label("zai_cn"), "ZCode z.ai CN");
+    }
+
+    /// 同一 uid 在不同族必须得到不同 account_id（防跨族覆盖）
+    #[test]
+    fn same_uid_across_families_gets_distinct_ids() {
+        let bigmodel = json!({
+            "oauth:active_provider": seal("bigmodel"),
+            "oauth:bigmodel:user_info": seal(&json!({"id": "123"}).to_string()),
+        });
+        let zai = json!({
+            "oauth:active_provider": seal("zai"),
+            "oauth:zai:user_info": seal(&json!({"id": "123"}).to_string()),
+        });
+        let (bm_id, ..) = identity(&bigmodel);
+        let (zai_id, ..) = identity(&zai);
+        assert_eq!(bm_id, "123");
+        assert_eq!(zai_id, "123@zai");
+    }
+
+    /// 匿名登录（user_info 缺失、JWT 读不出 uid）时，account_id 落到 token 指纹：
+    /// 同一份 token 稳定对应同一行，重登不会刷出新行；「ZCode 账号」只做显示兜底
+    #[test]
+    fn anonymous_login_uses_token_fingerprint_not_display_name() {
+        let token = "not-even-a-jwt";
+        let c = json!({
+            "oauth:active_provider": seal("zai"),
+            "oauth:zai:access_token": seal(token),
+        });
+        let (id, name, _, _, _) = identity(&c);
+        assert_eq!(id, format!("{}@zai", &sha256_hex(token.as_bytes())[..12]));
+        assert_eq!(name, "ZCode 账号");
     }
 
     #[test]

@@ -16,14 +16,20 @@ import { toast } from '@/components/ui/toast';
 import { errText } from '@/lib/ipc';
 import type { AccountView, AddOutcome, LoginOutcome } from '@/lib/types';
 
-/** 可添加的平台。顺序 = 下拉框顺序。 */
+/** 可添加的平台。顺序 = 下拉框顺序。zcode_zai / zcode_zai_cn 只走浏览器登录
+ *  （z.ai 两族没有客户端外的ApiKey兑换路径，借客户端登录用 ZCode 入口即可）。 */
 const PLATFORMS: { key: string; label: string }[] = [
   { key: 'workbuddy', label: 'WorkBuddy 国内版' },
   { key: 'workbuddy_intl', label: 'WorkBuddy 国际版' },
   { key: 'qoder', label: 'Qoder CN' },
   { key: 'qoder_intl', label: 'Qoder 国际版' },
-  { key: 'zcode', label: 'ZCode' },
+  { key: 'zcode', label: 'ZCode 智谱' },
+  { key: 'zcode_zai', label: 'ZCode z.ai' },
+  { key: 'zcode_zai_cn', label: 'ZCode z.ai CN' },
 ];
+
+/** 只支持浏览器登录的入口：没有「改用客户端登录」的兜底（客户端流程认不了这个键）。 */
+const BROWSER_ONLY = new Set(['zcode_zai', 'zcode_zai_cn']);
 
 const platformOf = (key: string) => PLATFORMS.find((p) => p.key === key) ?? PLATFORMS[0];
 
@@ -228,9 +234,11 @@ export function AddAccountDialog({
       footer={
         stage === 'failed' ? (
           <>
-            <Button variant="ghost" onClick={startViaClient}>
-              改用客户端登录
-            </Button>
+            {!BROWSER_ONLY.has(platform) && (
+              <Button variant="ghost" onClick={startViaClient}>
+                改用客户端登录
+              </Button>
+            )}
             <Button variant="ghost" onClick={onClose}>
               关闭
             </Button>

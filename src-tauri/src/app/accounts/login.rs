@@ -58,10 +58,17 @@ pub struct LoginOutcome {
 // ------------------------------------------------------------------ 入口
 
 /// 这个平台支持浏览器登录吗（Trae 的登录态设备绑定，只读）。
+/// zcode_zai / zcode_zai_cn 是 ZCode 的 z.ai 族浏览器登录入口（智谱 = zcode）。
 pub fn supported(platform: &str) -> bool {
     matches!(
         platform,
-        "workbuddy" | "workbuddy_intl" | "qoder" | "qoder_intl" | "zcode"
+        "workbuddy"
+            | "workbuddy_intl"
+            | "qoder"
+            | "qoder_intl"
+            | "zcode"
+            | "zcode_zai"
+            | "zcode_zai_cn"
     )
 }
 
@@ -86,6 +93,18 @@ pub fn relogin_platform(db: &Db, iid: &str) -> Result<String> {
             "这个平台不支持浏览器重新登录，请在客户端里登录后点「扫描客户端」",
         ));
     }
+    // ZCode 的族跟随账号现有的 provider：重新登录不能把 z.ai 账号登成智谱
+    if key == "zcode" {
+        if let Ok(Some(bytes)) = repo::secret_of(db, iid) {
+            if let Ok(cred) = Credential::parse(&bytes) {
+                match cred.meta_str("provider").as_deref() {
+                    Some("zai") => return Ok("zcode_zai".to_string()),
+                    Some("zai_cn") => return Ok("zcode_zai_cn".to_string()),
+                    _ => {}
+                }
+            }
+        }
+    }
     Ok(key)
 }
 
@@ -93,11 +112,21 @@ pub async fn start(platform: &str) -> Result<Pending> {
     match platform {
         "workbuddy" | "workbuddy_intl" => start_workbuddy(platform).await,
         "qoder" | "qoder_intl" => start_qoder(platform).await,
-        "zcode" => start_zcode().await,
+        "zcode" | "zcode_zai" | "zcode_zai_cn" => start_zcode(&zcode_variant(platform)).await,
         other => Err(AppError::new(
             ErrorKind::Unsupported,
             format!("{other} 不支持浏览器登录"),
         )),
+    }
+}
+
+/// 平台键 → ZCode 登录族：智谱 = zcode（bigmodel），z.ai 国际 = zcode_zai，
+/// z.ai 中国 = zcode_zai_cn。客户端的 cli/init 以 body 里的 provider 区分。
+fn zcode_variant(platform: &str) -> &'static str {
+    match platform {
+        "zcode_zai" => "zai",
+        "zcode_zai_cn" => "zai_cn",
+        _ => "bigmodel",
     }
 }
 
@@ -111,7 +140,7 @@ pub fn wait_for_login(db: &Db, platform: &str, ticket: &str) -> Result<LoginOutc
         match platform {
             "workbuddy" | "workbuddy_intl" => wait_workbuddy(db, platform, ticket).await,
             "qoder" | "qoder_intl" => wait_qoder(db, platform, ticket).await,
-            "zcode" => wait_zcode(db, ticket).await,
+            "zcode" | "zcode_zai" | "zcode_zai_cn" => wait_zcode(db, ticket).await,
             other => Err(AppError::new(
                 ErrorKind::Unsupported,
                 format!("{other} 不支持浏览器登录"),
@@ -561,15 +590,18 @@ const ZCODE_POLL: &str = "https://zcode.z.ai/api/v1/oauth/cli/poll";
 const BIGMODEL_BIZ: &str = "https://bigmodel.cn";
 const BIGMODEL_ANTHROPIC: &str = "https://open.bigmodel.cn/api/anthropic";
 const START_PLAN_ANTHROPIC: &str = "https://zcode.z.ai/api/v1/zcode-plan/anthropic";
+const ZAI_ANTHROPIC: &str = "https://api.z.ai/api/anthropic";
 const ZCODE_KEY_NAME: &str = "zcode-api-key";
 
-async fn start_zcode() -> Result<Pending> {
+async fn start_zcode(variant: &str) -> Result<Pending> {
     let poll_token = random_hex(32);
     let mid = uuid_like();
     let http = RealHttp::new();
     let mut req = HttpRequest::post(ZCODE_INIT);
     req.headers = zcode_headers(&poll_token, &mid);
-    req.body = Some(json!({ "provider": "bigmodel" }).to_string());
+    // 服务端按 provider 签发授权页：bigmodel=智谱、zai=z.ai 国际、zai_cn=z.ai 中国
+    //（中国区的授权地址必须由服务端下发，客户端源码同口径）
+    req.body = Some(json!({ "provider": variant }).to_string());
     let resp = http.send(req).await?;
     let body = resp.json().unwrap_or(Value::Null);
     let code = body.get("code").and_then(Value::as_i64).unwrap_or(0);
@@ -601,13 +633,21 @@ async fn start_zcode() -> Result<Pending> {
     Ok(Pending {
         start: LoginStart {
             url: authorize,
-            platform: "zcode".into(),
-            label: "ZCode".into(),
+            platform: format!(
+                "zcode{}",
+                match variant {
+                    "zai" => "_zai",
+                    "zai_cn" => "_zai_cn",
+                    _ => "",
+                }
+            ),
+            label: zcode_provider::family_label(variant).to_string(),
         },
         ticket: json!({
             "flow_id": flow_id,
             "poll_token": poll_token,
             "mid": mid,
+            "variant": variant,
             "interval": data.get("poll_interval_sec").and_then(Value::as_f64).unwrap_or(2.0),
         })
         .to_string(),
@@ -620,6 +660,15 @@ async fn wait_zcode(db: &Db, ticket: &str) -> Result<LoginOutcome> {
     let flow_id = str_of(&t, "flow_id");
     let poll_token = str_of(&t, "poll_token");
     let mid = str_of(&t, "mid");
+    // 登录族：发起时选定的 provider（bigmodel/zai/zai_cn），轮询回包按它取节点
+    let variant = {
+        let v = str_of(&t, "variant");
+        if v.is_empty() {
+            "bigmodel".to_string()
+        } else {
+            v
+        }
+    };
     let interval = t
         .get("interval")
         .and_then(Value::as_f64)
@@ -689,11 +738,19 @@ async fn wait_zcode(db: &Db, ticket: &str) -> Result<LoginOutcome> {
     };
 
     let jwt = str_of(&data, "token");
-    let node = data
-        .get("bigmodel")
-        .or_else(|| data.get("zai"))
-        .cloned()
-        .unwrap_or(Value::Null);
+    // 回包节点按发起时的族优先，再按 bigmodel/zai 兜底；**取到哪个族就用哪个族落键位**
+    // ——以前这里把节点读出来却写死 bigmodel，z.ai 登录的 token 会被放错地方
+    let has_node = |fam: &str| data.get(fam).map(|v| !v.is_null()).unwrap_or(false);
+    let family = if has_node(&variant) {
+        variant.clone()
+    } else if has_node("bigmodel") {
+        "bigmodel".to_string()
+    } else if has_node("zai") {
+        "zai".to_string()
+    } else {
+        variant.clone()
+    };
+    let node = data.get(&family).cloned().unwrap_or(Value::Null);
     let access = {
         let v = str_of(&node, "access_token");
         if v.is_empty() {
@@ -706,7 +763,7 @@ async fn wait_zcode(db: &Db, ticket: &str) -> Result<LoginOutcome> {
         return Err(AppError::new(ErrorKind::Io, "登录返回的数据不完整，请重试"));
     }
 
-    // credentials 结构沿用客户端：zcodejwttoken + oauth:<provider>:*
+    // credentials 结构沿用客户端：zcodejwttoken + oauth:<族>:*，键位按真实登录族
     let mut user = Map::new();
     if let Some(obj) = data.get("user").and_then(Value::as_object) {
         for (key, value) in obj {
@@ -720,10 +777,10 @@ async fn wait_zcode(db: &Db, ticket: &str) -> Result<LoginOutcome> {
     }
     let mut credentials = Map::new();
     credentials.insert("zcodejwttoken".into(), json!(jwt));
-    credentials.insert("oauth:active_provider".into(), json!("bigmodel"));
-    credentials.insert("oauth:bigmodel:access_token".into(), json!(access));
+    credentials.insert("oauth:active_provider".into(), json!(family));
+    credentials.insert(format!("oauth:{family}:access_token"), json!(access));
     credentials.insert(
-        "oauth:bigmodel:user_info".into(),
+        format!("oauth:{family}:user_info"),
         json!(Value::Object(user).to_string()),
     );
     let refresh = {
@@ -735,23 +792,27 @@ async fn wait_zcode(db: &Db, ticket: &str) -> Result<LoginOutcome> {
         }
     };
     if !refresh.is_empty() {
-        credentials.insert("oauth:bigmodel:refresh_token".into(), json!(refresh));
+        credentials.insert(format!("oauth:{family}:refresh_token"), json!(refresh));
     }
     let credentials = Value::Object(credentials);
 
     // 身份、昵称、到期都交给 provider 里那套逻辑，避免两处口径漂移
-    let (account_id, nickname, expires_at, _provider, email) =
-        zcode_provider::identity(&credentials);
+    let (account_id, nickname, expires_at, family, email) = zcode_provider::identity(&credentials);
 
-    // 客户端还需要 config.json 里的 apiKey 才真能用：尽力换一个，换不到也照样入库
-    let api_key = resolve_biz_api_key(BIGMODEL_BIZ, &access, false).await;
-    let config = assemble_zcode_config(&jwt, api_key.as_deref().unwrap_or(""));
+    // 客户端还需要 config.json 里的 apiKey 才真能用：尽力换一个，换不到也照样入库。
+    // 换 key 走的是 bigmodel 商务接口，z.ai 族没有这条路，跳过。
+    let api_key = if family == "bigmodel" {
+        resolve_biz_api_key(BIGMODEL_BIZ, &access, false).await
+    } else {
+        None
+    };
+    let config = assemble_zcode_config(&family, &jwt, api_key.as_deref().unwrap_or(""));
 
     let mut meta = Map::new();
     meta.insert("credentials".into(), credentials);
     meta.insert("config".into(), config);
     meta.insert("device_mid".into(), json!(mid));
-    meta.insert("provider".into(), json!("bigmodel"));
+    meta.insert("provider".into(), json!(family));
     meta.insert("email".into(), json!(email));
     meta.insert("ua".into(), json!("ZCode/1.0"));
     let credential = Credential {
@@ -766,7 +827,7 @@ async fn wait_zcode(db: &Db, ticket: &str) -> Result<LoginOutcome> {
         AccountIdentity {
             iid: format!("zcode:{account_id}"),
             platform: "zcode".into(),
-            platform_label: "ZCode".into(),
+            platform_label: zcode_provider::family_label(&family).to_string(),
             account_id,
             name: nickname.clone(),
             expires_at,
@@ -796,7 +857,7 @@ fn zcode_headers(token: &str, mid: &str) -> Vec<(String, String)> {
     ]
 }
 
-fn assemble_zcode_config(jwt: &str, api_key: &str) -> Value {
+fn assemble_zcode_config(family: &str, jwt: &str, api_key: &str) -> Value {
     let key = api_key.trim();
     let entry = |name: &str, key: &str, base: &str| {
         let options = if key.is_empty() {
@@ -812,13 +873,34 @@ fn assemble_zcode_config(jwt: &str, api_key: &str) -> Value {
             "source": "custom",
         })
     };
-    json!({
-        "provider": {
-            "builtin:bigmodel": entry("Bigmodel - API Key", key, BIGMODEL_ANTHROPIC),
-            "builtin:bigmodel-coding-plan": entry("BigModel - Coding Plan", key, BIGMODEL_ANTHROPIC),
-            "builtin:bigmodel-start-plan": entry("BigModel- Coding Plan", jwt, START_PLAN_ANTHROPIC),
-        }
-    })
+    // z.ai 族的条目名与 baseURL 取自客户端内置模板（zai-api / zai-start-plan）；
+    // zai_cn 与 zai 共用 z.ai 的 API 形态，只差 OAuth 授权路径
+    let (plain, coding, start) = if family == "bigmodel" {
+        (
+            ("Bigmodel - API Key", BIGMODEL_ANTHROPIC),
+            ("BigModel - Coding Plan", BIGMODEL_ANTHROPIC),
+            ("BigModel- Coding Plan", START_PLAN_ANTHROPIC),
+        )
+    } else {
+        (
+            ("Z.ai - API Key", ZAI_ANTHROPIC),
+            ("Z.ai - Coding Plan", ZAI_ANTHROPIC),
+            ("Z.ai - Coding Plan", START_PLAN_ANTHROPIC),
+        )
+    };
+    let prefix = if family == "bigmodel" {
+        "builtin:bigmodel"
+    } else {
+        "builtin:zai"
+    };
+    let mut provider = Map::new();
+    provider.insert(format!("{prefix}"), entry(plain.0, key, plain.1));
+    provider.insert(
+        format!("{prefix}-coding-plan"),
+        entry(coding.0, key, coding.1),
+    );
+    provider.insert(format!("{prefix}-start-plan"), entry(start.0, jwt, start.1));
+    json!({ "provider": Value::Object(provider) })
 }
 
 /// 拿 access token 换一个 anthropic 用的 apiKey（`key.secret` 形态）。
@@ -1065,15 +1147,32 @@ mod tests {
 
     #[test]
     fn config_entries_follow_key_presence() {
-        let with = assemble_zcode_config("jwt", "key.secret");
+        let with = assemble_zcode_config("bigmodel", "jwt", "key.secret");
         let entry = &with["provider"]["builtin:bigmodel"];
         assert_eq!(entry["options"]["apiKey"], "key.secret");
         assert_eq!(entry["enabled"], true);
 
-        let without = assemble_zcode_config("jwt", "");
+        let without = assemble_zcode_config("bigmodel", "jwt", "");
         let entry = &without["provider"]["builtin:bigmodel"];
         assert_eq!(entry["enabled"], false);
         assert_eq!(entry["options"]["apiKeyRequired"], true);
+    }
+
+    /// z.ai 族的 config 条目落在 builtin:zai 键位下，baseURL 是 api.z.ai
+    #[test]
+    fn zai_family_config_uses_zai_entries() {
+        let config = assemble_zcode_config("zai_cn", "jwt", "");
+        let entry = &config["provider"]["builtin:zai-start-plan"];
+        assert_eq!(entry["options"]["apiKey"], "jwt");
+        assert_eq!(
+            entry["options"]["baseURL"],
+            "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
+        );
+        assert_eq!(
+            config["provider"]["builtin:zai"]["options"]["baseURL"],
+            "https://api.z.ai/api/anthropic"
+        );
+        assert!(config["provider"].get("builtin:bigmodel").is_none());
     }
 
     #[test]
