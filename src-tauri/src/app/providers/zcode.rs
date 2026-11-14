@@ -746,10 +746,7 @@ impl ZCodeProvider {
         // 族感知：z.ai 族（zai/zai_cn）的 token 在 BigModel 监控接口上只会 401 或
         // 「没有资格」，直接走余额通道——省一轮注定失败的请求，也不往错误列表里塞脏数据。
         // 只认**显式**的族标记：缺省（旧数据）保持 bigmodel 通道，行为不回退。
-        if matches!(
-            cred.meta_str("provider").as_deref(),
-            Some("zai") | Some("zai_cn")
-        ) {
+        if matches!(cred.meta_str("provider"), Some("zai") | Some("zai_cn")) {
             return self.quota_from_balance_channel(cred, http, &tokens).await;
         }
         let mut errors: Vec<String> = Vec::new();
