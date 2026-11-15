@@ -10,6 +10,7 @@
 //      `<AnimatePresence mode="wait">` 会在退场结束后用**自己的 state** 去挂新页面，
 //      那次渲染不在 transition 里，lazy 页面一挂起就退回灰条骨架——这就是用户看到的
 //      「切过去一片空白」。
+import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   Users, MessagesSquare, Blocks, Settings, RefreshCw, ScrollText, LayoutDashboard,
@@ -22,6 +23,8 @@ import { Button, cn } from '@/components/ui/button';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { onIdle } from '@/lib/idle';
 import { CommandPalette, type PaletteItem } from './CommandPalette';
+import { focusSession } from '@/lib/nav';
+import type { Filter, Page, SessionRow } from '@/lib/types';
 import { hideSplash } from '@/lib/splash';
 import { loadTheme } from '@/lib/theme';
 import { Suspense } from 'react';
@@ -132,6 +135,20 @@ export function Shell() {
 
   const current = caps.find((c) => c.manifest.id === view) ?? caps[0];
 
+  // 会话快搜（Ctrl+K）：最近的 30 条进面板，命中后跳会话页并打开预览。
+  // 正文级搜索在会话页（FTS）；面板只做标题级的快速定位。
+  const recentSessions = useQuery<Page<SessionRow>>({
+    queryKey: ['palette-sessions'],
+    queryFn: () => {
+      const filter: Filter = {
+        source: null, account: null, state: null, q: null, origin: null,
+        unnamed: false, pinned: false, hidden: false, body: null, tags: [], sort: 'last_at',
+      };
+      return queryCmd('session_page', { cursor: null, limit: 30, filter });
+    },
+    staleTime: 60_000,
+  });
+
   const paletteItems = useMemo<PaletteItem[]>(() => {
     const pages: PaletteItem[] = navCaps.map((cap) => ({
       id: `nav:${cap.manifest.id}`,
@@ -193,8 +210,18 @@ export function Shell() {
         run: () => void runCmd('maintenance_open_data'),
       },
     ];
-    return [...pages, ...actions];
-  }, [navCaps, go]);
+    const sessions: PaletteItem[] = (recentSessions.data?.items ?? []).map((row) => ({
+      id: `sess:${row.kind}|${row.source_key}|${row.account}|${row.session_id}`,
+      title: row.title || '（无标题）',
+      group: '会话',
+      hint: row.source_label,
+      run: () => {
+        go('sessions');
+        focusSession(`${row.kind}|${row.source_key}|${row.account}|${row.session_id}`);
+      },
+    }));
+    return [...pages, ...actions, ...sessions];
+  }, [navCaps, go, recentSessions.data]);
 
   return (
     <MotionConfig reducedMotion="user">
@@ -240,7 +267,7 @@ export function Shell() {
         />
       </header>
 
-      <CommandPalette items={paletteItems} />
+      <CommandPalette items={paletteItems} placeholder="搜索页面 / 动作 / 会话…（Esc 关闭）" />
 
       <main className="flex-1 overflow-auto px-5 pb-6 pt-4">
         {/* 兜底边界：只有「首屏第一页」会真的用到它——之后的切页都在 go() 里等到

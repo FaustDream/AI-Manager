@@ -209,3 +209,165 @@ pub async fn session_retention_set(
     );
     Ok(days)
 }
+
+// ------------------------------------------------------------ v3：置顶 / 改名 / 隐藏 / 标签
+
+/// 置顶 / 取消置顶。只写本地标记，客户端与扫描都无感。
+#[tauri::command]
+
+pub async fn session_pin(
+    state: State<'_, AppState>,
+    keys: Vec<String>,
+    on: bool,
+) -> std::result::Result<usize, String> {
+    let count = state.sessions.pin(keys, on).await.map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "sessions",
+        format!("{} {} 条会话", if on { "置顶" } else { "取消置顶" }, count),
+    );
+    Ok(count)
+}
+
+/// 本地改名（`title = None` 表示恢复客户端原标题）。改名即锁定：扫描永不覆盖。
+#[tauri::command]
+
+pub async fn session_rename(
+    state: State<'_, AppState>,
+    key: String,
+    title: Option<String>,
+) -> std::result::Result<(), String> {
+    let action = match &title {
+        Some(t) => format!("重命名会话：{t}"),
+        None => "恢复会话原标题".to_string(),
+    };
+    state.sessions.rename(key, title).await.map_err(err_text)?;
+    log::log(Level::Info, "sessions", action);
+    Ok(())
+}
+
+/// 隐藏 / 取消隐藏。Trae 家族的「彻底删除」就是写隐藏墓碑，取消隐藏=恢复显示。
+#[tauri::command]
+
+pub async fn session_hide(
+    state: State<'_, AppState>,
+    keys: Vec<String>,
+    on: bool,
+) -> std::result::Result<usize, String> {
+    let count = state.sessions.hide(keys, on).await.map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "sessions",
+        format!("{} {} 条会话", if on { "隐藏" } else { "取消隐藏" }, count),
+    );
+    Ok(count)
+}
+
+/// 全量替换一个会话的标签。
+#[tauri::command]
+
+pub async fn session_tag_set(
+    state: State<'_, AppState>,
+    key: String,
+    tags: Vec<String>,
+) -> std::result::Result<usize, String> {
+    let count = state.sessions.tags_set(key, tags).await.map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "sessions",
+        format!("设置会话标签（{count} 个）"),
+    );
+    Ok(count)
+}
+
+// ------------------------------------------------------------ v3：导出 / 打开 / 建议 / 统计
+
+/// 导出会话正文到 `data/exports/`（markdown / json），返回报告。
+#[tauri::command]
+
+pub async fn session_export(
+    state: State<'_, AppState>,
+    keys: Vec<String>,
+    format: String,
+) -> std::result::Result<crate::app::sessions::ExportReport, String> {
+    let report = state
+        .sessions
+        .export(keys, &format)
+        .await
+        .map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "sessions",
+        format!("导出会话：{}", report.path),
+    );
+    Ok(report)
+}
+
+/// 打开正文所在文件夹。正文在 SQLite 库里的来源（Qoder / ZCode / Trae）没有
+/// 可打开的文件，返回 `false` 让界面提示，而不是硬开一个没用的目录。
+#[tauri::command]
+
+pub async fn session_open_body(
+    state: State<'_, AppState>,
+    key: String,
+) -> std::result::Result<bool, String> {
+    let dir = state.sessions.body_dir(key).await.map_err(err_text)?;
+    let Some(dir) = dir else {
+        return Ok(false);
+    };
+    crate::app::runtime::blocking(move || {
+        crate::app::process::spawn_with_args(
+            &std::path::PathBuf::from("explorer.exe"),
+            &[dir.to_string_lossy().as_ref()],
+            true,
+        )
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)?;
+    Ok(true)
+}
+
+/// 打开该会话所属的客户端（复用账号中心的启动逻辑）。
+/// 插件会话等没有独立客户端的来源返回 `false`。
+#[tauri::command]
+
+pub async fn session_open_client(key: String) -> std::result::Result<bool, String> {
+    let platform = crate::app::runtime::blocking(move || {
+        crate::app::sessions::preview::parse_key(&key)
+            .ok()
+            .and_then(|t| {
+                crate::app::sessions::delete::platform_of(&t.source_key).map(str::to_string)
+            })
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
+    let Some(platform) = platform else {
+        return Ok(false);
+    };
+    crate::app::runtime::blocking(move || crate::app::accounts::add::open_client(&platform))
+        .await
+        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+        .map_err(err_text)?;
+    Ok(true)
+}
+
+/// 未命名会话的标题建议（首条用户消息截短），返回 `[key, 建议]` 列表。
+/// 纯只读；由界面在「一键治理」弹窗里人工确认后再调 `session_rename`。
+#[tauri::command]
+
+pub async fn session_suggest_titles(
+    state: State<'_, AppState>,
+    keys: Vec<String>,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    state.sessions.suggest_titles(keys).await.map_err(err_text)
+}
+
+/// 会话维度统计（仪表盘「会话」区块）。
+#[tauri::command]
+
+pub async fn session_stats(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::sessions::SessionStats, String> {
+    state.sessions.stats().await.map_err(err_text)
+}

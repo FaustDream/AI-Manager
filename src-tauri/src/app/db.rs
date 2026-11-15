@@ -9,7 +9,7 @@ use crate::app::paths;
 use rusqlite::Connection;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: u32 = 2;
+pub(crate) const SCHEMA_VERSION: u32 = 3;
 
 pub struct Db {
     write: Mutex<Connection>,
@@ -147,11 +147,41 @@ impl Db {
                  --   archived_at  归档时刻（到点自动归档 / 手动归档）
                  --   hidden_at    本地隐藏（Trae 这类只有云端占位、远端删不掉的来源）
                  CREATE TABLE IF NOT EXISTS session_marks (
-                     source_key  TEXT NOT NULL,
-                     session_id  TEXT NOT NULL,
-                     archived_at TEXT,
-                     hidden_at   TEXT,
+                     source_key     TEXT NOT NULL,
+                     session_id     TEXT NOT NULL,
+                     archived_at    TEXT,
+                     hidden_at      TEXT,
+                     -- v3 会话管理扩展：置顶与本地命名。索引表每轮扫描整源重建，
+                     -- 这类用户态只能活在 marks（与 archived/hidden 同一条铁律）
+                     pinned_at      TEXT,
+                     title_override TEXT,
                      PRIMARY KEY (source_key, session_id)
+                 );
+                 -- 标签：一个会话可挂多个，独立成表才能按 tag 建索引、按 tag 聚合计数
+                 CREATE TABLE IF NOT EXISTS session_tag (
+                     source_key TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     tag        TEXT NOT NULL,
+                     PRIMARY KEY (source_key, session_id, tag)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_session_tag_tag ON session_tag(tag);
+                 -- 正文全文索引（v3）：session_text 是唯一事实（正文 + 指纹），
+                 -- session_fts 是它的 external-content FTS5 倒排（rowid 对齐，body 不重复存）。
+                 -- 写入纪律见 sessions/fts.rs：先写 text 再同步 fts，删除两边一起删。
+                 CREATE TABLE IF NOT EXISTS session_text (
+                     source_key TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     fp         TEXT NOT NULL DEFAULT '',
+                     truncated  INTEGER NOT NULL DEFAULT 0,
+                     body       TEXT NOT NULL DEFAULT '',
+                     UNIQUE (source_key, session_id)
+                 );
+                 CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
+                     body,
+                     content='session_text',
+                     content_rowid='rowid',
+                     -- trigram：中文子串搜索的前提（unicode61 把整段 CJK 当一个 token）
+                     tokenize='trigram'
                  );
                  CREATE TABLE IF NOT EXISTS hub_items (
                      kind       TEXT NOT NULL,
@@ -172,19 +202,64 @@ impl Db {
                     [SCHEMA_VERSION],
                 )?;
             } else {
-                // 不做旧库迁移：所有环境都已升级到当前版本，版本不一致直接报错，
-                // 避免带着旧结构运行产生难以排查的数据问题。
+                // 升级走增量迁移（v3 起恢复迁移通道）：全部是 ALTER/CREATE 增量语句，
+                // 不动既有列，装好的环境无感升级。库比程序新才报错——降级运行会把
+                // 新结构当成旧结构用，产生难以排查的数据问题。
                 let stored: i64 =
                     conn.query_row("SELECT MAX(version) FROM schema_meta", [], |r| r.get(0))?;
-                if stored != SCHEMA_VERSION as i64 {
+                if stored > SCHEMA_VERSION as i64 {
                     return Err(AppError::new(
                         ErrorKind::Sqlite,
-                        format!("库 schema 版本不匹配：库是 v{stored}，程序要 v{SCHEMA_VERSION}"),
+                        format!("库 schema 版本比程序新：库是 v{stored}，程序是 v{SCHEMA_VERSION}"),
                     ));
+                }
+                if stored < 2 {
+                    return Err(AppError::new(
+                        ErrorKind::Sqlite,
+                        format!("库 schema 版本过旧（v{stored}），请先升级到 v2.0.x 再更新"),
+                    ));
+                }
+                if stored < 3 {
+                    Self::migrate_v2_to_v3(conn)?;
                 }
             }
             Ok(())
         })
+    }
+
+    /// v2 → v3：会话管理扩展（置顶 / 本地命名 / 标签 / 正文全文索引）。
+    ///
+    /// execute_batch 不是原子的：中途崩溃可能留下「一半迁移」的库。所以 ALTER 用
+    /// 逐列检查兜底（重复执行不炸），CREATE 全部带 IF NOT EXISTS，版本号最后才写——
+    /// 任何一步失败，下一轮启动都能从 v2 原地重跑。
+    fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
+        add_column(conn, "session_marks", "pinned_at", "TEXT")?;
+        add_column(conn, "session_marks", "title_override", "TEXT")?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS session_tag (
+                 source_key TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 tag        TEXT NOT NULL,
+                 PRIMARY KEY (source_key, session_id, tag)
+             );
+             CREATE INDEX IF NOT EXISTS idx_session_tag_tag ON session_tag(tag);
+             CREATE TABLE IF NOT EXISTS session_text (
+                 source_key TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 fp         TEXT NOT NULL DEFAULT '',
+                 truncated  INTEGER NOT NULL DEFAULT 0,
+                 body       TEXT NOT NULL DEFAULT '',
+                 UNIQUE (source_key, session_id)
+             );
+             CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
+                 body,
+                 content='session_text',
+                 content_rowid='rowid',
+                 tokenize='trigram'
+             );",
+        )?;
+        conn.execute("UPDATE schema_meta SET version = 3", [])?;
+        Ok(())
     }
 
     /// 写操作。调用方必须把它包在 spawn_blocking 里（见架构 §2）。
@@ -266,12 +341,29 @@ fn poisoned() -> AppError {
     AppError::new(ErrorKind::Sqlite, "数据库锁被污染（上一次操作 panic 过）")
 }
 
+/// 表里补一列（已存在就跳过）。迁移要能原地重跑：execute_batch 中途崩溃后，
+/// 下一次启动会把已经加过的列再「加」一遍，靠这里的 PRAGMA 检查兜住。
+fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    let exists = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .any(|col| col.ok().as_deref() == Some(column));
+    if !exists {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// v2 的存量库打开后应无感升到 v3（v3 起恢复迁移通道），签到功能不受影响。
     #[test]
-    fn existing_v2_database_gains_empty_claim_history_without_version_change() {
+    fn existing_v2_database_migrates_to_current_version() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("app.db");
         let conn = Connection::open(&path).unwrap();
@@ -282,7 +374,21 @@ mod tests {
         .unwrap();
         drop(conn);
         let db = Db::open_at(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2);
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+        // 迁移产物：marks 新列可写，fts 可查
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO session_marks(source_key, session_id, pinned_at)
+                 VALUES ('qoder_cn', 's1', '2026-11-15T00:00:00+08:00')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let hits: i64 = db
+            .read(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM session_fts", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(hits, 0);
         assert!(crate::app::checkin::SqliteCheckin::new(&db)
             .claims("workbuddy:u1")
             .unwrap()

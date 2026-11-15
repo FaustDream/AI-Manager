@@ -1,4 +1,5 @@
-// 右键菜单守卫：开着时必须 preventDefault + stopPropagation，关掉时不得注册监听。
+// 右键菜单守卫：开着时必须 preventDefault（压掉原生菜单）但**不得**断流
+// （应用的自定义菜单靠同一个事件打开），关掉时不得注册监听。
 import { describe, expect, it, vi } from 'vitest';
 import { installContextMenuGuard, type ContextMenuTarget } from './context-menu';
 
@@ -17,7 +18,7 @@ function makeTarget() {
 }
 
 describe('installContextMenuGuard', () => {
-  it('在捕获阶段拦截右键：默认行为与冒泡都被阻止', () => {
+  it('在捕获阶段压掉原生菜单，但事件继续冒泡给应用的自定义菜单', () => {
     const target = makeTarget();
     installContextMenuGuard(true, target);
 
@@ -30,7 +31,7 @@ describe('installContextMenuGuard', () => {
     } as unknown as Event;
     handler!(event);
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
-    expect(event.stopPropagation).toHaveBeenCalledTimes(1);
+    expect(event.stopPropagation).not.toHaveBeenCalled();
   });
 
   it('传 false 时不注册任何监听，原生菜单照旧', () => {

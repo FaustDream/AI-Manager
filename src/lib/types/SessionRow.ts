@@ -17,4 +17,16 @@ cwd: string,
 /**
  * 运行形态：`desktop` / `ide-plugin`，用于 IDEA 插件标签聚合
  */
-origin: string, last_at: string | null, msgs: number | null, size: number | null, state: SessionState, has_body: boolean, };
+origin: string, last_at: string | null, msgs: number | null, size: number | null, state: SessionState, has_body: boolean, 
+/**
+ * 置顶标记（本地 marks，扫描重建不丢）。列表按置顶优先排序。
+ */
+pinned: boolean, 
+/**
+ * 标题被本地改名过（`session_marks.title_override` 非空）：界面画铅笔小标。
+ */
+renamed: boolean, 
+/**
+ * 正文搜索的命中摘要（`Filter.body` 命中时才有值；标题搜索为 null）。
+ */
+snippet: string | null, };

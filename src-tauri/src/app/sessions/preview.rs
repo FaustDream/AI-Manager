@@ -25,6 +25,9 @@ const TAIL_BYTES: u64 = 1024 * 1024;
 const CB_SCAN_LIMIT: usize = 600;
 const MAX_MESSAGES: usize = 100;
 const MAX_CHARS: usize = 3000;
+/// 全量模式（导出 / FTS 索引）的消息上限：不再是「头尾 100 条」，而是整段读，
+/// 但仍要有硬顶——一条失控的会话不该把内存拖垮。5000 条 × 3000 字 ≈ 15MB。
+const EXPORT_MAX_MESSAGES: usize = 5000;
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
@@ -77,17 +80,24 @@ pub fn parse_key(key: &str) -> Result<Target> {
 }
 
 pub fn load(roots: &Roots, target: &Target) -> Preview {
+    load_for(roots, target, false)
+}
+
+/// `full = true`：**全量模式**——不做「头尾 100 条」截断，读整段（仍受
+/// `EXPORT_MAX_MESSAGES` 与单条 `MAX_CHARS` 硬顶）。导出与 FTS 索引用；
+/// 界面预览永远走 `full = false`，别把一条几十 MB 的会话拉进内存。
+pub fn load_for(roots: &Roots, target: &Target, full: bool) -> Preview {
     if target.kind == "trae" {
-        return load_trae(roots, target);
+        return load_trae(roots, target, full);
     }
     if target.kind == "trae_plugin" {
-        return load_trae_plugin(roots, target);
+        return load_trae_plugin(roots, target, full);
     }
     if target.kind == "qoder_plugin" {
-        return load_qoder_plugin(roots, target);
+        return load_qoder_plugin(roots, target, full);
     }
     match super::backend::backend_for(&target.kind) {
-        Some(backend) => backend.load_preview(roots, target),
+        Some(backend) => backend.load_preview(roots, target, full),
         None => Preview {
             note: format!("不认识的会话类型：{}", target.kind),
             ..Default::default()
@@ -198,9 +208,31 @@ fn thin(messages: Vec<Message>) -> (Vec<Message>, usize) {
     (out, dropped)
 }
 
+/// 界面预览口径：头尾 100 条。
 fn result(messages: Vec<Message>, truncated: bool, note: &str) -> Preview {
+    result_with(messages, truncated, note, MAX_MESSAGES, true)
+}
+
+/// 全量模式口径：不做头尾合并，只按 `max` 硬顶截断（导出 / FTS 索引）。
+/// `thin` 与「头尾」逻辑绑死在预览上限上，全量时走这一条。
+fn result_with(
+    messages: Vec<Message>,
+    truncated: bool,
+    note: &str,
+    max: usize,
+    fold: bool,
+) -> Preview {
     let total = messages.len();
-    let (shown, dropped) = thin(messages);
+    let (shown, dropped, truncated) = if fold {
+        let (shown, dropped) = thin(messages);
+        (shown, dropped, truncated)
+    } else if total > max {
+        let mut shown = messages;
+        shown.truncate(max);
+        (shown, total - max, true)
+    } else {
+        (messages, 0, truncated)
+    };
     let note = if !note.is_empty() {
         note.to_string()
     } else if truncated {
@@ -221,7 +253,7 @@ fn result(messages: Vec<Message>, truncated: bool, note: &str) -> Preview {
 
 // ------------------------------------------------------------------ WorkBuddy
 
-pub(crate) fn load_workbuddy(roots: &Roots, target: &Target) -> Preview {
+pub(crate) fn load_workbuddy(roots: &Roots, target: &Target, full: bool) -> Preview {
     let Some(ep) = wb::editions(roots)
         .into_iter()
         .find(|ep| ep.key == target.source_key)
@@ -236,6 +268,25 @@ pub(crate) fn load_workbuddy(roots: &Roots, target: &Target) -> Preview {
     else {
         return result(Vec::new(), false, "没有正文文件");
     };
+
+    if full {
+        // 全量：流式读整段，读到 EXPORT_MAX_MESSAGES 硬顶为止
+        let mut messages = Vec::new();
+        if let Ok(file) = File::open(path) {
+            for line in BufReader::new(file)
+                .split(b'\n')
+                .map_while(std::result::Result::ok)
+            {
+                if let Some(message) = parse_wb_line(&line) {
+                    messages.push(message);
+                    if messages.len() >= EXPORT_MAX_MESSAGES {
+                        break;
+                    }
+                }
+            }
+        }
+        return result_with(messages, false, "", EXPORT_MAX_MESSAGES, false);
+    }
 
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size <= TAIL_BYTES {
@@ -340,7 +391,7 @@ fn read_tail_messages(path: &Path, limit: usize) -> Vec<Message> {
 
 // ------------------------------------------------------------------ Trae / Qoder 插件
 
-fn load_trae_plugin(roots: &Roots, target: &Target) -> Preview {
+fn load_trae_plugin(roots: &Roots, target: &Target, full: bool) -> Preview {
     let Some(items) = crate::app::sessions::sources::trae_plugin::preview(
         roots,
         &target.source_key,
@@ -360,10 +411,16 @@ fn load_trae_plugin(roots: &Roots, target: &Target) -> Preview {
             id: String::new(),
         })
         .collect();
-    result(messages, false, "来源：Trae IDEA 插件运行日志")
+    result_with(
+        messages,
+        false,
+        "来源：Trae IDEA 插件运行日志",
+        EXPORT_MAX_MESSAGES,
+        !full,
+    )
 }
 
-fn load_qoder_plugin(roots: &Roots, target: &Target) -> Preview {
+fn load_qoder_plugin(roots: &Roots, target: &Target, full: bool) -> Preview {
     let cn = target.source_key == "qoder_plugin_cn";
     let Some(items) = crate::app::sessions::sources::qoder_plugin::preview(
         roots,
@@ -384,7 +441,7 @@ fn load_qoder_plugin(roots: &Roots, target: &Target) -> Preview {
             id: String::new(),
         })
         .collect();
-    result(
+    result_with(
         messages,
         false,
         if cn {
@@ -392,10 +449,12 @@ fn load_qoder_plugin(roots: &Roots, target: &Target) -> Preview {
         } else {
             "来源：Qoder 插件"
         },
+        EXPORT_MAX_MESSAGES,
+        !full,
     )
 }
 
-fn load_trae(roots: &Roots, target: &Target) -> Preview {
+fn load_trae(roots: &Roots, target: &Target, full: bool) -> Preview {
     let Some(items) =
         crate::app::sessions::sources::trae::preview(roots, &target.source_key, &target.session_id)
     else {
@@ -425,12 +484,12 @@ fn load_trae(roots: &Roots, target: &Target) -> Preview {
             id: String::new(),
         })
         .collect();
-    result(messages, false, "")
+    result_with(messages, false, "", EXPORT_MAX_MESSAGES, !full)
 }
 
 // ------------------------------------------------------------------ CodeBuddy
 
-pub(crate) fn load_codebuddy(roots: &Roots, target: &Target) -> Preview {
+pub(crate) fn load_codebuddy(roots: &Roots, target: &Target, full: bool) -> Preview {
     // 会话目录在「工作区/<会话 id>/messages」，工作区名不固定：
     // 逐个工作区试一下比在索引里存一份 slug 更经得起客户端改目录结构
     let history = roots
@@ -464,23 +523,35 @@ pub(crate) fn load_codebuddy(roots: &Roots, target: &Target) -> Preview {
 
     // 从**最后**往前读：CodeBuddy 一条会话几百个文件，且大量是 tool 调用。
     // 开头那段多半是「读文件」的噪音，用户想看的是最近的对话。
+    // 全量模式（导出 / 索引）不设 CB_SCAN_LIMIT，只认消息硬顶。
     let total_files = files.len();
     let mut messages: Vec<Message> = Vec::new();
     let mut scanned = 0usize;
+    let message_cap = if full {
+        EXPORT_MAX_MESSAGES
+    } else {
+        MAX_MESSAGES + HEAD_MESSAGES
+    };
     for file in files.iter().rev() {
         scanned += 1;
-        if scanned > CB_SCAN_LIMIT {
+        if !full && scanned > CB_SCAN_LIMIT {
             break;
         }
         if let Some(message) = parse_codebuddy(file) {
             messages.push(message);
-            if messages.len() >= MAX_MESSAGES + HEAD_MESSAGES {
+            if messages.len() >= message_cap {
                 break;
             }
         }
     }
     messages.reverse();
-    result(messages, scanned < total_files, "")
+    result_with(
+        messages,
+        scanned < total_files,
+        "",
+        EXPORT_MAX_MESSAGES,
+        !full,
+    )
 }
 
 fn parse_codebuddy(file: &Path) -> Option<Message> {
@@ -512,17 +583,23 @@ fn parse_codebuddy(file: &Path) -> Option<Message> {
 
 // ------------------------------------------------------------------ Qoder
 
-pub(crate) fn load_qoder(roots: &Roots, target: &Target) -> Preview {
+pub(crate) fn load_qoder(roots: &Roots, target: &Target, full: bool) -> Preview {
     let intl = target.source_key == "qoder_intl";
     let path = roots.qoder(intl).join("main.sqlite");
     let Some(conn) = open_ro(&path) else {
         return result(Vec::new(), false, "会话库无法读取（客户端可能正在写入）");
     };
+    // 全量模式给一个宽松的行数硬顶：SQL 层截断比内存截断便宜
+    let cap = if full {
+        EXPORT_MAX_MESSAGES as i64 + 1000
+    } else {
+        -1
+    };
     let mut messages = Vec::new();
-    let stmt = conn.prepare(
+    let stmt = conn.prepare_cached(&format!(
         "SELECT message_id, payload_json FROM chat_session_messages
-         WHERE session_id = ?1 ORDER BY sequence, created_at",
-    );
+         WHERE session_id = ?1 ORDER BY sequence, created_at LIMIT {cap}"
+    ));
     if let Ok(mut stmt) = stmt {
         if let Ok(rows) = stmt.query_map([&target.session_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -534,7 +611,7 @@ pub(crate) fn load_qoder(roots: &Roots, target: &Target) -> Preview {
             }
         }
     }
-    result(messages, false, "")
+    result_with(messages, false, "", EXPORT_MAX_MESSAGES, !full)
 }
 
 fn parse_qoder(mid: &str, raw: &str) -> Option<Message> {
@@ -589,7 +666,7 @@ fn parse_qoder(mid: &str, raw: &str) -> Option<Message> {
 
 // ------------------------------------------------------------------ ZCode
 
-pub(crate) fn load_zcode(roots: &Roots, target: &Target) -> Preview {
+pub(crate) fn load_zcode(roots: &Roots, target: &Target, full: bool) -> Preview {
     let path = roots.zcode().join("cli").join("db").join("db.sqlite");
     let Some(conn) = open_ro(&path) else {
         return result(Vec::new(), false, "会话库无法读取（客户端可能正在写入）");
@@ -602,8 +679,14 @@ pub(crate) fn load_zcode(roots: &Roots, target: &Target) -> Preview {
         )
         .unwrap_or(0);
 
+    // 全量模式放宽到消息硬顶（留 1000 余量给 system/空正文行），SQL 层截断
+    let cap = if full {
+        EXPORT_MAX_MESSAGES as i64 + 1000
+    } else {
+        -1
+    };
     let mut rows: Vec<(String, String)> = Vec::new();
-    if (total as usize) > HEAD_MESSAGES + TAIL_MESSAGES {
+    if (total as usize) > HEAD_MESSAGES + TAIL_MESSAGES && !full {
         if let Ok(mut stmt) = conn.prepare(
             "SELECT id, data FROM message WHERE session_id = ?1
              ORDER BY sequence, time_created LIMIT ?2",
@@ -628,9 +711,9 @@ pub(crate) fn load_zcode(roots: &Roots, target: &Target) -> Preview {
                 rows.extend(tail);
             }
         }
-    } else if let Ok(mut stmt) = conn.prepare(
-        "SELECT id, data FROM message WHERE session_id = ?1 ORDER BY sequence, time_created",
-    ) {
+    } else if let Ok(mut stmt) = conn.prepare(&format!(
+        "SELECT id, data FROM message WHERE session_id = ?1 ORDER BY sequence, time_created LIMIT {cap}"
+    )) {
         if let Ok(items) = stmt.query_map([&target.session_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         }) {
@@ -689,8 +772,12 @@ pub(crate) fn load_zcode(roots: &Roots, target: &Target) -> Preview {
     }
     // 与头尾截取同口径：只有「总量超出头尾之和」才是真的只读了片段；
     // 用 messages.len() 比，会把 system/空正文行误算成被截断
-    let truncated = total as usize > HEAD_MESSAGES + TAIL_MESSAGES;
-    result(messages, truncated, "")
+    let truncated = if full {
+        messages.len() >= EXPORT_MAX_MESSAGES
+    } else {
+        total as usize > HEAD_MESSAGES + TAIL_MESSAGES
+    };
+    result_with(messages, truncated, "", EXPORT_MAX_MESSAGES, !full)
 }
 
 fn open_ro(path: &Path) -> Option<Connection> {

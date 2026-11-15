@@ -9,13 +9,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cn } from '@/components/ui/button';
 import { Input, StateBlock } from '@/components/ui/form';
 import { queryCmd, runCmd } from '@/lib/cmd';
-import { fmtAmount } from '@/lib/format';
+import { fmtAmount, fmtTime } from '@/lib/format';
 import { errText } from '@/lib/ipc';
 import { CreditFlowChart } from '@/components/credit-flow';
 import { CreditPlatformSplit } from '@/components/credit-platforms';
 import { CreditTrend } from '@/components/credit-trend';
 import type { AccountView, AppConfig, CreditFlowReport, HealthReport, TrendPoint } from '@/lib/types';
 import { SectionTitle } from './metric';
+import { SessionsSection } from './sessions-section';
 import { UsageSection } from './usage-section';
 
 const NAV_EVENT = 'aim:navigate';
@@ -174,6 +175,20 @@ export default function OverviewPage() {
 
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <h1 className="text-base font-semibold">仪表盘</h1>
+        <span className="flex-1" />
+        {report && (
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full border border-line bg-card px-2.5 py-1 text-xs text-muted"
+            title={`积分数据超过 ${config.data?.dashboard.stale_refresh_min ?? 10} 分钟没刷新就自动补刷一轮`}
+          >
+            <span className="size-1.5 rounded-full bg-ok" />
+            更新 {report.credits_at === null ? '从未' : fmtTime(report.credits_at)}
+          </span>
+        )}
+      </div>
+
       {health.isError && (
         <div className="rounded-lg border border-line bg-card">
           <StateBlock
@@ -289,12 +304,12 @@ export default function OverviewPage() {
 
             {chartMode === 'flow' ? (
               flow.isLoading ? (
-                <div className="h-[200px] animate-pulse rounded-md bg-hover" />
+                <div className="h-[240px] animate-pulse rounded-md bg-hover" />
               ) : (
-                <CreditFlowChart points={flowPoints} />
+                <CreditFlowChart points={flowPoints} platforms={platformFlows} />
               )
             ) : trend.isLoading ? (
-              <div className="h-[200px] animate-pulse rounded-md bg-hover" />
+              <div className="h-[240px] animate-pulse rounded-md bg-hover" />
             ) : (
               <CreditTrend points={trendPoints} />
             )}
@@ -334,6 +349,9 @@ export default function OverviewPage() {
 
       {/* 用量与账号无关：没有账号也要能看本机客户端的 Token 消耗 */}
       <UsageSection />
+
+      {/* 会话维度：与用量并列的第三块，KPI 瓦片 + 来源/项目排名 */}
+      <SessionsSection />
     </div>
   );
 }

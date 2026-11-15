@@ -48,6 +48,8 @@ export interface DataTableProps<R> {
   empty?: ReactNode;
   /** 行点击：带原生事件，页面可据此判断 Ctrl / Cmd 做多选（不传事件就没法区分） */
   onRowClick?: (row: R, event: MouseEvent<HTMLTableRowElement>) => void;
+  /** 行右键：自定义上下文菜单（原生菜单已被 context-menu.ts 全局拦掉） */
+  onRowContextMenu?: (row: R, event: MouseEvent<HTMLTableRowElement>) => void;
   rowClassName?: (row: R) => string;
   stickyHead?: boolean;
   /** 紧凑密度（hub 系列）：px-2 py-1 / px-2 py-1.5；默认 px-2.5 */
@@ -78,6 +80,7 @@ export function DataTable<R>({
   skeletonRows = 4,
   empty,
   onRowClick,
+  onRowContextMenu,
   rowClassName,
   stickyHead,
   dense,
@@ -124,6 +127,9 @@ export function DataTable<R>({
             key={rowKey(row)}
             className={rowClassName?.(row)}
             onClick={onRowClick ? (event) => onRowClick(row, event) : undefined}
+            onContextMenu={
+              onRowContextMenu ? (event) => onRowContextMenu(row, event) : undefined
+            }
           >
             {lead && <td className={cn(cellCls(dense), 'whitespace-nowrap')}>{lead.cell(row)}</td>}
             {columns.map((col) => (

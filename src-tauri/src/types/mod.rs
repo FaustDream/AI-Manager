@@ -153,6 +153,12 @@ pub struct SessionRow {
     pub size: Option<i64>,
     pub state: SessionState,
     pub has_body: bool,
+    /// 置顶标记（本地 marks，扫描重建不丢）。列表按置顶优先排序。
+    pub pinned: bool,
+    /// 标题被本地改名过（`session_marks.title_override` 非空）：界面画铅笔小标。
+    pub renamed: bool,
+    /// 正文搜索的命中摘要（`Filter.body` 命中时才有值；标题搜索为 null）。
+    pub snippet: Option<String>,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

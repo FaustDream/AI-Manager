@@ -11,7 +11,7 @@ use crate::app::sessions::preview::{self, Preview, Target};
 pub(crate) trait SessionBackend {
     /// 永久删除：返回（删除的文件数, 释放的字节数）。失败必须让调用方记进报告。
     fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)>;
-    fn load_preview(&self, roots: &Roots, target: &Target) -> Preview;
+    fn load_preview(&self, roots: &Roots, target: &Target, full: bool) -> Preview;
 }
 
 struct Workbuddy;
@@ -28,8 +28,8 @@ impl SessionBackend for Workbuddy {
     fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)> {
         delete::purge_workbuddy(roots, target)
     }
-    fn load_preview(&self, roots: &Roots, target: &Target) -> Preview {
-        preview::load_workbuddy(roots, target)
+    fn load_preview(&self, roots: &Roots, target: &Target, full: bool) -> Preview {
+        preview::load_workbuddy(roots, target, full)
     }
 }
 
@@ -37,8 +37,8 @@ impl SessionBackend for Codebuddy {
     fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)> {
         delete::purge_codebuddy(roots, target)
     }
-    fn load_preview(&self, roots: &Roots, target: &Target) -> Preview {
-        preview::load_codebuddy(roots, target)
+    fn load_preview(&self, roots: &Roots, target: &Target, full: bool) -> Preview {
+        preview::load_codebuddy(roots, target, full)
     }
 }
 
@@ -46,8 +46,8 @@ impl SessionBackend for Qoder {
     fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)> {
         delete::purge_sqlite(roots, target, "qoder")
     }
-    fn load_preview(&self, roots: &Roots, target: &Target) -> Preview {
-        preview::load_qoder(roots, target)
+    fn load_preview(&self, roots: &Roots, target: &Target, full: bool) -> Preview {
+        preview::load_qoder(roots, target, full)
     }
 }
 
@@ -55,8 +55,8 @@ impl SessionBackend for Zcode {
     fn purge(&self, roots: &Roots, target: &Target) -> Result<(usize, i64)> {
         delete::purge_sqlite(roots, target, "zcode")
     }
-    fn load_preview(&self, roots: &Roots, target: &Target) -> Preview {
-        preview::load_zcode(roots, target)
+    fn load_preview(&self, roots: &Roots, target: &Target, full: bool) -> Preview {
+        preview::load_zcode(roots, target, full)
     }
 }
 

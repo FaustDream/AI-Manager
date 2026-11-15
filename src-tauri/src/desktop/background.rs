@@ -247,6 +247,18 @@ pub fn spawn_session_scan(service: Arc<crate::app::sessions::Service>) {
                 }
                 Err(e) => log::fail("sessions", "session_scan", "定时会话扫描失败", e.evidence()),
             }
+            // 正文全文索引跟在扫描后面：扫描只写索引行，索引这步才读正文。
+            // 每轮限量 20 条，这轮扫不完的下轮接着来（进度在 facets.fts 里）。
+            // 失败只记日志：搜索是增值功能，索引器坏了不能连累扫描循环。
+            match service.index_fts(20).await {
+                Ok(0) => {}
+                Ok(count) => log::log(
+                    log::Level::Info,
+                    "sessions",
+                    format!("正文索引：本轮写入 {count} 条"),
+                ),
+                Err(e) => log::fail("sessions", "session_fts", "正文索引失败", e.evidence()),
+            }
             tokio::time::sleep(std::time::Duration::from_secs(5 * 60)).await;
         }
     });

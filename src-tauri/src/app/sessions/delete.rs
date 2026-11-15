@@ -37,7 +37,8 @@ pub struct PurgeReport {
 }
 
 /// 来源 → 需要先关掉的客户端平台键（`accounts::add` 用的是同一套键）。
-fn platform_of(source: &str) -> Option<&'static str> {
+/// 「打开客户端」（会话右键）也走这张映射：来源键 → 客户端平台键。
+pub(crate) fn platform_of(source: &str) -> Option<&'static str> {
     match source {
         "cn" => Some("workbuddy"),
         "intl" => Some("workbuddy_intl"),
@@ -270,6 +271,20 @@ pub fn purge(roots: &Roots, db: &Db, keys: &[String], with_guard: bool) -> Resul
                 crate::app::log::Level::Warn,
                 "sessions",
                 format!("清理归档标记失败：{}", e.message),
+            );
+        }
+        // 正文全文索引一并摘掉，别留「搜得到、点进去 404」的幽灵命中
+        if let Err(e) = crate::app::sessions::fts::forget_keys(
+            db,
+            &handled
+                .iter()
+                .map(|t| format!("{}|{}|{}|{}", t.kind, t.source_key, t.account, t.session_id))
+                .collect::<Vec<_>>(),
+        ) {
+            crate::app::log::log(
+                crate::app::log::Level::Warn,
+                "sessions",
+                format!("清理正文索引失败：{}", e.message),
             );
         }
         // 指纹一并作废：下次扫描重读这一源，索引与客户端库重新对齐

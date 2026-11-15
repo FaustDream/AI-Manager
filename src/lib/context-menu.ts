@@ -1,8 +1,10 @@
 // 关闭浏览器 / WebView 的原生右键菜单。
 //
 // 桌面应用里原生菜单（后退/刷新/另存为/检查元素）几乎全是干扰项，这里在
-// document 的捕获阶段拦 `contextmenu`：preventDefault 让菜单不弹，
-// stopPropagation 防止页面内其他 contextmenu 处理器再把事件捡起来。
+// document 的捕获阶段拦 `contextmenu`：**只 preventDefault**，不 stopPropagation——
+// 页面自己的自定义右键菜单（会话行的操作菜单）靠冒泡阶段拿到同一个事件来打开，
+// 一旦在这里断流，应用菜单永远弹不出来（实测踩坑：会话页右键无响应就是它）。
+// preventDefault 已经足以压掉原生菜单，后续处理器再多也改变不了这一点。
 //
 // 只拦右键菜单这一种事件：键盘、焦点、文本选择、拖拽等基础交互完全不受影响，
 // 复制/粘贴仍可用 Ctrl+C / Ctrl+V。
@@ -29,10 +31,8 @@ export interface ContextMenuTarget {
 }
 
 function blockContextMenu(event: Event): void {
-  // 两件事都必须做：preventDefault 决定「弹不弹」，stopPropagation 决定
-  // 「还有没有人能接到」。只做一半都会留下漏网的菜单。
+  // 只 preventDefault：原生菜单不弹；事件继续冒泡，让应用的自定义菜单接得住。
   event.preventDefault();
-  event.stopPropagation();
 }
 
 /**

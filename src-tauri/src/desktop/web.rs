@@ -386,6 +386,39 @@ pub async fn dispatch<R: tauri::Runtime>(
             let days = arg(v, "days")?;
             to_json(cmd::sessions::session_retention_set(app.state::<AppState>(), days).await)
         }
+        "session_pin" => {
+            let (keys, on) = (arg(v, "keys")?, arg(v, "on")?);
+            to_json(cmd::sessions::session_pin(app.state::<AppState>(), keys, on).await)
+        }
+        "session_rename" => {
+            let (key, title) = (arg(v, "key")?, arg(v, "title")?);
+            to_json(cmd::sessions::session_rename(app.state::<AppState>(), key, title).await)
+        }
+        "session_hide" => {
+            let (keys, on) = (arg(v, "keys")?, arg(v, "on")?);
+            to_json(cmd::sessions::session_hide(app.state::<AppState>(), keys, on).await)
+        }
+        "session_tag_set" => {
+            let (key, tags) = (arg(v, "key")?, arg(v, "tags")?);
+            to_json(cmd::sessions::session_tag_set(app.state::<AppState>(), key, tags).await)
+        }
+        "session_export" => {
+            let (keys, format) = (arg(v, "keys")?, arg(v, "format")?);
+            to_json(cmd::sessions::session_export(app.state::<AppState>(), keys, format).await)
+        }
+        "session_open_body" => {
+            let key = arg(v, "key")?;
+            to_json(cmd::sessions::session_open_body(app.state::<AppState>(), key).await)
+        }
+        "session_open_client" => {
+            let key = arg(v, "key")?;
+            to_json(cmd::sessions::session_open_client(key).await)
+        }
+        "session_suggest_titles" => {
+            let keys = arg(v, "keys")?;
+            to_json(cmd::sessions::session_suggest_titles(app.state::<AppState>(), keys).await)
+        }
+        "session_stats" => to_json(cmd::sessions::session_stats(app.state::<AppState>()).await),
 
         // ------------------------------------------------------------ activity
         "activity_overview" => {

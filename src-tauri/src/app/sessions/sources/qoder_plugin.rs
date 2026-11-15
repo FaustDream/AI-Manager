@@ -60,7 +60,7 @@ fn fingerprint(root: &Path) -> String {
 
 /// 会话文件：`<root>/cache/projects/<项目>/conversation-history/<sid>/<sid>.jsonl`。
 /// 只枚举到 conversation-history 一层——`~/.qoder*` 下 memory/skills/tmp 全在里面，整棵递归太宽。
-fn session_files(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn session_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for project in sub_dirs(&root.join("cache").join("projects")) {
         for session in sub_dirs(&project.join("conversation-history")) {

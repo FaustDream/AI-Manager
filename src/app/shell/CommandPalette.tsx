@@ -8,7 +8,7 @@ import { cn } from '@/components/ui/button';
 export type PaletteItem = {
   id: string;
   title: string;
-  group: '页面' | '动作';
+  group: '页面' | '动作' | '会话';
   hint?: string;
   run: () => void;
 };
@@ -24,7 +24,7 @@ function matches(text: string, query: string): boolean {
     .every((word) => haystack.includes(word));
 }
 
-export function CommandPalette({ items }: { items: PaletteItem[] }) {
+export function CommandPalette({ items, placeholder }: { items: PaletteItem[]; placeholder?: string }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(0);
@@ -84,7 +84,7 @@ export function CommandPalette({ items }: { items: PaletteItem[] }) {
         <input
           ref={inputRef}
           value={query}
-          placeholder="搜索页面或动作…（Esc 关闭）"
+          placeholder={placeholder ?? '搜索页面或动作…（Esc 关闭）'}
           className="w-full border-b border-line bg-transparent px-3 py-2.5 text-sm outline-none"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {

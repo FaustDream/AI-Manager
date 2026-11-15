@@ -455,6 +455,9 @@ fn contract_18_time_crosses_ipc_as_machine_readable() {
         size: Some(1024),
         state: SessionState::Visible,
         has_body: true,
+        pinned: false,
+        renamed: false,
+        snippet: None,
     };
     let value = serde_json::to_value(&row).unwrap();
     let last_at = value["last_at"]

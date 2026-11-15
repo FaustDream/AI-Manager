@@ -49,6 +49,8 @@ import type {
   RoundResult,
   ScanReport,
   SessionScanReport,
+  ExportReport,
+  SessionStats,
   UsageOverview,
   UsageScanReport,
   Schedule,
@@ -115,6 +117,15 @@ export interface CmdArgs {
   session_purge: { keys: string[] };
   session_retention: void;
   session_retention_set: { days: number };
+  session_pin: { keys: string[]; on: boolean };
+  session_rename: { key: string; title: string | null };
+  session_hide: { keys: string[]; on: boolean };
+  session_tag_set: { key: string; tags: string[] };
+  session_export: { keys: string[]; format: 'markdown' | 'json' };
+  session_open_body: { key: string };
+  session_open_client: { key: string };
+  session_suggest_titles: { keys: string[] };
+  session_stats: void;
   activity_overview: { iid: string };
   activity_claim: { iid: string };
   activity_depart: { iid: string; location: number | null };
@@ -225,6 +236,15 @@ export interface CmdReturn {
   session_purge: PurgeReport;
   session_retention: number;
   session_retention_set: number;
+  session_pin: number;
+  session_rename: void;
+  session_hide: number;
+  session_tag_set: number;
+  session_export: ExportReport;
+  session_open_body: boolean;
+  session_open_client: boolean;
+  session_suggest_titles: [string, string][];
+  session_stats: SessionStats;
   activity_overview: ActivityOverview;
   activity_claim: ActionResult;
   activity_depart: ActionResult;
@@ -358,6 +378,15 @@ const CMD_LABELS: Record<string, string> = {
   session_archive: '归档会话',
   session_retention: '读取自动归档天数',
   session_retention_set: '设置自动归档天数',
+  session_pin: '置顶会话',
+  session_rename: '重命名会话',
+  session_hide: '隐藏会话',
+  session_tag_set: '设置会话标签',
+  session_export: '导出会话正文',
+  session_open_body: '打开会话正文目录',
+  session_open_client: '打开会话所属客户端',
+  session_suggest_titles: '生成会话标题建议',
+  session_stats: '读取会话统计',
   activity_overview: '读取猫猫旅行',
   activity_claim: '领取旅行奖励',
   activity_depart: '派出猫猫',
@@ -432,6 +461,11 @@ const KEY_ACTIONS = new Set<string>([
   'session_purge',
   'session_archive',
   'session_retention_set',
+  'session_pin',
+  'session_rename',
+  'session_hide',
+  'session_tag_set',
+  'session_export',
   'zcode_claim_run',
   'hub_skill_import',
   'hub_skill_import_many',

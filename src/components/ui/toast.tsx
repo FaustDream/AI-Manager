@@ -10,7 +10,7 @@ export interface ToastItem {
 
 interface ToastStore {
   items: ToastItem[];
-  push: (text: string) => void;
+  push: (text: string, durationMs?: number) => void;
   dismiss: (id: number) => void;
 }
 
@@ -18,16 +18,17 @@ let nextId = 1;
 
 export const useToasts = create<ToastStore>((set) => ({
   items: [],
-  push: (text) => {
+  push: (text, durationMs) => {
     const id = nextId++;
     set((s) => ({ items: [...s.items.slice(-4), { id, text }] }));
-    setTimeout(() => set((s) => ({ items: s.items.filter((t) => t.id !== id) })), 5000);
+    // 导出路径这类长文本给更长的阅读时间；默认 5s 不变
+    setTimeout(() => set((s) => ({ items: s.items.filter((t) => t.id !== id) })), durationMs ?? 5000);
   },
   dismiss: (id) => set((s) => ({ items: s.items.filter((t) => t.id !== id) })),
 }));
 
-export function toast(text: string): void {
-  useToasts.getState().push(text);
+export function toast(text: string, durationMs?: number): void {
+  useToasts.getState().push(text, durationMs);
 }
 
 export function ToastHost() {

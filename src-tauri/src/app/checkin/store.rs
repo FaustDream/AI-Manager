@@ -689,7 +689,11 @@ mod tests {
         assert!(store.claims("zcode:missing").unwrap().is_empty());
         drop(db);
         let reopened = Db::open_at(&path).unwrap();
-        assert_eq!(reopened.schema_version().unwrap(), 2);
+        // 重开应无感升到当前 schema 版本（v3 起走增量迁移）
+        assert_eq!(
+            reopened.schema_version().unwrap(),
+            crate::app::db::SCHEMA_VERSION
+        );
         assert_eq!(
             SqliteCheckin::new(&reopened).claims("zcode:u1").unwrap(),
             vec![first]

@@ -2,11 +2,11 @@
 import type { Sort } from "./Sort";
 
 /**
- * 列表筛选。三个下拉对应 §7 的草图，空值 = 不限。
+ * 列表筛选。下拉与快筛叠加使用，空值 = 不限。
  */
 export type Filter = { source: string | null, account: string | null, state: string | null, 
 /**
- * 标题 / 来源 / 项目路径的模糊搜索；空值 = 不限
+ * 标题（含本地命名）/ 来源 / 项目路径的模糊搜索；空值 = 不限
  */
 q: string | null, 
 /**
@@ -14,6 +14,22 @@ q: string | null,
  */
 origin: string | null, 
 /**
- * 只看「未命名」会话（标题是占位文案 UNNAMED_TITLE 或空）。false = 不限。
+ * 只看「未命名」会话（生效标题是占位文案 UNNAMED_TITLE 或空）。false = 不限。
  */
-unnamed: boolean, sort: Sort, };
+unnamed: boolean, 
+/**
+ * 只看置顶会话。
+ */
+pinned: boolean, 
+/**
+ * 只看「本地隐藏」的会话（Trae 家族的墓碑也在里面，可从这里取消隐藏）。
+ */
+hidden: boolean, 
+/**
+ * 正文全文搜索（FTS5）。空值 = 不限；与 `q`（标题级）相互独立。
+ */
+body: string | null, 
+/**
+ * 标签多选（命中任一即通过）。空 = 不限。
+ */
+tags: Array<string>, sort: Sort, };

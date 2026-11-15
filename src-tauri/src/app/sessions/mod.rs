@@ -8,13 +8,19 @@
 
 pub mod backend;
 pub mod delete;
+pub mod export;
+pub mod fts;
+pub mod locate;
 pub mod marks;
 pub mod preview;
 pub mod restore;
 pub mod sources;
+pub mod stats;
 pub mod store;
 
+pub use export::ExportReport;
 pub use preview::Preview;
+pub use stats::SessionStats;
 pub use store::{Facets, Filter, RawRow, SqliteSessions};
 
 use crate::app::accounts::{is_intl_account, uid_of};
@@ -287,6 +293,117 @@ impl Service {
         })
         .await?
     }
+
+    // -------------------------------------------------- v3：置顶 / 改名 / 隐藏 / 标签 / 导出
+
+    /// 置顶 / 取消置顶（只写本地标记）。
+    pub async fn pin(&self, keys: Vec<String>, on: bool) -> Result<usize> {
+        let db = self.db.clone();
+        blocking(move || marks::pin(&db, &keys, on)).await?
+    }
+
+    /// 本地改名（锁定）或恢复原标题（`title = None`）。
+    pub async fn rename(&self, key: String, title: Option<String>) -> Result<()> {
+        let db = self.db.clone();
+        blocking(move || marks::rename(&db, &key, title.as_deref())).await?
+    }
+
+    /// 取消本地隐藏。隐藏沿用既有 `session_hide`（on=true 走 marks::hide）。
+    pub async fn unhide(&self, keys: Vec<String>) -> Result<usize> {
+        let db = self.db.clone();
+        blocking(move || marks::unhide(&db, &keys)).await?
+    }
+
+    /// 隐藏 / 取消隐藏二合一（界面只有一个开关位）。
+    pub async fn hide(&self, keys: Vec<String>, on: bool) -> Result<usize> {
+        let db = self.db.clone();
+        blocking(move || {
+            if on {
+                marks::hide(&db, &keys)
+            } else {
+                marks::unhide(&db, &keys)
+            }
+        })
+        .await?
+    }
+
+    /// 全量替换一个会话的标签。
+    pub async fn tags_set(&self, key: String, tags: Vec<String>) -> Result<usize> {
+        let db = self.db.clone();
+        blocking(move || marks::tags_set(&db, &key, &tags)).await?
+    }
+
+    /// 导出会话正文到 `data/exports/`，返回报告（路径在界面 toast 里）。
+    pub async fn export(&self, keys: Vec<String>, format: &str) -> Result<ExportReport> {
+        let roots = self.roots.clone();
+        let db = self.db.clone();
+        let format = format.to_string();
+        blocking(move || {
+            let fmt = export::ExportFormat::parse(&format)?;
+            export::export(&roots, &db, &keys, fmt)
+        })
+        .await?
+    }
+
+    /// 该会话的正文所在目录（文件落盘的来源才有；正文在库里的返回 None）。
+    pub async fn body_dir(&self, key: String) -> Result<Option<std::path::PathBuf>> {
+        let roots = self.roots.clone();
+        blocking(move || Ok(locate::body_dir(&roots, &preview::parse_key(&key)?))).await?
+    }
+
+    /// 未命名会话的标题建议：取首条用户消息截短。不落库，纯只读，
+    /// 由界面在「一键治理」弹窗里人工确认后才走 `rename`。
+    pub async fn suggest_titles(&self, keys: Vec<String>) -> Result<Vec<(String, String)>> {
+        let roots = self.roots.clone();
+        blocking(move || {
+            let mut out = Vec::new();
+            for key in &keys {
+                let Ok(target) = preview::parse_key(key) else {
+                    continue;
+                };
+                let loaded = preview::load(&roots, &target);
+                let suggestion = loaded
+                    .messages
+                    .iter()
+                    .find(|m| m.role == "user" && !m.text.trim().is_empty())
+                    .map(|m| first_line(&m.text, 30));
+                if let Some(title) = suggestion {
+                    out.push((key.clone(), title));
+                }
+            }
+            Ok(out)
+        })
+        .await?
+    }
+
+    /// 会话维度统计（仪表盘用）。
+    pub async fn stats(&self) -> Result<SessionStats> {
+        let db = self.db.clone();
+        blocking(move || stats::stats(&db)).await?
+    }
+
+    /// FTS 后台索引一批（后台任务与手动触发共用）。
+    pub async fn index_fts(&self, limit: usize) -> Result<usize> {
+        let roots = self.roots.clone();
+        let db = self.db.clone();
+        blocking(move || {
+            if !fts::enabled(&db) {
+                return Ok(0);
+            }
+            fts::index_batch(&roots, &db, limit)
+        })
+        .await?
+    }
+}
+
+/// 标题建议：首行截 30 字。换行当边界（jsonl 里一条消息可能带多行正文）。
+fn first_line(text: &str, max_chars: usize) -> String {
+    let line = text.lines().next().unwrap_or("").trim();
+    let mut out: String = line.chars().take(max_chars).collect();
+    if line.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
 }
 
 /// 上次跑自动归档的秒级时间戳。进程内节流：列表翻页很密，不能每页都算一遍。
