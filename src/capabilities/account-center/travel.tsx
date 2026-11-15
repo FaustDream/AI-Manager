@@ -137,28 +137,29 @@ export function TravelCard({ account }: { account: AccountView }) {
         </Button>
       </div>
 
-      <div className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2 lg:grid-cols-4">
-        <div>
-          <div className="text-muted">地点</div>
-          <div className="truncate" title={locationName ?? undefined}>
-            {locationName ?? '—'}
+      {/* 事实行只在旅途中/回来后有意义：待派出时全是一排「—」，直接不画 */}
+      {(state === 'traveling' || state === 'arrived') && (
+        <div className="mb-2 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+          <div>
+            <div className="text-muted">{state === 'traveling' ? '预计回来' : '回来时间'}</div>
+            <div className="tabular-nums">{fmtTime(status.arrive_at)}</div>
           </div>
-        </div>
-        <div>
-          <div className="text-muted">{state === 'traveling' ? '预计回来' : '回来时间'}</div>
-          <div className="tabular-nums">{fmtTime(status.arrive_at)}</div>
-        </div>
-        <div>
-          <div className="text-muted">本次奖励</div>
-          <div className="tabular-nums">
-            {status.reward_credit === null ? '—' : `+${fmtAmount(status.reward_credit)}`}
+          <div>
+            <div className="text-muted">本次奖励</div>
+            <div className="tabular-nums">
+              {status.reward_credit === null ? '—' : `+${fmtAmount(status.reward_credit)}`}
+            </div>
           </div>
+          {locationName && (
+            <div>
+              <div className="text-muted">地点</div>
+              <div className="truncate" title={locationName}>
+                {locationName}
+              </div>
+            </div>
+          )}
         </div>
-        <div>
-          <div className="text-muted">自动旅行</div>
-          <div>{prefs.enabled ? '已开启' : '已关闭'}</div>
-        </div>
-      </div>
+      )}
 
       {status.letter && (
         <details className="mt-2 rounded-md border border-line bg-bg px-2 py-1.5 text-xs text-muted">
@@ -218,7 +219,10 @@ export function TravelCard({ account }: { account: AccountView }) {
             ))}
           </Select>
         )}
-        <label className="flex items-center gap-1.5 text-xs text-fg2">
+        <label
+          className="flex items-center gap-1.5 text-xs text-fg2"
+          title="开启后，「猫猫旅行」定时任务会按这个地点领取并再派出"
+        >
           <Checkbox
             checked={prefs.enabled}
             disabled={!!busy || locations.length === 0}
@@ -226,16 +230,18 @@ export function TravelCard({ account }: { account: AccountView }) {
           />
           参与自动旅行
         </label>
-        <span className="text-xs text-muted">
-          开启后，「猫猫旅行」定时任务会按这个地点领取并再派出。
-        </span>
       </div>
 
-      {events.length > 0 && (
+      {/* 旅行记录：本机事件为主、平台记录折叠；限高滚动，数据再多也不把卡片撑长 */}
+      {(events.length > 0 || records.length > 0) && (
         <div className="mt-2 border-t border-line/60 pt-1.5">
-          <div className="mb-1 text-xs text-muted">本机记录（派出 / 回来 / 领到积分）</div>
-          <div className="flex flex-col gap-0.5 text-xs">
-            {events.slice(0, 8).map((event, index) => (
+          <div className="mb-1 flex items-baseline gap-2 text-xs text-muted">
+            <span>旅行记录</span>
+            <span className="flex-1" />
+            <span className="tabular-nums">本机 {events.length} 条 · 平台 {records.length} 条</span>
+          </div>
+          <div className="flex max-h-36 flex-col gap-0.5 overflow-y-auto text-xs">
+            {events.map((event, index) => (
               <div key={`${event.kind}-${event.at}-${index}`} className="flex items-baseline gap-2">
                 <span className="tabular-nums text-muted">{fmtTime(event.at)}</span>
                 <span
@@ -255,20 +261,21 @@ export function TravelCard({ account }: { account: AccountView }) {
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {records.length > 0 && (
-        <div className="mt-2 border-t border-line/60 pt-1.5">
-          <div className="mb-1 text-xs text-muted">平台记录</div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-            {records.slice(0, 5).map((record, index) => (
-              <span key={record.record_id ?? index} className="tabular-nums">
-                {record.travel_date ?? fmtTime(record.arrive_at)} · {record.location_name ?? '—'} ·{' '}
-                {record.reward_credit === null ? '—' : `+${fmtAmount(record.reward_credit)}`}
-              </span>
-            ))}
-          </div>
+          {records.length > 0 && (
+            <details className="mt-1 text-xs text-muted">
+              <summary className="cursor-pointer select-none">
+                平台已完成旅行（{records.length}）
+              </summary>
+              <div className="mt-1 flex flex-col gap-0.5">
+                {records.slice(0, 10).map((record, index) => (
+                  <span key={record.record_id ?? index} className="tabular-nums">
+                    {record.travel_date ?? fmtTime(record.arrive_at)} · {record.location_name ?? '—'} ·{' '}
+                    {record.reward_credit === null ? '—' : `+${fmtAmount(record.reward_credit)}`}
+                  </span>
+                ))}
+              </div>
+            </details>
+          )}
         </div>
       )}
     </section>

@@ -1,11 +1,11 @@
-// ECharts 按需注册：只装仪表盘用得到的三种图与六个组件。
+// ECharts 按需注册：只装仪表盘用得到的两种图与五个组件。
 //
 // 全量 `import 'echarts'` 会把地图、3D、桑基图等几十个用不上的部分拉进依赖图，
 // 体积直接翻倍；走 echarts/core 按需注册后，产物里只有这里列出的这一份。
 // 因此仓库里所有图表组件一律 `import ... from '@/lib/echarts'`，
 // 不要直接 import 'echarts'——那会让按需注册白做。
 import * as echarts from 'echarts/core';
-import { BarChart, LineChart, PieChart } from 'echarts/charts';
+import { BarChart, LineChart } from 'echarts/charts';
 import {
   DataZoomComponent,
   GridComponent,
@@ -16,10 +16,9 @@ import {
 import { CanvasRenderer } from 'echarts/renderers';
 
 echarts.use([
-  // 图：双向柱（收支）、折线（趋势/用量）、环形（占比）
+  // 图：双向柱（收支）、折线（趋势/用量）、堆叠柱（每日明细）
   BarChart,
   LineChart,
-  PieChart,
   // 组件：直角坐标系、提示框、图例（点选隐藏系列）、缩放拖拽、最高/最低标记
   GridComponent,
   TooltipComponent,
@@ -32,7 +31,7 @@ echarts.use([
 
 export { echarts };
 
-import type { BarSeriesOption, LineSeriesOption, PieSeriesOption } from 'echarts/charts';
+import type { BarSeriesOption, LineSeriesOption } from 'echarts/charts';
 import type {
   DataZoomComponentOption,
   GridComponentOption,
@@ -45,7 +44,6 @@ import type {
 export type ChartOption = echarts.ComposeOption<
   | BarSeriesOption
   | LineSeriesOption
-  | PieSeriesOption
   | GridComponentOption
   | TooltipComponentOption
   | LegendComponentOption
@@ -60,7 +58,7 @@ export type {
   DefaultLabelFormatterCallbackParams as CallbackDataParams,
   TooltipComponentFormatterCallbackParams as TopLevelFormatterParams,
 } from 'echarts';
-export type { BarSeriesOption, LineSeriesOption, PieSeriesOption } from 'echarts/charts';
+export type { BarSeriesOption, LineSeriesOption } from 'echarts/charts';
 export type {
   DataZoomComponentOption,
   GridComponentOption,

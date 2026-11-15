@@ -1,19 +1,19 @@
 // 用量：本地只读采集出来的 Token 与平台扣费。
 //
-// 与上面的积分收支不是同一份账：这份来自客户端落盘文件（每 30 分钟增量扫描），
-// 能归因到具体软件与模型；积分收支来自账号余额快照，回答的是「进出多少」。
-// 两块并排放，才能对出「跑了多少 Token」与「扣了多少积分」的关系。
+// 按 dashboard-design 技能重构：KPI 瓦片只留数字与 delta 徽章（口径与解释进 tooltip）；
+// 各软件用量与模型占比是排名列表 + 行底 3px 份额条（环形图只配「一家独大」的份额，
+// 七个切片的占比用排名列表更诚实）；每日明细是按平台堆叠柱（零日自然缺失，不装没数据）。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Button, cn } from '@/components/ui/button';
+import { Button } from '@/components/ui/button';
 import { StateBlock } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { errText } from '@/lib/ipc';
 import { fmtAmount, fmtTime, fmtTokens, fmtTokensExact } from '@/lib/format';
-import { appLabel, ModelDonut, TrendLines } from '@/components/usage-charts';
-import type { UsageOverview } from '@/lib/types';
-import { Metric, SectionTitle } from './metric';
+import { appLabel, DailyTokensBars, TrendLines } from '@/components/usage-charts';
+import type { UsageModel, UsageOverview, UsageSlice } from '@/lib/types';
+import { Delta, Metric, SectionTitle, ShareBar, shareText } from './metric';
 
 export function UsageSection() {
   const qc = useQueryClient();
@@ -43,10 +43,6 @@ export function UsageSection() {
   const empty = data && data.total.calls === 0;
   // days 已把区间补满且按日期升序，所以「今天的前一天」就是倒数第二个
   const yesterday = data && data.days.length >= 2 ? data.days[data.days.length - 2] : null;
-  const dayDelta =
-    data && yesterday && yesterday.tokens > 0
-      ? Math.round(((data.today.tokens - yesterday.tokens) / yesterday.tokens) * 100)
-      : null;
   const perCall = data && data.total.calls > 0 ? Math.round(data.total.tokens / data.total.calls) : 0;
 
   return (
@@ -59,10 +55,11 @@ export function UsageSection() {
               {[7, 14, 30].map((value) => (
                 <button
                   key={value}
-                  className={cn(
-                    'cursor-pointer rounded px-1.5 py-0.5 text-xs',
-                    days === value ? 'bg-hover text-fg' : 'text-muted hover:text-fg',
-                  )}
+                  className={
+                    days === value
+                      ? 'rounded bg-hover px-1.5 py-0.5 text-xs text-fg'
+                      : 'cursor-pointer rounded px-1.5 py-0.5 text-xs text-muted hover:text-fg'
+                  }
                   onClick={() => setDays(value)}
                 >
                   {value} 天
@@ -117,155 +114,131 @@ export function UsageSection() {
               label="今日 Token"
               value={fmtTokens(data.today.tokens)}
               exact={fmtTokensExact(data.today.tokens)}
-              hint={
-                `${data.today.calls} 次调用` +
-                (dayDelta === null ? '' : ` · 较昨日 ${dayDelta > 0 ? '+' : ''}${dayDelta}%`)
+              hint={`${data.today.calls} 次调用`}
+              delta={
+                <Delta
+                  cur={data.today.tokens}
+                  prev={yesterday && yesterday.tokens > 0 ? yesterday.tokens : 0}
+                />
               }
             />
             <Metric
               label="今日积分"
               value={fmtAmount(data.today.credit)}
-              hint="平台实际扣费口径"
+              hint={
+                data.today.calls > 0
+                  ? `平台实际扣费口径 · ${data.today.calls} 次调用`
+                  : '平台实际扣费口径'
+              }
             />
             <Metric
               label="区间 Token"
               value={fmtTokens(data.total.tokens)}
               exact={fmtTokensExact(data.total.tokens)}
-              hint={`最近 ${days} 天 · 日均 ${fmtTokens(Math.round(data.total.tokens / days))}`}
+              hint={`日均 ${fmtTokens(Math.round(data.total.tokens / days))}`}
             />
             <Metric
               label="区间积分"
               value={fmtAmount(data.total.credit)}
-              hint={`${data.total.calls} 次调用 · 平均每次 ${fmtTokens(perCall)} Token`}
+              hint={
+                data.total.calls > 0
+                  ? `平台实际扣费口径 · ${data.total.calls} 次调用 · 单次 ${fmtTokens(perCall)} Token`
+                  : '平台实际扣费口径'
+              }
             />
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-            <div className="rounded-lg border border-line/70 p-2">
-              <div className="mb-1.5 flex items-baseline gap-2">
-                <h4 className="text-xs font-semibold tracking-wide text-fg2">Token 消耗趋势</h4>
-                <span className="flex-1" />
-                <span className="text-xs text-muted">每天一个点 · 按软件分线</span>
-              </div>
-              <TrendLines days={data.days} />
-            </div>
-
-            <div className="rounded-lg border border-line/70 p-2">
-              <div className="mb-1.5 flex items-baseline gap-2">
-                <h4 className="text-xs font-semibold tracking-wide text-fg2">模型占比</h4>
-                <span className="flex-1" />
-                <span className="text-xs text-muted">按 Token</span>
-              </div>
-              <ModelDonut models={data.by_model} />
-            </div>
-          </div>
-
-          <div>
+          <div className="rounded-lg border border-line/70 p-3">
             <div className="mb-1.5 flex items-baseline gap-2">
-              <h4 className="text-xs font-semibold tracking-wide text-fg2">各软件用量</h4>
+              <h4 className="text-xs font-semibold tracking-wide text-fg2">Token 消耗趋势</h4>
               <span className="flex-1" />
-              <span className="text-xs text-muted">最近 {days} 天 · 平台扣费口径</span>
             </div>
-            <table className="w-full border-collapse text-xs">
-              <thead>
-                <tr className="text-left text-muted">
-                  <th className="py-1 font-medium">软件</th>
-                  <th className="py-1 text-right font-medium">Token</th>
-                  <th className="py-1 text-right font-medium">积分</th>
-                  <th className="py-1 text-right font-medium">调用</th>
-                  <th className="w-32 py-1 pl-3 font-medium">占比</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.by_app.map((app) => {
-                  const share = data.total.tokens === 0 ? 0 : (app.tokens / data.total.tokens) * 100;
-                  return (
-                    <tr key={app.platform} className="border-t border-line/60">
-                      <td className="whitespace-nowrap py-1">{appLabel(app.platform)}</td>
-                      <td
-                        className="py-1 text-right tabular-nums"
-                        title={fmtTokensExact(app.tokens)}
-                      >
-                        {fmtTokens(app.tokens)}
-                      </td>
-                      <td className="py-1 text-right tabular-nums">{fmtAmount(app.credit)}</td>
-                      <td className="py-1 text-right tabular-nums">{app.calls}</td>
-                      <td className="py-1 pl-3">
-                        <div className="flex items-center gap-1.5">
-                          <div className="h-1.5 flex-1 rounded-full bg-hover">
-                            <div
-                              className="h-1.5 rounded-full bg-accent"
-                              style={{ width: `${Math.max(2, share)}%` }}
-                            />
-                          </div>
-                          <span className="w-10 text-right tabular-nums text-muted">
-                            {share.toFixed(0)}%
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <TrendLines days={data.days} />
           </div>
 
-          <div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="rounded-lg border border-line/70 p-3">
+              <div className="mb-1 flex items-baseline justify-between gap-2 px-1 text-xs text-muted">
+                <span>软件</span>
+                <span>Token · 占比</span>
+              </div>
+              <RankedAppUsage byApp={data.by_app} totalTokens={data.total.tokens} />
+            </div>
+
+            <div className="rounded-lg border border-line/70 p-3">
+              <div className="mb-1 flex items-baseline justify-between gap-2 px-1 text-xs text-muted">
+                <span>模型</span>
+                <span>Token · 占比</span>
+              </div>
+              <RankedModelUsage byModel={data.by_model} totalTokens={data.total.tokens} />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-line/70 p-3">
             <div className="mb-1.5 flex items-baseline gap-2">
               <h4 className="text-xs font-semibold tracking-wide text-fg2">每日明细</h4>
               <span className="flex-1" />
-              <span className="text-xs text-muted">最近 {days} 天 · 最新在上</span>
             </div>
-            {/* 区间内每天都有行（没记录的是 0），这样才能一眼看出「哪几天真的没用」 */}
-            <div className="max-h-72 overflow-auto">
-              <table className="w-full border-collapse text-xs">
-                <thead>
-                  <tr className="sticky top-0 bg-card text-left text-muted">
-                    <th className="py-1 font-medium">日期</th>
-                    <th className="py-1 text-right font-medium">Token</th>
-                    <th className="py-1 text-right font-medium">积分</th>
-                    <th className="py-1 text-right font-medium">调用</th>
-                    <th className="w-40 py-1 pl-3 font-medium">占区间</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...data.days].reverse().map((day) => {
-                    const share = data.total.tokens === 0 ? 0 : (day.tokens / data.total.tokens) * 100;
-                    return (
-                      <tr key={day.date} className="border-t border-line/60">
-                        <td className="whitespace-nowrap py-1 tabular-nums">{day.date}</td>
-                        <td
-                          className="py-1 text-right tabular-nums"
-                          title={fmtTokensExact(day.tokens)}
-                        >
-                          {fmtTokens(day.tokens)}
-                        </td>
-                        <td className="py-1 text-right tabular-nums">
-                          {day.credit > 0 ? fmtAmount(day.credit) : '—'}
-                        </td>
-                        <td className="py-1 text-right tabular-nums">{day.calls}</td>
-                        <td className="py-1 pl-3">
-                          <div className="flex items-center gap-1.5">
-                            <div className="h-1.5 flex-1 rounded-full bg-hover">
-                              <div
-                                className="h-1.5 rounded-full bg-accent"
-                                style={{ width: share > 0 ? `${Math.max(2, share)}%` : '0%' }}
-                              />
-                            </div>
-                            <span className="w-10 text-right tabular-nums text-muted">
-                              {share.toFixed(0)}%
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <DailyTokensBars days={data.days} />
           </div>
         </div>
       )}
     </section>
+  );
+}
+
+/** 排名列表：一行一个软件，数值右对齐、行底 3px 份额条，hover 提亮。 */
+function RankedAppUsage({ byApp, totalTokens }: { byApp: UsageSlice[]; totalTokens: number }) {
+  const rows = [...byApp].sort((a, b) => b.tokens - a.tokens);
+  const max = Math.max(...rows.map((row) => row.tokens), 1);
+  return (
+    <div>
+      {rows.map((row) => (
+        <button
+          key={row.platform}
+          title={`${appLabel(row.platform)} · ${fmtTokensExact(row.tokens)} Token · ${row.calls} 次调用 · 积分 ${
+            row.credit > 0 ? fmtAmount(row.credit) : '—'
+          }`}
+          className="group relative flex h-11 w-full items-center gap-3 rounded-[10px] px-3 pb-1.5 text-left text-sm text-fg hover:bg-hover/60"
+        >
+          <ShareBar pct={(row.tokens / max) * 100} />
+          <span className="relative min-w-0 flex-1 truncate">{appLabel(row.platform)}</span>
+          <span className="relative tabular-nums" title={fmtTokensExact(row.tokens)}>
+            {fmtTokens(row.tokens)}
+          </span>
+          <span className="relative w-10 text-right text-xs tabular-nums text-muted">
+            {shareText(totalTokens === 0 ? 0 : (row.tokens / totalTokens) * 100)}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** 模型占比：同样是排名列表（环形图只配「一家独大」的份额）。 */
+function RankedModelUsage({ byModel, totalTokens }: { byModel: UsageModel[]; totalTokens: number }) {
+  const rows = [...byModel].sort((a, b) => b.tokens - a.tokens);
+  const max = Math.max(...rows.map((row) => row.tokens), 1);
+  return (
+    <div>
+      {rows.map((row) => (
+        <div
+          key={row.model}
+          title={`${row.model} · ${fmtTokensExact(row.tokens)} Token · ${row.calls} 次调用`}
+          className="group relative flex h-11 w-full items-center gap-3 rounded-[10px] px-3 pb-1.5 text-left text-sm text-fg hover:bg-hover/60"
+        >
+          <ShareBar pct={(row.tokens / max) * 100} />
+          <span className="relative min-w-0 flex-1 truncate" title={row.model}>
+            {row.model}
+          </span>
+          <span className="relative tabular-nums" title={fmtTokensExact(row.tokens)}>
+            {fmtTokens(row.tokens)}
+          </span>
+          <span className="relative w-10 text-right text-xs tabular-nums text-muted">
+            {shareText(totalTokens === 0 ? 0 : (row.tokens / totalTokens) * 100)}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }

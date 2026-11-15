@@ -21,6 +21,8 @@ src-tauri/.cargo/
 .workbuddy-ai/
 .trae/
 .trae-html-share-packages/
+# ZCode 工作区本地配置与会话数据（技能装在用户目录 ~/.zcode/skills，与仓库无关）
+.zcode/
 
 # 本地留存，不入库（docs/shots 截图带账号昵称等信息；tools/ 开发脚本与素材随本机走）
 docs/
