@@ -96,6 +96,20 @@ fn platform_scope(iid: &str) -> String {
     iid.split(':').next().unwrap_or(iid).to_string()
 }
 
+/// 定时轮询的平台节流判定：距上次成功查询不足平台最小间隔 → 本轮跳过。
+///
+/// - `min_minutes = 0`：平台不设限，跟随全局任务间隔；
+/// - `last_ok_at` 为空：从没查成功过，本轮必须查（不能让新账号一直等着）。
+fn throttled(min_minutes: u64, last_ok_at: Option<i64>, now_ms: i64) -> bool {
+    if min_minutes == 0 {
+        return false;
+    }
+    match last_ok_at {
+        Some(at) => now_ms.saturating_sub(at) < (min_minutes as i64) * 60_000,
+        None => false,
+    }
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 /// 只读诊断结果：给界面看的归一化状态，不含原始凭据或敏感字段。
@@ -727,15 +741,26 @@ impl Service {
     }
 
     /// 定时积分刷新：全部有凭据的账号刷一遍余额。返回 (总数, 失败数)。
+    ///
+    /// 平台可以声明自己的最小刷新间隔（`Provider::credits_min_interval_minutes`）：
+    /// 距离上次成功查询不够久的账号，这一轮直接跳过——豆包的活动面板接口
+    /// 按 5 分钟一问是 288 次/天，节奏完全不像人。手动刷新不走这里，不受限制。
     pub async fn credits_round(&self) -> (usize, usize) {
-        let iids: Vec<String> = match self.accounts().await {
-            Ok(list) => list
-                .into_iter()
-                .filter(|a| a.has_secret && a.enabled)
-                .map(|a| a.iid)
-                .collect(),
+        let accounts = match self.accounts().await {
+            Ok(list) => list,
             Err(_) => return (0, 0),
         };
+        let now = self.clock.now().timestamp_millis();
+        let mut iids = Vec::new();
+        for account in accounts.into_iter().filter(|a| a.has_secret && a.enabled) {
+            let min = Self::provider_of(&account.iid)
+                .map(|provider| provider.credits_min_interval_minutes())
+                .unwrap_or(0);
+            if throttled(min, account.last_ok_at, now) {
+                continue;
+            }
+            iids.push(account.iid);
+        }
         let total = iids.len();
         if total == 0 {
             return (0, 0);
@@ -1749,6 +1774,22 @@ pub fn normalize_trigger(raw: Option<&str>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn throttle_respects_platform_interval_and_never_blocks_first_query() {
+        let now = 1_800_000_000_000i64;
+        // 平台不设限：永远不跳过
+        assert!(!throttled(0, Some(now), now));
+        // 没查过：必须查（新账号不能一直等）
+        assert!(!throttled(30, None, now));
+        // 29 分钟前查过：跳过；31 分钟前：放行
+        assert!(throttled(30, Some(now - 29 * 60_000), now));
+        assert!(!throttled(30, Some(now - 31 * 60_000), now));
+        // 边界：正好 30 分钟放行
+        assert!(!throttled(30, Some(now - 30 * 60_000), now));
+        // 时钟回拨（last_ok_at 在未来）按「刚查过」处理，不刷
+        assert!(throttled(30, Some(now + 60_000), now));
+    }
 
     fn row(date: &str, iid: &str, balance: f64) -> (String, String, f64) {
         (date.into(), iid.into(), balance)

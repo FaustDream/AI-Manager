@@ -105,6 +105,17 @@ impl Provider for DoubaoProvider {
         true
     }
 
+    /// 签到面板是活动接口：一次查询返回整块任务、奖励与示例内容（30KB+），
+    /// 和别家「一个轻量余额 GET」不是一回事。5 分钟一轮（288 次/天）太像脚本，
+    /// 定时轮询压到 30 分钟；手动「刷新积分」不受这个限制。
+    fn credits_min_interval_minutes(&self) -> u64 {
+        30
+    }
+
+    fn credits_interval_note(&self) -> &'static str {
+        "活动面板接口：一次查询返回整块签到面板，定时刷新最快 30 分钟一次；手动「刷新积分」不受限"
+    }
+
     async fn status(&self, cred: &Credential, http: &dyn Http) -> Result<StatusResult> {
         let data = self.detail(cred, http).await?;
         let panel = parse_panel(&data)?;
@@ -446,6 +457,18 @@ mod tests {
         assert_eq!(normalize_cookie("   "), "");
         // 大小写与前缀空格都要认：用户从 DevTools 复制过来就是这么长的
         assert_eq!(normalize_cookie("cookie:a=1;b=2"), "a=1; b=2");
+    }
+
+    #[test]
+    fn checkin_panel_is_throttled_for_scheduled_refresh() {
+        // 活动面板不是轻量余额接口：定时轮询必须放慢，且理由要能显示给用户
+        let provider = DoubaoProvider::new();
+        assert_eq!(provider.credits_min_interval_minutes(), 30);
+        assert!(
+            provider.credits_interval_note().contains("活动面板"),
+            "{}",
+            provider.credits_interval_note()
+        );
     }
 
     #[test]

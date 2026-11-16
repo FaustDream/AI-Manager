@@ -107,6 +107,18 @@ pub trait Provider: Send + Sync {
     fn cooldown_hours(&self) -> u32 {
         0
     }
+    /// 定时积分刷新对该平台的**最小间隔**（分钟）。`0` = 跟随全局「积分刷新」任务。
+    ///
+    /// 只约束定时轮询，不约束用户手动点「刷新积分」：用户要看最新数字时，等 30 分钟
+    /// 是不可接受的；而定时轮询的节奏由接口性质决定——余额接口可以 5 分钟一问，
+    /// 活动面板接口（一次返回整块任务/奖励）问这么勤只会招风控。
+    fn credits_min_interval_minutes(&self) -> u64 {
+        0
+    }
+    /// 界面上的节奏说明（为什么是这个间隔）。空 = 跟随全局，不需要额外解释。
+    fn credits_interval_note(&self) -> &'static str {
+        ""
+    }
     /// 查签到状态。会顺带读余额。
     async fn status(&self, _cred: &Credential, _http: &dyn Http) -> Result<StatusResult> {
         Err(AppError::new(

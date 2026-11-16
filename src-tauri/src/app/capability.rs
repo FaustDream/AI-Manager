@@ -49,12 +49,29 @@ pub struct CapabilityRow {
     pub cells: Vec<CapabilityCell>,
 }
 
+/// 一家平台的自动刷新节奏。`min_minutes = 0` 表示跟随全局「积分刷新」任务。
+///
+/// 数值与说明都来自 Provider 自己（`credits_min_interval_minutes` /
+/// `credits_interval_note`）：接口性质只有适配器最清楚，界面与调度器读同一份。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize)]
+pub struct RefreshPolicy {
+    pub platform: String,
+    pub label: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub min_minutes: u64,
+    pub note: String,
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilityMatrix {
     pub features: Vec<CapabilityFeature>,
     pub platforms: Vec<CapabilityRow>,
+    /// 自动刷新节奏：与 `platforms` 同一批平台，供「定时任务」页解释平台差异
+    pub refresh_policies: Vec<RefreshPolicy>,
 }
 
 // ------------------------------------------------------------------ 表本体
@@ -297,6 +314,17 @@ pub fn matrix() -> CapabilityMatrix {
                     .collect(),
             })
             .collect(),
+        // 节奏由适配器自己声明：接口是「轻量余额 GET」还是「整块活动面板」，
+        // 只有写适配器的人知道；这里只负责汇总给界面。
+        refresh_policies: crate::app::providers::all()
+            .iter()
+            .map(|provider| RefreshPolicy {
+                platform: provider.platform().to_string(),
+                label: provider.label().to_string(),
+                min_minutes: provider.credits_min_interval_minutes(),
+                note: provider.credits_interval_note().to_string(),
+            })
+            .collect(),
     }
 }
 
@@ -351,5 +379,33 @@ mod tests {
             .platforms
             .iter()
             .all(|p| p.cells.len() == m.features.len()));
+    }
+
+    #[test]
+    fn refresh_policies_cover_every_provider_and_doubao_is_throttled() {
+        let m = matrix();
+        // 每个 Provider 都要有一行：设置页的说明不能漏掉某一家
+        assert_eq!(
+            m.refresh_policies.len(),
+            crate::app::providers::all().len(),
+            "刷新节奏行数与 Provider 数不一致"
+        );
+        let doubao = m
+            .refresh_policies
+            .iter()
+            .find(|p| p.platform == "doubao")
+            .expect("豆包缺刷新节奏");
+        assert_eq!(doubao.min_minutes, 30);
+        assert!(
+            doubao.note.contains("活动面板"),
+            "豆包要写清为什么慢：{}",
+            doubao.note
+        );
+        // 其余平台跟随全局：0 且不需要额外说明
+        assert!(m
+            .refresh_policies
+            .iter()
+            .filter(|p| p.platform != "doubao")
+            .all(|p| p.min_minutes == 0 && p.note.is_empty()));
     }
 }

@@ -1000,6 +1000,9 @@ function ScheduleCard() {
         </div>
       ))}
 
+      {/* 平台差异必须写在用户配间隔的地方：全局间隔只是上限，接口性质不同的平台会自己放慢 */}
+      <RefreshPolicyNote />
+
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {editing && <span className="text-xs font-semibold">编辑：{editing.name}</span>}
         <Input
@@ -1056,6 +1059,50 @@ function ScheduleCard() {
         </Button>
         {editing && <Button size="sm" variant="ghost" disabled={!!busy} onClick={resetForm}>取消</Button>}
       </div>
+    </div>
+  );
+}
+
+/**
+ * 各平台的自动刷新节奏。
+ *
+ * 数据来自 Provider 自己（`credits_min_interval_minutes` / `credits_interval_note`），
+ * 与调度器读同一份——前端不写死「豆包 30 分钟」，也不替平台解释原因。
+ */
+function RefreshPolicyNote() {
+  const matrix = useQuery<CapabilityMatrix>({
+    queryKey: ['capabilities'],
+    queryFn: () => queryCmd('platform_capabilities'),
+    staleTime: Infinity,
+  });
+  const policies = matrix.data?.refresh_policies ?? [];
+  if (policies.length === 0) return null;
+  const slow = policies.filter((p) => p.min_minutes > 0);
+  const followers = policies.length - slow.length;
+
+  return (
+    <div className="mt-3 rounded-md border border-line bg-hover px-3 py-2">
+      <p className="text-xs font-semibold">各平台的自动刷新节奏</p>
+      <p className="mt-1 text-xs leading-relaxed text-muted">
+        上面的间隔是<span className="font-medium text-fg2">上限</span>
+        ：到点这一轮只查「距上次成功查询已超过平台最小间隔」的账号，没到点的直接跳过——这是正常的限速，不是失败。
+        手动「刷新积分」不受限制，随时可以查最新数字。
+      </p>
+      <ul className="mt-1.5 flex flex-col gap-1 text-xs">
+        {slow.map((p) => (
+          <li key={p.platform} className="flex flex-wrap gap-x-2">
+            <span className="w-36 shrink-0 text-fg2">{p.label}</span>
+            <span className="text-fg2">最快 {p.min_minutes} 分钟一次</span>
+            {p.note && <span className="text-muted">· {p.note}</span>}
+          </li>
+        ))}
+        {followers > 0 && (
+          <li className="flex flex-wrap gap-x-2">
+            <span className="w-36 shrink-0 text-fg2">其余 {followers} 家</span>
+            <span className="text-muted">跟随任务间隔（余额接口，可按分钟级刷新）</span>
+          </li>
+        )}
+      </ul>
     </div>
   );
 }
