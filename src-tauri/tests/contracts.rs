@@ -394,6 +394,7 @@ fn test_hub(paths: &TestPaths) -> ai_manager::app::hub::Hub {
     ai_manager::app::hub::Hub::at(
         paths.join("home"),
         paths.join("appdata"),
+        paths.join("localdata"),
         paths.join("data"),
     )
 }

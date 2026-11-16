@@ -20,6 +20,8 @@ pub enum TargetKey {
     WorkBuddyIntl,
     CodeBuddy,
     ZCode,
+    /// 豆包：只有技能可分发（MCP 在应用内管理，没有本地配置文件）
+    Doubao,
 }
 
 /// 统一 MCP 条目（内部一律用 disabled 表示停用）。

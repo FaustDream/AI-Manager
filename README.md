@@ -58,9 +58,12 @@ Skills & MCP: import once, distribute per platform, and the matrix shows at a gl
 | Qoder (China / International) | Yes | Yes |
 | WorkBuddy (China / International) | Yes | Yes |
 | ZCode | Yes | Yes |
+| Doubao (personal) | No (added by pasting a Cookie) | — |
 | Trae | No | — |
 
 Trae stores its login state in a device-bound encrypted format that cannot be written back safely, so switch accounts inside the Trae client itself. Check-in and credits are implemented per provider; the UI only shows the entry points a platform actually supports.
+
+Doubao has no local login state this tool can read (its cookies live in Chromium's encrypted store), so accounts are added by pasting a Cookie under "Add account → Doubao"; one Cookie per account, each checks in independently. Only personal accounts have the daily quota check-in — Doubao Work and Feishu enterprise accounts do not.
 
 > The application UI is currently Chinese only. The screenshots above show the real interface.
 

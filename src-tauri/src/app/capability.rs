@@ -232,7 +232,9 @@ const PLATFORMS: &[PlatformDef] = &[
             no("非 WorkBuddy 平台"),
             part("Cookie 过期只能重新粘贴；有效期由字节控制，接口不返回"),
             no("会话在云端，本地没有可读的会话库"),
-            no("豆包没有技能 / MCP 概念"),
+            part(
+                "技能可分发到 %LOCALAPPDATA%\\...\\.user_skills；MCP 只在应用内管理，没有可写配置",
+            ),
         ],
     },
     PlatformDef {

@@ -223,11 +223,20 @@ fn orphan_login_hint(db: &Db, iid: &str) -> Option<String> {
 /// 刷新一个账号的凭据。会读客户端文件并解密凭据，调用方负责放到阻塞线程里。
 pub fn refresh_credential(db: &Db, iid: &str) -> Result<RefreshCredentialOutcome> {
     let before = snapshot(db, iid)?;
-    if providers::for_iid(iid).is_none() {
+    let Some(provider) = providers::for_iid(iid) else {
         return Ok(RefreshCredentialOutcome::new(
             RefreshCredentialState::Unsupported,
             "这个平台没有可重扫的客户端登录态，刷新不了；请在客户端里登录后点「刷新账号状态」"
                 .into(),
+            before.expires,
+        ));
+    };
+    // 「平台压根没有可重扫的入口」和「客户端里就是最新的一份」必须分开说：
+    // 前者再点多少次都不会变，后者说明客户端已经续过了。
+    if !provider.scannable() {
+        return Ok(RefreshCredentialOutcome::new(
+            RefreshCredentialState::Unsupported,
+            provider.refresh_unsupported(),
             before.expires,
         ));
     }

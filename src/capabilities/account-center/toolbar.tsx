@@ -3,15 +3,17 @@
 // 批量签到是任务化的：进度由 tasks 轮询给，这里只负责把「正在跑」画出来，
 // 不在前端猜完成时刻。
 //
-// 「添加账号」统一走浏览器登录（v1 的做法）：选平台 → 开官方登录页 → 轮询入库。
-// 客户端全程不参与，所以弹窗只留一个下拉框 + 一个按钮；借客户端那条路退成失败时的兜底。
+// 「添加账号」两条路：
+//   1. 浏览器登录（多数平台）：选平台 → 开官方登录页 → 轮询入库；
+//   2. 粘贴 Cookie（豆包这类没有可借用登录流程的平台）：一份 Cookie = 一个账号，
+//      多账号就是多份 Cookie，各自入库、互不覆盖。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { listen } from '@/lib/events';
 import { Check, Copy, ExternalLink, Link } from 'lucide-react';
 import { Button, cn } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
-import { Select } from '@/components/ui/form';
+import { Input, Select, Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { errText } from '@/lib/ipc';
 import type { AccountView, AddOutcome, LoginOutcome } from '@/lib/types';
@@ -26,10 +28,19 @@ const PLATFORMS: { key: string; label: string }[] = [
   { key: 'zcode', label: 'ZCode 智谱' },
   { key: 'zcode_zai', label: 'ZCode z.ai' },
   { key: 'zcode_zai_cn', label: 'ZCode z.ai CN' },
+  { key: 'doubao', label: '豆包' },
 ];
 
 /** 只支持浏览器登录的入口：没有「改用客户端登录」的兜底（客户端流程认不了这个键）。 */
 const BROWSER_ONLY = new Set(['zcode_zai', 'zcode_zai_cn']);
+
+/**
+ * 用 Cookie 添加的平台：没有可借用的登录流程，只能粘贴一次登录态。
+ *
+ * 豆包网页走字节 SSO（没有可回调的授权码），电脑版的 Cookie 在 Chromium 加密库里
+ * （格式随版本变），所以这里让用户从浏览器复制一次——多账号就是多份 Cookie。
+ */
+const COOKIE_PLATFORMS = new Set(['doubao']);
 
 const platformOf = (key: string) => PLATFORMS.find((p) => p.key === key) ?? PLATFORMS[0];
 
@@ -98,8 +109,9 @@ export function AccountToolbar({
 }
 
 /** 弹窗状态：正在取链接 → 等浏览器授权 / 启动客户端 → 已就绪 → 失败。
- *  没有「选平台」这一态：打开就是链接页，换平台自动重取。 */
-type Stage = 'working' | 'waiting' | 'ready' | 'failed';
+ *  「粘贴 Cookie」是第四条路（`cookie`），它没有链接可等，整块换成表单。
+ *  没有「选平台」这一态：打开就是链接页（或 Cookie 表单），换平台自动切换。 */
+type Stage = 'working' | 'waiting' | 'ready' | 'failed' | 'cookie';
 
 // 弹窗视觉约束（refactoring-ui brief）：
 //   分级：平台下拉 = 上下文；登录链接 = 待办对象；「在浏览器打开」= 唯一主操作，
@@ -126,9 +138,21 @@ export function AddAccountDialog({
   const [loginUrl, setLoginUrl] = useState('');
   const [error, setError] = useState('');
   const [scanning, setScanning] = useState(false);
+  // 粘贴 Cookie 那条路：Cookie 是凭据，只在本组件内存里待到提交，不落 localStorage
+  const [cookie, setCookie] = useState('');
+  const [cookieName, setCookieName] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [cookieError, setCookieError] = useState('');
 
   // 打开弹窗、或换平台，就立刻要一条新的登录链接——用户不需要再点一次「登录」
   const loadLink = useCallback(async () => {
+    // 粘贴 Cookie 的平台没有登录链接可等：直接切表单，别白跑一次 IPC
+    if (COOKIE_PLATFORMS.has(platform)) {
+      setStage('cookie');
+      setError('');
+      setLoginUrl('');
+      return;
+    }
     setStage('working');
     setError('');
     setLoginUrl('');
@@ -203,6 +227,37 @@ export function AddAccountDialog({
     }
   };
 
+  /**
+   * 粘贴 Cookie 添加账号。
+   *
+   * 校验放在后端（Cookie 里必须含 sessionid），这里只把失败原因显示在表单里——
+   * 弹窗一关用户就得重贴一遍整段 Cookie，代价太高。所以走 `onError` 而不是默认 toast。
+   */
+  const addByCookie = async () => {
+    const raw = cookie.trim();
+    if (!raw) {
+      setCookieError('请先粘贴 Cookie');
+      return;
+    }
+    setAdding(true);
+    setCookieError('');
+    try {
+      const iid = await runCmd(
+        'account_add_cookie',
+        { platform, cookie: raw, name: cookieName.trim() },
+        { onError: (e) => setCookieError(errText(e)) },
+      );
+      if (!iid) return;
+      toast(`${platformOf(platform).label} 账号已添加，可以直接签到`);
+      setCookie('');
+      setCookieName('');
+      onScanned();
+      onClose();
+    } finally {
+      setAdding(false);
+    }
+  };
+
   const openManually = async () => {
     
       const focused = await runCmd('account_open_client', { platform });
@@ -232,7 +287,21 @@ export function AddAccountDialog({
       title={`添加账号 · ${picked.label}`}
       onClose={onClose}
       footer={
-        stage === 'failed' ? (
+        stage === 'cookie' ? (
+          <>
+            <Button variant="ghost" onClick={onClose}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => void addByCookie()}
+              loading={adding}
+              disabled={!cookie.trim()}
+            >
+              添加账号
+            </Button>
+          </>
+        ) : stage === 'failed' ? (
           <>
             {!BROWSER_ONLY.has(platform) && (
               <Button variant="ghost" onClick={startViaClient}>
@@ -285,6 +354,40 @@ export function AddAccountDialog({
             })}
           </Select>
         </label>
+
+        {stage === 'cookie' && (
+          <div className="flex flex-col gap-3">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted">备注名（可选，用来区分同一平台的多个账号）</span>
+              <Input
+                value={cookieName}
+                onChange={(e) => setCookieName(e.target.value)}
+                placeholder="例如：主号 / 小号"
+                className="max-w-none"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted">doubao.com 的 Cookie</span>
+              <Textarea
+                value={cookie}
+                onChange={(e) => setCookie(e.target.value)}
+                placeholder="粘贴整段 Cookie（形如 a=1; b=2; sessionid=...）"
+                className="min-h-[96px] font-mono text-xs"
+                spellCheck={false}
+              />
+            </label>
+            <p className="text-xs leading-relaxed text-muted">
+              获取方式：浏览器打开 doubao.com 并登录 → F12 → Network 里任选一条 doubao.com 请求
+              → 复制请求头中的 <span className="font-mono">Cookie</span> 整段粘贴进来。
+              一个账号一份 Cookie，多开就重复添加一次；只有个人账号有「天天领额度」，工作版 / 飞书企业账号没有签到。
+            </p>
+            {cookieError && (
+              <p className="whitespace-pre-wrap rounded-md border border-line border-l-[3px] border-l-bad bg-card px-3 py-2 text-sm text-fg2">
+                {cookieError}
+              </p>
+            )}
+          </div>
+        )}
 
         {stage === 'working' && (
           <p className="flex items-center gap-2 text-xs text-muted">

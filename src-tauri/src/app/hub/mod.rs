@@ -101,6 +101,8 @@ use std::path::{Path, PathBuf};
 pub struct Hub {
     home: PathBuf,
     appdata: PathBuf,
+    /// `%LOCALAPPDATA%`：豆包的技能目录在这一支下（Roaming 里没有）
+    localdata: PathBuf,
     data: PathBuf,
     /// v1 管过的 MCP 名字。v1 写配置时不带 `_aimanager` 标记，
     /// 光看标记会把用户已有的条目全判成「别人写的」，那就一条都管不了。
@@ -109,14 +111,20 @@ pub struct Hub {
 
 impl Hub {
     pub fn system() -> Self {
-        Self::at(paths::home(), appdata_dir(), paths::data_dir())
+        Self::at(
+            paths::home(),
+            appdata_dir(),
+            localdata_dir(),
+            paths::data_dir(),
+        )
     }
 
-    pub fn at(home: PathBuf, appdata: PathBuf, data: PathBuf) -> Self {
+    pub fn at(home: PathBuf, appdata: PathBuf, localdata: PathBuf, data: PathBuf) -> Self {
         let legacy_mcp = read_legacy_mcp(&data);
         Self {
             home,
             appdata,
+            localdata,
             data,
             legacy_mcp,
         }
@@ -128,11 +136,26 @@ impl Hub {
     }
 
     pub fn skill_dir(&self, key: TargetKey) -> PathBuf {
-        targets::skill_dir(&self.home, key)
+        targets::skill_dir(&self.home, &self.appdata, &self.localdata, key)
     }
 
-    pub fn mcp_path(&self, key: TargetKey) -> PathBuf {
-        targets::mcp_file(&self.home, &self.appdata, key)
+    /// MCP 配置文件路径。**None = 这个平台没有可写的本地 MCP 配置**（豆包），
+    /// 调用方必须跳过，不能退化成「写到家目录」。
+    pub fn mcp_path(&self, key: TargetKey) -> Option<PathBuf> {
+        targets::mcp_file(&self.home, &self.appdata, &self.localdata, key)
+    }
+
+    /// 要写 MCP 时必须拿到路径：没有就明确报「不支持」，而不是静默不写。
+    fn require_mcp_path(&self, key: TargetKey) -> crate::app::error::Result<PathBuf> {
+        self.mcp_path(key).ok_or_else(|| {
+            crate::app::error::AppError::new(
+                crate::app::error::ErrorKind::Unsupported,
+                format!(
+                    "{} 没有可写的本地 MCP 配置（只在应用内管理）",
+                    targets::label(key)
+                ),
+            )
+        })
     }
 
     /// 数据目录（技能库与回收站都在它下面）。
@@ -167,6 +190,12 @@ fn appdata_dir() -> PathBuf {
         .unwrap_or_else(|_| paths::home().join("AppData").join("Roaming"))
 }
 
+fn localdata_dir() -> PathBuf {
+    std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| paths::home().join("AppData").join("Local"))
+}
+
 impl HubStore for Hub {
     fn target_dir(&self, key: TargetKey) -> PathBuf {
         self.skill_dir(key)
@@ -182,7 +211,11 @@ impl HubStore for Hub {
 
     /// 契约 16：同名条目存在且没有我们的标记 → 冲突，绝不覆盖。
     fn check_conflict(&self, name: &str, key: TargetKey) -> Result<()> {
-        let root = mcp::read_config(&self.mcp_path(key));
+        // 没有可写配置文件的平台没有「冲突」可言
+        let Some(path) = self.mcp_path(key) else {
+            return Ok(());
+        };
+        let root = mcp::read_config(&path);
         if let Some(body) = mcp::entries_of(&root, key).get(name) {
             if !self.owns_mcp(name, body) {
                 return Err(AppError::new(
@@ -204,7 +237,7 @@ pub fn key_name(key: TargetKey) -> &'static str {
 pub fn write_entry(hub: &Hub, entry: &McpEntry, key: TargetKey) -> Result<()> {
     hub.check_conflict(&entry.name, key)?;
 
-    let path = hub.mcp_path(key);
+    let path = hub.require_mcp_path(key)?;
     let mut root = mcp::read_config(&path);
     let body = mcp::to_platform(entry, key);
     let body = mcp::entries_of(&body, key)
@@ -251,7 +284,10 @@ fn insert(root: &mut serde_json::Value, container: &[&str], name: &str, body: se
 /// 从配置文件里拿掉一条（只拿本工具写的，别人的不动）。
 pub fn remove_entry(hub: &Hub, name: &str, key: TargetKey) -> Result<bool> {
     hub.check_conflict(name, key)?;
-    let path = hub.mcp_path(key);
+    // 没有配置文件的平台：本来就没有可删的
+    let Some(path) = hub.mcp_path(key) else {
+        return Ok(false);
+    };
     if !path.exists() {
         return Ok(false);
     }
@@ -369,7 +405,11 @@ pub fn snapshot(hub: &Hub) -> HubSnapshot {
     let mut target_infos = Vec::new();
     for target in targets::TARGETS {
         let key = targets::key_name(target.key);
-        let root = mcp::read_config(&hub.mcp_path(target.key));
+        // 没有可写 MCP 配置的平台（豆包）：读空对象，不参与合并
+        let root = match hub.mcp_path(target.key) {
+            Some(path) => mcp::read_config(&path),
+            None => serde_json::json!({}),
+        };
         let entries = mcp::entries_of(&root, target.key);
         let mut own = 0;
         for (name, body) in &entries {
@@ -412,7 +452,11 @@ pub fn snapshot(hub: &Hub) -> HubSnapshot {
             key: key.to_string(),
             label: target.label.to_string(),
             skill_dir: hub.skill_dir(target.key).display().to_string(),
-            mcp_file: hub.mcp_path(target.key).display().to_string(),
+            // 没有可写 MCP 配置的平台给空串：界面据此显示「该客户端只在应用内管理 MCP」
+            mcp_file: hub
+                .mcp_path(target.key)
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
             skills: skill_count,
             mcp: own,
             installed: skills::installed(hub, target.key),
@@ -436,7 +480,7 @@ pub fn mcp_claim(
     source: TargetKey,
     keys: &[TargetKey],
 ) -> Result<DeployReport> {
-    let path = hub.mcp_path(source);
+    let path = hub.require_mcp_path(source)?;
     let mut root = mcp::read_config(&path);
     let body = mcp::entries_of(&root, source)
         .get(name)
@@ -478,12 +522,14 @@ pub fn mcp_add(hub: &Hub, entry: &McpEntry, keys: &[TargetKey]) -> DeployReport 
     let mut report = DeployReport::default();
     for key in keys {
         let name = targets::key_name(*key);
+        // 没有配置文件的平台也会落到下面那个 Err 分支（Unsupported），路径留空
+        let path = hub.mcp_path(*key).unwrap_or_default();
         match write_entry(hub, entry, *key) {
-            Ok(_) => report.push(true, name, "已写入", &hub.mcp_path(*key), false),
+            Ok(_) => report.push(true, name, "已写入", &path, false),
             Err(e) if e.kind == crate::app::error::ErrorKind::Conflict => {
-                report.push(false, name, e.message, &hub.mcp_path(*key), true)
+                report.push(false, name, e.message, &path, true)
             }
-            Err(e) => report.push(false, name, e.message, &hub.mcp_path(*key), false),
+            Err(e) => report.push(false, name, e.message, &path, false),
         }
     }
     report
@@ -512,7 +558,10 @@ pub fn mcp_deploy(hub: &Hub, name: &str, keys: &[TargetKey]) -> DeployReport {
 fn mcp_source_entry(hub: &Hub, name: &str) -> Option<McpEntry> {
     let mut fallback = None;
     for target in targets::TARGETS {
-        let root = mcp::read_config(&hub.mcp_path(target.key));
+        let Some(path) = hub.mcp_path(target.key) else {
+            continue;
+        };
+        let root = mcp::read_config(&path);
         let entries = mcp::entries_of(&root, target.key);
         if let Some(body) = entries.get(name) {
             let entry = mcp::from_body(name, body, target.key);
@@ -532,7 +581,7 @@ pub fn mcp_remove(hub: &Hub, name: &str, keys: &[TargetKey]) -> DeployReport {
     let mut report = DeployReport::default();
     for key in keys {
         let label = targets::key_name(*key);
-        let path = hub.mcp_path(*key);
+        let path = hub.mcp_path(*key).unwrap_or_default();
         match remove_entry(hub, name, *key) {
             Ok(true) => report.push(true, label, "已移除", &path, false),
             Ok(false) => report.push(true, label, "本来就没有", &path, false),
@@ -609,7 +658,11 @@ fn from_map(map: serde_json::Map<String, serde_json::Value>) -> Vec<McpEntry> {
 }
 
 pub fn read_entries(hub: &Hub, key: TargetKey) -> Vec<McpEntry> {
-    let root = mcp::read_config(&hub.mcp_path(key));
+    // 没有可写 MCP 配置的平台：读空列表，不是错误
+    let Some(path) = hub.mcp_path(key) else {
+        return Vec::new();
+    };
+    let root = mcp::read_config(&path);
     mcp::entries_of(&root, key)
         .into_iter()
         .map(|(name, body)| mcp::from_body(&name, &body, key))
@@ -621,7 +674,12 @@ mod tests {
     use super::*;
 
     fn hub(dir: &std::path::Path) -> Hub {
-        Hub::at(dir.join("home"), dir.join("appdata"), dir.join("data"))
+        Hub::at(
+            dir.join("home"),
+            dir.join("appdata"),
+            dir.join("localdata"),
+            dir.join("data"),
+        )
     }
 
     fn entry(name: &str) -> McpEntry {
@@ -702,7 +760,7 @@ mod tests {
         let hub = hub(dir.path());
         write_entry(&hub, &entry("github"), TargetKey::QoderCn).unwrap();
 
-        let path = hub.mcp_path(TargetKey::QoderCn);
+        let path = hub.mcp_path(TargetKey::QoderCn).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"mcpServers\""));
         assert!(text.contains("github"));
@@ -712,7 +770,7 @@ mod tests {
     fn foreign_entry_is_a_conflict_and_stays_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let hub = hub(dir.path());
-        let path = hub.mcp_path(TargetKey::Trae);
+        let path = hub.mcp_path(TargetKey::Trae).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let original = r#"{"mcpServers":{"github":{"command":"uvx"}}}"#;
         std::fs::write(&path, original).unwrap();
@@ -731,7 +789,7 @@ mod tests {
     fn claim_takes_over_a_foreign_entry_and_keeps_its_fields() {
         let dir = tempfile::tempdir().unwrap();
         let hub = hub(dir.path());
-        let path = hub.mcp_path(TargetKey::QoderCn);
+        let path = hub.mcp_path(TargetKey::QoderCn).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -780,7 +838,7 @@ mod tests {
         let mut changed = entry("github");
         changed.args = Some(vec!["-y".into()]);
         write_entry(&hub, &changed, TargetKey::QoderCn).unwrap();
-        let raw = mcp::read_config(&hub.mcp_path(TargetKey::QoderCn));
+        let raw = mcp::read_config(&hub.mcp_path(TargetKey::QoderCn).unwrap());
         let parsed = mcp::from_platform(&raw, TargetKey::QoderCn).unwrap();
         assert_eq!(parsed.args, Some(vec!["-y".to_string()]));
     }

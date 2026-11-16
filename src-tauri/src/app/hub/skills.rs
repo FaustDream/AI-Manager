@@ -764,7 +764,12 @@ mod tests {
     use super::*;
 
     fn hub(dir: &Path) -> Hub {
-        Hub::at(dir.join("home"), dir.join("appdata"), dir.join("data"))
+        Hub::at(
+            dir.join("home"),
+            dir.join("appdata"),
+            dir.join("localdata"),
+            dir.join("data"),
+        )
     }
 
     fn seed_skill(hub: &Hub, name: &str, body: &str) -> PathBuf {

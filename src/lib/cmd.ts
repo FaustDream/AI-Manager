@@ -78,6 +78,7 @@ export interface CmdArgs {
   account_reorder: { iids: string[] };
   account_delete: { iid: string };
   account_scan: void;
+  account_add_cookie: { platform: string; cookie: string; name: string };
   account_login_start: { platform: string };
   account_relogin_start: { iid: string };
   account_refresh_all: void;
@@ -91,7 +92,6 @@ export interface CmdArgs {
   account_current: void;
   account_switchable: void;
   account_add_prepare: { platform: string };
-  account_add_cookie: { platform: string; cookie: string; name: string };
   account_open_client: { platform: string };
   open_external: { url: string };
   open_private_browser: { url: string };
@@ -197,6 +197,7 @@ export interface CmdReturn {
   account_reorder: void;
   account_delete: boolean;
   account_scan: ScanReport;
+  account_add_cookie: string;
   account_login_start: LoginStart;
   account_relogin_start: LoginStart;
   account_refresh_all: RefreshReport;
@@ -210,7 +211,6 @@ export interface CmdReturn {
   account_current: string[];
   account_switchable: string[];
   account_add_prepare: AddOutcome;
-  account_add_cookie: string;
   account_open_client: boolean;
   open_external: void;
   open_private_browser: string;
@@ -341,6 +341,7 @@ const CMD_LABELS: Record<string, string> = {
   account_reorder: '调整账号顺序',
   account_delete: '删除账号',
   account_scan: '扫描账号',
+  account_add_cookie: '用 Cookie 添加账号',
   account_login_start: '开始添加账号',
   account_relogin_start: '重新登录账号',
   account_refresh_all: '刷新账号状态',
@@ -353,7 +354,6 @@ const CMD_LABELS: Record<string, string> = {
   account_uid: '复制账号 UID',
   account_current: '读取当前登录',
   account_add_prepare: '打开客户端登录页',
-  account_add_cookie: '用 Cookie 添加账号',
   account_open_client: '打开客户端',
   open_external: '打开外部链接',
   open_private_browser: '打开登录页（无痕）',
@@ -444,6 +444,7 @@ const CMD_LABELS: Record<string, string> = {
 const KEY_ACTIONS = new Set<string>([
   'app_quit',
   'account_scan',
+  'account_add_cookie',
   'account_relogin_start',
   'account_set_enabled',
   'account_set_alias',

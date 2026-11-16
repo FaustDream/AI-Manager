@@ -550,9 +550,15 @@ export default function HubPage() {
             <div className="mt-1 truncate text-xs text-muted" title={activeTarget.skill_dir}>
               技能目录：{activeTarget.skill_dir}
             </div>
-            <div className="truncate text-xs text-muted" title={activeTarget.mcp_file}>
-              MCP 配置：{activeTarget.mcp_file}
-            </div>
+            {activeTarget.mcp_file ? (
+              <div className="truncate text-xs text-muted" title={activeTarget.mcp_file}>
+                MCP 配置：{activeTarget.mcp_file}
+              </div>
+            ) : (
+              <div className="text-xs text-muted">
+                MCP：这个客户端只在应用内管理，本地没有可写的配置文件
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -567,7 +573,7 @@ export default function HubPage() {
             <span className="flex flex-wrap items-center gap-2">
               {pane === 'skills' ? (
                 importButtons(tab)
-              ) : (
+              ) : activeTarget.mcp_file ? (
                 <>
                   <Button
                     variant="primary"
@@ -581,6 +587,10 @@ export default function HubPage() {
                   </Button>
                   <span className="text-xs text-muted">写进{activeTarget.label}后即进入分发库</span>
                 </>
+              ) : (
+                <span className="text-xs text-muted">
+                  {activeTarget.label}没有可写的 MCP 配置，技能分发不受影响
+                </span>
               )}
             </span>
           </div>
@@ -750,7 +760,17 @@ export default function HubPage() {
             </>
           )}
 
-          {pane === 'mcp' && (
+          {pane === 'mcp' && !activeTarget.mcp_file && (
+            <PaneCard title={`${activeTarget.label} 的 MCP`} hint="这个客户端没有可写的本地配置">
+              <StateBlock
+                kind="empty"
+                title="只在应用内管理 MCP"
+                detail={`${activeTarget.label} 的 MCP 配置不落在本地文件里（安装目录只有 mcp_helper.dll），本工具无法分发；技能分发不受影响。`}
+              />
+            </PaneCard>
+          )}
+
+          {pane === 'mcp' && !!activeTarget.mcp_file && (
             <>
               <PaneCard
                 title={`${activeTarget.label} 的个人条目（${myMcp.length}）`}

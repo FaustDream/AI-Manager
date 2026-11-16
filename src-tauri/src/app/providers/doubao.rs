@@ -90,6 +90,16 @@ impl Provider for DoubaoProvider {
         None
     }
 
+    /// 豆包没有可重扫的登录态：Cookie 存在本工具里，客户端那边读不出来。
+    /// 不声明这一条，「刷新凭据」会对豆包报「已是最新」，等于骗人。
+    fn scannable(&self) -> bool {
+        false
+    }
+
+    fn refresh_unsupported(&self) -> String {
+        "豆包没有可重扫的本地登录态：Cookie 过期时请用「添加账号 → 豆包」重新粘贴一次".into()
+    }
+
     /// 豆包额度是平台自己记的（累计发放），写进本工具台账会和「积分」混单位（契约 5）。
     fn live_credit(&self) -> bool {
         true
@@ -461,5 +471,148 @@ mod tests {
         ] {
             assert!(url.contains(marker), "缺参数 {marker}：{url}");
         }
+    }
+
+    // ---- 以下是带假 HTTP 的链路测试：解析、错误码、幂等、请求头 ----
+
+    use crate::app::net::MockHttp;
+
+    const SEED: &str = "dbtest1234";
+
+    fn cred() -> Credential {
+        let mut cred = Credential {
+            token: "sessionid=test; uid=1".into(),
+            ..Default::default()
+        };
+        cred.put("seed", json!(SEED));
+        cred
+    }
+
+    fn detail_url() -> String {
+        api_url(DETAIL_URL, SEED)
+    }
+
+    fn checkin_url() -> String {
+        api_url(CHECKIN_URL, SEED)
+    }
+
+    #[tokio::test]
+    async fn status_reads_today_state_total_and_sends_cookie() {
+        let http = MockHttp::new();
+        http.on(
+            &detail_url(),
+            200,
+            &json!({ "code": 0, "data": panel_json() }).to_string(),
+        );
+        let status = DoubaoProvider::new().status(&cred(), &http).await.unwrap();
+        assert_eq!(status.checked_in, Some(true));
+        assert_eq!(status.balance, Some(1400.0));
+        assert!(status.summary.contains("连签 3 天"), "{}", status.summary);
+        // Cookie 必须原样带上，否则服务端只会回「登录已过期」
+        let cookie = http
+            .last_header(&detail_url(), "Cookie")
+            .expect("没带 Cookie 头");
+        assert_eq!(cookie, "sessionid=test; uid=1");
+    }
+
+    #[tokio::test]
+    async fn checkin_claims_then_reports_grant() {
+        let http = MockHttp::new();
+        http.on(
+            &detail_url(),
+            200,
+            &json!({ "code": 0, "data": {
+                "tasks": [{ "task_kind": "daily_signin", "daily_checkin": {
+                    "checked_in_today": false, "continuous_days": 3
+                }}],
+                "progress": { "total_amount": 1400 }
+            }})
+            .to_string(),
+        );
+        http.on(
+            &checkin_url(),
+            200,
+            &json!({ "code": 0, "data": {
+                "checked_in": true, "continuous_days": 4,
+                "reward_amount": 200, "reward_type": "quota_grant", "idempotent": false
+            }})
+            .to_string(),
+        );
+
+        let result = DoubaoProvider::new().checkin(&cred(), &http).await.unwrap();
+        assert!(result.ok);
+        assert!(!result.already);
+        assert_eq!(result.granted, Some(200.0));
+        assert!(result.message.contains("连签 4 天"), "{}", result.message);
+        assert_eq!(http.call_count(&checkin_url()), 1);
+        // 领取请求体的 scene 必须是活动组，不能是自己拼的字符串
+        assert!(http
+            .last_header(&checkin_url(), "Referer")
+            .unwrap_or_default()
+            .contains("doubao.com"));
+    }
+
+    #[tokio::test]
+    async fn already_checked_today_does_not_call_claim() {
+        let http = MockHttp::new();
+        http.on(
+            &detail_url(),
+            200,
+            &json!({ "code": 0, "data": panel_json() }).to_string(),
+        );
+        let result = DoubaoProvider::new().checkin(&cred(), &http).await.unwrap();
+        assert!(result.already);
+        assert!(result.granted.is_none());
+        assert_eq!(http.call_count(&checkin_url()), 0, "已签就不该再打签到接口");
+    }
+
+    #[tokio::test]
+    async fn idempotent_claim_is_not_counted_as_new_grant() {
+        let http = MockHttp::new();
+        http.on(
+            &detail_url(),
+            200,
+            &json!({ "code": 0, "data": {
+                "tasks": [{ "task_kind": "daily_signin", "daily_checkin": { "checked_in_today": false } }]
+            }})
+            .to_string(),
+        );
+        http.on(
+            &checkin_url(),
+            200,
+            &json!({ "code": 0, "data": { "idempotent": true, "reward_amount": 200 } }).to_string(),
+        );
+        let result = DoubaoProvider::new().checkin(&cred(), &http).await.unwrap();
+        assert!(result.ok);
+        assert!(result.already, "重复请求不能报成新发放");
+        assert!(result.granted.is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_cookie_maps_to_auth_expired() {
+        let http = MockHttp::new();
+        // 真实接口对无效 Cookie 的返回（已用假 Cookie 实测）
+        http.on(
+            &detail_url(),
+            200,
+            r#"{"data":null,"code":710012001,"msg":"登录已过期，请重新登录","message":"login invalid"}"#,
+        );
+        let err = DoubaoProvider::new()
+            .status(&cred(), &http)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::AuthExpired);
+        assert!(err.message.contains("Cookie"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn missing_cookie_fails_without_touching_network() {
+        let http = MockHttp::new();
+        let err = DoubaoProvider::new()
+            .status(&Credential::default(), &http)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::AuthExpired);
+        assert!(http.calls().is_empty(), "没有 Cookie 时不该发请求");
     }
 }

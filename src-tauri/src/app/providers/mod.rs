@@ -75,6 +75,24 @@ pub trait Provider: Send + Sync {
     /// 客户端**当前**登录的 account_id；读不到返回 None（客户端没装/没登录）。
     fn current_id(&self) -> Option<String>;
 
+    /// 有没有可重扫的**本地登录态**。
+    ///
+    /// 「客户端没装」和「平台根本没这个入口」是两件事：前者重扫一次还能扫到，
+    /// 后者重扫一万次也不会有结果（豆包的 Cookie 在 Chromium 加密库里，不解析）。
+    /// 刷新凭据据此给出正确结论，而不是笼统地说「已是最新」。
+    fn scannable(&self) -> bool {
+        true
+    }
+
+    /// 没得重扫时给用户的一句话（下一步该做什么）。文案留在平台适配器里，
+    /// 业务层不出现平台特有的说法。
+    fn refresh_unsupported(&self) -> String {
+        format!(
+            "{} 没有可重扫的客户端登录态，刷新不了；请在客户端里重新登录后点「刷新账号状态」",
+            self.label()
+        )
+    }
+
     // ---- 以下是 P3 加的接口：默认实现一律「不支持」，各家按需覆盖 ----
     /// 平台本身有没有签到玩法。WorkBuddy 国际版与 ZCode 都没有，只查积分。
     fn requires_checkin(&self) -> bool {
