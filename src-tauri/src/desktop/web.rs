@@ -249,9 +249,9 @@ pub async fn dispatch<R: tauri::Runtime>(
             let platform = arg(v, "platform")?;
             to_json(cmd::accounts::account_login_start(app.state::<AppState>(), platform).await)
         }
-        "account_relogin_start" => {
+        "account_reauth_start" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::accounts::account_relogin_start(app.state::<AppState>(), iid).await)
+            to_json(cmd::accounts::account_reauth_start(app.state::<AppState>(), iid).await)
         }
         "account_refresh_all" => {
             to_json(cmd::accounts::account_refresh_all(app.state::<AppState>()).await)

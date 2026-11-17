@@ -245,10 +245,10 @@ pub fn note_health_ok(db: &Db, iid: &str, now_ms: i64) -> Result<()> {
     })
 }
 
-/// 清掉失败标记（重新登录成功后调用）。
+/// 清掉失败标记（重新授权成功后调用）。
 ///
 /// 换了新凭据就等于重新开始，旧的失败记录继续挂着只会让界面一直显示「查询失败」。
-/// **不写 `last_ok_at`**：那个字段说的是「最近一次成功拉取」，而重新登录不是拉取，
+/// **不写 `last_ok_at`**：那个字段说的是「最近一次成功拉取」，而重新授权不是拉取，
 /// 拿登录时刻冒充成功时刻会掩盖真实的查询状况。
 pub fn clear_health_fail(db: &Db, iid: &str) -> Result<()> {
     db.write(|conn| {
@@ -286,7 +286,7 @@ pub fn set_expires_at(db: &Db, iid: &str, expires_at: i64) -> Result<()> {
     })
 }
 
-/// 更新登录态（切换账号 / 重新登录后写入）。凭据单独加密存放。
+/// 更新登录态（切换账号 / 重新授权后写入）。凭据单独加密存放。
 pub fn set_secret(db: &Db, iid: &str, plain: &[u8], expires_at: Option<i64>) -> Result<()> {
     let blob = secret::protect(plain)?;
     db.write(|conn| {

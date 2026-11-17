@@ -121,7 +121,7 @@ const FEATURES: &[FeatureDef] = &[
     FeatureDef {
         key: "renew",
         label: "凭据刷新",
-        hint: "每次重扫客户端，把最新凭据与有效期写回本地库；刷新后仍过期才需要重新登录",
+        hint: "每次重扫客户端，把最新凭据与有效期写回本地库；刷新后仍过期才需要重新授权",
     },
     FeatureDef {
         key: "sessions",
@@ -153,7 +153,7 @@ const fn no(note: &'static str) -> (Support, &'static str) {
 }
 
 /// 刷新格子：四家都是同一条路，只有「客户端里也过期」这个共同限制
-const REFRESH_NOTE: &str = "每次重扫客户端写回最新凭据与有效期；客户端里也过期就只能重新登录";
+const REFRESH_NOTE: &str = "每次重扫客户端写回最新凭据与有效期；客户端里也过期就只能重新授权";
 
 const PLATFORMS: &[PlatformDef] = &[
     PlatformDef {

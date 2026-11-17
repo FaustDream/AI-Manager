@@ -96,6 +96,18 @@ fn platform_scope(iid: &str) -> String {
     iid.split(':').next().unwrap_or(iid).to_string()
 }
 
+/// 「领取请求可能已发出、但结果不确定」的错误类别。
+///
+/// 这些失败后保留 `reserved`，让下一轮只回查、不重复领取；其余（凭证失效 / 活动
+/// 关闭 / 配置无效 / 限流等）确定没有提交出去，直接清除标记，不挡用户重试。
+/// 限流（429）不算：平台明确拒了，等于没提交。
+fn uncertain_submit(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::Io | ErrorKind::Provider | ErrorKind::Sqlite
+    )
+}
+
 /// 定时轮询的平台节流判定：距上次成功查询不足平台最小间隔 → 本轮跳过。
 ///
 /// - `min_minutes = 0`：平台不设限，跟随全局任务间隔；
@@ -1009,6 +1021,55 @@ impl Service {
             return (subject, Ok(result));
         }
 
+        // 今天已有提交但结果未确认（reserved）：只回查、不重复领取。这是跨轮次幂等
+        // 的第二道防线——上一轮「领取已发出、响应丢了」时，本轮不能再发第二次。
+        if self.reserved_today(iid).await {
+            if let Ok(status) = provider.status(&cred, self.http.as_ref()).await {
+                if status.checked_in == Some(true) {
+                    let _ = self.mark_today(iid).await;
+                    self.settle_today(iid).await;
+                    let result = ActionResult {
+                        ok: true,
+                        message: "今日签到已由平台确认（提交后回查）".into(),
+                        granted: None,
+                        validity_days: None,
+                        already: true,
+                    };
+                    record(
+                        &subject,
+                        "签到前检查",
+                        Outcome::Skip,
+                        &result.message,
+                        "依据=checkin_attempts.reserved 回查命中",
+                        started,
+                        batch,
+                    );
+                    return (subject, Ok(result));
+                }
+            }
+            let result = ActionResult {
+                ok: true,
+                message: "今日签到已提交、结果待确认，本轮只回查不重复领取".into(),
+                granted: None,
+                validity_days: None,
+                already: true,
+            };
+            record(
+                &subject,
+                "签到前检查",
+                Outcome::Skip,
+                &result.message,
+                "依据=checkin_attempts.reserved 未确认",
+                started,
+                batch,
+            );
+            return (subject, Ok(result));
+        }
+
+        // 提交前先打 reserved 标记：这一步之后平台可能已处理、响应却丢了，
+        // 标记先落库，后续轮次据此只回查不重领。
+        self.reserve_today(iid).await;
+
         // 失败重试：只重试可恢复错误；重试前先复查状态，避免「平台已成功但响应丢失」重复提交
         let mut result = None;
         let mut last_error = None;
@@ -1052,10 +1113,19 @@ impl Service {
             }
         }
         let result = match result {
-            Some(value) => value,
+            Some(value) => {
+                // 拿到确定结果（成功或已签）：reserved 使命完成，清除
+                self.settle_today(iid).await;
+                value
+            }
             None => {
                 let e =
                     last_error.unwrap_or_else(|| AppError::new(ErrorKind::Provider, "签到失败"));
+                // 不确定「平台是否已处理」的错误保留 reserved（下一轮只回查），
+                // 确定没提交出去的（凭证失效 / 限流 / 配置无效等）直接清除。
+                if !uncertain_submit(e.kind) {
+                    self.settle_today(iid).await;
+                }
                 self.health_fail(iid, e.kind).await;
                 record(
                     &subject,
@@ -1624,6 +1694,40 @@ impl Service {
         let clock = self.clock.clone();
         let iid = iid.to_string();
         blocking(move || SqliteCheckin::new(&db).mark_today(&iid, clock.as_ref())).await?
+    }
+
+    /// 今天是否已提交签到但结果未确认（`reserved`）。读失败按「未提交」处理。
+    async fn reserved_today(&self, iid: &str) -> bool {
+        let db = self.db.clone();
+        let clock = self.clock.clone();
+        let iid = iid.to_string();
+        blocking(move || SqliteCheckin::new(&db).reserved_today(&iid, clock.as_ref()))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// 提交领取前打 reserved 标记；写失败只留痕，不中断签到（去重仍由服务端兜底）。
+    async fn reserve_today(&self, iid: &str) {
+        let db = self.db.clone();
+        let clock = self.clock.clone();
+        let iid = iid.to_string();
+        let scope = platform_scope(&iid);
+        match blocking(move || SqliteCheckin::new(&db).reserve_today(&iid, clock.as_ref())).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) | Err(e) => log_write_failure("写入签到提交标记失败", &scope, e),
+        }
+    }
+
+    /// 确认结果后清除 reserved。
+    async fn settle_today(&self, iid: &str) {
+        let db = self.db.clone();
+        let clock = self.clock.clone();
+        let iid = iid.to_string();
+        let scope = platform_scope(&iid);
+        match blocking(move || SqliteCheckin::new(&db).settle_today(&iid, clock.as_ref())).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) | Err(e) => log_write_failure("清除签到提交标记失败", &scope, e),
+        }
     }
 
     /// 「平台说今天没签」只影响展示，写失败不值得打断任何流程。

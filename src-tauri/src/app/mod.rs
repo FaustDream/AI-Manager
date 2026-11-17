@@ -21,6 +21,7 @@ pub mod health;
 pub mod hub;
 pub mod log;
 pub mod maintenance;
+pub mod model_api;
 pub mod net;
 pub mod paths;
 pub mod platform;

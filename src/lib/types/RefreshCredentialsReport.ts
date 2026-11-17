@@ -2,7 +2,7 @@
 
 /**
  * 批量刷新的汇总。`errors` 只收真正出错的行（凭据解不开、写盘失败），
- * 「平台不支持」「需要重新登录」是**结论**，各有自己的计数。
+ * 「平台不支持」「需要重新授权」是**结论**，各有自己的计数。
  */
 export type RefreshCredentialsReport = { 
 /**
@@ -18,9 +18,9 @@ refreshed: number,
  */
 up_to_date: number, 
 /**
- * 刷新后仍然过期，需要重新登录
+ * 刷新后仍然过期，需要重新授权
  */
-need_relogin: number, 
+need_reauth: number, 
 /**
  * 平台没有可重扫的登录态
  */

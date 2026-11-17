@@ -26,7 +26,7 @@ import type {
 } from '@/lib/types';
 import { TravelCard } from './travel';
 import { AccountSessionsCard } from './sessions-card';
-import { ReloginDialog } from './toolbar';
+import { ReauthDialog } from './toolbar';
 import { DataTable, type Column } from '@/components/ui/table';
 import type { CreditClaim } from '@/lib/types';
 
@@ -109,7 +109,7 @@ export function DetailPanel({
   const [aliasDraft, setAliasDraft] = useState('');
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState('');
-  const [reloginOpen, setReloginOpen] = useState(false);
+  const [reauthOpen, setReauthOpen] = useState(false);
   // 平台奖励积分明细：与「积分批次」不同，它按包名聚合、含已用完之外的完整口径
   const [rewardOpen, setRewardOpen] = useState(false);
   // 慢操作（签到/拉活动列表都是几秒级的网络+写盘）的按钮加载态
@@ -589,7 +589,7 @@ export function DetailPanel({
               onClick={refreshCredential}
               loading={busy === 'refresh-credential'}
               disabled={!!busy || !account.has_secret}
-              title="重扫客户端并写回最新凭据与有效期；刷新后仍过期才需要重新登录"
+              title="重扫客户端并写回最新凭据与有效期；刷新后仍过期才需要重新授权"
             >
               刷新凭据
             </Button>
@@ -597,15 +597,15 @@ export function DetailPanel({
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => setReloginOpen(true)}
+                onClick={() => setReauthOpen(true)}
                 disabled={!!busy}
                 title={
                   account.has_secret
                     ? '重新走一次平台登录，成功后覆盖已保存的凭据与到期时间'
-                    : '这个账号没有可用凭据，切不过去；点这里重新登录，成功后自动保存'
+                    : '这个账号没有可用凭据，切不过去；点这里重新授权，成功后自动保存'
                 }
               >
-                重新登录
+                重新授权
               </Button>
             )}
             <Button
@@ -768,9 +768,9 @@ export function DetailPanel({
         )}
       </Dialog>
 
-      <ReloginDialog
-        target={reloginOpen ? account : null}
-        onClose={() => setReloginOpen(false)}
+      <ReauthDialog
+        target={reauthOpen ? account : null}
+        onClose={() => setReauthOpen(false)}
         onDone={refresh}
       />
 

@@ -9,7 +9,7 @@ use crate::app::paths;
 use rusqlite::Connection;
 use std::sync::Mutex;
 
-pub(crate) const SCHEMA_VERSION: u32 = 3;
+pub(crate) const SCHEMA_VERSION: u32 = 4;
 
 pub struct Db {
     write: Mutex<Connection>,
@@ -79,6 +79,16 @@ impl Db {
                  CREATE TABLE IF NOT EXISTS daily_marks (
                      iid  TEXT NOT NULL,
                      date TEXT NOT NULL,
+                     PRIMARY KEY (iid, date)
+                 );
+                 -- 签到提交标记：reserved=1 表示「今天已提交领取、结果未确认」。
+                 -- 这是跨轮次幂等的第二道防线（第一道 daily_marks 记「已签成功」）：
+                 -- 一旦提交，同一天后续轮次只回查、不重复领取，避免「响应丢失→重领」。
+                 CREATE TABLE IF NOT EXISTS checkin_attempts (
+                     iid      TEXT NOT NULL,
+                     date     TEXT NOT NULL,
+                     reserved INTEGER NOT NULL DEFAULT 0,
+                     at       INTEGER NOT NULL,
                      PRIMARY KEY (iid, date)
                  );
                  CREATE TABLE IF NOT EXISTS credit_lots (
@@ -222,6 +232,9 @@ impl Db {
                 if stored < 3 {
                     Self::migrate_v2_to_v3(conn)?;
                 }
+                if stored < 4 {
+                    Self::migrate_v3_to_v4(conn)?;
+                }
             }
             Ok(())
         })
@@ -259,6 +272,21 @@ impl Db {
              );",
         )?;
         conn.execute("UPDATE schema_meta SET version = 3", [])?;
+        Ok(())
+    }
+
+    /// v3 → v4：签到提交标记表（跨轮次幂等）。
+    fn migrate_v3_to_v4(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS checkin_attempts (
+                 iid      TEXT NOT NULL,
+                 date     TEXT NOT NULL,
+                 reserved INTEGER NOT NULL DEFAULT 0,
+                 at       INTEGER NOT NULL,
+                 PRIMARY KEY (iid, date)
+             );",
+        )?;
+        conn.execute("UPDATE schema_meta SET version = 4", [])?;
         Ok(())
     }
 

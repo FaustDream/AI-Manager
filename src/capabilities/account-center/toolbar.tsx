@@ -16,7 +16,7 @@ import { Dialog } from '@/components/ui/dialog';
 import { Input, Select, Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { errText } from '@/lib/ipc';
-import type { AccountView, AddOutcome, LoginOutcome } from '@/lib/types';
+import type { AccountView, AddOutcome, BrowserLoginStatus, LoginOutcome } from '@/lib/types';
 
 /** 可添加的平台。顺序 = 下拉框顺序。zcode_zai / zcode_zai_cn 只走浏览器登录
  *  （z.ai 两族没有客户端外的ApiKey兑换路径，借客户端登录用 ZCode 入口即可）。 */
@@ -84,7 +84,7 @@ export function AccountToolbar({
         {busy === 'refresh-state' ? '刷新中…' : '刷新账号状态'}
       </Button>
       {/* 与「刷新账号状态」的区别：那个是全量重扫；这个针对当前筛选的一批账号，
-          逐个给出「更新了 / 已是最新 / 需重登」的结论，且**不会因为未过期就跳过** */}
+          逐个给出「更新了 / 已是最新 / 需重新授权」的结论，且**不会因为未过期就跳过** */}
       <Button
         onClick={onRefreshCredentials}
         loading={busy === 'refresh-credentials'}
@@ -110,8 +110,9 @@ export function AccountToolbar({
 
 /** 弹窗状态：正在取链接 → 等浏览器授权 / 启动客户端 → 已就绪 → 失败。
  *  「粘贴 Cookie」是第四条路（`cookie`），它没有链接可等，整块换成表单。
- *  没有「选平台」这一态：打开就是链接页（或 Cookie 表单），换平台自动切换。 */
-type Stage = 'working' | 'waiting' | 'ready' | 'failed' | 'cookie';
+ *  豆包额外有「浏览器登录」：`doubao` = 二选一入口，`browser` = 独立窗口登录进行中。
+ *  没有「选平台」这一态：打开就是链接页（或 Cookie 表单 / 豆包入口），换平台自动切换。 */
+type Stage = 'working' | 'waiting' | 'ready' | 'failed' | 'cookie' | 'doubao' | 'browser';
 
 // 弹窗视觉约束（refactoring-ui brief）：
 //   分级：平台下拉 = 上下文；登录链接 = 待办对象；「在浏览器打开」= 唯一主操作，
@@ -143,14 +144,16 @@ export function AddAccountDialog({
   const [cookieName, setCookieName] = useState('');
   const [adding, setAdding] = useState(false);
   const [cookieError, setCookieError] = useState('');
+  const [browserStatus, setBrowserStatus] = useState<BrowserLoginStatus | null>(null);
 
   // 打开弹窗、或换平台，就立刻要一条新的登录链接——用户不需要再点一次「登录」
   const loadLink = useCallback(async () => {
-    // 粘贴 Cookie 的平台没有登录链接可等：直接切表单，别白跑一次 IPC
+    // 豆包没有可回调的授权码：给一个「浏览器登录 / 粘贴 Cookie」二选一入口
     if (COOKIE_PLATFORMS.has(platform)) {
-      setStage('cookie');
+      setStage('doubao');
       setError('');
       setLoginUrl('');
+      setBrowserStatus(null);
       return;
     }
     setStage('working');
@@ -258,6 +261,58 @@ export function AddAccountDialog({
     }
   };
 
+  /** 豆包浏览器登录：起一个独立临时窗口，后台轮询 cookie、核验身份并入库。 */
+  const startBrowserLogin = async () => {
+    setError('');
+    setBrowserStatus(null);
+    try {
+      const status = await queryCmd('doubao_browser_login_start', { browser_id: null });
+      setBrowserStatus(status);
+      setStage('browser');
+    } catch (e) {
+      // 找不到浏览器这类即时失败也留在 browser 面板里显示，别跳到「改用客户端登录」的 failed 态
+      setBrowserStatus({
+        state: 'error',
+        message: errText(e),
+        browser_name: '',
+        account_name: '',
+        updated: false,
+        active: false,
+      });
+      setStage('browser');
+    }
+  };
+
+  /** 取消进行中的浏览器登录：后端会关掉临时窗口并清理，回到二选一入口。 */
+  const cancelBrowserLogin = async () => {
+    await runCmd('doubao_browser_login_cancel').catch(() => {});
+    setBrowserStatus(null);
+    setStage('doubao');
+  };
+
+  // 浏览器登录是后台任务：状态走 doubao:login 事件，成功/取消据此收尾
+  useEffect(() => {
+    if (stage !== 'browser') return;
+    let alive = true;
+    const un = listen<BrowserLoginStatus>('doubao:login', (e) => {
+      if (!alive) return;
+      const s = e.payload;
+      setBrowserStatus(s);
+      if (s.state === 'success') {
+        toast(s.updated ? `已更新账号：${s.account_name}` : `已添加账号：${s.account_name}`);
+        onScanned();
+        onClose();
+      } else if (s.state === 'cancelled') {
+        setBrowserStatus(null);
+        setStage('doubao');
+      }
+    });
+    return () => {
+      alive = false;
+      void un.then((fn) => fn()).catch(() => {});
+    };
+  }, [stage, onScanned, onClose]);
+
   const openManually = async () => {
     
       const focused = await runCmd('account_open_client', { platform });
@@ -301,6 +356,14 @@ export function AddAccountDialog({
               添加账号
             </Button>
           </>
+        ) : stage === 'browser' ? (
+          <Button variant="ghost" onClick={() => void cancelBrowserLogin()}>
+            取消登录
+          </Button>
+        ) : stage === 'doubao' ? (
+          <Button variant="ghost" onClick={onClose}>
+            关闭
+          </Button>
         ) : stage === 'failed' ? (
           <>
             {!BROWSER_ONLY.has(platform) && (
@@ -389,6 +452,57 @@ export function AddAccountDialog({
           </div>
         )}
 
+        {stage === 'doubao' && (
+          <div className="flex flex-col gap-3">
+            <p className="text-xs leading-relaxed text-muted">
+              豆包网页登录走字节 SSO、电脑版登录态存在加密库里，无法像其他平台那样借客户端或回调登录。
+              两条路任选：自动起一个独立浏览器窗口登录，或手动粘贴 Cookie。
+            </p>
+            <Button variant="primary" onClick={() => void startBrowserLogin()}>
+              在浏览器里登录（自动）
+            </Button>
+            <Button
+              onClick={() => {
+                setError('');
+                setBrowserStatus(null);
+                setStage('cookie');
+              }}
+            >
+              改用粘贴 Cookie
+            </Button>
+          </div>
+        )}
+
+        {stage === 'browser' && (
+          <div className="flex flex-col gap-3">
+            {browserStatus &&
+              ['starting', 'waiting', 'importing'].includes(browserStatus.state) && (
+                <p className="flex items-start gap-2 text-xs text-muted">
+                  <Spinner />
+                  <span className="whitespace-pre-wrap">{browserStatus.message}</span>
+                </p>
+              )}
+            {browserStatus?.state === 'error' && (
+              <p className="whitespace-pre-wrap rounded-md border border-line border-l-[3px] border-l-bad bg-card px-3 py-2 text-sm text-fg2">
+                {browserStatus.message}
+              </p>
+            )}
+            <p className="text-xs leading-relaxed text-muted">
+              登录成功后账号会自动接入，无需复制 Cookie；用的是临时会话，日常浏览器不受影响。
+            </p>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setError('');
+                setBrowserStatus(null);
+                setStage('cookie');
+              }}
+            >
+              改用粘贴 Cookie
+            </Button>
+          </div>
+        )}
+
         {stage === 'working' && (
           <p className="flex items-center gap-2 text-xs text-muted">
             <Spinner />
@@ -444,9 +558,9 @@ async function openLoginPage(url: string): Promise<string | null> {
 
 /**
  * 登录链接：一条一等公民的「值」——单行截断 + 可整段选中，悬停给全文。
- * 「添加账号」与「重新登录」共用，避免各写一套复制反馈。
+ * 「添加账号」与「重新授权」共用，避免各写一套复制反馈。
  *
- * `autoOpen` 只给「重新登录」用：用户的意图就是去登录，不该再让他在对话框里找按钮。
+ * `autoOpen` 只给「重新授权」用：用户的意图就是去登录，不该再让他在对话框里找按钮。
  */
 function LoginLink({ url, autoOpen = false }: { url: string; autoOpen?: boolean }) {
   // 复制反馈：剪贴板写入没有任何系统提示，按钮自己「已复制」一秒半才算闭环
@@ -517,13 +631,13 @@ function LoginLink({ url, autoOpen = false }: { url: string; autoOpen?: boolean 
 }
 
 /**
- * 重新登录：给已有账号补一次凭据（详情页的「重新登录」）。
+ * 重新授权：给已有账号补一次凭据（详情页的「重新授权」）。
  *
  * 复用「添加账号」那条浏览器登录链路，差别只在平台由账号决定、不再下拉选择。
  * 登录成功后凭据由后端自动保存；这里必须把「登进来的到底是不是这个账号」说清楚——
  * 登成别的号会新增一行，不提示的话用户会以为原账号已经修好了。
  */
-export function ReloginDialog({
+export function ReauthDialog({
   target,
   onClose,
   onDone,
@@ -547,7 +661,7 @@ export function ReloginDialog({
     setError('');
     setLoginUrl('');
     try {
-      const info = await queryCmd('account_relogin_start', { iid });
+      const info = await queryCmd('account_reauth_start', { iid });
       setLoginUrl(info.url);
       setStage('waiting');
     } catch (e) {
@@ -575,7 +689,7 @@ export function ReloginDialog({
       }
       toast(
         outcome.iid === iid
-          ? `已重新登录并保存凭据：${name}`
+          ? `已重新授权并保存凭据：${name}`
           : `${outcome.message}\n这次登录的不是「${name}」，已作为新账号入库`,
       );
       onDone();
@@ -590,7 +704,7 @@ export function ReloginDialog({
   return (
     <Dialog
       open={!!target}
-      title={target ? `重新登录 · ${target.name}` : '重新登录'}
+      title={target ? `重新授权 · ${target.name}` : '重新授权'}
       onClose={onClose}
       footer={
         stage === 'failed' ? (
@@ -620,10 +734,10 @@ export function ReloginDialog({
         {stage === 'waiting' && (
           <div className="flex flex-col gap-2">
             <p className="text-xs text-muted">
-              正在无痕窗口里打开登录页。请在新窗口用「{name}」完成登录；凭据会自动保存，
+              正在无痕窗口里打开登录页。请在新窗口用「{name}」完成授权；凭据会自动保存，
               不需要再点「扫描客户端」。
             </p>
-            {/* 用户点「重新登录」就是要登，链接一出来就直接把窗口拉起来 */}
+            {/* 用户点「重新授权」就是要重新走一次授权，链接一出来就直接把窗口拉起来 */}
             <LoginLink url={loginUrl} autoOpen />
           </div>
         )}

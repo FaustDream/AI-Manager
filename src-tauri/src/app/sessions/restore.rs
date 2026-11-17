@@ -220,7 +220,7 @@ fn run(
     let changed = match changed {
         Ok(changed) => changed,
         Err(e) => {
-            fail("改写归属", "写会话库失败", "重新登录该账号后可重试", &e);
+            fail("改写归属", "写会话库失败", "重新授权该账号后可重试", &e);
             return Err(e);
         }
     };

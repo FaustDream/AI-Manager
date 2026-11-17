@@ -14,6 +14,8 @@ import type {
   AccountView,
   ActionResult,
   BatchDiagnoseReport,
+  BrowserInfo,
+  BrowserLoginStatus,
   ConfigSnapshot,
   HealthReport,
   LogStat,
@@ -37,6 +39,8 @@ import type {
   LogFilter,
   LogSpan,
   LoginStart,
+  ModelApiInfo,
+  ModelEntry,
   Page,
   Preview,
   PurgeReport,
@@ -79,8 +83,12 @@ export interface CmdArgs {
   account_delete: { iid: string };
   account_scan: void;
   account_add_cookie: { platform: string; cookie: string; name: string };
+  doubao_browser_list: void;
+  doubao_browser_login_start: { browser_id?: string | null };
+  doubao_browser_login_status: void;
+  doubao_browser_login_cancel: void;
   account_login_start: { platform: string };
-  account_relogin_start: { iid: string };
+  account_reauth_start: { iid: string };
   account_refresh_all: void;
   account_refresh_credential: { iid: string };
   account_refresh_credentials: { iids?: string[] | null };
@@ -95,6 +103,12 @@ export interface CmdArgs {
   account_open_client: { platform: string };
   open_external: { url: string };
   open_private_browser: { url: string };
+  model_api_info: void;
+  model_api_start: void;
+  model_api_stop: void;
+  model_api_models: void;
+  model_api_set_port: { port: number };
+  model_api_regenerate_key: void;
   app_show_window: void;
   hub_snapshot: void;
   hub_skill_import_many: { target: string; names: string[] };
@@ -198,8 +212,12 @@ export interface CmdReturn {
   account_delete: boolean;
   account_scan: ScanReport;
   account_add_cookie: string;
+  doubao_browser_list: BrowserInfo[];
+  doubao_browser_login_start: BrowserLoginStatus;
+  doubao_browser_login_status: BrowserLoginStatus;
+  doubao_browser_login_cancel: BrowserLoginStatus;
   account_login_start: LoginStart;
-  account_relogin_start: LoginStart;
+  account_reauth_start: LoginStart;
   account_refresh_all: RefreshReport;
   account_refresh_credential: RefreshCredentialOutcome;
   account_refresh_credentials: RefreshCredentialsReport;
@@ -214,6 +232,12 @@ export interface CmdReturn {
   account_open_client: boolean;
   open_external: void;
   open_private_browser: string;
+  model_api_info: ModelApiInfo;
+  model_api_start: ModelApiInfo;
+  model_api_stop: ModelApiInfo;
+  model_api_models: ModelEntry[];
+  model_api_set_port: ModelApiInfo;
+  model_api_regenerate_key: ModelApiInfo;
   app_show_window: void;
   hub_snapshot: HubSnapshot;
   hub_skill_import_many: ImportReport;
@@ -342,8 +366,11 @@ const CMD_LABELS: Record<string, string> = {
   account_delete: '删除账号',
   account_scan: '扫描账号',
   account_add_cookie: '用 Cookie 添加账号',
+  doubao_browser_list: '探测可用浏览器',
+  doubao_browser_login_start: '豆包浏览器登录',
+  doubao_browser_login_cancel: '取消豆包浏览器登录',
   account_login_start: '开始添加账号',
-  account_relogin_start: '重新登录账号',
+  account_reauth_start: '重新授权账号',
   account_refresh_all: '刷新账号状态',
   account_refresh_credential: '刷新凭据',
   account_refresh_credentials: '批量刷新凭据',
@@ -357,6 +384,12 @@ const CMD_LABELS: Record<string, string> = {
   account_open_client: '打开客户端',
   open_external: '打开外部链接',
   open_private_browser: '打开登录页（无痕）',
+  model_api_info: '读取模型接口状态',
+  model_api_start: '启动模型接口',
+  model_api_stop: '停止模型接口',
+  model_api_models: '获取豆包模型列表',
+  model_api_set_port: '修改模型接口端口',
+  model_api_regenerate_key: '重新生成模型接口 Key',
   hub_snapshot: '读取技能与 MCP',
   hub_skill_import: '导入技能',
   hub_skill_import_many: '批量导入技能',
@@ -445,7 +478,9 @@ const KEY_ACTIONS = new Set<string>([
   'app_quit',
   'account_scan',
   'account_add_cookie',
-  'account_relogin_start',
+  'doubao_browser_login_start',
+  'doubao_browser_login_cancel',
+  'account_reauth_start',
   'account_set_enabled',
   'account_set_alias',
   'account_set_note',
@@ -480,6 +515,10 @@ const KEY_ACTIONS = new Set<string>([
   'hub_mcp_claim',
   'settings_set',
   'autostart_set',
+  'model_api_regenerate_key',
+  'model_api_set_port',
+  'model_api_start',
+  'model_api_stop',
   'log_level',
   'log_export',
   'log_clear',

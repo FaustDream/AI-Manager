@@ -35,11 +35,14 @@ getrandom = "0.2"
 tauri = { version = "2", features = ["tray-icon", "test"] }
 # 签到 / 积分的唯一网络库；Windows 上 native-tls = schannel，
 # 不引入 OpenSSL、也不用 rustls（那套会多背 1MB 以上）
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "stream"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 async-trait = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
+# 豆包浏览器登录：CDP over WebSocket（连临时 Chrome/Edge 会话，只走 ws:// 明文，不开 TLS）
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
+futures-util = "0.3"
 # 网页调试壳（ai-manager-web bin）：hyper 已在依赖树（reqwest 传递），axum 只是薄封装
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 # SSE 事件流要把 broadcast Receiver 转成 Stream

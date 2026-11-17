@@ -54,10 +54,10 @@ pub fn open_external(url: String) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// 用**无痕窗口**打开登录页（重新登录 / 添加账号的登录链接）。
+/// 用**无痕窗口**打开登录页（重新授权 / 添加账号的登录链接）。
 ///
 /// 为什么不用 `open_external`：复用浏览器已有会话时，平台会按「已登录的那个账号」
-/// 直接签发凭据，用户点「重新登录 A」却拿回 B 的凭据，账号库就此串掉。
+/// 直接签发凭据，用户点「重新授权 A」却拿回 B 的凭据，账号库就此串掉。
 ///
 /// 返回实际使用的浏览器名，界面据此说明「去哪个窗口里登录」；
 /// 找不到支持无痕参数的浏览器时返回 Unsupported，界面退回普通打开。
@@ -87,4 +87,105 @@ pub fn app_show_window(window: tauri::Window) {
         return;
     }
     let _ = window.show();
+}
+
+// ---------------------------------------------------------------- 模型接口
+
+/// 把内存快照里的配置端口校正成 kv 里的真实值。
+///
+/// 内存单例只记得「上次启动时用的值」：用户改过端口、或服务压根没起来时它会过期。
+async fn fill_configured_port(
+    db: std::sync::Arc<crate::app::db::Db>,
+    mut info: crate::app::model_api::ModelApiInfo,
+) -> std::result::Result<crate::app::model_api::ModelApiInfo, String> {
+    let configured = crate::app::runtime::blocking({
+        let db = db.clone();
+        move || crate::app::model_api::configured_port(&db)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
+    info.configured_port = configured;
+    Ok(info)
+}
+
+/// 豆包 OpenAI 兼容接口的当前状态（实际端口 + 配置端口 + API Key + 是否在跑）。
+#[tauri::command]
+pub async fn model_api_info(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::model_api::ModelApiInfo, String> {
+    fill_configured_port(state.db.clone(), crate::app::model_api::info()).await
+}
+
+/// 手动启动接口（会记住「用户要它开着」，重启后自动恢复）。
+#[tauri::command]
+pub async fn model_api_start(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::model_api::ModelApiInfo, String> {
+    let info = crate::app::model_api::start(state.db.clone())
+        .await
+        .map_err(err_text)?;
+    let info = fill_configured_port(state.db.clone(), info).await?;
+    crate::app::log::action(
+        "启动模型接口",
+        "user",
+        true,
+        0,
+        format!("监听 127.0.0.1:{}", info.port),
+    );
+    Ok(info)
+}
+
+/// 手动停止接口（会记住「用户要它关着」，重启后不会自己回来）。
+#[tauri::command]
+pub async fn model_api_stop(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::model_api::ModelApiInfo, String> {
+    let info = crate::app::model_api::stop(state.db.clone())
+        .await
+        .map_err(err_text)?;
+    let info = fill_configured_port(state.db.clone(), info).await?;
+    crate::app::log::action("停止模型接口", "user", true, 0, "已停止监听");
+    Ok(info)
+}
+
+/// 读取当前可用的豆包模型（不需要接口在跑，也不用 API Key）。
+#[tauri::command]
+pub async fn model_api_models(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<crate::app::model_api::ModelEntry>, String> {
+    crate::app::model_api::available_models(state.db.clone())
+        .await
+        .map_err(err_text)
+}
+
+/// 改模型接口端口，立即生效（会重启监听）。端口被占用时自动退到空闲端口。
+#[tauri::command]
+pub async fn model_api_set_port(
+    state: State<'_, AppState>,
+    port: u16,
+) -> std::result::Result<crate::app::model_api::ModelApiInfo, String> {
+    let info = crate::app::model_api::set_port(state.db.clone(), port)
+        .await
+        .map_err(err_text)?;
+    crate::app::log::action(
+        "模型接口端口",
+        "user",
+        true,
+        0,
+        format!(
+            "端口改为 {}（实际监听 {}）",
+            info.configured_port, info.port
+        ),
+    );
+    Ok(info)
+}
+
+/// 重新生成 API Key，立即生效（旧 Key 作废）。
+#[tauri::command]
+pub async fn model_api_regenerate_key(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::model_api::ModelApiInfo, String> {
+    crate::app::model_api::regenerate_key(state.db.clone())
+        .await
+        .map_err(err_text)
 }

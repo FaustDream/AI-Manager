@@ -123,6 +123,7 @@ pub fn run() -> tauri::Result<()> {
             let sync_db = state.db.clone();
             let sched_db = state.db.clone();
             let session_service = state.sessions.clone();
+            let model_api_db = state.db.clone();
             // 应用配置：加载 data/config.toml（首次会把旧 kv 配置键迁移进来）
             crate::app::config::init(&state.db);
             // 自启 + 配置「自启后最小化到托盘」：主窗口不主动显示，常驻托盘跑定时任务。
@@ -181,6 +182,7 @@ pub fn run() -> tauri::Result<()> {
             background::spawn_event_bridges(app.handle().clone());
             background::spawn_usage_scan(usage_db);
             background::spawn_session_scan(session_service);
+            background::spawn_model_api(model_api_db);
 
             // 启动本身也是一次「动作」：执行动作里能看到每次重启的时间点
             log::action("app.startup", "startup", true, 0, "外壳启动完成");
@@ -195,6 +197,12 @@ pub fn run() -> tauri::Result<()> {
             commands::shell::app_show_window,
             commands::shell::open_external,
             commands::shell::open_private_browser,
+            commands::shell::model_api_info,
+            commands::shell::model_api_start,
+            commands::shell::model_api_stop,
+            commands::shell::model_api_models,
+            commands::shell::model_api_set_port,
+            commands::shell::model_api_regenerate_key,
             commands::accounts::account_list,
             commands::accounts::account_set_enabled,
             commands::accounts::account_set_alias,
@@ -206,6 +214,10 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_delete,
             commands::accounts::account_scan,
             commands::accounts::account_add_cookie,
+            commands::accounts::doubao_browser_list,
+            commands::accounts::doubao_browser_login_start,
+            commands::accounts::doubao_browser_login_status,
+            commands::accounts::doubao_browser_login_cancel,
             commands::accounts::account_switch,
             commands::accounts::account_switch_codebuddy,
             commands::accounts::account_codebuddy_targets,
@@ -215,7 +227,7 @@ pub fn run() -> tauri::Result<()> {
             commands::accounts::account_switchable,
             commands::accounts::account_add_prepare,
             commands::accounts::account_login_start,
-            commands::accounts::account_relogin_start,
+            commands::accounts::account_reauth_start,
             commands::accounts::account_refresh_all,
             commands::accounts::account_refresh_credential,
             commands::accounts::account_refresh_credentials,

@@ -34,8 +34,8 @@ pub enum RefreshCredentialState {
     Refreshed,
     /// 客户端里就是最新的一份，没有可更新的内容（有效期保持原值）
     UpToDate,
-    /// 刷新后凭据仍然过期：客户端里也是旧的，只能重新登录
-    NeedRelogin,
+    /// 刷新后凭据仍然过期：客户端里也是旧的，只能重新授权
+    NeedReauth,
     /// 这个平台没有可重扫的登录态
     Unsupported,
 }
@@ -67,7 +67,7 @@ impl RefreshCredentialOutcome {
 }
 
 /// 批量刷新的汇总。`errors` 只收真正出错的行（凭据解不开、写盘失败），
-/// 「平台不支持」「需要重新登录」是**结论**，各有自己的计数。
+/// 「平台不支持」「需要重新授权」是**结论**，各有自己的计数。
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Default, Clone, serde::Serialize)]
@@ -81,9 +81,9 @@ pub struct RefreshCredentialsReport {
     /// 已是最新，没有可更新的内容
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub up_to_date: usize,
-    /// 刷新后仍然过期，需要重新登录
+    /// 刷新后仍然过期，需要重新授权
     #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub need_relogin: usize,
+    pub need_reauth: usize,
     /// 平台没有可重扫的登录态
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub unsupported: usize,
@@ -107,7 +107,7 @@ fn snapshot(db: &Db, iid: &str) -> Result<Snapshot> {
     let bytes = repo::secret_of(db, iid)?.ok_or_else(|| {
         AppError::new(
             ErrorKind::AuthExpired,
-            "这个账号没有保存凭据，只能重新登录一次",
+            "这个账号没有保存凭据，只能重新授权一次",
         )
     })?;
     let cred = Credential::parse(&bytes)?;
@@ -131,7 +131,7 @@ fn judge(
     let bytes = repo::secret_of(db, iid)?.ok_or_else(|| {
         AppError::new(
             ErrorKind::AuthExpired,
-            "刷新后这个账号的凭据不见了，只能重新登录一次",
+            "刷新后这个账号的凭据不见了，只能重新授权一次",
         )
     })?;
     let after = Credential::parse(&bytes)?;
@@ -148,10 +148,10 @@ fn judge(
         };
 
     // 刷新完还是过期的，说明客户端里也没有新凭据：这时候「已是最新」没有意义，
-    // 必须明确告诉用户要重新登录
+    // 必须明确告诉用户要重新授权
     if after_exp.map(|ms| ms <= now_ms()).unwrap_or(false) {
         let mut message = if super::login::supported(providers::client_key_of(iid)) {
-            String::from("刷新后凭据仍是过期的：客户端里也是同一份旧凭据，只能重新登录一次")
+            String::from("刷新后凭据仍是过期的：客户端里也是同一份旧凭据，只能重新授权一次")
         } else {
             String::from("刷新后凭据仍是过期的：这个平台只能在客户端里登录，登录后回来再刷新")
         };
@@ -159,12 +159,12 @@ fn judge(
             message.push_str(&format!("；重扫报错：{e}"));
         }
         // 重扫之后这条还是过期的，而客户端里登录的是另一个有效账号：
-        // 那是重登换发了 userId，旧行成了孤儿——「去重新登录」的指引是错的，把实情说明白
+        // 那是重授权换发了 userId，旧行成了孤儿——「去重新授权」的指引是错的，把实情说明白
         if let Some(hint) = orphan_login_hint(db, iid) {
             message.push_str(&format!("；{hint}"));
         }
         return Ok(RefreshCredentialOutcome::new(
-            RefreshCredentialState::NeedRelogin,
+            RefreshCredentialState::NeedReauth,
             message,
             after_exp,
         ));
@@ -195,8 +195,8 @@ fn judge(
 
 /// 同平台有另一条凭据仍有效的账号 → 客户端当前登录的不是这一条。
 ///
-/// 重新登录会换发 userId（新身份新行），旧行就成了永远续不上的孤儿；
-/// 这时「去客户端重新登录」的指引是错的——客户端里登录的明明是另一个账号。
+/// 重新授权会换发 userId（新身份新行），旧行就成了永远续不上的孤儿；
+/// 这时「去客户端重新授权」的指引是错的——客户端里登录的明明是另一个账号。
 /// 只在重扫**之后**判断（`scan_platform` 刚落完库），DB 就是客户端的当前实况。
 fn orphan_login_hint(db: &Db, iid: &str) -> Option<String> {
     let (platform, _) = iid.split_once(':')?;
@@ -286,7 +286,7 @@ pub fn refresh_credentials(db: &Db, iids: &[String]) -> Result<RefreshCredential
                 Ok(out) => match out.state {
                     RefreshCredentialState::Refreshed => report.refreshed += 1,
                     RefreshCredentialState::UpToDate => report.up_to_date += 1,
-                    RefreshCredentialState::NeedRelogin => report.need_relogin += 1,
+                    RefreshCredentialState::NeedReauth => report.need_reauth += 1,
                     RefreshCredentialState::Unsupported => report.unsupported += 1,
                 },
                 Err(e) => {
@@ -381,9 +381,9 @@ mod tests {
         assert!(out.days_left.unwrap() >= 9);
     }
 
-    /// 已过期且刷新拿不到新凭据 → 必须明确要求重新登录，而不是含糊的「失败」
+    /// 已过期且刷新拿不到新凭据 → 必须明确要求重新授权，而不是含糊的「失败」
     #[test]
-    fn expired_after_refresh_needs_relogin() {
+    fn expired_after_refresh_needs_reauth() {
         let (_dir, db) = setup();
         seed(&db, "qoder:a");
         let c = cred("tk", "2000-01-01T00:00:00Z");
@@ -391,13 +391,13 @@ mod tests {
 
         let out = refresh_credential(&db, "qoder:a").unwrap();
 
-        assert_eq!(out.state, RefreshCredentialState::NeedRelogin);
-        assert!(out.message.contains("重新登录"));
+        assert_eq!(out.state, RefreshCredentialState::NeedReauth);
+        assert!(out.message.contains("重新授权"));
     }
 
     /// Trae 没有应用内登录入口，话术必须改成「去客户端登录」，否则用户找不到按钮
     #[test]
-    fn read_only_platform_points_at_the_client_instead_of_relogin() {
+    fn read_only_platform_points_at_the_client_instead_of_reauth() {
         let (_dir, db) = setup();
         seed(&db, "trae:a");
         let c = cred("tk", "2000-01-01T00:00:00Z");
@@ -405,12 +405,12 @@ mod tests {
 
         let out = refresh_credential(&db, "trae:a").unwrap();
 
-        assert_eq!(out.state, RefreshCredentialState::NeedRelogin);
+        assert_eq!(out.state, RefreshCredentialState::NeedReauth);
         assert!(out.message.contains("客户端"), "{}", out.message);
-        assert!(!out.message.contains("重新登录"), "{}", out.message);
+        assert!(!out.message.contains("重新授权"), "{}", out.message);
     }
 
-    /// 重登换发了 userId 后，客户端里登录的是另一个有效账号、旧行永远续不上：
+    /// 重授权换发了 userId 后，客户端里登录的是另一个有效账号、旧行永远续不上：
     /// 这时不能只说「去客户端登录」，要直接点明这条是旧登录态（孤儿行）。
     /// 直调 judge 而非 refresh_credential——后者会真扫本机客户端目录，结果随环境漂。
     #[test]
@@ -428,7 +428,7 @@ mod tests {
         let before = snapshot(&db, "trae:old").unwrap();
         let out = judge(&db, "trae:old", &before, None).unwrap();
 
-        assert_eq!(out.state, RefreshCredentialState::NeedRelogin);
+        assert_eq!(out.state, RefreshCredentialState::NeedReauth);
         assert!(
             out.message.contains("客户端当前登录的是"),
             "{}",
@@ -449,7 +449,7 @@ mod tests {
         let before = snapshot(&db, "trae:old").unwrap();
         let out = judge(&db, "trae:old", &before, None).unwrap();
 
-        assert_eq!(out.state, RefreshCredentialState::NeedRelogin);
+        assert_eq!(out.state, RefreshCredentialState::NeedReauth);
         assert!(
             !out.message.contains("客户端当前登录的是"),
             "{}",

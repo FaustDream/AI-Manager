@@ -418,3 +418,30 @@ pub fn spawn_hub_auto_sync(db: Arc<Db>, hub: Arc<crate::app::hub::Hub>) {
         }
     });
 }
+
+/// 启动豆包 OpenAI 兼容接口（内嵌 axum，只绑 127.0.0.1）。
+/// 首次启动会自动生成 API Key；端口/Key 都存本地 kv。启动失败只记日志不阻塞主流程。
+/// 用户上次在设置页手动「停止」过就不自动起——那是明确意图，不该被开机流程覆盖。
+pub fn spawn_model_api(db: Arc<Db>) {
+    tauri::async_runtime::spawn(async move {
+        // 等首屏稳定再绑端口，别和账号列表抢资源
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        match crate::app::model_api::autostart(db).await {
+            Ok(Some(info)) => log::log(
+                Level::Info,
+                "model_api",
+                format!("豆包模型接口已启动：127.0.0.1:{}", info.port),
+            ),
+            Ok(None) => log::log(
+                Level::Info,
+                "model_api",
+                "豆包模型接口上次已被手动停止，本次不自动启动",
+            ),
+            Err(e) => log::log(
+                Level::Warn,
+                "model_api",
+                format!("豆包模型接口启动失败：{}", e.message),
+            ),
+        }
+    });
+}

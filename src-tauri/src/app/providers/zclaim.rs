@@ -222,7 +222,7 @@ async fn submit(
         }
         return Err(AppError::new(
             ErrorKind::Provider,
-            "登录态已失效，请重新登录该账号",
+            "登录态已失效，请重新授权该账号",
         ));
     }
     let data = resp
@@ -256,7 +256,7 @@ fn failure_message(code: i64, body: &Value) -> String {
         1005 => "领取过于频繁，请稍后再试",
         3001 => "领取失败，请稍后重试",
         3007 => "验证码校验未通过，请重新发起领取",
-        401 => "登录态已失效，请重新登录",
+        401 => "登录态已失效，请重新授权",
         _ => return format!("领取失败（code {code}）"),
     };
     let server = body
@@ -301,7 +301,7 @@ async fn get_ok(
     if resp.status == 401 || resp.status == 403 {
         return Err(AppError::new(
             ErrorKind::Provider,
-            "登录态已失效，请重新登录该账号",
+            "登录态已失效，请重新授权该账号",
         ));
     }
     if resp.status >= 400 {

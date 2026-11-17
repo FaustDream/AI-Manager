@@ -280,7 +280,7 @@ export default function AccountCenterPage() {
 
   // 批量刷新凭据：对当前筛选出的账号逐个重扫并写回**最新凭据与有效期**。
   // 与「刷新账号状态」的分工：那个是全量重扫 + 校正 + 更新当前登录标记；
-  // 这个是针对当前筛选的一批账号，逐个给出「更新了 / 已是最新 / 需重登」的结论。
+  // 这个是针对当前筛选的一批账号，逐个给出「更新了 / 已是最新 / 需重新授权」的结论。
   // 不管是否过期都会刷——平台侧的有效期可能已经被客户端续过。
   const batchRefreshCredentials = () =>
     runBusy('refresh-credentials', async () => {
@@ -294,7 +294,7 @@ export default function AccountCenterPage() {
       const parts = [
         report.refreshed > 0 ? `更新 ${report.refreshed}` : '',
         report.up_to_date > 0 ? `已是最新 ${report.up_to_date}` : '',
-        report.need_relogin > 0 ? `需重登 ${report.need_relogin}` : '',
+        report.need_reauth > 0 ? `需重新授权 ${report.need_reauth}` : '',
         report.unsupported > 0 ? `不支持 ${report.unsupported}` : '',
         report.failed > 0 ? `失败 ${report.failed}` : '',
       ].filter(Boolean);

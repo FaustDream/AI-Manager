@@ -11,7 +11,7 @@ pub fn explain(code: i64) -> Option<&'static str> {
     match code {
         10001 => Some("今日已签到，无需重复操作"),
         11102 => Some("该模型暂不可用：账号未开通或无权限，换模型或换账号"),
-        12153 | 401 => Some("登录态已失效，需要重新登录"),
+        12153 | 401 => Some("登录态已失效，需要重新授权"),
         6004 | 429 => Some("平台限流，稍后再试"),
         402 | 14018 => Some("积分不足，先签到或领取活动"),
         _ => None,
@@ -37,7 +37,7 @@ mod tests {
             with_hint("失败 code=11102", 11102),
             "失败 code=11102（该模型暂不可用：账号未开通或无权限，换模型或换账号）"
         );
-        assert!(explain(12153).unwrap().contains("重新登录"));
+        assert!(explain(12153).unwrap().contains("重新授权"));
     }
 
     #[test]

@@ -245,6 +245,7 @@ impl<'a> SqliteCheckin<'a> {
                 [&snapshot_before],
             )?;
             removed += conn.execute("DELETE FROM daily_marks WHERE date <> ?1", [&today])?;
+            removed += conn.execute("DELETE FROM checkin_attempts WHERE date <> ?1", [&today])?;
             Ok(removed)
         })
     }
@@ -254,6 +255,54 @@ impl<'a> SqliteCheckin<'a> {
             conn.execute(
                 "DELETE FROM daily_marks WHERE iid = ?1 AND date = ?2",
                 rusqlite::params![iid, day_of(clock)],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 今天是否已提交签到但结果未确认（`reserved`）。
+    ///
+    /// 与 `marked_today` 的分工：`daily_marks` 记「已签成功」，这里记「提交了但还没
+    /// 拿到确定结果」。一旦 reserved，同一天的后续轮次只回查、不重复领取——把
+    /// 「领取请求已发出、响应却丢了」的账号挡在二次提交之外。
+    pub fn reserved_today(&self, iid: &str, clock: &dyn Clock) -> bool {
+        let day = day_of(clock);
+        self.db
+            .read(|conn| {
+                let hit: Option<i64> = conn
+                    .query_row(
+                        "SELECT 1 FROM checkin_attempts WHERE iid = ?1 AND date = ?2 AND reserved = 1",
+                        rusqlite::params![iid, day],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                Ok(hit.is_some())
+            })
+            .unwrap_or(false)
+    }
+
+    /// 提交领取前打 reserved 标记。**必须在调用签到接口之前**写：这一步之后平台
+    /// 可能已经处理，只是响应还没回来；标记先落库，后续轮次才知道「别再领」。
+    pub fn reserve_today(&self, iid: &str, clock: &dyn Clock) -> Result<()> {
+        let day = day_of(clock);
+        let at = clock.now().timestamp_millis();
+        self.db.write(|conn| {
+            conn.execute(
+                "INSERT INTO checkin_attempts(iid, date, reserved, at) VALUES (?1, ?2, 1, ?3)
+                 ON CONFLICT(iid, date) DO UPDATE SET reserved = 1, at = excluded.at",
+                rusqlite::params![iid, day, at],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 确认结果后清除 reserved（成功 / 已签 / 确定未提交都清）。
+    pub fn settle_today(&self, iid: &str, clock: &dyn Clock) -> Result<()> {
+        let day = day_of(clock);
+        self.db.write(|conn| {
+            conn.execute(
+                "DELETE FROM checkin_attempts WHERE iid = ?1 AND date = ?2",
+                rusqlite::params![iid, day],
             )?;
             Ok(())
         })
@@ -852,5 +901,37 @@ mod tests {
         assert!(shown[0].expires_at.is_none(), "国际版不显示批次到期");
         let kept = lots_for_display("workbuddy:u1", vec![lot]);
         assert!(kept[0].expires_at.is_some(), "国内版照常显示");
+    }
+
+    /// 签到提交标记：按账号、按天隔离；确认后清除；跨天不残留。
+    #[test]
+    fn reserved_marker_is_per_account_and_per_day() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let store = SqliteCheckin::new(&db);
+        let clock = FakeClock::at("2026-11-02T09:00:00+08:00");
+
+        assert!(!store.reserved_today("qoder:u1", &clock), "初始未提交");
+
+        store.reserve_today("qoder:u1", &clock).unwrap();
+        assert!(store.reserved_today("qoder:u1", &clock));
+        assert!(!store.reserved_today("qoder:u2", &clock), "标记按账号隔离");
+
+        store.settle_today("qoder:u1", &clock).unwrap();
+        assert!(!store.reserved_today("qoder:u1", &clock), "确认后清除");
+
+        // 跨天：昨天的标记不作用于今天（查询本身按当天过滤）
+        store.reserve_today("qoder:u1", &clock).unwrap();
+        let next = FakeClock::at("2026-11-03T09:00:00+08:00");
+        assert!(!store.reserved_today("qoder:u1", &next), "跨天不残留");
+
+        // cleanup 把非当天的行物理清掉，避免无限增长
+        store.cleanup(&next).unwrap();
+        let left: i64 = db
+            .read(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM checkin_attempts", [], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(left, 0, "跨天 cleanup 清空旧提交标记");
     }
 }

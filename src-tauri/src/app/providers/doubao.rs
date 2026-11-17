@@ -341,9 +341,9 @@ fn seed_of(cred: &Credential) -> String {
 
 /// 每个账号一组稳定的网页标识（由账号自己的种子派生，账号之间不同）。
 ///
-/// 不随请求变化很重要：服务端会把同一账号的多次签到归到同一设备上，
-/// 每次随机反而更像异常流量。
-fn device_ids(seed: &str) -> (String, String) {
+/// 不随请求变化很重要：服务端会把同一账号的多次请求归到同一设备上，
+/// 每次随机反而更像异常流量。模型接口（`model_api`）也复用这组标识。
+pub(crate) fn device_ids(seed: &str) -> (String, String) {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in format!("doubao-dev:{seed}").bytes() {
         hash ^= u64::from(byte);

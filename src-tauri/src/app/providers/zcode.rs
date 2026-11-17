@@ -486,7 +486,7 @@ pub fn identity(creds: &Value) -> (String, String, Option<i64>, String, String) 
     } else if !email.is_empty() {
         email.clone()
     } else {
-        // 最后兜底：token 指纹。同一份 token 稳定对应同一行，重登同一账号不会刷出新行
+        // 最后兜底：token 指纹。同一份 token 稳定对应同一行，重授权同一账号不会刷出新行
         let token = field(creds, "zcodejwttoken")
             .or_else(|| field(creds, &format!("oauth:{family}:access_token")))
             .unwrap_or_default();
@@ -1114,7 +1114,7 @@ pub fn switch_to(
     if !is_logged_in(creds) {
         return Err(AppError::new(
             ErrorKind::Invalid,
-            "登录凭据已经失效，请重新登录一次该账号",
+            "登录凭据已经失效，请重新授权一次该账号",
         ));
     }
     if provider.current_id().as_deref() == Some(account_id) {
@@ -1390,7 +1390,7 @@ mod tests {
     }
 
     /// 匿名登录（user_info 缺失、JWT 读不出 uid）时，account_id 落到 token 指纹：
-    /// 同一份 token 稳定对应同一行，重登不会刷出新行；「ZCode 账号」只做显示兜底
+    /// 同一份 token 稳定对应同一行，重授权不会刷出新行；「ZCode 账号」只做显示兜底
     #[test]
     fn anonymous_login_uses_token_fingerprint_not_display_name() {
         let token = "not-even-a-jwt";

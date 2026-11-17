@@ -138,6 +138,48 @@ pub async fn account_add_cookie(
     Ok(identity.iid)
 }
 
+// ---------------------------------------------------------------- 豆包浏览器登录
+
+/// 探测本机可用的 Chrome / Edge（只判断 exe 在不在，不碰用户日常浏览器）。
+#[tauri::command]
+pub async fn doubao_browser_list(
+) -> std::result::Result<Vec<crate::app::accounts::browser_login::BrowserInfo>, String> {
+    crate::app::runtime::blocking(crate::app::accounts::browser_login::discover_browsers)
+        .await
+        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))
+}
+
+/// 发起豆包浏览器登录：起一个独立临时会话窗口，后台轮询 cookie、核验身份并入库。
+/// 返回「已开始」的即时状态；后续进度走 `doubao:login` 事件，成功还会推 `account:login`。
+#[tauri::command]
+pub async fn doubao_browser_login_start(
+    state: State<'_, AppState>,
+    browser_id: Option<String>,
+) -> std::result::Result<crate::app::accounts::browser_login::BrowserLoginStatus, String> {
+    let db = state.db.clone();
+    let status = crate::app::accounts::browser_login::start(db, browser_id).map_err(err_text)?;
+    log::log(
+        Level::Info,
+        "accounts",
+        format!("豆包浏览器登录：已发起（state={}）", status.state),
+    );
+    Ok(status)
+}
+
+/// 当前浏览器登录会话的状态（弹窗轮询用；有 `doubao:login` 事件时也可以只靠事件）。
+#[tauri::command]
+pub async fn doubao_browser_login_status(
+) -> std::result::Result<crate::app::accounts::browser_login::BrowserLoginStatus, String> {
+    Ok(crate::app::accounts::browser_login::status())
+}
+
+/// 取消进行中的豆包浏览器登录。
+#[tauri::command]
+pub async fn doubao_browser_login_cancel(
+) -> std::result::Result<crate::app::accounts::browser_login::BrowserLoginStatus, String> {
+    Ok(crate::app::accounts::browser_login::cancel())
+}
+
 /// 浏览器登录第一步：申请登录地址 → 后台等登录完成。
 /// **不自动打开浏览器**：界面自己给出链接和「在浏览器打开」，避免一次点击弹两个窗口。
 /// 登录成功后由后台任务入库并 emit `account:login`，界面据此刷新。
@@ -169,17 +211,17 @@ pub async fn account_login_start(
     Ok(pending.start)
 }
 
-/// 详情页的「重新登录」：给已有账号重新走一遍浏览器登录，成功后凭据自动落库。
+/// 详情页的「重新授权」：给已有账号重新走一遍浏览器登录，成功后凭据自动落库。
 ///
 /// 与「添加账号」的差异只有两点：
 ///   1. 平台键由 **iid** 推出来（WorkBuddy 国际版带 `@intl`），界面不用自己拼；
-///   2. 日志按「重新登录」记，事后能分清这一次是补凭据还是加号。
+///   2. 日志按「重新授权」记，事后能分清这一次是补凭据还是加号。
 ///
 /// 凭据由 `login::save()` 自动保存：iid 相同 = 覆盖这个账号的凭据与到期时间；
 /// 登进了别的账号 = 作为新账号入库（返回值里带新 iid，界面据此提示）。
 #[tauri::command]
 
-pub async fn account_relogin_start(
+pub async fn account_reauth_start(
     state: State<'_, AppState>,
     iid: String,
 ) -> std::result::Result<crate::app::accounts::login::LoginStart, String> {
@@ -187,7 +229,7 @@ pub async fn account_relogin_start(
     let key = {
         let db = db.clone();
         crate::app::runtime::blocking(move || {
-            crate::app::accounts::login::relogin_platform(&db, &iid)
+            crate::app::accounts::login::reauth_platform(&db, &iid)
         })
         .await
         .map_err(err_text)?
@@ -201,7 +243,7 @@ pub async fn account_relogin_start(
         Level::Info,
         "accounts",
         format!(
-            "重新登录：已生成 {} 的登录链接，等待用户在浏览器完成授权",
+            "重新授权：已生成 {} 的登录链接，等待用户在浏览器完成授权",
             pending.start.label
         ),
     );
@@ -210,14 +252,14 @@ pub async fn account_relogin_start(
         db,
         key,
         pending.ticket.clone(),
-        "account_relogin",
-        "重新登录",
+        "account_reauth",
+        "重新授权",
     );
     Ok(pending.start)
 }
 
 /// 登录的后半段：后台等授权 → 入库 → 推 `account:login`。
-/// 「添加账号」与「重新登录」共用：两处各写一遍必然有一处忘了落失败日志。
+/// 「添加账号」与「重新授权」共用：两处各写一遍必然有一处忘了落失败日志。
 fn spawn_login_wait(
     db: std::sync::Arc<crate::app::db::Db>,
     platform_key: String,
@@ -265,7 +307,7 @@ fn spawn_login_wait(
 ///
 /// 要点是**让本地库追上客户端的实际登录情况**：登录态被客户端刷新过、凭据换了、
 /// 到期时间变了，界面上的「剩 N 天」「已过期」都跟着一起更新。
-/// 不自己实现 token 续期——凭据真过期了就重新登录，走平台自己的登录页。
+/// 不自己实现 token 续期——凭据真过期了就重新授权，走平台自己的登录页。
 ///
 /// 走阻塞线程：读客户端库 + 逐个解密凭据全是磁盘活，放主线程会让窗口变灰。
 #[tauri::command]
@@ -308,7 +350,7 @@ pub async fn account_refresh_all(
 }
 
 /// 刷新单个账号的凭据：**不管当前是否过期都重扫一次**，把客户端里的最新凭据
-/// 与有效期写回本地库；刷新完仍过期才明确告诉用户「只能重新登录」。
+/// 与有效期写回本地库；刷新完仍过期才明确告诉用户「只能重新授权」。
 /// **不猜任何平台的 refresh 协议**。
 ///
 /// 走阻塞线程：重扫要读客户端文件、解密凭据，是纯磁盘活。
@@ -330,7 +372,7 @@ pub async fn account_refresh_credential(
         Ok(out) => log::action(
             "account_refresh_credential",
             "user",
-            out.state != crate::app::accounts::RefreshCredentialState::NeedRelogin,
+            out.state != crate::app::accounts::RefreshCredentialState::NeedReauth,
             started.elapsed().as_millis() as u64,
             format!("刷新凭据 {iid}：{:?} · {}", out.state, out.message),
         ),
@@ -381,10 +423,10 @@ pub async fn account_refresh_credentials(
         report.failed == 0,
         started.elapsed().as_millis() as u64,
         format!(
-            "批量刷新凭据：{count} 个账号 · 更新 {} · 已是最新 {} · 需重登 {} · 不支持 {} · 失败 {}{}",
+            "批量刷新凭据：{count} 个账号 · 更新 {} · 已是最新 {} · 需重新授权 {} · 不支持 {} · 失败 {}{}",
             report.refreshed,
             report.up_to_date,
-            report.need_relogin,
+            report.need_reauth,
             report.unsupported,
             report.failed,
             if report.errors.is_empty() {

@@ -5,7 +5,7 @@
 //! 再用凭据包回填到期时间，界面上的「剩 N 天」「已过期」才可信。
 //!
 //! **不做 token 续期**：各家 refresh 协议随时会变，自己实现一套等于给自己埋雷；
-//! 凭据真过期了就重新登录（详情页的「重新登录」），那条路走的是平台自己的登录页。
+//! 凭据真过期了就重新授权（详情页的「重新授权」），那条路走的是平台自己的登录页。
 
 use super::{credential::Credential, repo, scan};
 use crate::app::db::Db;
@@ -32,7 +32,7 @@ pub struct RefreshReport {
     /// 有凭据的账号数
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub with_secret: usize,
-    /// 缺凭据的账号数：这些账号切不过去，要重新登录
+    /// 缺凭据的账号数：这些账号切不过去，要重新授权
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub missing_secret: usize,
     /// 凭据已过期
@@ -74,7 +74,7 @@ pub fn refresh_all(db: &Db) -> Result<RefreshReport> {
     errors.append(&mut report.errors);
     report.errors = errors;
 
-    // 3) 当前登录：界面靠它标「当前」，切换或重登之后必须重读
+    // 3) 当前登录：界面靠它标「当前」，切换或重授权之后必须重读
     report.current = super::current_iids().len();
     report.ms = started.elapsed().as_millis() as u64;
     Ok(report)

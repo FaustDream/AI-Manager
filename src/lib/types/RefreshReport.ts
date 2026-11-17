@@ -18,7 +18,7 @@ added: number,
  */
 with_secret: number, 
 /**
- * 缺凭据的账号数：这些账号切不过去，要重新登录
+ * 缺凭据的账号数：这些账号切不过去，要重新授权
  */
 missing_secret: number, 
 /**

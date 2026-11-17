@@ -72,14 +72,14 @@ pub fn supported(platform: &str) -> bool {
     )
 }
 
-/// 「重新登录」用：由 iid 反推**客户端平台键**，并确认这个平台能走浏览器登录。
+/// 「重新授权」用：由 iid 反推**客户端平台键**，并确认这个平台能走浏览器登录。
 ///
 /// 平台键必须由后端算：WorkBuddy 两版共用 `workbuddy` 前缀、靠 `@intl` 后缀区分，
 /// 让界面自己拼一次就会多出第二套口径（关客户端已经踩过这个坑）。
 ///
 /// 登录成功后凭据由 `save()` 自动落库：iid 相同 = 覆盖这个账号的凭据与到期时间；
 /// 登进了别的账号 = 作为新账号入库，界面要据此提示用户，不能假装切好了。
-pub fn relogin_platform(db: &Db, iid: &str) -> Result<String> {
+pub fn reauth_platform(db: &Db, iid: &str) -> Result<String> {
     if repo::identity(db, iid)?.is_none() {
         return Err(AppError::new(
             ErrorKind::Invalid,
@@ -90,10 +90,10 @@ pub fn relogin_platform(db: &Db, iid: &str) -> Result<String> {
     if !supported(&key) {
         return Err(AppError::new(
             ErrorKind::Unsupported,
-            "这个平台不支持浏览器重新登录，请在客户端里登录后点「扫描客户端」",
+            "这个平台不支持浏览器重新授权，请在客户端里登录后点「扫描客户端」",
         ));
     }
-    // ZCode 的族跟随账号现有的 provider：重新登录不能把 z.ai 账号登成智谱
+    // ZCode 的族跟随账号现有的 provider：重新授权不能把 z.ai 账号登成智谱
     if key == "zcode" {
         if let Ok(Some(bytes)) = repo::secret_of(db, iid) {
             if let Ok(cred) = Credential::parse(&bytes) {
@@ -904,7 +904,7 @@ fn assemble_zcode_config(family: &str, jwt: &str, api_key: &str) -> Value {
 }
 
 /// 拿 access token 换一个 anthropic 用的 apiKey（`key.secret` 形态）。
-/// 换不到就返回 None——账号仍然可用（查额度/签到走 JWT），只是切到客户端要重登。
+/// 换不到就返回 None——账号仍然可用（查额度/签到走 JWT），只是切到客户端要重授权。
 async fn resolve_biz_api_key(base: &str, access: &str, require_secret: bool) -> Option<String> {
     let http = RealHttp::new();
     let customer = http
@@ -1022,7 +1022,9 @@ async fn resolve_biz_api_key(base: &str, access: &str, require_secret: bool) -> 
 
 // ------------------------------------------------------------------ 公共
 
-fn save(
+/// 登录/授权成功后统一入库：upsert 身份 + 写凭据 + 清失败标记。
+/// 豆包浏览器登录也走这里（`browser_login`），「已添加 / 已重新授权」的口径不再各写一份。
+pub(crate) fn save(
     db: &Db,
     identity: AccountIdentity,
     credential: &Credential,
@@ -1033,8 +1035,8 @@ fn save(
     let existed = repo::identity(db, &iid)?.is_some();
     repo::upsert_identity(db, &identity, now_ms())?;
     repo::set_secret(db, &iid, &credential.to_bytes()?, expires_at)?;
-    // 重新登录 = 换了一套新凭据，旧的失败标记没有意义了；留着会让详情页
-    // 一直显示「最近一次查询失败」，用户以为重新登录没生效
+    // 重新授权 = 换了一套新凭据，旧的失败标记没有意义了；留着会让详情页
+    // 一直显示「最近一次查询失败」，用户以为重新授权没生效
     if let Err(e) = repo::clear_health_fail(db, &iid) {
         crate::app::log::log(
             crate::app::log::Level::Warn,
@@ -1044,9 +1046,9 @@ fn save(
     }
     Ok(LoginOutcome {
         ok: true,
-        // 「重新登录」不该说成「已添加」：同一个 iid 是覆盖凭据，不是新增账号
+        // 「重新授权」不该说成「已添加」：同一个 iid 是覆盖凭据，不是新增账号
         message: if existed {
-            format!("已重新登录：{nickname}")
+            format!("已重新授权：{nickname}")
         } else {
             format!("已添加 {nickname}")
         },
@@ -1201,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn relogin_platform_follows_the_iid_edition() {
+    fn reauth_platform_follows_the_iid_edition() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
 
@@ -1212,7 +1214,7 @@ mod tests {
             } else {
                 iid.split_once(':').unwrap().0
             };
-            assert_eq!(relogin_platform(&db, iid).unwrap(), expected, "{iid}");
+            assert_eq!(reauth_platform(&db, iid).unwrap(), expected, "{iid}");
         }
     }
 
@@ -1230,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn relogin_clears_failure_mark_and_says_relogin() {
+    fn reauth_clears_failure_mark_and_says_reauth() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
         seed(&db, "qoder:u1");
@@ -1245,11 +1247,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(outcome.message, "已重新登录：测试账号");
+        assert_eq!(outcome.message, "已重新授权：测试账号");
         let row = repo::list(&db).unwrap().remove(0);
         assert!(
             row.last_fail_at.is_none() && row.last_fail_kind.is_none(),
-            "重新登录后旧的失败标记必须清掉，否则界面一直说查询失败"
+            "重新授权后旧的失败标记必须清掉，否则界面一直说查询失败"
         );
     }
 
@@ -1271,16 +1273,16 @@ mod tests {
     }
 
     #[test]
-    fn relogin_refuses_unknown_account_and_read_only_platform() {
+    fn reauth_refuses_unknown_account_and_read_only_platform() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
 
-        let err = relogin_platform(&db, "qoder:none").unwrap_err();
+        let err = reauth_platform(&db, "qoder:none").unwrap_err();
         assert!(matches!(err.kind, ErrorKind::Invalid));
 
         // Trae 的登录态设备绑定，浏览器登录这条路走不通
         seed(&db, "trae:u1");
-        let err = relogin_platform(&db, "trae:u1").unwrap_err();
+        let err = reauth_platform(&db, "trae:u1").unwrap_err();
         assert!(matches!(err.kind, ErrorKind::Unsupported));
     }
 }
