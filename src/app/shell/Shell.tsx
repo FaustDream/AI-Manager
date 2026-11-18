@@ -142,7 +142,7 @@ export function Shell() {
     queryKey: ['palette-sessions'],
     queryFn: () => {
       const filter: Filter = {
-        source: null, account: null, state: null, q: null, origin: null,
+        source: null, account: null, project: null, state: null, q: null, origin: null,
         unnamed: false, pinned: false, hidden: false, body: null, tags: [], sort: 'last_at',
       };
       return queryCmd('session_page', { cursor: null, limit: 30, filter });
@@ -165,23 +165,6 @@ export function Shell() {
         hint: '会调用平台接口',
         run: async () => {
           if ((await runCmd('daily_run_now')) !== undefined) toast('已开始跑一轮每日轮询');
-        },
-      },
-      {
-        id: 'act:diagnose',
-        title: '批量诊断全部账号',
-        group: '动作',
-        hint: '只读',
-        run: async () => {
-          const rows = await queryCmd('account_list');
-          const iids = rows.filter((row) => row.has_secret && row.enabled).map((row) => row.iid);
-          if (iids.length === 0) {
-            toast('没有可诊断的账号');
-            return;
-          }
-          const result = await runCmd('account_batch_diagnose', { iids });
-          if (result === undefined) return;
-          toast(`批量诊断：${result.total} 个 · 成功 ${result.ok} · 失败 ${result.failed.length}`);
         },
       },
       {

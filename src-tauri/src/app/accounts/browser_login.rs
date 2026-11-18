@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn no_session_marker_means_not_logged_in() {
         assert!(!has_session(&[cookie("web_id", "w1")]));
-        assert!(has_session(&[cookie("sessionid", "")]) == false);
+        assert!(!has_session(&[cookie("sessionid", "")]));
     }
 
     #[test]

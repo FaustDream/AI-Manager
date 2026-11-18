@@ -332,26 +332,6 @@ export default function AccountCenterPage() {
       );
     });
 
-  const batchDiagnose = () =>
-    runBusy('diagnose', async () => {
-      const iids = visible.filter((r) => r.has_secret && r.enabled).map((r) => r.iid);
-      if (iids.length === 0) {
-        toast('当前筛选下没有可诊断的账号（需要凭据且已启用）');
-        return;
-      }
-      const result = await runCmd('account_batch_diagnose', { iids });
-      if (result === undefined) return;
-      const head = `批量诊断：${result.total} 个账号 · 成功 ${result.ok} · 失败 ${result.failed.length}`;
-      toast(
-        result.failed.length === 0
-          ? head
-          : `${head}\n${result.failed.slice(0, 2).join('\n')}${
-              result.failed.length > 2 ? `\n…另 ${result.failed.length - 2} 条见日志` : ''
-            }`,
-      );
-      qc.invalidateQueries({ queryKey: ['accounts'] });
-    });
-
   // 添加账号的整条链路（关客户端 → 备份登录态 → 打开登录页 → 扫描）都在弹窗里，
   // 页面只负责在扫完后刷新列表——弹窗中途不关，用户才看得到「正在做什么」。
   const afterAddScanned = () => {
@@ -452,7 +432,6 @@ export default function AccountCenterPage() {
         onRefreshState={refreshState}
         onRefreshCredentials={batchRefreshCredentials}
         onCheckin={batchCheckin}
-        onDiagnose={batchDiagnose}
       />
 
       {/* 窄窗口只在表格自己身上横向滚动，操作列 sticky 在右侧始终可点；

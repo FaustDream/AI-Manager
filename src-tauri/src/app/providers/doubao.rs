@@ -1,37 +1,40 @@
-//! 豆包（doubao.com）：个人账号的「天天领额度」每日签到。
+//! 豆包（doubao.com）：**只读积分查询**，不做签到、不领取额度。
 //!
-//! 三条前提决定了这个适配器的形状，别照着其它平台的样子改：
+//! 四条前提决定了这个适配器的形状，别照着其它平台的样子改：
 //!
-//!  1. **没有本地登录态可读**。豆包电脑版是 Electron，登录态在 Chromium 的加密
+//!  1. **不做签到/领取**。领取接口（`campaign/landing/checkin`）在 2026-11 实测会被
+//!     风控，代价远大于每天 200 额度；用户要签到请去豆包客户端里点。所以本模块只保留
+//!     只读的面板查询，`Provider::checkin` 保持默认「不支持」。
+//!  2. **没有本地登录态可读**。豆包电脑版是 Electron，登录态在 Chromium 的加密
 //!     cookie 库里（DPAPI + v10/v20 信封），格式随客户端版本变；网页版走字节 SSO，
 //!     没有可回调的授权码。所以账号只能由用户**粘贴 Cookie** 添加
 //!     （`accounts::cookie`），`scan` 永远返回 0，`current_id` 永远 None。
-//!  2. **鉴权就是 doubao.com 的 Cookie**：没有 a_bogus / msToken 签名，
+//!  3. **鉴权就是 doubao.com 的 Cookie**：没有 a_bogus / msToken 签名，
 //!     `device_id` 留空也能过（2026-10 实测，见 techysy/CreditDaddy#32）。
-//!  3. **服务端自带幂等**：重复领取返回 `idempotent: true`，客户端可以放心重试。
+//!  4. **平台不下发额度到期日**。官方口径是「赠送额度自发放起 30 天内有效」，但
+//!     面板只回累计额度与今日发放额，没有批次也没有到期时间。这里**不推算**：
+//!     推算出来的日期会被当成平台数据，比空着更容易误导。
 //!
-//! 接口口径与 dsh-checkin-all / dsh-model 的 `lib/providers/doubao.js`（MIT）一致：
-//!   POST /alice/ug/campaign/v3/detail/        任务面板（含今天签没签）
-//!   POST /alice/ug/campaign/landing/checkin   领取
+//! 唯一在用的接口（口径与 dsh-checkin-all 的 `lib/providers/doubao.js`（MIT）一致）：
+//!   POST /alice/ug/campaign/v3/detail/        活动面板（累计额度 + 今日发放）
 //!
-//! 只支持**个人账号**：工作版（豆包工作）与飞书企业账号的任务面板里没有
-//! `daily_signin`，签到接口回 710010702。那不是故障，要说清原因而不是重试。
+//! 工作版（豆包工作）与飞书企业账号的面板里没有 `daily_signin` 任务，额度口径也可能
+//! 不同。缺任务不算错误——额度照读，只是没有「今日发放」这一项。
 
 use crate::app::accounts::credential::Credential;
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::providers::{Provider, Sink};
-use crate::types::{trim_f64, ActionResult, CreditSnapshot, StatusResult};
+use crate::types::{trim_f64, CreditSnapshot};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 const DETAIL_URL: &str = "https://www.doubao.com/alice/ug/campaign/v3/detail/";
-const CHECKIN_URL: &str = "https://www.doubao.com/alice/ug/campaign/landing/checkin";
-/// 活动组：`detail` 用它查任务面板，`checkin` 用它当 scene
+/// 活动组：面板查询要带，否则服务端不知道问的是哪个活动
 const CAMPAIGN_GROUP: &str = "pc_incentive_task_mvp_v3";
 /// Cookie 失效（真的登录过期）
 const LOGIN_INVALID: i64 = 710012001;
-/// Cookie 有效，但这个账号没有可领的签到活动（工作版 / 飞书企业账号）
+/// Cookie 有效，但这个账号没有可用的额度活动面板（工作版 / 飞书企业账号）
 const NO_ACTIVITY: i64 = 710010702;
 /// 请求要带豆包电脑版的网页标记，纯 curl 形态会被风控挡
 const CLIENT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -105,7 +108,7 @@ impl Provider for DoubaoProvider {
         true
     }
 
-    /// 签到面板是活动接口：一次查询返回整块任务、奖励与示例内容（30KB+），
+    /// 活动面板接口：一次查询返回整块任务、奖励与示例内容（30KB+），
     /// 和别家「一个轻量余额 GET」不是一回事。5 分钟一轮（288 次/天）太像脚本，
     /// 定时轮询压到 30 分钟；手动「刷新积分」不受这个限制。
     fn credits_min_interval_minutes(&self) -> u64 {
@@ -113,106 +116,41 @@ impl Provider for DoubaoProvider {
     }
 
     fn credits_interval_note(&self) -> &'static str {
-        "活动面板接口：一次查询返回整块签到面板，定时刷新最快 30 分钟一次；手动「刷新积分」不受限"
+        "活动面板接口：一次查询返回整块活动数据，定时刷新最快 30 分钟一次；手动「刷新积分」不受限"
     }
 
-    async fn status(&self, cred: &Credential, http: &dyn Http) -> Result<StatusResult> {
-        let data = self.detail(cred, http).await?;
-        let panel = parse_panel(&data)?;
-        Ok(StatusResult {
-            checked_in: Some(panel.checked),
-            summary: panel.summary(),
-            balance: panel.total,
-            lots: None,
-            next_at: None,
-        })
+    /// 豆包不走签到：领取接口会被风控（见模块注释）。界面据此不画「签到」按钮，
+    /// 定时轮询也不会把豆包排进签到批次。
+    fn requires_checkin(&self) -> bool {
+        false
     }
 
     async fn credits(&self, cred: &Credential, http: &dyn Http) -> Result<CreditSnapshot> {
         let data = self.detail(cred, http).await?;
-        let panel = parse_panel(&data)?;
+        let panel = parse_panel(&data);
         Ok(CreditSnapshot {
             summary: panel.summary(),
             error: None,
             balance: panel.total,
+            // 平台不给批次：到期日空着，界面显示「平台未提供」，不编造
             lots: None,
             quota: None,
-        })
-    }
-
-    async fn checkin(&self, cred: &Credential, http: &dyn Http) -> Result<ActionResult> {
-        // 提交前查一次积分面板：既确认今天签没签，也作为「前后对比」的基线。
-        let before_data = self.detail(cred, http).await?;
-        let before = parse_panel(&before_data)?;
-        if before.checked {
-            return Ok(ActionResult {
-                ok: true,
-                message: format!("今日已签到（{}）", before.summary()),
-                granted: None,
-                validity_days: None,
-                already: true,
-            });
-        }
-
-        let body = json!({ "scene": CAMPAIGN_GROUP }).to_string();
-        let resp = http.send(self.post(cred, CHECKIN_URL, &body)?).await?;
-        let value = resp.json()?;
-        check_code(&value)?;
-        let data = value.get("data").cloned().unwrap_or_else(|| json!({}));
-
-        // 服务端幂等：并发或重复点击时它回 idempotent=true，不算新发放
-        if data.get("idempotent").and_then(Value::as_bool) == Some(true) {
-            return Ok(ActionResult {
-                ok: true,
-                message: "今日已签到（这次是重复请求，平台没有重复发放）".into(),
-                granted: None,
-                validity_days: None,
-                already: true,
-            });
-        }
-
-        // 领完再查一次面板，用累计额度的前后差算这次实际到账；
-        // 接口的 reward_amount 只作兜底（部分活动不返回金额）。
-        let after = self
-            .detail(cred, http)
-            .await
-            .ok()
-            .and_then(|data| parse_panel(&data).ok());
-        let delta = match (before.total, after.as_ref().and_then(|panel| panel.total)) {
-            (Some(before), Some(after)) => Some(after - before).filter(|v| *v > 0.0),
-            _ => None,
-        };
-        let granted = delta
-            .or_else(|| data.get("reward_amount").and_then(as_f64))
-            .or(before.reward)
-            .filter(|v| *v > 0.0);
-        let days = data
-            .get("continuous_days")
-            .and_then(as_i64)
-            .unwrap_or(before.continuous);
-        Ok(ActionResult {
-            ok: true,
-            message: match granted {
-                Some(amount) => format!("签到成功，+{} 额度（连签 {days} 天）", trim_f64(amount)),
-                None => format!("签到成功（连签 {days} 天）"),
-            },
-            granted,
-            validity_days: None,
-            already: false,
         })
     }
 }
 
 // ------------------------------------------------------------------ 纯函数
 
-/// 面板里跟这张卡片有关的那几个数。
+/// 面板里跟「积分」有关的那几个数。
+///
+/// `total` 是平台口径的累计额度（不是剩余可用），字段名就叫 total_amount；
+/// 「今日发放」挂在 `daily_signin` 任务上，工作版 / 飞书企业账号没有这个任务。
 #[derive(Debug, Clone, PartialEq)]
 struct Panel {
-    checked: bool,
-    continuous: i64,
-    reward: Option<f64>,
     /// 累计已得额度（平台口径，不是「剩余」）
     total: Option<f64>,
+    /// 今天平台发放的额度；任务缺失时为 None
+    today: Option<f64>,
 }
 
 impl Panel {
@@ -221,17 +159,11 @@ impl Panel {
         if let Some(total) = self.total {
             text.push_str(&format!("累计体验额度 {}", trim_f64(total)));
         }
-        if self.continuous > 0 {
+        if let Some(today) = self.today.filter(|v| *v > 0.0) {
             if !text.is_empty() {
                 text.push_str(" · ");
             }
-            text.push_str(&format!("连签 {} 天", self.continuous));
-        }
-        if let Some(reward) = self.reward.filter(|v| *v > 0.0) {
-            if !text.is_empty() {
-                text.push_str(" · ");
-            }
-            text.push_str(&format!("今日 +{}", trim_f64(reward)));
+            text.push_str(&format!("今日 +{}", trim_f64(today)));
         }
         if text.is_empty() {
             text.push_str("豆包暂无额度数据");
@@ -240,48 +172,25 @@ impl Panel {
     }
 }
 
-/// 从 `detail` 的 `data` 里取 `daily_signin` 任务。
+/// 从 `detail` 的 `data` 里取额度。
 ///
-/// 找不到 = 这个账号没有签到玩法（工作版 / 飞书企业账号）。这不是错误码能表达的，
-/// 所以要把「它到底有哪些任务」带出来，用户才知道是账号类型不对。
-fn parse_panel(data: &Value) -> Result<Panel> {
-    let tasks = data.get("tasks").and_then(Value::as_array);
-    let task = tasks.and_then(|list| {
-        list.iter()
-            .find(|task| task.get("task_kind").and_then(Value::as_str) == Some("daily_signin"))
-    });
-    let Some(task) = task else {
-        let kinds: Vec<&str> = tasks
-            .map(|list| {
-                list.iter()
-                    .filter_map(|task| task.get("task_kind").and_then(Value::as_str))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let hint = if kinds.is_empty() {
-            String::new()
-        } else {
-            format!("（这个账号现有任务：{}）", kinds.join(" / "))
-        };
-        return Err(AppError::new(
-            ErrorKind::ActivityClosed,
-            format!("这个豆包账号没有「每日签到」任务{hint}；工作版与飞书企业账号不参与该活动"),
-        ));
-    };
-
-    let checkin = task
-        .get("daily_checkin")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    Ok(Panel {
-        checked: checkin
-            .get("checked_in_today")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        continuous: checkin.get("continuous_days").and_then(as_i64).unwrap_or(0),
-        reward: checkin.pointer("/reward/reward_amount").and_then(as_f64),
+/// 不要求 `daily_signin` 任务存在：工作版 / 飞书企业账号没有签到任务，但额度面板
+/// 一样有值；以前把「缺任务」当错误，等于让这些账号连余额都查不到。
+fn parse_panel(data: &Value) -> Panel {
+    let signin = data
+        .get("tasks")
+        .and_then(Value::as_array)
+        .and_then(|list| {
+            list.iter()
+                .find(|task| task.get("task_kind").and_then(Value::as_str) == Some("daily_signin"))
+        })
+        .and_then(|task| task.get("daily_checkin"));
+    Panel {
         total: data.pointer("/progress/total_amount").and_then(as_f64),
-    })
+        today: signin
+            .and_then(|checkin| checkin.pointer("/reward/reward_amount"))
+            .and_then(as_f64),
+    }
 }
 
 /// 接口统一错误码 → 本应用错误类别。`code` 缺失按成功处理（部分环境下它只回 data）。
@@ -304,7 +213,7 @@ fn check_code(value: &Value) -> Result<()> {
         )),
         NO_ACTIVITY => Err(AppError::new(
             ErrorKind::ActivityClosed,
-            "这个豆包账号今天没有可领的签到活动（工作版 / 飞书企业账号不参与）",
+            "这个豆包账号没有可用的额度活动面板（工作版 / 飞书企业账号不参与该活动）",
         )),
         _ => Err(AppError::new(
             ErrorKind::Provider,
@@ -421,24 +330,33 @@ mod tests {
     }
 
     #[test]
-    fn panel_reads_signin_task_fields() {
-        let panel = parse_panel(&panel_json()).unwrap();
-        assert!(panel.checked);
-        assert_eq!(panel.continuous, 3);
-        assert_eq!(panel.reward, Some(200.0));
+    fn panel_reads_total_and_today_grant() {
+        let panel = parse_panel(&panel_json());
         assert_eq!(panel.total, Some(1400.0));
+        assert_eq!(panel.today, Some(200.0));
         assert!(panel.summary().contains("累计体验额度 1400"));
-        assert!(panel.summary().contains("连签 3 天"));
+        assert!(panel.summary().contains("今日 +200"));
     }
 
     #[test]
-    fn panel_without_signin_task_says_why() {
-        // 工作版 / 飞书企业账号：只有聊天任务。要带出「现有任务」，用户才知道是账号类型不对
-        let data = json!({ "tasks": [{ "task_kind": "chat_activity" }] });
-        let err = parse_panel(&data).unwrap_err();
-        assert_eq!(err.kind, ErrorKind::ActivityClosed);
-        assert!(err.message.contains("chat_activity"), "{}", err.message);
-        assert!(err.message.contains("工作版"), "{}", err.message);
+    fn panel_without_signin_task_still_reads_total() {
+        // 工作版 / 飞书企业账号没有 daily_signin：额度照读，只是没有「今日发放」
+        let data = json!({
+            "tasks": [{ "task_kind": "chat_activity" }],
+            "progress": { "total_amount": 900 }
+        });
+        let panel = parse_panel(&data);
+        assert_eq!(panel.total, Some(900.0));
+        assert_eq!(panel.today, None);
+        assert!(panel.summary().contains("累计体验额度 900"));
+        assert!(!panel.summary().contains("今日"), "{}", panel.summary());
+    }
+
+    #[test]
+    fn panel_without_progress_says_no_data() {
+        let panel = parse_panel(&json!({ "tasks": [] }));
+        assert_eq!(panel.total, None);
+        assert_eq!(panel.summary(), "豆包暂无额度数据");
     }
 
     #[test]
@@ -525,22 +443,33 @@ mod tests {
         api_url(DETAIL_URL, SEED)
     }
 
-    fn checkin_url() -> String {
-        api_url(CHECKIN_URL, SEED)
+    #[tokio::test]
+    async fn doubao_never_checks_in() {
+        // 领取接口会被风控：豆包必须对签到说「不支持」，界面与定时轮询据此排除它
+        let provider = DoubaoProvider::new();
+        assert!(!provider.requires_checkin());
+        let http = MockHttp::new();
+        let err = provider.checkin(&cred(), &http).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Unsupported);
+        assert!(http.calls().is_empty(), "签到被禁用后不该发任何请求");
     }
 
     #[tokio::test]
-    async fn status_reads_today_state_total_and_sends_cookie() {
+    async fn credits_reads_total_and_sends_cookie() {
         let http = MockHttp::new();
         http.on(
             &detail_url(),
             200,
             &json!({ "code": 0, "data": panel_json() }).to_string(),
         );
-        let status = DoubaoProvider::new().status(&cred(), &http).await.unwrap();
-        assert_eq!(status.checked_in, Some(true));
-        assert_eq!(status.balance, Some(1400.0));
-        assert!(status.summary.contains("连签 3 天"), "{}", status.summary);
+        let snapshot = DoubaoProvider::new().credits(&cred(), &http).await.unwrap();
+        assert_eq!(snapshot.balance, Some(1400.0));
+        assert!(snapshot.lots.is_none(), "平台不给批次，别编造到期日");
+        assert!(
+            snapshot.summary.contains("累计体验额度 1400"),
+            "{}",
+            snapshot.summary
+        );
         // Cookie 必须原样带上，否则服务端只会回「登录已过期」
         let cookie = http
             .last_header(&detail_url(), "Cookie")
@@ -549,76 +478,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checkin_claims_then_reports_grant() {
+    async fn credits_still_work_for_accounts_without_signin_task() {
+        // 工作版账号以前会因为「没有签到任务」直接报错，连余额都查不到
         let http = MockHttp::new();
         http.on(
             &detail_url(),
             200,
             &json!({ "code": 0, "data": {
-                "tasks": [{ "task_kind": "daily_signin", "daily_checkin": {
-                    "checked_in_today": false, "continuous_days": 3
-                }}],
-                "progress": { "total_amount": 1400 }
+                "tasks": [{ "task_kind": "chat_activity" }],
+                "progress": { "total_amount": 900 }
             }})
             .to_string(),
         );
-        http.on(
-            &checkin_url(),
-            200,
-            &json!({ "code": 0, "data": {
-                "checked_in": true, "continuous_days": 4,
-                "reward_amount": 200, "reward_type": "quota_grant", "idempotent": false
-            }})
-            .to_string(),
-        );
-
-        let result = DoubaoProvider::new().checkin(&cred(), &http).await.unwrap();
-        assert!(result.ok);
-        assert!(!result.already);
-        assert_eq!(result.granted, Some(200.0));
-        assert!(result.message.contains("连签 4 天"), "{}", result.message);
-        assert_eq!(http.call_count(&checkin_url()), 1);
-        // 领取请求体的 scene 必须是活动组，不能是自己拼的字符串
-        assert!(http
-            .last_header(&checkin_url(), "Referer")
-            .unwrap_or_default()
-            .contains("doubao.com"));
-    }
-
-    #[tokio::test]
-    async fn already_checked_today_does_not_call_claim() {
-        let http = MockHttp::new();
-        http.on(
-            &detail_url(),
-            200,
-            &json!({ "code": 0, "data": panel_json() }).to_string(),
-        );
-        let result = DoubaoProvider::new().checkin(&cred(), &http).await.unwrap();
-        assert!(result.already);
-        assert!(result.granted.is_none());
-        assert_eq!(http.call_count(&checkin_url()), 0, "已签就不该再打签到接口");
-    }
-
-    #[tokio::test]
-    async fn idempotent_claim_is_not_counted_as_new_grant() {
-        let http = MockHttp::new();
-        http.on(
-            &detail_url(),
-            200,
-            &json!({ "code": 0, "data": {
-                "tasks": [{ "task_kind": "daily_signin", "daily_checkin": { "checked_in_today": false } }]
-            }})
-            .to_string(),
-        );
-        http.on(
-            &checkin_url(),
-            200,
-            &json!({ "code": 0, "data": { "idempotent": true, "reward_amount": 200 } }).to_string(),
-        );
-        let result = DoubaoProvider::new().checkin(&cred(), &http).await.unwrap();
-        assert!(result.ok);
-        assert!(result.already, "重复请求不能报成新发放");
-        assert!(result.granted.is_none());
+        let snapshot = DoubaoProvider::new().credits(&cred(), &http).await.unwrap();
+        assert_eq!(snapshot.balance, Some(900.0));
     }
 
     #[tokio::test]
@@ -631,7 +504,7 @@ mod tests {
             r#"{"data":null,"code":710012001,"msg":"登录已过期，请重新登录","message":"login invalid"}"#,
         );
         let err = DoubaoProvider::new()
-            .status(&cred(), &http)
+            .credits(&cred(), &http)
             .await
             .unwrap_err();
         assert_eq!(err.kind, ErrorKind::AuthExpired);
@@ -642,7 +515,7 @@ mod tests {
     async fn missing_cookie_fails_without_touching_network() {
         let http = MockHttp::new();
         let err = DoubaoProvider::new()
-            .status(&Credential::default(), &http)
+            .credits(&Credential::default(), &http)
             .await
             .unwrap_err();
         assert_eq!(err.kind, ErrorKind::AuthExpired);

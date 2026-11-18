@@ -145,12 +145,20 @@ const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
   const error = errors[a.iid];
   const balance = fmtAmount(a.balance);
   const quota = Object.entries(a.quota ?? {});
+  // 豆包回的是平台口径的**累计**体验额度（不是剩余可用），title 里必须说清，
+  // 否则「1800」会被当成还能用 1800。
+  const balanceTitle =
+    a.platform === 'doubao'
+      ? '豆包平台口径的累计体验额度（含已消耗），不是剩余可用；官方规则：赠送额度自发放起 30 天有效'
+      : a.balance === null
+        ? '还没查到余额，点「刷新积分」'
+        : '平台实时返回的可用积分 / 额度余额';
 
   let cell: Cell;
   if (quota.length === 0) {
     cell = {
       text: balance,
-      title: a.balance === null ? '还没查到余额，点「刷新积分」' : '平台实时返回的可用积分 / 额度余额',
+      title: balanceTitle,
     };
   } else {
     const [name, used] = quota.reduce((worst, item) => (item[1] > worst[1] ? item : worst));
@@ -180,7 +188,15 @@ const checkinCell = (a: AccountView): Cell => {
   // 图标已经把「签没签到」说完了，主行不再重复写字：文字进 title，鼠标悬停仍读得到。
   // 唯一保留文字的是「约 HH:MM」——那是下次自动签到的时间，不是签到状态本身。
   if (!a.requires_checkin)
-    return { text: '', tone: 'muted', icon: 'forbid', title: '这个平台不需要签到' };
+    return {
+      text: '',
+      tone: 'muted',
+      icon: 'forbid',
+      title:
+        a.platform === 'doubao'
+          ? '豆包不在本工具签到：领取接口会被风控，签到请去豆包客户端'
+          : '这个平台不需要签到',
+    };
   if (a.checked_in === true) return { text: '', tone: 'ok', icon: 'check', title: '今天已签到' };
   if (a.checked_in === false)
     return { text: '', tone: 'warn', icon: 'clock', title: '今天还没签到' };

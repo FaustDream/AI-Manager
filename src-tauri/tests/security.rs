@@ -17,7 +17,8 @@ use ai_manager::app::secret;
 use std::sync::Arc;
 use support::*;
 
-const STATUS_URL: &str = "https://api.trae.cn/trae/api/v2/ug/checkin_credits/status";
+/// Trae 的积分查询走套餐用量接口（`credits()` 不碰签到接口）
+const STATUS_URL: &str = "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage";
 /// 唯一性标记：日志/磁盘扫描按这个字节串找，避免误伤正常文案。
 const TOKEN: &str = "SECMARK-tok-f6e5d4c3b2a1";
 
@@ -91,25 +92,20 @@ async fn failure_evidence_redacts_response_body() {
     let clock = Arc::new(clock_at("2026-11-07T10:00:00+08:00"));
     let service = Service::new(db, http, clock);
 
-    // 两次诊断都失败，错误与证据都不携带正文
+    // 两次刷新积分都失败：错误消息与证据都不携带正文
     for _ in 0..2 {
-        let err = service.diagnose(&iid).await.unwrap_err();
-        assert!(
-            !err.message.contains(TOKEN),
-            "错误消息泄漏正文：{}",
-            err.message
-        );
-        let evidence = err.evidence();
-        assert!(!evidence.contains(TOKEN), "证据泄漏正文：{evidence}");
+        let out = service
+            .credits_batch(std::slice::from_ref(&iid), "user")
+            .await;
+        assert_eq!(out.len(), 1, "批次应回一条结果");
+        let message = out[0].1.error.clone().unwrap_or_default();
+        assert!(!message.contains(TOKEN), "错误消息泄漏正文：{message}");
     }
 
     // 日志确实写了失败行（排除「没日志所以扫不到」的假阴性），再全目录扫 token
     let app_log = std::fs::read(logs.join("app.log")).unwrap();
     let text = String::from_utf8_lossy(&app_log);
-    assert!(
-        text.contains("checkin_diagnose"),
-        "失败日志应存在，实际：{text}"
-    );
+    assert!(text.contains("刷新积分"), "失败日志应存在，实际：{text}");
 
     let mut scanned = 0;
     for entry in walk_files(&paths.join(".")) {

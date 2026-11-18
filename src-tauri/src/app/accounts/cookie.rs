@@ -66,7 +66,8 @@ pub fn add(db: &Db, platform: &str, cookie: &str, name: &str) -> Result<AccountI
         // 界面按「未知」显示，不编一个假日期出来。
         expires_at: None,
         source: "cookie".into(),
-        requires_checkin: true,
+        // 豆包只查积分，不签到（领取接口会被风控，见 providers/doubao.rs 模块注释）
+        requires_checkin: false,
         has_secret: true,
     };
 

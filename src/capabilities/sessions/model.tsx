@@ -109,8 +109,7 @@ export const SESSION_COLUMNS: Column<SessionRow>[] = [
     title: (row) => row.cwd || undefined,
     cell: (row) => row.project || '—',
   },
-  { key: 'source', header: '来源', width: 144, truncate: true, className: 'text-muted', cell: (row) => row.source_label },
-  { key: 'account', header: '账号', width: 128, truncate: true, className: 'text-muted', cell: (row) => row.account_label },
+  { key: 'source', header: '平台', width: 144, truncate: true, className: 'text-muted', cell: (row) => row.source_label },
   // truncate 不只是省略号：它还带着 whitespace-nowrap。少了它，窗口一窄这列会把
   // 「11-13 09:20」折成两行，整张表的行高被这一列撑起来（其他列都是单行）。
   // 宽度给 128 而不是 112：125% 缩放下 112 刚好差几像素，会先省略再换行。

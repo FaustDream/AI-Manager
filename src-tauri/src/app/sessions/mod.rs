@@ -282,16 +282,7 @@ impl Service {
 
     pub async fn facets(&self) -> Result<Facets> {
         let db = self.db.clone();
-        blocking(move || {
-            let mut facets = SqliteSessions::new(&db).facets()?;
-            // 账号列显示昵称：库里有账号就补名字，没有的（Qoder / ZCode / Trae）显示「本机」
-            let names = account_names(&db);
-            for item in &mut facets.accounts {
-                item.label = account_label(&item.value, &names);
-            }
-            Ok(facets)
-        })
-        .await?
+        blocking(move || SqliteSessions::new(&db).facets()).await?
     }
 
     // -------------------------------------------------- v3：置顶 / 改名 / 隐藏 / 标签 / 导出

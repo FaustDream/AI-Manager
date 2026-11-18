@@ -4,13 +4,18 @@ import type { Sort } from "./Sort";
 /**
  * 列表筛选。下拉与快筛叠加使用，空值 = 不限。
  */
-export type Filter = { source: string | null, account: string | null, state: string | null, 
+export type Filter = { source: string | null, account: string | null, 
+/**
+ * 项目名（与列表「项目」列同一口径：slug 优先，其次 cwd 末段）。空值 = 不限。
+ */
+project: string | null, state: string | null, 
 /**
  * 标题（含本地命名）/ 来源 / 项目路径的模糊搜索；空值 = 不限
  */
 q: string | null, 
 /**
- * 运行形态：`desktop` / `ide-plugin`。IDEA 插件标签用这个维度聚合各软件插件会话。
+ * 运行形态：`desktop` / `ide-plugin`。会话页已合并成一份列表、不再按它聚合标签，
+ * 这里保留维度供后续按运行形态筛选。
  */
 origin: string | null, 
 /**

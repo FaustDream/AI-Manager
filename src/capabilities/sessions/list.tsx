@@ -4,6 +4,9 @@
 //
 // v3 会话管理（docs/session-management-design.md）：置顶 / 本地改名 / 标签 /
 // 正文全文搜索 / 已隐藏视图 / 右键菜单 / 导出 / 未命名治理，全部落在这里。
+//
+// 列表只有一份：所有平台、所有账号的会话合在一起（不按平台拆标签页，也不显示
+// 账号）。要看某一维度的子集，用筛选条的平台 / 状态 / 项目下拉；分组只改摆放。
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
@@ -17,23 +20,15 @@ import { toast } from '@/components/ui/toast';
 import { usePersistedChoice, usePersistedSet } from '@/lib/ui-state';
 import { onFocusSession, takePreset } from '@/lib/nav';
 import type { Facets, Filter, Preview, SessionRow } from '@/lib/types';
-import {
-  currentScope,
-  groupActive,
-  groupArchived,
-  isPluginFacet,
-  isPluginKey,
-  scopeSources,
-  type ActiveGroup,
-  type ArchiveGroup,
-} from './grouping';
+import { groupRows, type GroupMode } from './grouping';
 import { ARCHIVED_COLUMNS, PAGE_SIZE, SESSION_COLUMNS, rowKey } from './model';
 import { CopyAllButton, PreviewBody } from './preview';
 import { ContextMenu, type MenuItem } from './actions-menu';
 import { RenameDialog, SuggestTitlesDialog, TagsDialog, fetchSuggestions } from './dialogs';
 
-const ACTIVE_GROUPS: readonly ActiveGroup[] = ['none', 'source', 'project', 'account', 'state'];
-const ARCHIVE_GROUPS: readonly ArchiveGroup[] = ['none', 'source', 'project', 'account'];
+/** 分组档位。归档列表整表都是归档件，按状态分组没有意义，所以少一档。 */
+const ACTIVE_GROUPS: readonly GroupMode[] = ['none', 'source', 'project', 'state'];
+const ARCHIVE_GROUPS: readonly GroupMode[] = ['none', 'source', 'project'];
 
 /** 自动归档档位：关闭 + 四档。0 = 关闭，后端只认这几个值。 */
 const RETENTION_CHOICES = [
@@ -55,7 +50,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
 
   const [filter, setFilter] = useState<Filter>(() => ({
     source: null,
-    account: null,
+    project: null,
     state: archived ? 'archived' : null,
     q: null,
     origin: null,
@@ -66,15 +61,17 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
     tags: [],
     sort: 'last_at',
     ...takePreset<Partial<Filter>>('sessions'),
+    // 账号维度已从会话页撤掉（不再显示账号数据）：账号中心下钻即使带了也不生效
+    account: null,
   }));
   // 搜索框的草稿与后端筛选分离：输入防抖 250ms 才落到 filter，避免每键一查
   const [searchDraft, setSearchDraft] = useState(filter.q ?? filter.body ?? '');
   const [bodyMode, setBodyMode] = useState(false);
   // 活跃列表的选中与分组；分组选择跨重启保持
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [group, setGroup] = usePersistedChoice<ActiveGroup | ArchiveGroup>(
+  const [group, setGroup] = usePersistedChoice<GroupMode>(
     archived ? 'sessions.archive.group' : 'sessions.active.group',
-    'source',
+    'none',
     archived ? ARCHIVE_GROUPS : ACTIVE_GROUPS,
   );
   const [collapsed, setCollapsed] = usePersistedSet(
@@ -93,12 +90,10 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
     queryFn: () => queryCmd('session_facets'),
   });
 
-  // 「来源」下拉的选项范围只跟着标签走（currentScope）：选了插件源也留在 IDEA 范围，
-  // 聚合项不消失、同组其他源也能直接切；其他软件范围只出它自己。
-  const scopedSources = useMemo(
-    () => scopeSources(facets.data?.sources ?? [], currentScope(filter)),
-    [facets.data, filter],
-  );
+  // 平台 / 项目的可选项要跟当前列表口径走：归档页列的是「只剩归档件」的平台，
+  // 活跃页列的是活跃口径（后端分两套统计，前端只挑一套）。
+  const platformOptions = (archived ? facets.data?.archived_sources : facets.data?.sources) ?? [];
+  const projectOptions = (archived ? facets.data?.archived_projects : facets.data?.projects) ?? [];
 
   const filterKey = JSON.stringify(filter);
   const listQuery = useInfiniteQuery({
@@ -497,29 +492,19 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
 
   // ------------------------------------------------------------- 分组
 
-  const groups = useMemo(() => {
-    if (archived) {
-      return groupArchived(items, group as ArchiveGroup);
-    }
-    return groupActive(items, group as ActiveGroup);
-  }, [archived, items, group]);
+  const groups = useMemo(() => groupRows(items, group), [items, group]);
 
-  const groupIs = (key: string) =>
-    !archived &&
-    ((key === 'project' && group === 'project') ||
-      (key === 'account' && group === 'account') ||
-      (key === 'state' && group === 'state') ||
-      (archived && key === 'source' && group === 'source'));
-  const columns = SESSION_COLUMNS.filter((c) => !groupIs(c.key));
-  const archivedColumns = ARCHIVED_COLUMNS.filter(
-    (c) => !(c.key === 'source' && group === 'source' && archived) && !(c.key === 'project' && group === 'project' && archived) && !(c.key === 'account' && group === 'account' && archived),
+  // 分组时把被分组的那一列藏掉：信息已经在组头上，不必每行再重复一遍。
+  // 归档列表整表都是归档件，列定义里本来就没有「状态」列。
+  const columns = (archived ? ARCHIVED_COLUMNS : SESSION_COLUMNS).filter(
+    (column) => column.key !== group,
   );
 
   const total = listQuery.data?.pages[0]?.total ?? 0;
   const facetsData = facets.data;
   const hasActiveFilters =
     filter.source !== null ||
-    filter.account !== null ||
+    filter.project !== null ||
     filter.q !== null ||
     filter.body !== null ||
     filter.unnamed ||
@@ -558,110 +543,54 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
             )}
           </div>
 
-          {/* 来源标签栏：插件会话全部收进「IDEA 插件」聚合标签。 */}
-          <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
-            <SourceTab
-              active={filter.source === null && filter.origin === null}
-              label="全部"
-              onClick={() => setFilter((f) => ({ ...f, source: null, origin: null }))}
-            />
-            {(facetsData?.sources ?? []).some(isPluginFacet) && (
-              <SourceTab
-                active={filter.origin === 'ide-plugin' || (filter.origin === null && isPluginKey(filter.source))}
-                label="IDEA 插件"
-                title="聚合 Qoder / Qoder CN / Trae / CodeBuddy 的 IDEA 插件会话；子源可在「来源」下拉里单独筛"
-                onClick={() => setFilter((f) => ({ ...f, source: null, origin: 'ide-plugin' }))}
-              />
-            )}
-            {(facetsData?.sources ?? [])
-              .filter((s) => !isPluginFacet(s))
-              .map((s) => (
-                <SourceTab
-                  key={s.value}
-                  active={filter.source === s.value && filter.origin === null}
-                  label={s.label}
-                  onClick={() => setFilter((f) => ({ ...f, source: s.value, origin: null }))}
-                />
-              ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3 text-sm">
+          {/* 筛选条：一份列表，维度全在下面两行里。
+              第一行挑子集（平台 / 状态 / 项目 / 标签 + 搜索 + 快筛），
+              第二行只改「怎么摆」和扫描入口。 */}
+          <div className="flex flex-wrap items-center gap-3 border-b border-line pb-2 text-sm">
             <label className="flex items-center gap-1 text-muted">
-              来源
+              平台
               <Select
                 value={filter.source ?? ''}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  if (value === '') {
-                    const scope = currentScope(filter);
-                    setFilter((f) => ({
-                      ...f,
-                      source: scope === 'all' || scope === 'ide-plugin' ? null : scope,
-                      origin: scope === 'ide-plugin' ? 'ide-plugin' : null,
-                    }));
-                  } else {
-                    setFilter((f) => ({ ...f, source: value, origin: null }));
-                  }
-                }}
+                onChange={(e) => setFilter((f) => ({ ...f, source: e.target.value || null }))}
               >
                 <option value="">全部</option>
-                {scopedSources.map((s) => (
+                {platformOptions.map((s) => (
                   <option key={s.value} value={s.value}>
                     {s.label}（{s.count}）
                   </option>
                 ))}
               </Select>
             </label>
+            {!archived && (
+              <label className="flex items-center gap-1 text-muted">
+                状态
+                <Select
+                  value={filter.state ?? ''}
+                  onChange={(e) => setFilter((f) => ({ ...f, state: e.target.value || null }))}
+                >
+                  <option value="">全部</option>
+                  {(facetsData?.states ?? []).map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+            )}
             <label className="flex items-center gap-1 text-muted">
-              账号
+              项目
               <Select
-                value={filter.account ?? ''}
-                onChange={(e) => setFilter((f) => ({ ...f, account: e.target.value || null }))}
+                value={filter.project ?? ''}
+                onChange={(e) => setFilter((f) => ({ ...f, project: e.target.value || null }))}
               >
                 <option value="">全部</option>
-                {(facetsData?.accounts ?? []).map((a) => (
-                  <option key={a.value} value={a.value}>
-                    {a.label}（{a.count}）
+                {projectOptions.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}（{p.count}）
                   </option>
                 ))}
               </Select>
             </label>
-            {!archived && (
-              <>
-                <label className="flex items-center gap-1 text-muted">
-                  状态
-                  <Select
-                    value={filter.state ?? ''}
-                    onChange={(e) => setFilter((f) => ({ ...f, state: e.target.value || null }))}
-                  >
-                    <option value="">全部</option>
-                    {(facetsData?.states ?? []).map((s) => (
-                      <option key={s.value} value={s.value}>
-                        {s.label}
-                      </option>
-                    ))}
-                  </Select>
-                </label>
-                <FilterChip
-                  active={filter.unnamed}
-                  label={`未命名${facetsData?.unnamed ? `（${facetsData.unnamed}）` : ''}`}
-                  title="只看标题是「（未命名会话）」占位文案的会话"
-                  onClick={() => setFilter((f) => ({ ...f, unnamed: !f.unnamed }))}
-                />
-                <FilterChip
-                  active={filter.pinned}
-                  label={`置顶${facetsData?.pinned ? `（${facetsData.pinned}）` : ''}`}
-                  title="只看置顶的会话；置顶的会话也永远排在列表最前"
-                  onClick={() => setFilter((f) => ({ ...f, pinned: !f.pinned }))}
-                />
-                <FilterChip
-                  active={filter.hidden}
-                  label={`已隐藏${facetsData?.hidden ? `（${facetsData.hidden}）` : ''}`}
-                  title="本地隐藏的会话（含 Trae 家族远端删不掉的删除墓碑），可从这里取消隐藏"
-                  onClick={() => setFilter((f) => ({ ...f, hidden: !f.hidden }))}
-                />
-              </>
-            )}
             {(facetsData?.tags.length ?? 0) > 0 && (
               <label className="flex items-center gap-1 text-muted">
                 标签
@@ -685,7 +614,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                 className="w-44"
                 value={searchDraft}
                 onChange={(e) => setSearchDraft(e.target.value)}
-                placeholder={bodyMode ? '正文关键词（≥3 字更快）' : '标题 / 项目 / 来源 / 账号'}
+                placeholder={bodyMode ? '正文关键词（≥3 字更快）' : '标题 / 项目 / 平台'}
               />
             </label>
             <FilterChip
@@ -697,6 +626,31 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                 setSearchDraft('');
               }}
             />
+            {!archived && (
+              <>
+                <FilterChip
+                  active={filter.unnamed}
+                  label={`未命名${facetsData?.unnamed ? `（${facetsData.unnamed}）` : ''}`}
+                  title="只看标题是「（未命名会话）」占位文案的会话"
+                  onClick={() => setFilter((f) => ({ ...f, unnamed: !f.unnamed }))}
+                />
+                <FilterChip
+                  active={filter.pinned}
+                  label={`置顶${facetsData?.pinned ? `（${facetsData.pinned}）` : ''}`}
+                  title="只看置顶的会话；置顶的会话也永远排在列表最前"
+                  onClick={() => setFilter((f) => ({ ...f, pinned: !f.pinned }))}
+                />
+                <FilterChip
+                  active={filter.hidden}
+                  label={`已隐藏${facetsData?.hidden ? `（${facetsData.hidden}）` : ''}`}
+                  title="本地隐藏的会话（含 Trae 家族远端删不掉的删除墓碑），可从这里取消隐藏"
+                  onClick={() => setFilter((f) => ({ ...f, hidden: !f.hidden }))}
+                />
+              </>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 text-sm">
             <label className="flex items-center gap-1 text-muted">
               排序
               <Select
@@ -710,11 +664,10 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
             </label>
             <label className="flex items-center gap-1 text-muted">
               分组
-              <Select value={group} onChange={(e) => setGroup(e.target.value as never)}>
+              <Select value={group} onChange={(e) => setGroup(e.target.value as GroupMode)}>
                 <option value="none">不分组</option>
-                <option value="source">按软件</option>
+                <option value="source">按平台</option>
                 <option value="project">按项目</option>
-                <option value="account">按账号</option>
                 {!archived && <option value="state">按状态</option>}
               </Select>
             </label>
@@ -911,7 +864,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                   setFilter((f) => ({
                     ...f,
                     source: null,
-                    account: null,
+                    project: null,
                     q: null,
                     body: null,
                     unnamed: false,
@@ -927,7 +880,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
               <DataTable<SessionRow>
                 className="w-full table-fixed border-collapse"
                 stickyHead
-                columns={archived ? archivedColumns : columns}
+                columns={columns}
                 rows={items}
                 rowKey={rowKey}
                 empty={null}
@@ -979,8 +932,11 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                   </button>
                   {!collapsed.has(g.key) && (
                     <DataTable<SessionRow>
+                      // 与不分组时同一套列宽：分组表格各自成表，auto 布局会让
+                      // 标题特别长的那一组把整表撑宽、右侧列被挤出容器
+                      className="w-full table-fixed border-collapse"
                       dense
-                      columns={archived ? archivedColumns : columns}
+                      columns={columns}
                       rows={g.rows}
                       rowKey={rowKey}
                       empty={null}
@@ -1109,30 +1065,6 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
 }
 
 // ------------------------------------------------------------------ 小组件
-
-function SourceTab({
-  active,
-  label,
-  title,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  title?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className={`rounded-md px-3 py-1 text-sm ${
-        active ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
-      }`}
-      onClick={onClick}
-      title={title}
-    >
-      {label}
-    </button>
-  );
-}
 
 /** 快筛 chip：未命名 / 置顶 / 已隐藏 / 正文。 */
 function FilterChip({

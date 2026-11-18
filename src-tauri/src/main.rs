@@ -30,11 +30,6 @@ fn main() {
         std::process::exit(scan_from_cli(&args));
     }
 
-    // 只读诊断：不进 GUI，直接打平台的查询接口，结果打到终端
-    if let Some(iid) = arg_text(&args, "--diagnose") {
-        std::process::exit(diagnose_from_cli(&args, &iid));
-    }
-
     // 演练：只列出「会自动参与签到」的账号，不调用接口、不写业务数据
     if args.iter().any(|a| a == "--dry-run") {
         std::process::exit(dry_run_from_cli(&args));
@@ -114,64 +109,6 @@ fn arg_text(args: &[String], flag: &str) -> Option<String> {
         .position(|a| a == flag)
         .and_then(|i| args.get(i + 1))
         .cloned()
-}
-
-/// `--diagnose <iid>`：只读诊断，成功 0 / 失败 1。
-///
-/// 与界面上的「诊断」按钮走同一个 `Service::diagnose`——命令行版本不是第二套实现，
-/// 否则「界面能诊断、命令行报错」这类差异永远查不清。
-fn diagnose_from_cli(args: &[String], iid: &str) -> i32 {
-    let _ = log::init(Level::Info);
-    let target = arg_value(args, "--db").unwrap_or_else(paths::app_db);
-    let db = match Db::open_at(&target) {
-        Ok(db) => Arc::new(db),
-        Err(e) => {
-            err_out(&format!("打开数据库失败：{}", e.message));
-            return 1;
-        }
-    };
-    let service = ai_manager::app::checkin::Service::new(
-        db,
-        Arc::new(ai_manager::app::net::RealHttp::new()),
-        Arc::new(ai_manager::app::clock::SystemClock),
-    );
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            err_out(&format!("创建运行时失败：{e}"));
-            return 1;
-        }
-    };
-    match runtime.block_on(service.diagnose(iid)) {
-        Ok(report) => {
-            let checked = match report.checked_in {
-                Some(true) => "已签",
-                Some(false) => "未签",
-                None => "未知",
-            };
-            out(&format!("诊断：{}（{}）", report.platform_label, checked));
-            out(&format!("摘要：{}", report.summary));
-            if let Some(balance) = report.balance {
-                out(&format!("余额：{balance}"));
-            }
-            if let Some(quota) = &report.quota {
-                let detail: Vec<String> = quota
-                    .iter()
-                    .map(|(name, used)| format!("{name} 已用 {used:.0}%"))
-                    .collect();
-                out(&format!("额度：{}", detail.join("；")));
-            }
-            out(&format!("耗时：{}ms", report.ms));
-            0
-        }
-        Err(e) => {
-            err_out(&format!("诊断失败（{}）：{}", e.kind.as_str(), e.message));
-            1
-        }
-    }
 }
 
 /// 状态查询本身负责落库；不走启动扫描、调度或签到动作。
@@ -339,7 +276,7 @@ mod refresh_status_tests {
         assert!(args.iter().any(|a| a == "--refresh-status"));
         assert_eq!(arg_value(&args, "--db"), Some(db));
         assert_eq!(arg_value(&args, "--data-dir"), Some(data_dir));
-        assert_eq!(arg_text(&args, "--diagnose"), None);
+        assert_eq!(arg_text(&args, "--no-such-flag"), None);
         assert!(!dir.path().join("isolated data").exists());
     }
 }

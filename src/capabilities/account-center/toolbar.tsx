@@ -51,7 +51,6 @@ export function AccountToolbar({
   onRefreshState,
   onRefreshCredentials,
   onCheckin,
-  onDiagnose,
 }: {
   busy: string | null;
   onAdd: () => void;
@@ -61,8 +60,6 @@ export function AccountToolbar({
   /** 逐个账号刷新凭据：不管是否过期都重扫，把最新凭据与有效期写回 */
   onRefreshCredentials: () => void;
   onCheckin: () => void;
-  /** 批量只读诊断：不写库、不触发签到 */
-  onDiagnose: () => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -95,14 +92,6 @@ export function AccountToolbar({
       </Button>
       <Button onClick={onCheckin} loading={busy === 'checkin'} disabled={!!busy}>
         {busy === 'checkin' ? '签到中…' : '批量签到'}
-      </Button>
-      <Button
-        onClick={onDiagnose}
-        loading={busy === 'diagnose'}
-        disabled={!!busy}
-        title="对当前筛选出的账号做一次只读诊断（并发 3），结果进日志"
-      >
-        {busy === 'diagnose' ? '诊断中…' : '批量诊断'}
       </Button>
     </div>
   );
@@ -251,7 +240,7 @@ export function AddAccountDialog({
         { onError: (e) => setCookieError(errText(e)) },
       );
       if (!iid) return;
-      toast(`${platformOf(platform).label} 账号已添加，可以直接签到`);
+      toast(`${platformOf(platform).label} 账号已添加，可以刷新积分了`);
       setCookie('');
       setCookieName('');
       onScanned();
@@ -442,7 +431,8 @@ export function AddAccountDialog({
             <p className="text-xs leading-relaxed text-muted">
               获取方式：浏览器打开 doubao.com 并登录 → F12 → Network 里任选一条 doubao.com 请求
               → 复制请求头中的 <span className="font-mono">Cookie</span> 整段粘贴进来。
-              一个账号一份 Cookie，多开就重复添加一次；只有个人账号有「天天领额度」，工作版 / 飞书企业账号没有签到。
+              一个账号一份 Cookie，多开就重复添加一次；本工具对豆包只做只读积分查询，
+              不签到、不领取（领取接口会被风控，签到请在豆包客户端里点）。
             </p>
             {cookieError && (
               <p className="whitespace-pre-wrap rounded-md border border-line border-l-[3px] border-l-bad bg-card px-3 py-2 text-sm text-fg2">

@@ -13,7 +13,6 @@ import type {
   AccountDetail,
   AccountView,
   ActionResult,
-  BatchDiagnoseReport,
   BrowserInfo,
   BrowserLoginStatus,
   ConfigSnapshot,
@@ -30,7 +29,6 @@ import type {
   CreditSnapshot,
   DailyActive,
   DeployReport,
-  DiagnoseReport,
   Facets,
   Filter,
   HubSnapshot,
@@ -79,7 +77,6 @@ export interface CmdArgs {
   account_set_enabled: { iid: string; enabled: boolean };
   account_set_alias: { iid: string; alias: string };
   account_set_note: { iid: string; note: string };
-  account_batch_diagnose: { iids: string[] };
   account_reward_credits: { iid: string };
   account_reorder: { iids: string[] };
   account_delete: { iid: string };
@@ -151,7 +148,6 @@ export interface CmdArgs {
   activity_daily_status: { iid: string };
   activity_pref_set: { iid: string; enabled: boolean; location: number | null };
   checkin_credits: { iids: string[]; trigger?: 'auto' | 'user' };
-  checkin_diagnose: { iid: string };
   checkin_detail: { iid: string };
   checkin_run: { iid: string };
   checkin_batch: { iids: string[] };
@@ -211,7 +207,6 @@ export interface CmdReturn {
   account_set_enabled: boolean;
   account_set_alias: string;
   account_set_note: string;
-  account_batch_diagnose: BatchDiagnoseReport;
   account_reward_credits: RewardCredits;
   account_reorder: void;
   account_delete: boolean;
@@ -283,7 +278,6 @@ export interface CmdReturn {
   activity_daily_status: DailyActive;
   activity_pref_set: TravelPrefs;
   checkin_credits: [string, CreditSnapshot][];
-  checkin_diagnose: DiagnoseReport;
   checkin_detail: AccountDetail;
   checkin_run: ActionResult;
   checkin_batch: RoundResult;
@@ -368,7 +362,6 @@ const CMD_LABELS: Record<string, string> = {
   account_set_enabled: '启用/停用账号',
   account_set_alias: '设置账号别名',
   account_set_note: '设置账号备注',
-  account_batch_diagnose: '批量诊断',
   account_reward_credits: '读取奖励积分明细',
   account_reorder: '调整账号顺序',
   account_delete: '删除账号',
@@ -437,7 +430,6 @@ const CMD_LABELS: Record<string, string> = {
   activity_daily_status: '读取每日活跃',
   activity_pref_set: '保存旅行配置',
   checkin_credits: '刷新积分',
-  checkin_diagnose: '只读诊断',
   checkin_detail: '读取账号详情',
   checkin_run: '签到',
   checkin_batch: '批量签到',

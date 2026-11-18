@@ -14,7 +14,7 @@ use crate::app::accounts::{self, AccountView};
 use crate::app::clock::Clock;
 use crate::app::db::Db;
 use crate::app::error::{AppError, ErrorKind, Result};
-use crate::app::log::{self, Item, Level, Outcome};
+use crate::app::log::{self, Item, Outcome};
 use crate::app::net::Http;
 use crate::app::providers;
 use crate::app::runtime::blocking;
@@ -120,24 +120,6 @@ fn throttled(min_minutes: u64, last_ok_at: Option<i64>, now_ms: i64) -> bool {
         Some(at) => now_ms.saturating_sub(at) < (min_minutes as i64) * 60_000,
         None => false,
     }
-}
-
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
-/// 只读诊断结果：给界面看的归一化状态，不含原始凭据或敏感字段。
-#[derive(Debug, Clone, Serialize)]
-pub struct DiagnoseReport {
-    pub platform: String,
-    pub platform_label: String,
-    pub requires_checkin: bool,
-    pub checked_in: Option<bool>,
-    pub summary: String,
-    pub balance: Option<f64>,
-    pub quota: Option<std::collections::HashMap<String, f64>>,
-    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
-    pub next_at: Option<i64>,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub ms: u64,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -497,91 +479,6 @@ impl Service {
         self.note_view(iid, quota, snapshot.lots.clone(), snapshot.balance)
             .await;
         Ok(snapshot)
-    }
-
-    /// 只读诊断：只调用平台的查询接口，**不写库、不写客户端、不触发签到**。
-    /// 结果同时落 `diagnose` 日志模块，查询入口与普通日志共用一份 `app.jsonl`。
-    pub async fn diagnose(&self, iid: &str) -> Result<DiagnoseReport> {
-        let started = std::time::Instant::now();
-        let (view, cred) = match self.load(iid).await {
-            Ok(pair) => pair,
-            Err(e) => {
-                log::fail("diagnose", "checkin_diagnose", "读取凭据失败", e.evidence());
-                return Err(e);
-            }
-        };
-        let provider = match Self::provider_of(iid) {
-            Ok(provider) => provider,
-            Err(e) => {
-                log::fail(
-                    "diagnose",
-                    "checkin_diagnose",
-                    "平台不支持诊断",
-                    e.evidence(),
-                );
-                return Err(e);
-            }
-        };
-
-        let mut report = DiagnoseReport {
-            platform: view.platform.clone(),
-            platform_label: view.platform_label.clone(),
-            requires_checkin: provider.requires_checkin(),
-            checked_in: None,
-            summary: String::new(),
-            balance: None,
-            quota: None,
-            next_at: None,
-            ms: 0,
-        };
-
-        if provider.requires_checkin() {
-            let status = match provider.status(&cred, self.http.as_ref()).await {
-                Ok(value) => value,
-                Err(e) => {
-                    log::fail(
-                        "diagnose",
-                        "checkin_diagnose",
-                        format!("诊断失败：{}", view.display_name()),
-                        e.evidence(),
-                    );
-                    return Err(e);
-                }
-            };
-            report.checked_in = status.checked_in;
-            report.summary = status.summary;
-            report.balance = status.balance;
-            report.next_at = status.next_at.map(|at| at.timestamp_millis());
-        } else {
-            let snapshot = match provider.credits(&cred, self.http.as_ref()).await {
-                Ok(value) => value,
-                Err(e) => {
-                    log::fail(
-                        "diagnose",
-                        "checkin_diagnose",
-                        format!("诊断失败：{}", view.display_name()),
-                        e.evidence(),
-                    );
-                    return Err(e);
-                }
-            };
-            report.summary = snapshot.summary;
-            report.balance = snapshot.balance;
-            report.quota = snapshot.quota;
-        }
-        report.ms = started.elapsed().as_millis() as u64;
-        log::log(
-            Level::Info,
-            "diagnose",
-            format!(
-                "诊断 {}（{}）· {} · {}ms",
-                view.display_name(),
-                view.platform_label,
-                report.summary,
-                report.ms
-            ),
-        );
-        Ok(report)
     }
 
     /// 批量刷积分：并发 3（与状态查询同口径），单账号失败不拖垮整批。

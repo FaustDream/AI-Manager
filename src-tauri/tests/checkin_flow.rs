@@ -199,32 +199,6 @@ async fn disabled_account_is_skipped_by_automatic_batch() {
     assert_eq!(http.call_count(CLAIM_URL), 0, "停用账号连接口都不该打");
 }
 
-/// 只读诊断不能写库、不能触发签到。
-#[tokio::test]
-async fn diagnose_is_read_only() {
-    let paths = TestPaths::new();
-    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
-    let iid = seed_trae_account(&db);
-    let http = mock_http(200, r#"{"code":0}"#);
-    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
-    let service = Service::new(db.clone(), http.clone(), clock.clone());
-
-    let report = service.diagnose(&iid).await.unwrap();
-    assert_eq!(report.balance, Some(60.0));
-    assert_eq!(http.call_count(CLAIM_URL), 0, "诊断不能提交签到");
-
-    let store = ai_manager::app::checkin::SqliteCheckin::new(&db);
-    assert!(
-        !store.marked_today(&iid, clock.as_ref()),
-        "诊断不能写去重表"
-    );
-    assert_eq!(
-        store.balance_on(&iid, "2026-10-30"),
-        None,
-        "诊断不能写余额快照"
-    );
-}
-
 /// 账号之间的间隔与并发上限从 kv 读取；默认值必须保持旧行为。
 #[tokio::test]
 async fn batch_limits_default_to_legacy_behavior() {

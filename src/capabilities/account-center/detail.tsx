@@ -11,7 +11,7 @@ import { useState } from 'react';
 import { Input, Textarea } from '@/components/ui/form';
 import type { ReactNode } from 'react';
 
-import { daysUntil, fmtAmount, fmtDay, fmtMs, fmtTime } from '@/lib/format';
+import { daysUntil, fmtAmount, fmtDay, fmtTime } from '@/lib/format';
 import { Button, cn } from '@/components/ui/button';
 import { confirmAction } from '@/components/ui/confirm';
 import { Dialog } from '@/components/ui/dialog';
@@ -184,14 +184,6 @@ export function DetailPanel({
       
     });
 
-  const diagnose = () =>
-    runBusy('diagnose', async () => {
-      const report = await runCmd('checkin_diagnose', { iid: account.iid });
-      if (report === undefined) return;
-      toast(`诊断完成：${report.summary || '无返回'} · ${fmtMs(report.ms)}`);
-      refresh();
-    });
-
   // 刷新凭据：**不管当前是否过期都重扫一次**，把客户端里的最新凭据与有效期写回本地库。
   // 判定由后端做（凭据真的变了才算刷新到新东西），界面只负责把结论说清楚。
   const refreshCredential = () =>
@@ -272,6 +264,8 @@ export function DetailPanel({
   const d = detail.data;
   const checked = d?.checked_in ?? account.checked_in === true;
   const now = Date.now();
+  // 豆包只做只读积分查询：平台回的是累计额度，没有批次也没有到期日
+  const isDoubao = account.platform === 'doubao';
 
   // 批次：按到期日从近到远；没有到期日的排最后
   const lots = [...(d?.lots ?? [])].sort((a, b) =>
@@ -382,26 +376,36 @@ export function DetailPanel({
               ? `${fmtDay(nearest.expires_at)} · ${
                   nearestDays !== null && nearestDays >= 0 ? `剩 ${nearestDays} 天` : fmtAmount(nearest.amount)
                 }`
-              : '—'
+              : isDoubao
+                ? '平台未提供'
+                : '—'
           }
           hint={
             nearest
               ? nearestDays !== null && nearestDays <= 7
                 ? `只剩 ${Math.max(0, nearestDays)} 天，优先用掉`
                 : '积分批次里最近的一笔'
-              : '平台没有返回批次到期时间'
+              : isDoubao
+                ? '豆包接口只回累计额度，不下发批次到期日。官方规则：赠送额度自发放起 30 天内有效，这里不推算'
+                : '平台没有返回批次到期时间'
           }
           tone={nearestDays !== null && nearestDays <= 7 ? 'warn' : undefined}
           strong
         />
         <Stat
-          label={quota.length > 0 ? '积分 / 配额' : '积分余额'}
+          label={quota.length > 0 ? '积分 / 配额' : isDoubao ? '累计体验额度' : '积分余额'}
           value={
             quotaLeft !== null && (d?.balance ?? account.balance) === null
               ? `剩 ${Math.round(quotaLeft)}%`
               : fmtAmount(d?.balance ?? account.balance)
           }
-          hint={quota.length > 0 ? '额度型账号，明细见下方窗口' : '平台实时返回'}
+          hint={
+            quota.length > 0
+              ? '额度型账号，明细见下方窗口'
+              : isDoubao
+                ? '豆包平台口径的累计已发放额度（含已消耗），不是剩余可用'
+                : '平台实时返回'
+          }
           tone={quotaLeft !== null && quotaLeft <= 10 ? 'bad' : quotaLeft !== null && quotaLeft <= 30 ? 'warn' : undefined}
         />
       </div>
@@ -455,7 +459,9 @@ export function DetailPanel({
           </div>
           {lots.length === 0 ? (
             <p className="text-xs text-muted">
-              还没有批次明细：签到成功后这里会列出每笔的金额、来源与到期日。
+              {isDoubao
+                ? '豆包不提供批次明细与到期日：接口只回累计额度。官方规则是「赠送额度自发放起 30 天内有效」，这里不推算具体日期。'
+                : '还没有批次明细：签到成功后这里会列出每笔的金额、来源与到期日。'}
             </p>
           ) : (
             <div className="max-h-56 overflow-y-auto">
@@ -608,16 +614,6 @@ export function DetailPanel({
                 重新授权
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={diagnose}
-              loading={busy === 'diagnose'}
-              disabled={!!busy || !account.has_secret}
-              title="只读诊断：调用平台查询接口，不写库、不触发签到；结果同时进日志"
-            >
-              诊断
-            </Button>
           </div>
         </section>
       </div>

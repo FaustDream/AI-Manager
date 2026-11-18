@@ -314,10 +314,6 @@ pub async fn dispatch<R: tauri::Runtime>(
             let (iid, note) = (arg(v, "iid")?, arg(v, "note")?);
             to_json(cmd::accounts::account_set_note(app.state::<AppState>(), iid, note).await)
         }
-        "account_batch_diagnose" => {
-            let iids = arg(v, "iids")?;
-            to_json(cmd::accounts::account_batch_diagnose(app.state::<AppState>(), iids).await)
-        }
 
         // ------------------------------------------------------------ hub
         "hub_snapshot" => to_json(cmd::hub::hub_snapshot(app.state::<AppState>()).await),
@@ -465,10 +461,6 @@ pub async fn dispatch<R: tauri::Runtime>(
         "checkin_credits" => {
             let (iids, trigger) = (arg(v, "iids")?, arg(v, "trigger")?);
             to_json(cmd::checkin::checkin_credits(app.state::<AppState>(), iids, trigger).await)
-        }
-        "checkin_diagnose" => {
-            let iid = arg(v, "iid")?;
-            to_json(cmd::checkin::checkin_diagnose(app.state::<AppState>(), iid).await)
         }
         "checkin_detail" => {
             let iid = arg(v, "iid")?;

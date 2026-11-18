@@ -102,12 +102,16 @@ pub struct Filter {
     pub source: Option<String>,
     #[serde(default)]
     pub account: Option<String>,
+    /// 项目名（与列表「项目」列同一口径：slug 优先，其次 cwd 末段）。空值 = 不限。
+    #[serde(default)]
+    pub project: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
     /// 标题（含本地命名）/ 来源 / 项目路径的模糊搜索；空值 = 不限
     #[serde(default)]
     pub q: Option<String>,
-    /// 运行形态：`desktop` / `ide-plugin`。IDEA 插件标签用这个维度聚合各软件插件会话。
+    /// 运行形态：`desktop` / `ide-plugin`。会话页已合并成一份列表、不再按它聚合标签，
+    /// 这里保留维度供后续按运行形态筛选。
     #[serde(default)]
     pub origin: Option<String>,
     /// 只看「未命名」会话（生效标题是占位文案 UNNAMED_TITLE 或空）。false = 不限。
@@ -160,8 +164,15 @@ pub struct FacetItem {
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Facets {
+    /// 平台（来源）计数：活跃口径（不含已归档 / 已隐藏）
     pub sources: Vec<FacetItem>,
-    pub accounts: Vec<FacetItem>,
+    /// 项目计数：活跃口径。项目名过 `project_name` 归一化，交给 Rust 聚合
+    /// （与 stats 同一条纪律：不在 SQL 里复刻这套规则）
+    pub projects: Vec<FacetItem>,
+    /// 平台计数：归档口径。归档列表的平台下拉必须能列出「只有归档件」的平台
+    pub archived_sources: Vec<FacetItem>,
+    /// 项目计数：归档口径
+    pub archived_projects: Vec<FacetItem>,
     pub states: Vec<FacetItem>,
     pub tags: Vec<FacetItem>,
     /// 「未命名」会话数（与活跃列表同口径：不含已归档 / 已隐藏），给筛选 chip 当角标。
@@ -450,42 +461,13 @@ impl<'a> SqliteSessions<'a> {
 
     pub fn facets(&self) -> Result<Facets> {
         self.db.read(|conn| {
-            let mut facets = Facets::default();
-            let mut stmt = conn.prepare(
-                "SELECT s.source_key, s.source_label, COUNT(*) FROM session_index s
-                 LEFT JOIN session_marks m
-                   ON m.source_key = s.source_key AND m.session_id = s.session_id
-                 WHERE m.hidden_at IS NULL AND m.archived_at IS NULL
-                 GROUP BY s.source_key, s.source_label ORDER BY s.source_label",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok(FacetItem {
-                    value: row.get(0)?,
-                    label: row.get(1)?,
-                    count: row.get::<_, i64>(2)? as usize,
-                })
-            })?;
-            for item in rows {
-                facets.sources.push(item?);
-            }
-
-            let mut stmt = conn.prepare(
-                "SELECT s.account, COUNT(*) FROM session_index s
-                 LEFT JOIN session_marks m
-                   ON m.source_key = s.source_key AND m.session_id = s.session_id
-                 WHERE m.hidden_at IS NULL AND m.archived_at IS NULL
-                 GROUP BY s.account ORDER BY s.account",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok(FacetItem {
-                    value: row.get::<_, String>(0)?,
-                    label: String::new(),
-                    count: row.get::<_, i64>(1)? as usize,
-                })
-            })?;
-            for item in rows {
-                facets.accounts.push(item?);
-            }
+            let mut facets = Facets {
+                sources: source_facets(conn, false)?,
+                archived_sources: source_facets(conn, true)?,
+                projects: project_facets(conn, false)?,
+                archived_projects: project_facets(conn, true)?,
+                ..Default::default()
+            };
 
             // 状态计数与活跃列表同一口径：已归档单独成列表，不混进这里
             let sql = format!(
@@ -616,6 +598,65 @@ impl<'a> SqliteSessions<'a> {
     }
 }
 
+/// 平台（来源）计数。`archived = false` 是活跃口径（不含已归档 / 已隐藏），
+/// `true` 是归档口径——归档列表的平台下拉必须能列出「只剩归档件」的平台。
+fn source_facets(conn: &rusqlite::Connection, archived: bool) -> Result<Vec<FacetItem>> {
+    let sql = format!(
+        "SELECT source_key, source_label, COUNT(*) FROM ({})
+         WHERE state {} 'archived'
+         GROUP BY source_key, source_label ORDER BY source_label",
+        effective_state_sql(false),
+        if archived { "=" } else { "<>" },
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(FacetItem {
+            value: row.get(0)?,
+            label: row.get(1)?,
+            count: row.get::<_, i64>(2)? as usize,
+        })
+    })?;
+    let mut out = Vec::new();
+    for item in rows {
+        out.push(item?);
+    }
+    Ok(out)
+}
+
+/// 项目计数：项目名要过 `project_name` 的归一化（slug 优先、哈希忽略），
+/// 交给 Rust 聚合而不是在 SQL 里复刻这套规则。空项目（既无 slug 也无 cwd）不进筛选项。
+fn project_facets(conn: &rusqlite::Connection, archived: bool) -> Result<Vec<FacetItem>> {
+    let sql = format!(
+        "SELECT slug, cwd FROM ({}) WHERE state {} 'archived'",
+        effective_state_sql(false),
+        if archived { "=" } else { "<>" },
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for row in rows {
+        let (slug, cwd) = row?;
+        let project = project_name(&slug, &cwd);
+        if project.is_empty() {
+            continue;
+        }
+        *counts.entry(project).or_default() += 1;
+    }
+    let mut out: Vec<FacetItem> = counts
+        .into_iter()
+        .map(|(project, count)| FacetItem {
+            value: project.clone(),
+            label: project,
+            count,
+        })
+        .collect();
+    // 条数多的在前；同条数按名字排，保证下拉顺序稳定（HashMap 迭代序是随机的）
+    out.sort_by(|a, b| b.count.cmp(&a.count).then(a.value.cmp(&b.value)));
+    Ok(out)
+}
+
 /// 项目名（stats.rs 也用）。三种来源各有各的形态，统一成「人能看懂的一句话」：
 ///   - CodeBuddy 的 slug 是工作区目录的哈希（32 位十六进制），对人没意义，忽略；
 ///   - 其余来源只有 cwd，取最后一段；
@@ -654,6 +695,34 @@ fn is_scratch_workspace(path: &str, last: &str) -> bool {
             }
         });
     timestamp_like && path.contains("WorkBuddy")
+}
+
+/// `project_name` 的 SQL 版，只给「项目」筛选的 WHERE 用。
+///
+/// 项目名是派生的（slug 优先、cwd 末段兜底、WorkBuddy 临时工作区归一成「临时」），
+/// 本可以在 Rust 里算，但筛选必须发生在分页之前——只能让 SQL 也会算。
+/// 口径必须与 `project_name` 逐字一致：单测 `project_sql_matches_project_name`
+/// 拿同一批样例比对两边结果，**改那个函数必须同步改这里**。
+fn project_sql() -> String {
+    // cwd 归一化：反斜杠转正斜杠、去尾部斜杠（对齐 trim_end_matches(['/', '\\'])）
+    let path = "rtrim(replace(TRIM(x.cwd), '\\', '/'), '/')";
+    // 末段：rtrim(P, 非斜杠字符集) 会一路削到最后一个 `/`，其长度正好是
+    // 「最后一个 `/` 的位置」，substr 从下一位取就是末段；整串没有 `/` 时全留下。
+    let last = format!("substr({path}, LENGTH(rtrim({path}, replace({path}, '/', ''))) + 1)");
+    format!(
+        "CASE
+            WHEN TRIM(x.slug) <> ''
+                 AND NOT (LENGTH(TRIM(x.slug)) >= 16
+                          AND TRIM(x.slug) NOT GLOB '*[^0-9a-fA-F]*')
+              THEN TRIM(x.slug)
+            WHEN TRIM(x.cwd) = '' THEN ''
+            WHEN LENGTH({last}) = 19
+                 AND {last} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                 AND {path} LIKE '%WorkBuddy%'
+              THEN '临时'
+            ELSE {last}
+         END"
+    )
 }
 
 /// 「生效状态」与「生效标题」只有一份口径：
@@ -737,6 +806,7 @@ fn body_clause(raw: Option<&str>) -> String {
 fn filter_where_parts(filter: &Filter) -> (String, Vec<rusqlite::types::Value>, Option<String>) {
     let source = Filter::clean(&filter.source).map(str::to_string);
     let account = Filter::clean(&filter.account).map(str::to_string);
+    let project = Filter::clean(&filter.project).map(str::to_string);
     let state = Filter::clean(&filter.state).map(str::to_string);
     let q = Filter::clean(&filter.q).map(|s| format!("%{s}%"));
     let origin = Filter::clean(&filter.origin).map(str::to_string);
@@ -756,11 +826,20 @@ fn filter_where_parts(filter: &Filter) -> (String, Vec<rusqlite::types::Value>, 
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     // 参数顺序必须与 SQL 文本里 `?` 的出现顺序一致（一个都不能错位——
     // 错一位，MATCH 就会绑到 NULL，报「syntax error near ""」这种没头没尾的错）：
-    // source×2 → account×2 → state×2 → q×4 → origin×2 → tags×n → body → pinned
-    // → 最后是 WHERE 末尾归档放行子句的 state×1
+    // source×2 → account×2 → state×2 → project×1（仅选中项目时）→ q×4 → origin×2
+    // → tags×n → body → pinned → 最后是 WHERE 末尾归档放行子句的 state×1
     push_opt(&mut params, source, 2);
     push_opt(&mut params, account, 2);
     push_opt(&mut params, state.clone(), 2);
+    // 项目筛选的表达式要归一化 cwd（replace / rtrim / GLOB 一串），没选项目时
+    // 整段不拼进去——列表是最常走的路，不该为不用的筛选项付全表扫描的代价。
+    let project_clause = match &project {
+        Some(name) => {
+            params.push(name.clone().into());
+            format!(" AND {} = ?", project_sql())
+        }
+        None => String::new(),
+    };
     push_opt(&mut params, q, 4);
     push_opt(&mut params, origin, 2);
     for tag in &tags {
@@ -777,6 +856,7 @@ fn filter_where_parts(filter: &Filter) -> (String, Vec<rusqlite::types::Value>, 
         "WHERE (? IS NULL OR x.source_key = ?)
                AND (? IS NULL OR x.account = ?)
                AND (? IS NULL OR x.state = ?)
+               {project_clause}
                AND (? IS NULL OR x.title LIKE ? OR x.source_label LIKE ? OR x.cwd LIKE ?)
                AND (? IS NULL OR x.origin = ?)
                {}
@@ -991,6 +1071,136 @@ mod tests {
         // 都没有就留空，界面显示「—」
         assert_eq!(project_name("", ""), "");
         assert_eq!(project_name("", "   "), "");
+    }
+
+    /// 项目筛选的 SQL 版必须与 `project_name` 逐字同口径：
+    /// 两边喂同一批样例，结果必须完全一致（含空值、正反斜杠、哈希 slug、临时工作区）。
+    #[test]
+    fn project_sql_matches_project_name() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let cases = [
+            // slug 优先
+            ("AI Manager", "D:/whatever"),
+            ("  AI Manager  ", "D:/whatever"),
+            // 只有 cwd：末段，正反斜杠与尾部斜杠
+            ("", "D:/AI Manager"),
+            ("", "D:/AI Manager/"),
+            ("", r"D:\AI Manager"),
+            ("", r"D:\AI Manager\"),
+            ("", "/home/lynn/work/"),
+            ("  ", "/home/lynn/work/"),
+            // 空
+            ("", ""),
+            ("", "   "),
+            ("", "/"),
+            // 哈希 slug（CodeBuddy 工作区目录名）：忽略 slug，走 cwd
+            (
+                "0123456789abcdef0123456789abcdef",
+                r"C:\Users\Lynn\WorkBuddy\my-project",
+            ),
+            // 哈希 slug + 临时工作区时间戳目录
+            (
+                "0123456789abcdef0123456789abcdef",
+                r"C:\Users\Lynn\WorkBuddy\2026-11-02-08-51-01",
+            ),
+            // 时间戳目录但不在 WorkBuddy 下：不是临时工作区
+            ("", r"D:\builds\2026-11-02-08-51-01"),
+            // 16 位以上但不是纯十六进制：当 slug 用
+            ("release-candidate-2026", "D:/proj"),
+        ];
+        db.read(|conn| {
+            for (slug, cwd) in cases {
+                let sql = format!(
+                    "SELECT {} FROM (SELECT ?1 AS slug, ?2 AS cwd) AS x",
+                    project_sql()
+                );
+                let got: String = conn
+                    .query_row(&sql, rusqlite::params![slug, cwd], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(got, project_name(slug, cwd), "slug={slug:?} cwd={cwd:?}");
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// 项目筛选：不同 slug / cwd 形态落到同一个项目名时都要命中，
+    /// page / keys / facets 三条路同口径；归档口径的筛选项单独统计。
+    #[test]
+    fn project_filter_matches_normalized_name() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let store = SqliteSessions::new(&db);
+
+        let row = |sid: &str, slug: &str, cwd: &str| {
+            let mut row = RawRow::empty("qoder", "qoder_cn", "Qoder CN");
+            row.session_id = sid.into();
+            row.title = sid.into();
+            row.slug = slug.into();
+            row.cwd = cwd.into();
+            row.last_at = 1;
+            row
+        };
+        store
+            .replace_source(
+                "qoder_cn",
+                &[
+                    // 三条不同形态，同一个项目
+                    row("s1", "", "D:/AI Manager"),
+                    row("s2", "AI Manager", "C:/somewhere-else"),
+                    row("s3", "", r"D:\AI Manager\"),
+                    // 别的项目
+                    row("s4", "", "D:/other"),
+                    // WorkBuddy 临时工作区
+                    row("s5", "", r"C:\Users\Lynn\WorkBuddy\2026-11-02-08-51-01"),
+                ],
+            )
+            .unwrap();
+
+        let filter = Filter {
+            project: Some("AI Manager".into()),
+            ..Default::default()
+        };
+        let page = store.page(&filter, None, 100).unwrap();
+        let ids = page
+            .items
+            .iter()
+            .map(|row| row.session_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["s3", "s2", "s1"], "同项目不同 cwd 形态都要命中");
+        assert_eq!(page.total, 3);
+        assert_eq!(store.keys(&filter).unwrap().len(), 3);
+
+        // 临时工作区归一成「临时」，也能按它筛
+        let scratch = Filter {
+            project: Some("临时".into()),
+            ..Default::default()
+        };
+        assert_eq!(store.page(&scratch, None, 100).unwrap().total, 1);
+
+        let facets = store.facets().unwrap();
+        let projects: Vec<(&str, usize)> = facets
+            .projects
+            .iter()
+            .map(|item| (item.value.as_str(), item.count))
+            .collect();
+        assert_eq!(projects, [("AI Manager", 3), ("other", 1), ("临时", 1)]);
+        assert!(facets.archived_projects.is_empty(), "没有归档件");
+
+        // 归档一条：活跃口径少一条，归档口径多一条
+        crate::app::sessions::marks::archive(&db, &["qoder|qoder_cn||s1".to_string()], true)
+            .unwrap();
+        let facets = store.facets().unwrap();
+        let active: Vec<(&str, usize)> = facets
+            .projects
+            .iter()
+            .map(|item| (item.value.as_str(), item.count))
+            .collect();
+        assert_eq!(active, [("AI Manager", 2), ("other", 1), ("临时", 1)]);
+        assert_eq!(facets.archived_projects.len(), 1);
+        assert_eq!(facets.archived_projects[0].value, "AI Manager");
+        assert_eq!(facets.archived_sources[0].value, "qoder_cn");
     }
 
     /// 「未命名」筛选：占位标题与空标题都算，正常标题被滤掉；page / keys / facets

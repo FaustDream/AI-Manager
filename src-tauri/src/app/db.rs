@@ -9,7 +9,7 @@ use crate::app::paths;
 use rusqlite::Connection;
 use std::sync::Mutex;
 
-pub(crate) const SCHEMA_VERSION: u32 = 4;
+pub(crate) const SCHEMA_VERSION: u32 = 5;
 
 pub struct Db {
     write: Mutex<Connection>,
@@ -235,6 +235,9 @@ impl Db {
                 if stored < 4 {
                     Self::migrate_v3_to_v4(conn)?;
                 }
+                if stored < 5 {
+                    Self::migrate_v4_to_v5(conn)?;
+                }
             }
             Ok(())
         })
@@ -287,6 +290,19 @@ impl Db {
              );",
         )?;
         conn.execute("UPDATE schema_meta SET version = 4", [])?;
+        Ok(())
+    }
+
+    /// v4 → v5：豆包不再签到（领取接口会被风控）。
+    ///
+    /// `requires_checkin` 是入表时写死的列，光改 Provider 管不到已有账号——
+    /// 不迁移的话老账号上仍会画出「签到」按钮，点了才报「不支持」。
+    fn migrate_v4_to_v5(conn: &Connection) -> Result<()> {
+        conn.execute(
+            "UPDATE accounts SET requires_checkin = 0 WHERE platform = 'doubao'",
+            [],
+        )?;
+        conn.execute("UPDATE schema_meta SET version = 5", [])?;
         Ok(())
     }
 
@@ -421,6 +437,46 @@ mod tests {
             .claims("workbuddy:u1")
             .unwrap()
             .is_empty());
+    }
+
+    /// v4 → v5：豆包老账号的 requires_checkin 必须被迁成 0，否则界面上还留着签到按钮。
+    #[test]
+    fn doubao_accounts_lose_checkin_on_v5_migration() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("app.db");
+        let db = Db::open_at(&path).unwrap();
+        let identity = crate::app::accounts::AccountIdentity {
+            iid: "doubao:dbabc".into(),
+            platform: "doubao".into(),
+            platform_label: "豆包".into(),
+            account_id: "dbabc".into(),
+            name: "豆包测试".into(),
+            expires_at: None,
+            source: "cookie".into(),
+            requires_checkin: true,
+            has_secret: true,
+        };
+        crate::app::accounts::repo::upsert_identity(&db, &identity, 0).unwrap();
+        // 回退版本号，模拟「升级前就已经有这个账号」的存量库
+        db.write(|conn| {
+            conn.execute("UPDATE schema_meta SET version = 4", [])?;
+            Ok(())
+        })
+        .unwrap();
+        drop(db);
+
+        let db = Db::open_at(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+        let flag: i64 = db
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT requires_checkin FROM accounts WHERE iid = 'doubao:dbabc'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(flag, 0, "豆包不再参与签到");
     }
 
     #[test]

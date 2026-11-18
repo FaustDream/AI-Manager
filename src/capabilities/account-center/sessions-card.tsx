@@ -1,11 +1,12 @@
 // 账号详情里的「该账号的会话」区块：把会话页的账号维度接到账号中心。
 // 只对有账号归属的来源有意义（WorkBuddy / CodeBuddy 的会话行带 uid）；
 // Trae / Qoder / ZCode 的会话没有账号字段（显示「本机」），不下钻。
+//
+// 会话页已撤掉账号维度（列表合并、不显示账号），所以这里只做「就地看最近几条」，
+// 不再提供「去会话页按这个账号筛」的下钻入口。
 import { useQuery } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
 import { DataTable, type Column } from '@/components/ui/table';
 import { queryCmd } from '@/lib/cmd';
-import { navigate } from '@/lib/nav';
 import { fmtTime } from '@/lib/format';
 import type { AccountView, Filter, SessionRow } from '@/lib/types';
 import { STATE_LABELS } from '@/capabilities/sessions/grouping';
@@ -39,7 +40,7 @@ const columns: Column<SessionRow>[] = [
 export function AccountSessionsCard({ account }: { account: AccountView }) {
   const uid = uidOf(account);
   const filter: Filter = {
-    source: null, account: uid, state: null, q: null, origin: null,
+    source: null, account: uid, project: null, state: null, q: null, origin: null,
     unnamed: false, pinned: false, hidden: false, body: null, tags: [], sort: 'last_at',
   };
   const sessions = useQuery({
@@ -58,16 +59,6 @@ export function AccountSessionsCard({ account }: { account: AccountView }) {
         <h3 className="text-xs font-semibold tracking-wide text-fg2">该账号的会话</h3>
         <span className="flex-1" />
         <span className="text-xs text-muted">共 {total} 条</span>
-        {total > 0 && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => navigate('sessions', { account: uid })}
-            title="去会话页，按这个账号筛选"
-          >
-            查看全部 →
-          </Button>
-        )}
       </div>
       <div className="max-h-52 overflow-auto">
         <DataTable

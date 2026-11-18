@@ -2,7 +2,24 @@
 import type { FacetItem } from "./FacetItem";
 import type { FtsStatus } from "./FtsStatus";
 
-export type Facets = { sources: Array<FacetItem>, accounts: Array<FacetItem>, states: Array<FacetItem>, tags: Array<FacetItem>, 
+export type Facets = { 
+/**
+ * 平台（来源）计数：活跃口径（不含已归档 / 已隐藏）
+ */
+sources: Array<FacetItem>, 
+/**
+ * 项目计数：活跃口径。项目名过 `project_name` 归一化，交给 Rust 聚合
+ * （与 stats 同一条纪律：不在 SQL 里复刻这套规则）
+ */
+projects: Array<FacetItem>, 
+/**
+ * 平台计数：归档口径。归档列表的平台下拉必须能列出「只有归档件」的平台
+ */
+archived_sources: Array<FacetItem>, 
+/**
+ * 项目计数：归档口径
+ */
+archived_projects: Array<FacetItem>, states: Array<FacetItem>, tags: Array<FacetItem>, 
 /**
  * 「未命名」会话数（与活跃列表同口径：不含已归档 / 已隐藏），给筛选 chip 当角标。
  */

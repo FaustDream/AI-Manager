@@ -244,7 +244,7 @@ fn make(client_key: &str) -> Option<Box<dyn Provider>> {
         "zcode" => Some(Box::new(ZCodeProvider::new())),
         "trae" => Some(Box::new(TraeProvider::new())),
         // 豆包没有可读的本地登录态：账号靠「粘贴 Cookie」添加（accounts::cookie），
-        // 扫描恒为 0。列在这里是为了让签到 / 刷新积分能找到实现。
+        // 扫描恒为 0。列在这里是为了让「刷新积分」能找到实现（豆包不签到）。
         "doubao" => Some(Box::new(DoubaoProvider::new())),
         _ => None,
     }

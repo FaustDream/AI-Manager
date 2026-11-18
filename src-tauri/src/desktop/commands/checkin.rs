@@ -24,15 +24,6 @@ pub async fn checkin_credits(
         .await)
 }
 
-/// 只读诊断：调平台查询接口，不写库、不触发签到；结果同时落日志 `diagnose`。
-#[tauri::command]
-pub async fn checkin_diagnose(
-    state: State<'_, AppState>,
-    iid: String,
-) -> std::result::Result<crate::app::checkin::DiagnoseReport, String> {
-    state.checkin.diagnose(&iid).await.map_err(err_text)
-}
-
 /// 详情面板：余额、今日增减、批次、下次可签。只读本地库，不打接口。
 #[tauri::command]
 
