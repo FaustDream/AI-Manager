@@ -19,18 +19,19 @@ use crate::app::accounts::repo;
 use crate::app::db::Db;
 use crate::app::error::{AppError, ErrorKind, Result};
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_stream::wrappers::ReceiverStream;
 
 const DEFAULT_PORT: u16 = 43861;
@@ -72,6 +73,138 @@ pub struct ModelEntry {
     pub name: String,
 }
 
+/// 一次接口调用的摘要（界面「最近调用」列表）。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize)]
+pub struct CallRecord {
+    pub ts: String,
+    /// 请求路径（`/v1/chat/completions` …）
+    pub path: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub status: u16,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub ms: u64,
+    pub ok: bool,
+}
+
+/// 接口运行统计（界面只读展示；重启后从零开始）。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelApiStats {
+    pub running: bool,
+    /// 本次监听启动时间；从未启动过为 None
+    pub started_at: Option<String>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub uptime_secs: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub requests: u64,
+    /// 非 2xx 的调用数（含鉴权失败与上游错误）
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub failures: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub avg_ms: u64,
+    pub last_request_at: Option<String>,
+    /// 最近 20 次调用，时间倒序
+    pub recent: Vec<CallRecord>,
+}
+
+/// 自检结果：带 Key 真发一次 `/v1/models`，验证「监听 + 鉴权 + 上游」整条链路。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelApiProbe {
+    pub ok: bool,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub status: u16,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub ms: u64,
+    pub url: String,
+    pub detail: String,
+}
+
+/// 进程内的调用计数与最近记录。
+struct Stats {
+    started_at: std::sync::OnceLock<String>,
+    started: std::sync::OnceLock<Instant>,
+    requests: AtomicU64,
+    failures: AtomicU64,
+    total_ms: AtomicU64,
+    last_at: Mutex<Option<String>>,
+    recent: Mutex<VecDeque<CallRecord>>,
+}
+
+impl Stats {
+    fn new() -> Self {
+        Self {
+            started_at: std::sync::OnceLock::new(),
+            started: std::sync::OnceLock::new(),
+            requests: AtomicU64::new(0),
+            failures: AtomicU64::new(0),
+            total_ms: AtomicU64::new(0),
+            last_at: Mutex::new(None),
+            recent: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn mark_started(&self) {
+        let _ = self.started_at.set(chrono::Local::now().to_rfc3339());
+        let _ = self.started.set(Instant::now());
+    }
+
+    fn record(&self, path: &str, status: u16, ms: u64, ok: bool) {
+        let ts = chrono::Local::now().to_rfc3339();
+        if let Ok(mut last) = self.last_at.lock() {
+            *last = Some(ts.clone());
+        }
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        self.total_ms.fetch_add(ms, Ordering::Relaxed);
+        if !ok {
+            self.failures.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Ok(mut recent) = self.recent.lock() {
+            if recent.len() >= 20 {
+                recent.pop_back();
+            }
+            recent.push_front(CallRecord {
+                ts,
+                path: path.to_string(),
+                status,
+                ms,
+                ok,
+            });
+        }
+    }
+
+    fn snapshot(&self, running: bool) -> ModelApiStats {
+        let requests = self.requests.load(Ordering::Relaxed);
+        let total_ms = self.total_ms.load(Ordering::Relaxed);
+        ModelApiStats {
+            running,
+            started_at: self.started_at.get().cloned(),
+            // 停掉之后不能再按 Instant 继续累加：那会把「停止后又过了几小时」画成运行时长
+            uptime_secs: if running {
+                self.started
+                    .get()
+                    .map(|at| at.elapsed().as_secs())
+                    .unwrap_or(0)
+            } else {
+                0
+            },
+            requests,
+            failures: self.failures.load(Ordering::Relaxed),
+            avg_ms: total_ms.checked_div(requests).unwrap_or(0),
+            last_request_at: self.last_at.lock().ok().and_then(|v| v.clone()),
+            recent: self
+                .recent
+                .lock()
+                .map(|v| v.iter().cloned().collect())
+                .unwrap_or_default(),
+        }
+    }
+}
+
 /// 一个豆包账号的转发会话。
 #[derive(Clone)]
 struct Session {
@@ -105,6 +238,7 @@ struct ApiState {
     cache: Arc<Mutex<BTreeMap<String, Catalog>>>,
     /// 轮询起点：每次请求 +1，让多个豆包账号轮流承载。
     rr: Arc<AtomicUsize>,
+    stats: Arc<Stats>,
 }
 
 /// 服务器单例：同一时间只有一个监听。
@@ -115,6 +249,7 @@ struct Server {
     /// 配置里的端口。
     configured: u16,
     key: Arc<RwLock<String>>,
+    stats: Arc<Stats>,
 }
 
 fn server() -> &'static Mutex<Server> {
@@ -125,6 +260,7 @@ fn server() -> &'static Mutex<Server> {
             port: DEFAULT_PORT,
             configured: DEFAULT_PORT,
             key: Arc::new(RwLock::new(String::new())),
+            stats: Arc::new(Stats::new()),
         })
     })
 }
@@ -224,6 +360,25 @@ pub async fn set_port(db: Arc<Db>, port: u16) -> Result<ModelApiInfo> {
     serve(db, port, key).await
 }
 
+/// 重启监听（换端口、改 Key 之外的排障手段）：停旧监听 → 用配置端口重新绑定。
+/// 没在跑时等价于启动，并把「用户要它开着」的偏好写回。
+pub async fn restart(db: Arc<Db>) -> Result<ModelApiInfo> {
+    set_enabled(&db, true).await?;
+    stop_listening();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let port = crate::app::runtime::blocking({
+        let db = db.clone();
+        move || configured_port(&db)
+    })
+    .await?;
+    let key = crate::app::runtime::blocking({
+        let db = db.clone();
+        move || load_key(&db)
+    })
+    .await??;
+    serve(db, port, key).await
+}
+
 /// 绑定监听并起服务。
 ///
 /// 端口被占用时**不报错退出**，而是先顺延相邻端口、再退系统空闲端口——否则整个
@@ -237,12 +392,15 @@ async fn serve(db: Arc<Db>, want: u16, key: String) -> Result<ModelApiInfo> {
 
     // key 用 Arc 共享：regenerate_key 改的是同一个 RwLock，正在跑的接口立即生效
     let key_arc = Arc::new(RwLock::new(key));
+    let stats = Arc::new(Stats::new());
+    stats.mark_started();
     let state = ApiState {
         db,
         client,
         key: key_arc.clone(),
         cache: Arc::new(Mutex::new(BTreeMap::new())),
         rr: Arc::new(AtomicUsize::new(0)),
+        stats: stats.clone(),
     };
     let app = router(state);
 
@@ -263,6 +421,7 @@ async fn serve(db: Arc<Db>, want: u16, key: String) -> Result<ModelApiInfo> {
     srv.port = port;
     srv.configured = want;
     srv.key = key_arc;
+    srv.stats = stats;
     Ok(snapshot(&srv))
 }
 
@@ -357,6 +516,7 @@ pub async fn available_models(db: Arc<Db>) -> Result<Vec<ModelEntry>> {
         key: Arc::new(RwLock::new(String::new())),
         cache: Arc::new(Mutex::new(BTreeMap::new())),
         rr: Arc::new(AtomicUsize::new(0)),
+        stats: Arc::new(Stats::new()),
     };
     let targets = load_targets(&state.db).await?;
     if targets.is_empty() {
@@ -403,6 +563,90 @@ pub fn info() -> ModelApiInfo {
             configured_port: DEFAULT_PORT,
             key: String::new(),
         })
+}
+
+/// 当前运行统计（界面「运行概览」；停止后仍保留上一次监听的数字）。
+pub fn stats() -> ModelApiStats {
+    match server().lock() {
+        Ok(srv) => srv.stats.snapshot(srv.shutdown.is_some()),
+        Err(_) => ModelApiStats {
+            running: false,
+            started_at: None,
+            uptime_secs: 0,
+            requests: 0,
+            failures: 0,
+            avg_ms: 0,
+            last_request_at: None,
+            recent: Vec::new(),
+        },
+    }
+}
+
+/// 带 Key 真发一次 `/v1/models`：验证「监听 → 鉴权 → 上游目录」整条链路。
+/// 失败也返回结果（`status` 为 0 表示连接层失败），界面按 `ok` 决定颜色。
+pub async fn probe() -> Result<ModelApiProbe> {
+    let (running, port, key) = {
+        let srv = server()
+            .lock()
+            .map_err(|_| AppError::new(ErrorKind::Io, "模型接口状态锁失效"))?;
+        // guard 必须先落到局部变量再进元组：临时值的 Drop 会早于 srv，借用检查过不去
+        let key = srv.key.read().unwrap_or_else(|e| e.into_inner()).clone();
+        (srv.shutdown.is_some(), srv.port, key)
+    };
+    if !running {
+        return Err(AppError::new(
+            ErrorKind::Invalid,
+            "接口未启动，请先点「启动」再自检",
+        ));
+    }
+    let url = format!("http://127.0.0.1:{port}/v1/models");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .no_proxy()
+        .user_agent("AI-Manager")
+        .build()
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("构建 HTTP 客户端失败：{e}")))?;
+    let started = Instant::now();
+    let result = client.get(&url).bearer_auth(&key).send().await;
+    let ms = started.elapsed().as_millis() as u64;
+    match result {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let ok = resp.status().is_success();
+            let body = resp.text().await.unwrap_or_default();
+            let detail = if ok {
+                "监听、鉴权与上游模型目录均正常".to_string()
+            } else if status == 401 {
+                "API Key 被拒绝：接口里的 Key 与界面不一致，重新生成后再试".to_string()
+            } else {
+                let brief: String = body.chars().take(200).collect();
+                format!("HTTP {status}：{brief}")
+            };
+            Ok(ModelApiProbe {
+                ok,
+                status,
+                ms,
+                url,
+                detail,
+            })
+        }
+        Err(e) => Ok(ModelApiProbe {
+            ok: false,
+            status: 0,
+            ms,
+            url,
+            detail: format!(
+                "连接失败：{}",
+                if e.is_timeout() {
+                    "请求超时"
+                } else if e.is_connect() {
+                    "连不上本机监听"
+                } else {
+                    "请求失败"
+                }
+            ),
+        }),
+    }
 }
 
 fn snapshot(srv: &Server) -> ModelApiInfo {
@@ -463,7 +707,25 @@ fn router(state: ApiState) -> Router {
         // OpenAI Responses 形态：新版 SDK/客户端用 `/responses`
         .route("/v1/responses", post(responses_create))
         .route("/responses", post(responses_create))
+        // 统一在路由层记调用：每个 handler 自己记会漏掉鉴权失败与 404，
+        // 而那正是「客户端连不上」时最需要看到的证据。
+        .layer(middleware::from_fn_with_state(state.clone(), track_call))
         .with_state(state)
+}
+
+/// 记录每次调用的路径、状态码与耗时（不含请求体，避免把对话内容落进统计）。
+async fn track_call(State(state): State<ApiState>, req: Request, next: Next) -> Response {
+    let started = Instant::now();
+    let path = req.uri().path().to_string();
+    let resp = next.run(req).await;
+    let status = resp.status().as_u16();
+    state.stats.record(
+        &path,
+        status,
+        started.elapsed().as_millis() as u64,
+        resp.status().is_success(),
+    );
+    resp
 }
 
 async fn list_models(State(state): State<ApiState>, headers: HeaderMap) -> Response {
@@ -909,7 +1171,7 @@ fn parse_responses(body: &Value) -> std::result::Result<ChatRequest, String> {
 /// token 粗估：中文约 1 字 1 token、英文约 4 字符 1 token，取中间当量。
 /// 只用于 usage 展示与上下文裁剪，不追求准确。
 fn est_tokens(chars: usize) -> usize {
-    ((chars + 2) / 3).max(1)
+    chars.div_ceil(3).max(1)
 }
 
 /// 取出**所有**启用且带凭据的豆包账号，按账号中心的排序返回。
@@ -1846,6 +2108,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // 端口用例必须串行，锁故意跨 await 持有
     async fn bind_uses_configured_port_when_free() {
         let _g = port_guard();
         // 先占一个随机端口再释放，拿到一个当下大概率空闲的端口
@@ -1861,6 +2124,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // 端口用例必须串行，锁故意跨 await 持有
     async fn bind_falls_back_to_neighbor_port_when_taken() {
         let _g = port_guard();
         // 占住端口模拟「被别的程序用了」

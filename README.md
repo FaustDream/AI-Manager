@@ -89,20 +89,27 @@ Prerequisites: Rust stable, Node.js 22, WebView2 (bundled on Windows 11). Buildi
 ```bash
 npm ci
 
-# Development: two terminals
-npm run dev                                  # terminal 1: Vite dev server (127.0.0.1:5273)
-cd src-tauri && cargo run --bin ai-manager   # terminal 2: desktop shell, connects to 5273
+# Development: one command starts Vite + the web debug shell and opens a browser
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-run.ps1
+
+# Manual equivalent
+npm run dev                                     # terminal 1: Vite dev server (127.0.0.1:5273)
+cd src-tauri && cargo run --bin ai-manager-web  # terminal 2: web debug shell (127.0.0.1:5274)
+# then open http://127.0.0.1:5273 in a browser
+
+# The desktop shell is only for validating tray / single-instance / native-window behavior
+cd src-tauri && cargo run --bin ai-manager
 
 # Release build
 npm run build
 cd src-tauri && cargo build --release --features custom-protocol
 ```
 
-`--bin ai-manager` is required: `src-tauri` has two binaries (`ai-manager` and the web debug shell `ai-manager-web`) and Cargo has no default target.
+`--bin` is required: `src-tauri` has two binaries (the desktop shell `ai-manager` and the web debug shell `ai-manager-web`) and Cargo has no default target. Development and routine self-testing use the web shell, not the local desktop app.
 
 `custom-protocol` is also required, otherwise the release build tries to reach devUrl and shows a blank window.
 
-To debug the UI in a browser: `cargo run --bin ai-manager-web`. It binds `127.0.0.1` only and shares the single-instance lock with the desktop shell, so the two cannot run at once.
+The web debug shell binds `127.0.0.1` only and shares the single-instance lock with the desktop shell, so the two cannot run at once.
 
 The pre-commit gates match CI:
 

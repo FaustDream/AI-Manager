@@ -92,11 +92,31 @@ async fn second_checkin_does_not_call_the_api_again() {
 }
 
 #[tokio::test]
+async fn run_round_skips_marked_accounts_without_any_api_call() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_trae_account(&db);
+    let http = mock_http(200, r#"{"code":0}"#);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    // 本机已记录今天签过：轮询必须直接跳过，不能为了「确认」再打状态/签到接口
+    ai_manager::app::checkin::SqliteCheckin::new(&db)
+        .mark_today(&iid, clock.as_ref())
+        .unwrap();
+    let round = service.run_round("user").await;
+    assert!(round.skipped >= 1);
+    assert_eq!(round.due, 0);
+    assert_eq!(http.call_count(STATUS_URL), 0, "本地已签不该再查状态");
+    assert_eq!(http.call_count(CLAIM_URL), 0, "本地已签不该再调签到接口");
+}
+
+#[tokio::test]
 async fn failed_checkin_does_not_mark_today() {
     let paths = TestPaths::new();
     let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
     let iid = seed_trae_account(&db);
-    // 连续三次失败（编排层会重试 3 次），之后再成功；失败不能写去重表
+    // 第一次失败只提交一次（不再自动重试），之后重签成功；失败不能写去重表
     let http = Arc::new(MockHttp::new());
     http.on(
         STATUS_URL,
@@ -106,8 +126,6 @@ async fn failed_checkin_does_not_mark_today() {
     http.on_sequence(
         CLAIM_URL,
         vec![
-            (500, r#"{"message":"服务器开小差"}"#),
-            (500, r#"{"message":"服务器开小差"}"#),
             (500, r#"{"message":"服务器开小差"}"#),
             (200, r#"{"code":0}"#),
         ],
@@ -120,9 +138,14 @@ async fn failed_checkin_does_not_mark_today() {
     let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
     let service = Service::new(db.clone(), http.clone(), clock.clone());
 
-    // 三次都 500：编排层如实把错误往上抛，关键是别记成已签
+    // 一次 500：如实把错误往上抛，关键是别记成已签，也别自动补发第二次
     let failed = service.checkin(&iid).await;
     assert!(failed.is_err(), "接口失败要如实报错，不能静默成功");
+    assert_eq!(
+        http.call_count(CLAIM_URL),
+        1,
+        "风控优先：一次失败只提交一次，不能自动重试"
+    );
 
     let retried = service.checkin(&iid).await.unwrap();
     assert!(
@@ -132,8 +155,8 @@ async fn failed_checkin_does_not_mark_today() {
     );
     assert_eq!(
         http.call_count(CLAIM_URL),
-        4,
-        "失败那轮重试 3 次，成功后重签 1 次；失败不占去重名额"
+        2,
+        "失败一轮 1 次、成功后重签 1 次；失败不占去重名额"
     );
 }
 
@@ -216,9 +239,10 @@ async fn batch_limits_default_to_legacy_behavior() {
     assert_eq!(service.batch_limits_for_test().await, (3, 0));
 }
 
-/// 不补的话：列表永远停在「待查询」，每轮轮询还会再问一次签到接口。
+/// 积分刷新只打积分接口；签到结论只由本地去重表 / 真实签到回答。
+/// 平台侧已签的账号在下一次签到提交时会被 provider 拦住并落本地标记，不该靠刷新去猜。
 #[tokio::test]
-async fn refresh_marks_today_when_platform_already_signed() {
+async fn refresh_does_not_query_checkin_status() {
     let paths = TestPaths::new();
     let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
     let iid = seed_trae_account(&db);
@@ -242,16 +266,30 @@ async fn refresh_marks_today_when_platform_already_signed() {
         "前提：本工具没有这个账号的签到记录"
     );
 
-    // 「刷新积分」按钮打的就是这一发
+    // 「刷新积分」按钮打的就是这一发：只查积分，不查签到状态
     let out = service
         .credits_batch(std::slice::from_ref(&iid), "user")
         .await;
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].1.balance, Some(60.0), "余额照旧要刷出来");
     assert!(
-        store.marked_today(&iid, clock.as_ref()),
-        "平台说今天已签，本地标记必须补上"
+        !store.marked_today(&iid, clock.as_ref()),
+        "积分刷新不能替平台下「今天已签」的结论"
     );
+    assert_eq!(
+        http.call_count(STATUS_URL),
+        0,
+        "积分刷新不该再打签到状态接口"
+    );
+
+    // 真正走一次签到：provider 先查状态，平台说已签就不提交 claim，服务层落本地标记
+    let result = service.checkin(&iid).await.unwrap();
+    assert!(result.ok && result.already);
+    assert!(
+        store.marked_today(&iid, clock.as_ref()),
+        "平台确认已签后，本地标记必须补上"
+    );
+    assert_eq!(http.call_count(CLAIM_URL), 0, "平台已签就别再调签到接口");
 
     let mut rows = repo::list(&db).unwrap();
     ai_manager::app::checkin::store::hydrate(&db, &mut rows, clock.as_ref());
@@ -260,7 +298,6 @@ async fn refresh_marks_today_when_platform_already_signed() {
         Some(true),
         "列表要显示「已签」，不是「待查询」"
     );
-    assert_eq!(http.call_count(CLAIM_URL), 0, "状态已签就别再调签到接口");
 }
 
 /// 平台明确说「今天没签」时，列表要显示「未签」——不能也画成「待查询」。
@@ -307,10 +344,16 @@ async fn increased_balance_without_checkin_does_not_block_later_checkin() {
         .credits_batch(std::slice::from_ref(&iid), "user")
         .await;
     let store = ai_manager::app::checkin::SqliteCheckin::new(&db);
-    assert_eq!(store.balance_on(&iid, "2026-10-30"), Some(160.0));
+    assert_eq!(
+        store.balance_on(&iid, "2026-10-30"),
+        Some(60.0),
+        "当天首笔余额是基线，不能被第二次查询覆盖"
+    );
     assert!(!store.marked_today(&iid, clock.as_ref()));
     assert!(!service.detail(&iid).await.checked_in);
     let detail = serde_json::to_value(service.detail(&iid).await).unwrap();
+    assert_eq!(detail["balance"], 160.0, "详情显示最新余额");
+    assert_eq!(detail["today_delta"], 100.0, "最新 160 - 基线 60");
     assert_eq!(
         detail["claims"],
         serde_json::json!([]),
@@ -351,7 +394,7 @@ async fn trae_claim_amount_is_unknown_even_when_balance_increases() {
         vec![
             (
                 200,
-                r#"{"usage_summary":{"total_amount":100,"consumed_amount":40}}"#,
+                r#"{"usage_summary":{"total_amount":150,"consumed_amount":40}}"#,
             ),
             (
                 200,
@@ -425,33 +468,49 @@ async fn distinct_confirmed_claims_on_one_date_keep_both_records() {
 }
 
 #[tokio::test]
-async fn live_credit_checkin_records_claim_but_replays_and_failures_do_not() {
+async fn live_credit_checkin_marks_today_and_stops_after_success() {
     let paths = TestPaths::new();
     let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
     let iid = seed_workbuddy_account(&db);
     let http = Arc::new(MockHttp::new());
+    // 先失败一次（不写标记），再成功一次；成功之后当天不再打签到接口
     http.on_sequence(
         WB_DAILY_URL,
         vec![
-            (200, r#"{"code":10001}"#),
             (200, r#"{"code":42,"msg":"拒绝"}"#),
             (200, r#"{"code":0,"data":{"credit":10}}"#),
+            (200, r#"{"code":10001}"#),
         ],
     );
-    let service = Service::new(
-        db.clone(),
-        http,
-        Arc::new(clock_at("2026-10-30T10:00:00+08:00")),
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    let failed = service.checkin(&iid).await.unwrap();
+    assert!(!failed.ok, "平台明确拒绝不能算成功");
+    assert_eq!(
+        http.call_count(WB_DAILY_URL),
+        1,
+        "失败只提交一次，不自动重试"
     );
-    assert!(service.checkin(&iid).await.unwrap().already);
-    assert!(!service.checkin(&iid).await.unwrap().ok);
     let before = serde_json::to_value(service.detail(&iid).await).unwrap();
-    assert_eq!(before["claims"], serde_json::json!([]));
-    assert!(service.checkin(&iid).await.unwrap().ok);
+    assert_eq!(before["claims"], serde_json::json!([]), "失败不记领取");
+
+    let ok = service.checkin(&iid).await.unwrap();
+    assert!(ok.ok && !ok.already);
+    assert_eq!(http.call_count(WB_DAILY_URL), 2);
     let detail = serde_json::to_value(service.detail(&iid).await).unwrap();
     assert_eq!(detail["claims"].as_array().unwrap().len(), 1);
     assert_eq!(detail["claims"][0]["amount"], 10.0);
     assert!(ai_manager::app::checkin::store::lots_of(&db, &iid, 10).is_empty());
+
+    // 成功后当天封闸：第三次点击不能再打签到接口
+    let replay = service.checkin(&iid).await.unwrap();
+    assert!(replay.ok && replay.already);
+    assert_eq!(
+        http.call_count(WB_DAILY_URL),
+        2,
+        "签到成功后当天不能再使用签到接口"
+    );
 }
 
 #[tokio::test]

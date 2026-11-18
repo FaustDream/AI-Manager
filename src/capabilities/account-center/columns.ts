@@ -217,20 +217,3 @@ export const COLUMNS: ColumnDefEx[] = [
   { key: 'credit', header: '积分 / 配额', width: 128, min: 90, cell: creditCell },
   { key: 'checkin', header: '签到', width: 104, min: 70, cell: checkinCell },
 ];
-
-
-/**
- * 「需要人处理」的排序权重：0 已坏 → 1 快到期/最近失败 → 2 正常 → 3 停用/无凭据。
- *
- * 手动拖动顺序是用户的主排序；这个权重只在用户主动切到「需处理优先」时生效，
- * 不改变 `sort_order`，也不在后台偷偷重排。
- */
-export function attentionRank(a: AccountView, now = Date.now()): number {
-  if (a.has_secret && a.expires_at !== null && a.expires_at < now) return 0;
-  const days = daysUntil(a.expires_at);
-  if (a.has_secret && days !== null && days <= 3) return 1;
-  // 网络 / 限流不需要用户动手处理，别把它排进「需处理」
-  if (a.last_fail_kind && !TRANSIENT_FAIL.has(a.last_fail_kind)) return 1;
-  if (!a.has_secret || !a.enabled) return 3;
-  return 2;
-}

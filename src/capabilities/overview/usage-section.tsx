@@ -18,7 +18,8 @@ import { Delta, Metric, SectionTitle, ShareBar, shareText } from './metric';
 export function UsageSection() {
   const qc = useQueryClient();
   const { busy, run } = useBusy();
-  const [days, setDays] = useState(14);
+  // 默认今天：与上面的积分收支同一个默认口径
+  const [days, setDays] = useState(1);
 
   const overview = useQuery<UsageOverview>({
     queryKey: ['usage', days],
@@ -52,7 +53,7 @@ export function UsageSection() {
           <span className="flex flex-wrap items-center gap-1">
             {data?.scanned_at && <span className="mr-1">上次采集 {fmtTime(data.scanned_at)}</span>}
             <span className="flex items-center gap-0.5 rounded border border-line p-0.5">
-              {[7, 14, 30].map((value) => (
+              {[1, 7, 14, 30].map((value) => (
                 <button
                   key={value}
                   className={
@@ -62,7 +63,7 @@ export function UsageSection() {
                   }
                   onClick={() => setDays(value)}
                 >
-                  {value} 天
+                  {value === 1 ? '今天' : `${value} 天`}
                 </button>
               ))}
             </span>
@@ -96,8 +97,12 @@ export function UsageSection() {
         <div className="rounded-lg border border-dashed border-line">
           <StateBlock
             kind="empty"
-            title="还没有用量数据"
-            detail="采集器只读客户端本地文件，不改任何配置。点「扫描本地文件」立刻跑一次；之后每 30 分钟自动增量扫描。"
+            title={days === 1 ? '今天还没有用量数据' : '还没有用量数据'}
+            detail={
+              days === 1
+                ? '默认只看今天；切到 7 / 14 / 30 天可看历史区间。采集器只读客户端本地文件，不改任何配置，之后每 30 分钟自动增量扫描。'
+                : '采集器只读客户端本地文件，不改任何配置。点「扫描本地文件」立刻跑一次；之后每 30 分钟自动增量扫描。'
+            }
           />
           <div className="pb-6 text-center">
             <Button size="sm" variant="primary" onClick={scan} loading={busy === 'scan'}>

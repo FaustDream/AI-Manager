@@ -141,13 +141,13 @@ impl Provider for DoubaoProvider {
     }
 
     async fn checkin(&self, cred: &Credential, http: &dyn Http) -> Result<ActionResult> {
-        // 先看今天签没签：签到接口本身幂等，但先查能拿到连签天数与今日奖励
-        let data = self.detail(cred, http).await?;
-        let panel = parse_panel(&data)?;
-        if panel.checked {
+        // 提交前查一次积分面板：既确认今天签没签，也作为「前后对比」的基线。
+        let before_data = self.detail(cred, http).await?;
+        let before = parse_panel(&before_data)?;
+        if before.checked {
             return Ok(ActionResult {
                 ok: true,
-                message: format!("今日已签到（{}）", panel.summary()),
+                message: format!("今日已签到（{}）", before.summary()),
                 granted: None,
                 validity_days: None,
                 already: true,
@@ -171,15 +171,25 @@ impl Provider for DoubaoProvider {
             });
         }
 
-        let granted = data
-            .get("reward_amount")
-            .and_then(as_f64)
-            .or(panel.reward)
+        // 领完再查一次面板，用累计额度的前后差算这次实际到账；
+        // 接口的 reward_amount 只作兜底（部分活动不返回金额）。
+        let after = self
+            .detail(cred, http)
+            .await
+            .ok()
+            .and_then(|data| parse_panel(&data).ok());
+        let delta = match (before.total, after.as_ref().and_then(|panel| panel.total)) {
+            (Some(before), Some(after)) => Some(after - before).filter(|v| *v > 0.0),
+            _ => None,
+        };
+        let granted = delta
+            .or_else(|| data.get("reward_amount").and_then(as_f64))
+            .or(before.reward)
             .filter(|v| *v > 0.0);
         let days = data
             .get("continuous_days")
             .and_then(as_i64)
-            .unwrap_or(panel.continuous);
+            .unwrap_or(before.continuous);
         Ok(ActionResult {
             ok: true,
             message: match granted {

@@ -13,7 +13,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
-  Users, MessagesSquare, Blocks, Settings, RefreshCw, ScrollText, LayoutDashboard,
+  Users, MessagesSquare, Blocks, Settings, RefreshCw, ScrollText, LayoutDashboard, Network,
 } from 'lucide-react';
 import { MotionConfig, motion } from 'motion/react';
 import { capabilities } from '@/app/router';
@@ -35,6 +35,7 @@ const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   'account-center': Users,
   sessions: MessagesSquare,
   hub: Blocks,
+  'model-api': Network,
   logs: ScrollText,
   settings: Settings,
 };

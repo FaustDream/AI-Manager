@@ -6,6 +6,6 @@ export const manifest: Manifest = {
   id: 'sessions-archive',
   title: '已归档会话',
   icon: 'sessions',
-  order: 7,
+  order: 8,
   hidden: true,
 };

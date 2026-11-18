@@ -37,9 +37,12 @@ import type {
   ImportReport,
   LogLine,
   LogFilter,
+  LogContext,
   LogSpan,
   LoginStart,
   ModelApiInfo,
+  ModelApiProbe,
+  ModelApiStats,
   ModelEntry,
   Page,
   Preview,
@@ -77,7 +80,6 @@ export interface CmdArgs {
   account_set_alias: { iid: string; alias: string };
   account_set_note: { iid: string; note: string };
   account_batch_diagnose: { iids: string[] };
-  account_export: void;
   account_reward_credits: { iid: string };
   account_reorder: { iids: string[] };
   account_delete: { iid: string };
@@ -106,6 +108,9 @@ export interface CmdArgs {
   model_api_info: void;
   model_api_start: void;
   model_api_stop: void;
+  model_api_restart: void;
+  model_api_stats: void;
+  model_api_probe: void;
   model_api_models: void;
   model_api_set_port: { port: number };
   model_api_regenerate_key: void;
@@ -172,6 +177,7 @@ export interface CmdArgs {
   log_query: { filter: LogFilter };
   log_span: void;
   log_stats: { filter: LogFilter };
+  log_context: { anchor: number | null; ts: string | null; before: number; after: number };
   log_export: { path: string | null; filter: LogFilter };
   log_clear: void;
   log_action: { action: string; trigger: string; ok: boolean; ms: number; detail: string };
@@ -206,7 +212,6 @@ export interface CmdReturn {
   account_set_alias: string;
   account_set_note: string;
   account_batch_diagnose: BatchDiagnoseReport;
-  account_export: string;
   account_reward_credits: RewardCredits;
   account_reorder: void;
   account_delete: boolean;
@@ -235,6 +240,9 @@ export interface CmdReturn {
   model_api_info: ModelApiInfo;
   model_api_start: ModelApiInfo;
   model_api_stop: ModelApiInfo;
+  model_api_restart: ModelApiInfo;
+  model_api_stats: ModelApiStats;
+  model_api_probe: ModelApiProbe;
   model_api_models: ModelEntry[];
   model_api_set_port: ModelApiInfo;
   model_api_regenerate_key: ModelApiInfo;
@@ -301,6 +309,7 @@ export interface CmdReturn {
   log_query: LogLine[];
   log_span: LogSpan;
   log_stats: LogStat[];
+  log_context: LogContext;
   log_export: string;
   log_clear: void;
   log_action: void;
@@ -360,7 +369,6 @@ const CMD_LABELS: Record<string, string> = {
   account_set_alias: '设置账号别名',
   account_set_note: '设置账号备注',
   account_batch_diagnose: '批量诊断',
-  account_export: '导出账号清单',
   account_reward_credits: '读取奖励积分明细',
   account_reorder: '调整账号顺序',
   account_delete: '删除账号',
@@ -387,6 +395,9 @@ const CMD_LABELS: Record<string, string> = {
   model_api_info: '读取模型接口状态',
   model_api_start: '启动模型接口',
   model_api_stop: '停止模型接口',
+  model_api_restart: '重启模型接口',
+  model_api_stats: '读取接口运行统计',
+  model_api_probe: '接口自检',
   model_api_models: '获取豆包模型列表',
   model_api_set_port: '修改模型接口端口',
   model_api_regenerate_key: '重新生成模型接口 Key',
@@ -437,6 +448,7 @@ const CMD_LABELS: Record<string, string> = {
   log_query: '查询日志',
   log_span: '读取日志时间范围',
   log_stats: '日志聚合',
+  log_context: '查看日志上下文',
   system_health: '读取健康报告',
   platform_capabilities: '读取平台能力',
   usage_scan: '扫描本地用量',
@@ -519,6 +531,8 @@ const KEY_ACTIONS = new Set<string>([
   'model_api_set_port',
   'model_api_start',
   'model_api_stop',
+  'model_api_restart',
+  'model_api_probe',
   'log_level',
   'log_export',
   'log_clear',

@@ -115,7 +115,7 @@ fn contract_05b_lot_granted_at_is_local_not_from_api() {
 
 // ---------------------------------------------------------------- 契约 6
 #[test]
-fn contract_06_snapshot_keeps_last_per_day() {
+fn contract_06_snapshot_keeps_first_per_day() {
     let paths = TestPaths::new();
     let db = Db::open_at(&paths.join("app.db")).unwrap();
     let store = SqliteCheckin::new(&db);
@@ -129,8 +129,8 @@ fn contract_06_snapshot_keeps_last_per_day() {
         .expect("同日再记余额");
     assert_eq!(
         store.balance_on("qoder:1", "2026-10-30"),
-        Some(120.0),
-        "同一天多次刷新只保留最后一次，否则今日增减会被刷成 0"
+        Some(100.0),
+        "同一天多次刷新只保留首笔基线，后面再查只更新最新展示值"
     );
 }
 

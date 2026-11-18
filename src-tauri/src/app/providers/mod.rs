@@ -141,6 +141,44 @@ pub trait Provider: Send + Sync {
         ))
     }
 
+    /// 平台奖励积分明细（WorkBuddy 个人中心的「套餐与积分」）。默认不支持。
+    /// 放在 trait 里是为了让通用层不再直接 new 某个具体 Provider。
+    async fn credit_rewards(
+        &self,
+        _cred: &Credential,
+        _http: &dyn Http,
+    ) -> Result<crate::app::providers::workbuddy::RewardCredits> {
+        Err(AppError::new(
+            ErrorKind::Unsupported,
+            format!("{} 暂不支持奖励积分明细", self.label()),
+        ))
+    }
+
+    /// 可领取的活动套餐（ZCode）。默认不支持，其他平台不需要实现。
+    async fn claim_plans(
+        &self,
+        _cred: &Credential,
+        _http: &dyn Http,
+    ) -> Result<Vec<crate::app::providers::zclaim::ClaimPlan>> {
+        Err(AppError::new(
+            ErrorKind::Unsupported,
+            format!("{} 没有可领取的活动套餐", self.label()),
+        ))
+    }
+
+    /// 领取一个活动套餐（ZCode）。默认不支持。
+    async fn claim_plan(
+        &self,
+        _cred: &Credential,
+        _http: &dyn Http,
+        _plan_id: &str,
+    ) -> Result<crate::app::providers::zclaim::ClaimOutcome> {
+        Err(AppError::new(
+            ErrorKind::Unsupported,
+            format!("{} 暂不支持领取活动套餐", self.label()),
+        ))
+    }
+
     // ---- 猫猫旅行（WorkBuddy 国内版专属；其他平台保持「不支持」）----
     /// 平台是否有猫猫旅行玩法。默认没有，平台适配器按需覆盖。
     fn travel_supported(&self) -> bool {

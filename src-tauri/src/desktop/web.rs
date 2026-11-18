@@ -188,6 +188,22 @@ pub async fn dispatch<R: tauri::Runtime>(
             let url = arg(v, "url")?;
             to_json(cmd::shell::open_private_browser(url))
         }
+        "model_api_info" => to_json(cmd::shell::model_api_info(app.state::<AppState>()).await),
+        "model_api_start" => to_json(cmd::shell::model_api_start(app.state::<AppState>()).await),
+        "model_api_stop" => to_json(cmd::shell::model_api_stop(app.state::<AppState>()).await),
+        "model_api_restart" => {
+            to_json(cmd::shell::model_api_restart(app.state::<AppState>()).await)
+        }
+        "model_api_stats" => to_json(Ok(cmd::shell::model_api_stats())),
+        "model_api_probe" => to_json(cmd::shell::model_api_probe().await),
+        "model_api_models" => to_json(cmd::shell::model_api_models(app.state::<AppState>()).await),
+        "model_api_set_port" => {
+            let port = arg(v, "port")?;
+            to_json(cmd::shell::model_api_set_port(app.state::<AppState>(), port).await)
+        }
+        "model_api_regenerate_key" => {
+            to_json(cmd::shell::model_api_regenerate_key(app.state::<AppState>()).await)
+        }
 
         // ------------------------------------------------------------ settings
         "settings_get" => {
@@ -302,7 +318,6 @@ pub async fn dispatch<R: tauri::Runtime>(
             let iids = arg(v, "iids")?;
             to_json(cmd::accounts::account_batch_diagnose(app.state::<AppState>(), iids).await)
         }
-        "account_export" => to_json(cmd::accounts::account_export(app.state::<AppState>()).await),
 
         // ------------------------------------------------------------ hub
         "hub_snapshot" => to_json(cmd::hub::hub_snapshot(app.state::<AppState>()).await),
@@ -538,6 +553,15 @@ pub async fn dispatch<R: tauri::Runtime>(
         "log_stats" => {
             let filter = arg(v, "filter")?;
             to_json(cmd::logs::log_stats(filter).await)
+        }
+        "log_context" => {
+            let (anchor, ts, before, after) = (
+                arg(v, "anchor")?,
+                arg(v, "ts")?,
+                arg(v, "before")?,
+                arg(v, "after")?,
+            );
+            to_json(cmd::logs::log_context(anchor, ts, before, after).await)
         }
 
         // ------------------------------------------------------------ system

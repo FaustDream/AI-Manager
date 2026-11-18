@@ -3,7 +3,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy, errMsg } from '@/lib/cmd';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { fmtSize, fmtTime } from '@/lib/format';
 import { numOr } from '@/lib/num';
@@ -21,8 +21,6 @@ import type {
   CapabilityRow,
   CloseAction,
   HealthReport,
-  ModelApiInfo,
-  ModelEntry,
   RuleKind,
   Schedule,
   ScheduleAction,
@@ -45,7 +43,6 @@ export default function SettingsPage() {
       {tab === 'general' && (
         <>
           <GeneralPane />
-          <ModelApiPane />
           <ConfigPane />
         </>
       )}
@@ -172,217 +169,6 @@ function GeneralPane() {
  * 保存 = config_set：立即生效并写回文件；手改文件则重启生效。
  * 内容分级：数字输入 = 精调项，开关 = 显式授权项，保存按钮 = 唯一主操作。
  */
-/** 豆包 OpenAI 兼容接口：展示/修改端口与 API Key，供第三方客户端接入豆包。 */
-function ModelApiPane() {
-  const [info, setInfo] = useState<ModelApiInfo | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [portDraft, setPortDraft] = useState('');
-  const [savingPort, setSavingPort] = useState(false);
-  const [toggling, setToggling] = useState(false);
-  const [models, setModels] = useState<ModelEntry[] | null>(null);
-  const [loadingModels, setLoadingModels] = useState(false);
-
-  const load = useCallback(() => {
-    queryCmd('model_api_info')
-      .then((next) => {
-        setInfo(next);
-        setPortDraft(String(next.configured_port));
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const copyKey = async () => {
-    if (!info?.key) return;
-    try {
-      await navigator.clipboard.writeText(info.key);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      toast('复制失败，请手动选中复制');
-    }
-  };
-
-  const regenerate = async () => {
-    const ok = await confirmAction({
-      title: '重新生成 API Key？',
-      message: '旧 Key 会立即作废，正在用它接入的客户端需要改用新 Key。',
-    });
-    if (!ok) return;
-    const next = await runCmd('model_api_regenerate_key');
-    if (next) setInfo(next);
-  };
-
-  /** 启停是一次明确的意图：停掉后应用重启也不会自己回来（偏好落在 kv）。 */
-  const toggleRun = async () => {
-    if (!info) return;
-    setToggling(true);
-    const next = await runCmd(info.running ? 'model_api_stop' : 'model_api_start');
-    setToggling(false);
-    if (!next) return;
-    setInfo(next);
-    setPortDraft(String(next.configured_port));
-    if (!next.running) {
-      toast('已停止监听，正在接入的客户端会连不上');
-    } else if (next.port !== next.configured_port) {
-      toast(`端口 ${next.configured_port} 被占用，已改用 ${next.port}`);
-    } else {
-      toast(`已启动：http://127.0.0.1:${next.port}/v1`);
-    }
-  };
-
-  /** 查模型不走本地接口：直接用账号凭据拉目录，所以接口停着也能查。 */
-  const loadModels = async () => {
-    setLoadingModels(true);
-    const list = await runCmd('model_api_models');
-    setLoadingModels(false);
-    setModels(list ?? []);
-  };
-
-  const copyModel = async (id: string) => {
-    try {
-      await navigator.clipboard.writeText(id);
-      toast(`已复制 ${id}`);
-    } catch {
-      toast('复制失败，请手动选中复制');
-    }
-  };
-
-  const savePort = async () => {
-    const port = Number.parseInt(portDraft.trim(), 10);
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-      toast('端口需在 1024–65535 之间');
-      return;
-    }
-    if (port === info?.configured_port) return;
-    setSavingPort(true);
-    const next = await runCmd('model_api_set_port', { port });
-    setSavingPort(false);
-    if (!next) return;
-    setInfo(next);
-    setPortDraft(String(next.configured_port));
-    if (next.port !== next.configured_port) {
-      toast(`端口 ${next.configured_port} 被占用，已改用 ${next.port}`);
-    } else {
-      toast(`端口已改为 ${next.port}`);
-    }
-  };
-
-  // 未启动时内存里的实际端口没有意义，展示配置端口
-  const shownPort = info ? (info.running ? info.port : info.configured_port) : 0;
-  const fellBack = !!info && info.running && info.port !== info.configured_port;
-
-  return (
-    <div className="rounded-lg border border-line bg-card p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">豆包模型接口</h2>
-        <span className="flex-1" />
-        {info && (
-          <>
-            <span className={cn('text-xs', info.running ? 'text-ok' : 'text-muted')}>
-              {info.running ? '运行中' : '已停止'}
-            </span>
-            <Button variant="ghost" onClick={() => void toggleRun()} loading={toggling}>
-              {info.running ? '停止' : '启动'}
-            </Button>
-          </>
-        )}
-      </div>
-      {!info ? (
-        <SkeletonRows rows={2} />
-      ) : (
-        <div className="flex flex-col gap-3">
-          <p className="text-xs leading-relaxed text-muted">
-            把豆包账号暴露成本机接口（只绑 127.0.0.1，同时支持三种形态）：
-            <span className="font-mono text-fg2"> POST /v1/chat/completions</span>、
-            <span className="font-mono text-fg2"> POST /v1/messages</span>（Anthropic）、
-            <span className="font-mono text-fg2"> POST /v1/responses</span>。
-            客户端填上地址和 Key 即可调用；Anthropic 客户端用{' '}
-            <span className="font-mono text-fg2">x-api-key</span> 也认。
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">地址</span>
-            <code className="rounded bg-hover px-2 py-1 text-xs">
-              http://127.0.0.1:{shownPort}/v1
-            </code>
-            {!info.running && <span className="text-xs text-muted">（未启动，客户端连不上）</span>}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">端口</span>
-            <Input
-              className="w-28"
-              value={portDraft}
-              onChange={(e) => setPortDraft(e.target.value)}
-              placeholder="43861"
-              inputMode="numeric"
-            />
-            <Button
-              variant="ghost"
-              onClick={() => void savePort()}
-              loading={savingPort}
-              disabled={portDraft.trim() === String(info.configured_port)}
-            >
-              保存端口
-            </Button>
-            <span className="text-xs text-muted">
-              {info.running ? '改完立即重启监听' : '启动时按此端口监听'}
-            </span>
-          </div>
-          {fellBack && (
-            <p className="rounded-md border border-line border-l-[3px] border-l-warn bg-card px-3 py-2 text-xs text-fg2">
-              配置端口 {info.configured_port} 当时被占用，已自动改用 {info.port}。
-              正在接入的客户端请按上面的地址填写；想固定端口就换一个没被占用的再保存。
-            </p>
-          )}
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">API Key</span>
-            <code className="min-w-0 flex-1 truncate rounded bg-hover px-2 py-1 text-xs select-all">
-              {info.key}
-            </code>
-            <Button variant="ghost" onClick={copyKey}>
-              {copied ? '已复制' : '复制 Key'}
-            </Button>
-            <Button variant="ghost" onClick={() => void regenerate()}>
-              重新生成
-            </Button>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
-            <span className="text-xs text-muted">模型</span>
-            <Button variant="ghost" onClick={() => void loadModels()} loading={loadingModels}>
-              {models ? '重新获取' : '获取模型'}
-            </Button>
-            <span className="text-xs text-muted">
-              {models
-                ? `共 ${models.length} 个，点击复制 ID`
-                : '列出当前账号可用的模型 ID（接口停着也能查）'}
-            </span>
-          </div>
-          {models && models.length > 0 && (
-            <div className="flex max-h-56 flex-col gap-1 overflow-y-auto rounded-md border border-line bg-bg p-2">
-              {models.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => void copyModel(m.id)}
-                  className="flex items-baseline gap-2 rounded px-2 py-1 text-left hover:bg-hover"
-                  title="点击复制模型 ID"
-                >
-                  <span className="shrink-0 text-xs text-fg2">{m.name}</span>
-                  <code className="min-w-0 truncate text-xs text-muted">{m.id}</code>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ConfigPane() {
   const qc = useQueryClient();
   const { busy, run: runBusy } = useBusy();

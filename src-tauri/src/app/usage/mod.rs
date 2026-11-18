@@ -13,15 +13,17 @@
 
 use crate::app::clients::Roots;
 use crate::app::db::Db;
-use crate::app::error::{AppError, ErrorKind, Result};
+use crate::app::error::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::path::Path;
 
-const WB_OFFSETS_KV: &str = "usage.wb_offsets";
-const CB_FILES_KV: &str = "usage.cb_files";
-const ZC_CURSOR_KV: &str = "usage.zcode_cursor";
+mod codebuddy;
+mod doubao;
+mod qoder;
+mod trae;
+mod workbuddy;
+mod zcode;
+
 const LAST_SCAN_KV: &str = "usage.last_scan";
 
 /// 一条用量记录。`record_id` 是源内唯一键（主键即幂等）。
@@ -64,46 +66,14 @@ pub struct SourceCoverage {
 }
 
 pub fn coverage() -> Vec<SourceCoverage> {
-    vec![
-        SourceCoverage {
-            platform: "workbuddy".into(),
-            label: "WorkBuddy 国内版".into(),
-            level: "full".into(),
-            note: "projects/*.jsonl 的 providerData.usage + rawUsage.credit".into(),
-        },
-        SourceCoverage {
-            platform: "workbuddy_intl".into(),
-            label: "WorkBuddy 国际版".into(),
-            level: "full".into(),
-            note: "同上".into(),
-        },
-        SourceCoverage {
-            platform: "codebuddy".into(),
-            label: "CodeBuddy（IDE / 插件）".into(),
-            level: "full".into(),
-            note:
-                "history/*/index.json 的 requests[].usage；按用户轮次聚合（一轮可能多次模型调用）"
-                    .into(),
-        },
-        SourceCoverage {
-            platform: "zcode".into(),
-            label: "ZCode".into(),
-            level: "tokens".into(),
-            note: "model_usage 表：有 token，无扣费".into(),
-        },
-        SourceCoverage {
-            platform: "qoder".into(),
-            label: "Qoder".into(),
-            level: "context".into(),
-            note: "只有上下文占用快照，没有逐次计费".into(),
-        },
-        SourceCoverage {
-            platform: "trae".into(),
-            label: "Trae".into(),
-            level: "none".into(),
-            note: "本地 database.db 为加密格式，明文读不到".into(),
-        },
-    ]
+    let mut out = Vec::new();
+    out.extend(workbuddy::coverage());
+    out.extend(codebuddy::coverage());
+    out.extend(zcode::coverage());
+    out.extend(qoder::coverage());
+    out.extend(trae::coverage());
+    out.extend(doubao::coverage());
+    out
 }
 
 // ---------------------------------------------------------------- 采集入口
@@ -111,9 +81,9 @@ pub fn coverage() -> Vec<SourceCoverage> {
 pub fn scan_all(db: &Db, roots: &Roots) -> Result<UsageScanReport> {
     let started = std::time::Instant::now();
     let mut report = UsageScanReport::default();
-    scan_workbuddy(db, roots, &mut report);
-    scan_codebuddy(db, roots, &mut report);
-    scan_zcode(db, roots, &mut report);
+    workbuddy::scan_workbuddy(db, roots, &mut report);
+    codebuddy::scan_codebuddy(db, roots, &mut report);
+    zcode::scan_zcode(db, roots, &mut report);
     report.ms = started.elapsed().as_millis() as u32;
     let _ = db.kv_set(LAST_SCAN_KV, &crate::app::timeutil::now_ms().to_string());
     Ok(report)
@@ -150,354 +120,6 @@ fn insert_many(db: &Db, records: &[Record], report: &mut UsageScanReport) {
     match result {
         Ok(count) => report.inserted += count,
         Err(e) => report.errors.push(format!("写入用量失败：{}", e.message)),
-    }
-}
-
-// ---------------------------------------------------------------- WorkBuddy
-
-fn scan_workbuddy(db: &Db, roots: &Roots, report: &mut UsageScanReport) {
-    let mut offsets: BTreeMap<String, u64> = db
-        .kv_get(WB_OFFSETS_KV)
-        .ok()
-        .flatten()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default();
-
-    for (intl, platform) in [(false, "workbuddy"), (true, "workbuddy_intl")] {
-        let dir = roots.workbuddy(intl).join("projects");
-        let Ok(projects) = std::fs::read_dir(&dir) else {
-            report
-                .skipped
-                .push(format!("{platform}：没有 projects 目录"));
-            continue;
-        };
-        for project in projects.flatten() {
-            let Ok(files) = std::fs::read_dir(project.path()) else {
-                continue;
-            };
-            for file in files.flatten() {
-                let path = file.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                    continue;
-                }
-                let key = path.to_string_lossy().to_string();
-                let offset = offsets.get(&key).copied().unwrap_or(0);
-                match read_jsonl_usage(&path, offset, platform) {
-                    Ok((records, next)) => {
-                        insert_many(db, &records, report);
-                        offsets.insert(key, next);
-                    }
-                    Err(e) => report.errors.push(format!("{key}：{}", e.message)),
-                }
-            }
-        }
-    }
-    if let Ok(text) = serde_json::to_string(&offsets) {
-        let _ = db.kv_set(WB_OFFSETS_KV, &text);
-    }
-}
-
-fn read_jsonl_usage(path: &Path, offset: u64, platform: &str) -> Result<(Vec<Record>, u64)> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| AppError::new(ErrorKind::Io, format!("打开会话文件失败：{e}")))?;
-    // 文件被截断/重建：从头再来
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = if offset > len { 0 } else { offset };
-    file.seek(SeekFrom::Start(start))
-        .map_err(|e| AppError::new(ErrorKind::Io, format!("定位会话文件失败：{e}")))?;
-
-    let mut reader = BufReader::new(file);
-    let mut line = String::new();
-    let mut consumed = start;
-    let mut records = Vec::new();
-    loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|e| AppError::new(ErrorKind::Io, format!("读取会话文件失败：{e}")))?;
-        if read == 0 {
-            break;
-        }
-        // 半行不消费：下次从行首重读，避免把一条记录切成两半
-        if !line.ends_with('\n') {
-            break;
-        }
-        consumed += read as u64;
-        if let Some(record) = parse_wb_line(&line, platform) {
-            records.push(record);
-        }
-    }
-    Ok((records, consumed))
-}
-
-fn parse_wb_line(line: &str, platform: &str) -> Option<Record> {
-    let value: serde_json::Value = serde_json::from_str(line).ok()?;
-    let provider = value.get("providerData")?;
-    let usage = provider.get("usage")?.as_object()?;
-    let num = |key: &str| {
-        usage
-            .get(key)
-            .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
-            .unwrap_or(0)
-    };
-    let (prompt, completion, total) = (num("inputTokens"), num("outputTokens"), num("totalTokens"));
-    if total == 0 && prompt == 0 && completion == 0 {
-        return None;
-    }
-    let text = |key: &str| {
-        provider
-            .get(key)
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-    };
-    let session = value
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    // `traceId` 是「一轮对话」级别的（一轮可能几十次模型调用），
-    // 拿它当唯一键会把整轮压成一条、少算几十倍。`messageId` 才是逐次唯一的。
-    let id = if let Some(message) = text("messageId") {
-        format!("{session}:{message}")
-    } else {
-        let trace = text("traceId")?;
-        let seq = provider
-            .get("stepSeq")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        format!("{session}:{trace}:{seq}")
-    };
-    let credit = provider
-        .get("rawUsage")
-        .and_then(|v| v.get("credit"))
-        .and_then(|v| v.as_f64());
-    Some(Record {
-        record_id: format!("wb:{id}"),
-        platform: platform.to_string(),
-        model: text("requestModelName")
-            .or_else(|| text("model"))
-            .unwrap_or_else(|| "unknown".into()),
-        prompt_tokens: prompt,
-        completion_tokens: completion,
-        total_tokens: total.max(prompt + completion),
-        credit,
-        created_at: value
-            .get("timestamp")
-            .and_then(|v| v.as_i64())
-            .unwrap_or_else(crate::app::timeutil::now_ms),
-        source: "jsonl".into(),
-    })
-}
-
-// ---------------------------------------------------------------- CodeBuddy
-
-fn scan_codebuddy(db: &Db, roots: &Roots, report: &mut UsageScanReport) {
-    let mut seen: BTreeMap<String, String> = db
-        .kv_get(CB_FILES_KV)
-        .ok()
-        .flatten()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default();
-
-    let base = roots.codebuddy();
-    let Ok(uids) = std::fs::read_dir(&base) else {
-        report.skipped.push("codebuddy：没有数据目录".into());
-        return;
-    };
-    for uid_dir in uids.flatten() {
-        let Ok(platforms) = std::fs::read_dir(uid_dir.path()) else {
-            continue;
-        };
-        for platform_dir in platforms.flatten() {
-            let platform = platform_dir.file_name().to_string_lossy().to_string();
-            if platform != "CodeBuddyIDE" && platform != "JetBrains" {
-                continue;
-            }
-            let Ok(accounts) = std::fs::read_dir(platform_dir.path()) else {
-                continue;
-            };
-            for account in accounts.flatten() {
-                let history = account.path().join("history");
-                let mut indexes = Vec::new();
-                // index.json 可能在 `history/<工作区>/` 也可能在 `history/<工作区>/<会话>/`
-                collect_index_files(&history, 0, &mut indexes);
-                for index in indexes {
-                    let Ok(meta) = std::fs::metadata(&index) else {
-                        continue;
-                    };
-                    let key = index.to_string_lossy().to_string();
-                    let stamp = format!(
-                        "{}:{}",
-                        meta.modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0),
-                        meta.len()
-                    );
-                    if seen.get(&key) == Some(&stamp) {
-                        continue;
-                    }
-                    match read_codebuddy_index(&index) {
-                        Ok(records) => {
-                            insert_many(db, &records, report);
-                            seen.insert(key, stamp);
-                        }
-                        Err(e) => report.errors.push(format!("{key}：{}", e.message)),
-                    }
-                }
-            }
-        }
-    }
-    if let Ok(text) = serde_json::to_string(&seen) {
-        let _ = db.kv_set(CB_FILES_KV, &text);
-    }
-}
-
-/// 有界递归：只找 `index.json`，最多三层（工作区 / 会话），不扫全盘。
-fn collect_index_files(dir: &Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
-    if depth > 3 {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_index_files(&path, depth + 1, out);
-        } else if path.file_name().and_then(|n| n.to_str()) == Some("index.json") {
-            out.push(path);
-        }
-    }
-}
-
-fn read_codebuddy_index(path: &Path) -> Result<Vec<Record>> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| AppError::new(ErrorKind::Io, format!("读取会话索引失败：{e}")))?;
-    let value: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("会话索引不是 JSON：{e}")))?;
-    let mut out = Vec::new();
-    let Some(requests) = value.get("requests").and_then(|v| v.as_array()) else {
-        return Ok(out);
-    };
-    for request in requests {
-        let Some(usage) = request.get("usage").and_then(|v| v.as_object()) else {
-            continue;
-        };
-        let num = |key: &str| {
-            usage
-                .get(key)
-                .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
-                .unwrap_or(0)
-        };
-        let (prompt, completion, total) =
-            (num("inputTokens"), num("outputTokens"), num("totalTokens"));
-        if total == 0 && prompt == 0 && completion == 0 {
-            continue;
-        }
-        let Some(id) = request.get("id").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        out.push(Record {
-            record_id: format!("cb:{id}"),
-            platform: "codebuddy".into(),
-            model: request
-                .get("model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-            total_tokens: total.max(prompt + completion),
-            credit: usage.get("credit").and_then(|v| v.as_f64()),
-            created_at: request
-                .get("startedAt")
-                .map(|v| {
-                    crate::app::timeutil::parse_ts(v).unwrap_or_else(crate::app::timeutil::now_ms)
-                })
-                .unwrap_or_else(crate::app::timeutil::now_ms),
-            source: "index_json".into(),
-        });
-    }
-    Ok(out)
-}
-
-// ---------------------------------------------------------------- ZCode
-
-fn scan_zcode(db: &Db, roots: &Roots, report: &mut UsageScanReport) {
-    let path = roots.zcode().join("cli").join("db").join("db.sqlite");
-    if !path.exists() {
-        report.skipped.push("zcode：没有 db.sqlite".into());
-        return;
-    }
-    let cursor: i64 = db
-        .kv_get(ZC_CURSOR_KV)
-        .ok()
-        .flatten()
-        .and_then(|text| text.parse().ok())
-        .unwrap_or(0);
-    let conn = match rusqlite::Connection::open_with_flags(
-        &path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ) {
-        Ok(conn) => conn,
-        Err(e) => {
-            report.errors.push(format!("zcode 打开失败：{e}"));
-            return;
-        }
-    };
-    let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
-    let mut stmt = match conn.prepare(
-        "SELECT id, model_id, input_tokens, output_tokens,
-                COALESCE(NULLIF(computed_total_tokens,0), provider_total_tokens, 0),
-                started_at
-         FROM model_usage
-         WHERE status='completed' AND started_at > ?1
-         ORDER BY started_at LIMIT 5000",
-    ) {
-        Ok(stmt) => stmt,
-        Err(e) => {
-            report.errors.push(format!("zcode 查询失败：{e}"));
-            return;
-        }
-    };
-    let rows = stmt.query_map([cursor], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, i64>(3)?,
-            row.get::<_, i64>(4)?,
-            row.get::<_, i64>(5)?,
-        ))
-    });
-    let Ok(rows) = rows else {
-        report.errors.push("zcode 读取失败".into());
-        return;
-    };
-    let mut records = Vec::new();
-    let mut max_started = cursor;
-    for row in rows.flatten() {
-        let (id, model, prompt, completion, total, started_at) = row;
-        max_started = max_started.max(started_at);
-        if total == 0 && prompt == 0 && completion == 0 {
-            continue;
-        }
-        records.push(Record {
-            record_id: format!("zc:{id}"),
-            platform: "zcode".into(),
-            model,
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-            total_tokens: total.max(prompt + completion),
-            credit: None,
-            created_at: started_at,
-            source: "sqlite".into(),
-        });
-    }
-    insert_many(db, &records, report);
-    if max_started > cursor {
-        let _ = db.kv_set(ZC_CURSOR_KV, &max_started.to_string());
     }
 }
 
@@ -705,6 +327,23 @@ pub fn overview(db: &Db, days: i64) -> Result<UsageOverview> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coverage_has_one_entry_per_platform() {
+        let platforms: Vec<_> = coverage().into_iter().map(|c| c.platform).collect();
+        assert_eq!(
+            platforms,
+            [
+                "workbuddy",
+                "workbuddy_intl",
+                "codebuddy",
+                "zcode",
+                "qoder",
+                "trae",
+                "doubao"
+            ]
+        );
+    }
 
     fn roots(dir: &std::path::Path) -> Roots {
         Roots::at(dir.join("home"), dir.join("appdata"), dir.join("local"))

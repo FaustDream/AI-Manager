@@ -117,7 +117,7 @@ pub fn catalog_body(bot: &str) -> Value {
 /// 模型键有两种形态：
 ///   - 一个 model_item_key 只有一种模式 → 直接是 `model_item_key`；
 ///   - 同名 model_item_key 有多个模式 → `mode_id::model_item_key`（或 `agent-N::…`）。
-/// 这样 `/v1/models` 暴露的 id 与 `/v1/chat/completions` 的 `model` 一一对应。
+///     这样 `/v1/models` 暴露的 id 与 `/v1/chat/completions` 的 `model` 一一对应。
 pub fn parse_catalog(reply: &Value) -> BTreeMap<String, ModelInfo> {
     let mut index: BTreeMap<String, BTreeMap<String, ModelInfo>> = BTreeMap::new();
 

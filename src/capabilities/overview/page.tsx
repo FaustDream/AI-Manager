@@ -33,7 +33,8 @@ function go(id: string, iid?: string) {
 
 export default function OverviewPage() {
   const qc = useQueryClient();
-  const [days, setDays] = useState(30);
+  // 默认只看今天：仪表盘的第一问题是「今天进了多少、花了多少」，历史区间按需切
+  const [days, setDays] = useState(1);
   // 两种视角共存：收支看「进出」，余额看「存量走势」，默认收支
   const [chartMode, setChartMode] = useState<'flow' | 'balance'>('flow');
   // 自定义区间：起止日期由原生 date 控件给出（YYYY-MM-DD），与后端按日聚合的口径一致
@@ -87,15 +88,23 @@ export default function OverviewPage() {
       ),
     [flow.data, customOpen, customFrom, customTo],
   );
-  // 每个软件同样先裁点再交给表格：合计数由点现算，裁剪后才和上图对得上
+  // 每个软件同样先裁点再交给表格：合计数由点现算，裁剪后才和上图对得上。
+  // 区间内没有快照、或一分没进也没花的软件都不列——「0」会被读成「没花钱」，
+  // 而真实情况往往是「没数据」或「今天还没刷新过积分」。
   const platformFlows = useMemo(
     () =>
-      (flow.data?.platforms ?? []).map((row) => ({
-        ...row,
-        points: row.points.filter((point) =>
-          inRange(point.date, customOpen, customFrom, customTo),
+      (flow.data?.platforms ?? [])
+        .map((row) => ({
+          ...row,
+          points: row.points.filter((point) =>
+            inRange(point.date, customOpen, customFrom, customTo),
+          ),
+        }))
+        .filter(
+          (row) =>
+            row.points.length > 0 &&
+            row.points.some((point) => point.earned > 0 || point.spent > 0),
         ),
-      })),
     [flow.data, customOpen, customFrom, customTo],
   );
   const trendPoints = useMemo(
@@ -240,7 +249,7 @@ export default function OverviewPage() {
                       </button>
                     ))}
                   </span>
-                  {[7, 30, 60].map((value) => (
+                  {([1, 7, 30, 60] as const).map((value) => (
                     <button
                       key={value}
                       className={cn(
@@ -254,7 +263,7 @@ export default function OverviewPage() {
                         setDays(value);
                       }}
                     >
-                      {value} 天
+                      {rangeLabel(value)}
                     </button>
                   ))}
                   <button
@@ -340,7 +349,7 @@ export default function OverviewPage() {
               note={
                 customOpen && customFrom
                   ? `${customFrom} ~ ${customTo || todayIso()}`
-                  : `最近 ${days} 天`
+                  : rangeNote(days)
               }
             />
           )}
@@ -370,4 +379,14 @@ function isoOf(date: Date): string {
 
 function todayIso(): string {
   return isoOf(new Date());
+}
+
+/** 预设区间的按钮名：1 天读作「今天」，比「1 天」更像人话。 */
+function rangeLabel(days: number): string {
+  return days === 1 ? '今天' : `${days} 天`;
+}
+
+/** 各处「区间说明」的统一口径（各软件消耗的右上角注释用）。 */
+function rangeNote(days: number): string {
+  return days === 1 ? '今天' : `最近 ${days} 天`;
 }

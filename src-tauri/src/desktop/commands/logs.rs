@@ -106,3 +106,23 @@ pub async fn log_stats(
         .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
         .map_err(err_text)
 }
+
+/// 一条日志的前后文（点击日志行打开上下文弹窗）。
+///
+/// `anchor` 优先（查询结果里的物理行号），`ts` 兜底（实时行没有行号，
+/// 或日志被清空/轮转导致行号失效）。前后行数由界面传入，后端只做上限裁剪。
+#[tauri::command]
+
+pub async fn log_context(
+    anchor: Option<usize>,
+    ts: Option<String>,
+    before: usize,
+    after: usize,
+) -> std::result::Result<crate::app::log::LogContext, String> {
+    crate::app::runtime::blocking(move || {
+        crate::app::log::context(anchor, ts.as_deref(), before, after)
+    })
+    .await
+    .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+    .map_err(err_text)
+}

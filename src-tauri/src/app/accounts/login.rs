@@ -16,7 +16,7 @@ use crate::app::db::Db;
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest, RealHttp};
 use crate::app::providers::zcode as zcode_provider;
-use crate::app::timeutil::now_ms;
+use crate::app::timeutil::{now_ms, parse_ts};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{Local, TimeZone};
@@ -480,15 +480,7 @@ async fn wait_qoder(db: &Db, platform: &str, ticket: &str) -> Result<LoginOutcom
                 if !r.is_empty() {
                     refresh = r;
                 }
-                expires_at = body.get("expires_in").and_then(Value::as_i64).map(|sec| {
-                    if sec > 1_000_000_000_000 {
-                        sec
-                    } else if sec > 1_000_000_000 {
-                        sec * 1000
-                    } else {
-                        now_ms() + sec * 1000
-                    }
-                });
+                expires_at = qoder_expiry(&body);
             }
         }
         _ => {}
@@ -1078,18 +1070,29 @@ fn expiry_ms(data: &Value) -> Option<i64> {
     None
 }
 
-fn device_expiry(data: &Value) -> Option<i64> {
-    if let Some(ms) = data.get("expires_at").and_then(Value::as_i64) {
-        if ms > 1_000_000_000_000 {
-            return Some(ms);
-        }
-        if ms > 1_000_000_000 {
-            return Some(ms * 1000);
+/// Qoder 的 token 到期字段。优先 `expire_time` / `expires_at`（日期，或秒/毫秒时间戳），
+/// 其次 `expires_in`——Qoder 客户端协议里它是**毫秒**，不是秒。
+///
+/// 把 `expires_in` 当成秒级时间戳再乘 1000，会把一个正常的几十天有效期放大成
+/// 一百多年（2109 年），所以这里必须按毫秒直接加到当前时刻。
+fn qoder_expiry(data: &Value) -> Option<i64> {
+    qoder_expiry_at(data, now_ms())
+}
+
+fn qoder_expiry_at(data: &Value, now: i64) -> Option<i64> {
+    for key in ["expire_time", "expires_at", "expiresAt"] {
+        if let Some(ts) = data.get(key).and_then(parse_ts).filter(|ts| *ts > 0) {
+            return Some(ts);
         }
     }
     data.get("expires_in")
         .and_then(Value::as_i64)
-        .map(|sec| now_ms() + sec * 1000)
+        .filter(|ms| *ms > 0)
+        .map(|ms| now.saturating_add(ms))
+}
+
+fn device_expiry(data: &Value) -> Option<i64> {
+    qoder_expiry(data)
 }
 
 fn iso_of(ms: Option<i64>) -> String {
@@ -1182,6 +1185,39 @@ mod tests {
         let id = uuid_like();
         assert_eq!(id.split('-').count(), 5);
         assert_eq!(id.len(), 36);
+    }
+
+    /// Qoder 的 `expires_in` 是毫秒：当成秒级时间戳会得到 2109 年。
+    #[test]
+    fn qoder_expires_in_is_a_millisecond_duration() {
+        let now = 1_792_000_000_000i64;
+        let body = json!({ "expires_in": 4_392_067_000i64 });
+        assert_eq!(
+            qoder_expiry_at(&body, now),
+            Some(now + 4_392_067_000),
+            "expires_in 必须按毫秒加到当前时刻"
+        );
+    }
+
+    #[test]
+    fn qoder_expiry_prefers_absolute_timestamp_over_duration() {
+        let body = json!({
+            "expires_at": "2027-01-07T00:00:00Z",
+            "expires_in": 1_800_000i64
+        });
+        assert_eq!(
+            qoder_expiry_at(&body, 1_792_000_000_000),
+            parse_ts(&json!("2027-01-07T00:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn qoder_expiry_accepts_epoch_seconds() {
+        let body = json!({ "expire_time": 1_795_000_000i64 });
+        assert_eq!(
+            qoder_expiry_at(&body, 1_792_000_000_000),
+            Some(1_795_000_000_000)
+        );
     }
 
     fn seed(db: &Db, iid: &str) {

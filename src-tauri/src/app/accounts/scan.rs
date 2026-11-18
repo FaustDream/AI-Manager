@@ -112,7 +112,7 @@ fn cleanup_legacy_zcode_rows(db: &Db) {
     }
 }
 
-fn persist(db: &Db, scanned: ScannedAccount, user_platform: &str) -> Result<()> {
+fn persist(db: &Db, mut scanned: ScannedAccount, user_platform: &str) -> Result<()> {
     let AccountIdentity {
         ref iid,
         ref platform,
@@ -122,7 +122,34 @@ fn persist(db: &Db, scanned: ScannedAccount, user_platform: &str) -> Result<()> 
         platform, user_platform,
         "Provider 的 platform 必须与身份一致"
     );
-    repo::upsert_identity(db, &scanned.identity, now_ms())?;
+    let now = now_ms();
+
+    // 客户端文件不一定是最新的一份：应用内「重新授权」只写本地库，客户端可能还停在
+    // 更早的旧登录态。若重扫拿到的到期时间明显早于库里仍有效的凭据，保留后者，
+    // 否则「刷新凭据」会把刚续上的有效期打回旧值。
+    const EXPIRY_ROLLBACK_SLACK_MS: i64 = 3600 * 1000;
+    let existing_expiry = repo::secret_of(db, iid)
+        .ok()
+        .flatten()
+        .and_then(|bytes| Credential::parse(&bytes).ok())
+        .and_then(|cred| cred.expires_ms());
+    if let (Some(old), Some(new)) = (existing_expiry, scanned.identity.expires_at) {
+        if old > now && new < old - EXPIRY_ROLLBACK_SLACK_MS {
+            scanned.identity.expires_at = Some(old);
+            repo::upsert_identity(db, &scanned.identity, now)?;
+            crate::app::log::log(
+                crate::app::log::Level::Warn,
+                "accounts",
+                format!(
+                    "{}：客户端登录态比本地有效凭据更旧，保留本地凭据",
+                    scanned.identity.name
+                ),
+            );
+            return Ok(());
+        }
+    }
+
+    repo::upsert_identity(db, &scanned.identity, now)?;
     repo::set_secret(db, iid, &scanned.secret, scanned.identity.expires_at)?;
     // scanned 在这里释放：凭据明文不跨账号留存
     Ok(())
@@ -131,7 +158,7 @@ fn persist(db: &Db, scanned: ScannedAccount, user_platform: &str) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::accounts::credential::Credential;
+    use crate::app::accounts::credential::{iso_from_ms, Credential};
 
     fn fake(iid: &str, secret: &str) -> ScannedAccount {
         let (platform, account_id) = iid.split_once(':').unwrap();
@@ -181,6 +208,51 @@ mod tests {
         assert_eq!(repo::list(&db).unwrap().len(), 1, "同一账号不能变成两行");
         let back = repo::secret_of(&db, "qoder:a").unwrap().unwrap();
         assert_eq!(Credential::parse(&back).unwrap().token, "2", "凭据应被刷新");
+    }
+
+    fn fake_with_expiry(iid: &str, token: &str, expires_at: i64) -> ScannedAccount {
+        let (platform, account_id) = iid.split_once(':').unwrap();
+        let cred = Credential {
+            token: token.into(),
+            expires_at: iso_from_ms(expires_at),
+            ..Default::default()
+        };
+        ScannedAccount::new(
+            AccountIdentity {
+                iid: iid.into(),
+                platform: platform.into(),
+                platform_label: "Test".into(),
+                account_id: account_id.into(),
+                name: "测试账号".into(),
+                expires_at: Some(expires_at),
+                requires_checkin: true,
+                has_secret: true,
+                ..Default::default()
+            },
+            &cred,
+        )
+        .unwrap()
+    }
+
+    /// 重新授权把新凭据写进库里之后，客户端文件可能还停在更早的旧登录态。
+    /// 重扫不能拿那份更早的凭据把库里更晚的有效期覆盖掉。
+    #[test]
+    fn stale_scan_does_not_roll_back_a_longer_valid_expiry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let now = now_ms();
+        // Credential 里的 ISO 到期时间精确到秒，测试基准也先对齐到秒
+        let newer = (now + 50 * 24 * 3600 * 1000) / 1000 * 1000;
+        let older = (now + 3 * 3600 * 1000) / 1000 * 1000;
+
+        persist(&db, fake_with_expiry("qoder:a", "new", newer), "qoder").unwrap();
+        persist(&db, fake_with_expiry("qoder:a", "old", older), "qoder").unwrap();
+
+        let back = repo::secret_of(&db, "qoder:a").unwrap().unwrap();
+        let cred = Credential::parse(&back).unwrap();
+        assert_eq!(cred.token, "new", "更早的客户端凭据不能覆盖更新的凭据");
+        assert_eq!(cred.expires_ms(), Some(newer));
+        assert_eq!(repo::list(&db).unwrap()[0].expires_at, Some(newer));
     }
 
     /// 真实机验证：`cargo test --lib scan_all_real -- --ignored --nocapture`

@@ -4,7 +4,7 @@
 //!   - `STREAM_MSG_NOTIFY`：增量追加；
 //!   - `FULL_MSG_NOTIFY`：整块替换（可能是思考块的最终形态）；
 //!   - `STREAM_CHUNK`：按 patch 追加/替换。
-//! 这里按 `block_id` 记历史，把「这轮多出来的文本」算出来，避免把已输出的内容重复吐一遍。
+//!     这里按 `block_id` 记历史，把「这轮多出来的文本」算出来，避免把已输出的内容重复吐一遍。
 
 use crate::app::error::{AppError, ErrorKind, Result};
 use serde_json::Value;
@@ -40,6 +40,12 @@ pub struct SseDecoder {
     data: Vec<String>,
     history: BTreeMap<String, Block>,
     done: bool,
+}
+
+impl Default for SseDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SseDecoder {

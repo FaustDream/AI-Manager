@@ -402,16 +402,17 @@ impl CheckinStore for SqliteCheckin<'_> {
         Some(last + chrono::Duration::hours(cooldown_hours as i64))
     }
 
-    /// 契约 6：同日多次只留最后一次，且**用 upsert 不是 insert**。
+    /// 每天的第一笔余额是当天基线：同日后续查询只更新展示缓存，不再改这一行。
+    /// 这样「今天用了多少 / 到账多少」才有稳定的比较起点；覆盖成最后一次会把起点冲掉。
     fn note_balance(&self, iid: &str, balance: f64, clock: &dyn Clock) -> Result<bool> {
         let day = day_of(clock);
-        if self.balance_on(iid, &day) == Some(balance) {
+        if self.balance_on(iid, &day).is_some() {
             return Ok(false);
         }
         self.db.write(|conn| {
             conn.execute(
                 "INSERT INTO credit_snapshots(iid, date, balance) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(iid, date) DO UPDATE SET balance = excluded.balance",
+                 ON CONFLICT(iid, date) DO NOTHING",
                 rusqlite::params![iid, day, balance],
             )?;
             Ok(true)
@@ -435,32 +436,20 @@ impl CheckinStore for SqliteCheckin<'_> {
     }
 }
 
-/// 契约 6 的「今日增加」：今天与**上一次有记录的那天**的差值。
+/// 「今日变动」：当天**最新看到的余额**减当天首笔基线。
+///
+/// 首笔基线由 `note_balance` 固定下来，最新值来自 `CreditView.balance`：
+/// 正数是到账、负数是消耗。没有基线或没有新观察值时返回 None，别把「不知道」画成 0。
 pub fn today_delta(db: &Db, iid: &str, today: NaiveDate) -> Option<f64> {
     let stamp = today.format("%Y-%m-%d").to_string();
-    db.read(|conn| {
-        let previous: Option<f64> = conn
-            .query_row(
-                "SELECT balance FROM credit_snapshots
-                 WHERE iid = ?1 AND date < ?2 ORDER BY date DESC LIMIT 1",
-                rusqlite::params![iid, stamp],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let current: Option<f64> = conn
-            .query_row(
-                "SELECT balance FROM credit_snapshots WHERE iid = ?1 AND date = ?2",
-                rusqlite::params![iid, stamp],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(match (previous, current) {
-            (Some(previous), Some(current)) => Some(current - previous),
-            _ => None,
-        })
-    })
-    .ok()
-    .flatten()
+    let store = SqliteCheckin::new(db);
+    let baseline = store.balance_on(iid, &stamp)?;
+    let view = store.view_of(iid)?;
+    let at = Local.timestamp_millis_opt(view.at).single()?;
+    if at.date_naive() != today {
+        return None;
+    }
+    Some(view.balance? - baseline)
 }
 
 /// 最近一次实时查询看到的额度与批次。**只做展示缓存**，不参与台账计算：
@@ -469,6 +458,10 @@ pub fn today_delta(db: &Db, iid: &str, today: NaiveDate) -> Option<f64> {
 pub struct CreditView {
     /// 快照时刻（毫秒）。界面据此说「更新于 …」，而不是把旧值当实时值。
     pub at: i64,
+    /// 最近一次查询看到的余额。台账的每日基线在 `credit_snapshots`，
+    /// 这里只负责「现在还剩多少」，不与首笔基线混用。
+    #[serde(default)]
+    pub balance: Option<f64>,
     /// 额度型平台：窗口名 → 已用百分比
     pub quota: std::collections::BTreeMap<String, f64>,
     pub lots: Vec<crate::types::CreditLot>,
@@ -505,6 +498,7 @@ impl SqliteCheckin<'_> {
         iid: &str,
         quota: Option<std::collections::BTreeMap<String, f64>>,
         lots: Option<Vec<crate::types::CreditLot>>,
+        balance: Option<f64>,
         at: i64,
     ) -> Result<()> {
         let mut view = self.view_of(iid).unwrap_or_default();
@@ -514,11 +508,41 @@ impl SqliteCheckin<'_> {
         if let Some(lots) = lots {
             view.lots = lots;
         }
+        if let Some(balance) = balance {
+            view.balance = Some(balance);
+        }
         view.at = at;
         let text = serde_json::to_string(&view).map_err(|e| {
             crate::app::error::AppError::new(ErrorKind::Invalid, format!("配额缓存序列化失败：{e}"))
         })?;
         self.db.kv_set(&view_key(iid), &text)
+    }
+
+    /// 今天各账号最新看到的余额（来自展示缓存，不是每日基线）。
+    /// 收支图要用它给「今天」算出日末余额和当日增量；历史日期仍用快照。
+    pub fn latest_balances(
+        &self,
+        today: NaiveDate,
+    ) -> Result<std::collections::HashMap<String, f64>> {
+        let mut out = std::collections::HashMap::new();
+        for (key, raw) in self.db.kv_entries()? {
+            let Some(iid) = key.strip_prefix("credit_view:") else {
+                continue;
+            };
+            let Ok(view) = serde_json::from_str::<CreditView>(&raw) else {
+                continue;
+            };
+            let Some(balance) = view.balance else {
+                continue;
+            };
+            let Some(at) = Local.timestamp_millis_opt(view.at).single() else {
+                continue;
+            };
+            if at.date_naive() == today {
+                out.insert(iid.to_string(), balance);
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -567,7 +591,8 @@ fn nearest_lot(
 /// 攒出来的。于是重扫、刷新、重启都不会把它们冲成「—」。
 pub fn hydrate(db: &Db, rows: &mut [crate::app::accounts::AccountView], clock: &dyn Clock) {
     let store = SqliteCheckin::new(db);
-    let today = clock.today().format("%Y-%m-%d").to_string();
+    let today_date = clock.today();
+    let today = today_date.format("%Y-%m-%d").to_string();
     let now = clock.now();
     for row in rows {
         // 三态：本工具签过 / 平台今天说没签 / 没问过。前两个才配显示结论，
@@ -579,7 +604,19 @@ pub fn hydrate(db: &Db, rows: &mut [crate::app::accounts::AccountView], clock: &
         } else {
             None
         };
-        row.balance = store.balance_on(&row.iid, &today);
+        let view = store.view_of(&row.iid);
+        // 列表显示「现在还剩多少」：今天的最新缓存优先；没有才退回每日基线
+        row.balance = view
+            .as_ref()
+            .and_then(|item| {
+                let at = Local.timestamp_millis_opt(item.at).single()?;
+                if at.date_naive() == today_date {
+                    item.balance
+                } else {
+                    None
+                }
+            })
+            .or_else(|| store.balance_on(&row.iid, &today));
         row.next_at = store.next_at(&row.iid).map(|at| at.timestamp_millis());
         if row.checked_in == Some(true) {
             // 显示「HH:MM · 成功」用真实签到时刻；拿刷新时刻顶替会随每次打开漂移
@@ -587,14 +624,14 @@ pub fn hydrate(db: &Db, rows: &mut [crate::app::accounts::AccountView], clock: &
                 .last_checkin_at(&row.iid)
                 .map(|at| at.timestamp_millis());
         }
-        if let Some(view) = store.view_of(&row.iid) {
+        if let Some(view) = &view {
             // 空配额 = 这个平台没有额度概念，不是「额度用完了」：别让配额列显示「无额度」
             if !view.quota.is_empty() {
-                row.quota = view.quota;
+                row.quota = view.quota.clone();
                 row.quota_at = Some(view.at);
             }
             (row.lot_expires_at, row.lot_amount) =
-                nearest_lot(&lots_for_display(&row.iid, view.lots), now);
+                nearest_lot(&lots_for_display(&row.iid, view.lots.clone()), now);
         }
         if row.lot_expires_at.is_none() && !is_intl_account(&row.iid) {
             // 没有实时批次（免签到平台 / 还没刷过）：退回本工具发放台账。
@@ -828,13 +865,51 @@ mod tests {
         }
     }
 
-    /// 配额与批次到期必须能从缓存回到账号视图：否则表格永远是「—」。
+    /// 当天首笔余额是基线，后续查询只更新展示缓存，不能再改台账。
+    #[test]
+    fn daily_snapshot_keeps_first_balance_and_latest_goes_to_view() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let clock = FakeClock::at("2026-11-02T08:00:00+08:00");
+        let store = SqliteCheckin::new(&db);
+        repo::upsert_identity(&db, &identity("zcode:u1", "zcode"), 1).unwrap();
+        store.note_balance("zcode:u1", 100.0, &clock).unwrap();
+        store.note_balance("zcode:u1", 150.0, &clock).unwrap();
+        assert_eq!(
+            store.balance_on("zcode:u1", "2026-11-02"),
+            Some(100.0),
+            "同日第二笔不能覆盖基线"
+        );
+
+        store
+            .note_view(
+                "zcode:u1",
+                None,
+                None,
+                Some(130.0),
+                clock.now().timestamp_millis(),
+            )
+            .unwrap();
+        let rows = {
+            let mut rows = repo::list(&db).unwrap();
+            hydrate(&db, &mut rows, &clock);
+            rows
+        };
+        assert_eq!(rows[0].balance, Some(130.0), "列表显示最新余额");
+        assert_eq!(
+            today_delta(&db, "zcode:u1", clock.today()),
+            Some(30.0),
+            "最新 130 - 基线 100 = 今天到账 30"
+        );
+    }
+
     #[test]
     fn hydrate_restores_quota_and_nearest_lot() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
         repo::upsert_identity(&db, &identity("zcode:u1", "zcode"), 1).unwrap();
         let clock = FakeClock::at("2026-11-02T09:00:00+08:00");
+        let at = clock.now().timestamp_millis();
         let lot = |amount: f64, days: i64, key: &str| CreditLot {
             amount,
             expires_at: Some(clock.now() + chrono::Duration::days(days)),
@@ -854,15 +929,17 @@ mod tests {
                     lot(120.0, 3, "a"),
                     lot(50.0, 3, "c"),
                 ]),
-                1_760_000_000_000,
+                Some(88.0),
+                at,
             )
             .unwrap();
 
         let mut rows = repo::list(&db).unwrap();
         hydrate(&db, &mut rows, &clock);
         let row = &rows[0];
+        assert_eq!(row.balance, Some(88.0));
         assert_eq!(row.quota.get("周额度"), Some(&42.0));
-        assert_eq!(row.quota_at, Some(1_760_000_000_000));
+        assert_eq!(row.quota_at, Some(at));
         // 最近的是 3 天后那两笔，金额按「同一天到期」合计
         let expected = (clock.now() + chrono::Duration::days(3)).timestamp_millis();
         assert_eq!(row.lot_expires_at, Some(expected));
@@ -877,7 +954,7 @@ mod tests {
         repo::upsert_identity(&db, &identity("qoder:u1", "qoder"), 1).unwrap();
         let clock = FakeClock::at("2026-11-02T09:00:00+08:00");
         SqliteCheckin::new(&db)
-            .note_view("qoder:u1", None, Some(Vec::new()), 1_760_000_000_000)
+            .note_view("qoder:u1", None, Some(Vec::new()), None, 1_760_000_000_000)
             .unwrap();
 
         let mut rows = repo::list(&db).unwrap();

@@ -7,7 +7,7 @@ import type { CreditLot } from "./CreditLot";
  */
 export type AccountDetail = { balance: number | null, 
 /**
- * 契约 6：今天与上一次有记录那天的差值
+ * 契约 6：当天最新看到的余额 − 当天首笔基线
  */
 today_delta: number | null, lots: Array<CreditLot>, claims: Array<CreditClaim>, next_at: number | null, checked_in: boolean, 
 /**

@@ -597,6 +597,23 @@ impl Provider for ZCodeProvider {
             quota: Some(quota.windows),
         })
     }
+
+    async fn claim_plans(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+    ) -> Result<Vec<crate::app::providers::zclaim::ClaimPlan>> {
+        super::zclaim::claimable(cred, http, None).await
+    }
+
+    async fn claim_plan(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+        plan_id: &str,
+    ) -> Result<crate::app::providers::zclaim::ClaimOutcome> {
+        super::zclaim::claim(cred, http, None, plan_id).await
+    }
 }
 
 /// 归一化后的额度：一句话摘要 + 各窗口已用百分比（前端画额度条用）。

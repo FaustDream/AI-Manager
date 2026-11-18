@@ -87,20 +87,27 @@ Trae 的登录态是设备绑定的加密格式，无法安全写回，请在 Tr
 ```bash
 npm ci
 
-# 开发：开两个终端
+# 开发：一条命令，自动启动 Vite + 网页调试壳，并用浏览器打开
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-run.ps1
+
+# 手动等价：开两个终端
 npm run dev                                  # 终端 1：Vite 开发服务器（127.0.0.1:5273）
-cd src-tauri && cargo run --bin ai-manager   # 终端 2：桌面壳，连上面的 5273
+cd src-tauri && cargo run --bin ai-manager-web  # 终端 2：网页调试壳（127.0.0.1:5274）
+# 然后浏览器打开 http://127.0.0.1:5273
+
+# 只有验证托盘 / 单实例 / 原生窗口等桌面专属行为时，才启动桌面壳
+cd src-tauri && cargo run --bin ai-manager
 
 # 发布构建
 npm run build
 cd src-tauri && cargo build --release --features custom-protocol
 ```
 
-`--bin ai-manager` 不能省：`src-tauri` 下有两个二进制（`ai-manager` 与网页调试壳 `ai-manager-web`），Cargo 没有默认目标。
+`--bin` 不能省：`src-tauri` 下有两个二进制（桌面壳 `ai-manager` 与网页调试壳 `ai-manager-web`），Cargo 没有默认目标。开发与日常自测一律用网页壳，不启动本地桌面端。
 
 `custom-protocol` 也不能省，否则 release 版会去连 devUrl，表现为白屏。
 
-想在浏览器里调界面：`cargo run --bin ai-manager-web`。它只绑 `127.0.0.1`，且与桌面版共用单实例锁，两个不能同时开。
+网页调试壳只绑 `127.0.0.1`，且与桌面壳共用单实例锁，两个不能同时开。
 
 提交前的门禁与 CI 一致：
 

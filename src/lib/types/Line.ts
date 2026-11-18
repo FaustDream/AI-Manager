@@ -62,4 +62,9 @@ repeat: number | null,
 /**
  * 这一串重复里**最后一次**出现的时间；配合 `repeat` 说明「最近还在发生」。
  */
-last_ts: string | null, };
+last_ts: string | null, 
+/**
+ * 物理行号（`app.jsonl` 中从 0 开始）。只由 `query` 填充，用来定位上下文；
+ * 写盘时不带这个字段（`skip_serializing_if`），日志文件格式保持不变。
+ */
+seq: number | null, };

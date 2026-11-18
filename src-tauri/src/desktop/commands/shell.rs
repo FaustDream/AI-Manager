@@ -135,6 +135,38 @@ pub async fn model_api_start(
     Ok(info)
 }
 
+/// 重启监听：排障用（端口漂移、客户端连不上时先重启一次）。
+#[tauri::command]
+pub async fn model_api_restart(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::app::model_api::ModelApiInfo, String> {
+    let info = crate::app::model_api::restart(state.db.clone())
+        .await
+        .map_err(err_text)?;
+    let info = fill_configured_port(state.db.clone(), info).await?;
+    crate::app::log::action(
+        "重启模型接口",
+        "user",
+        true,
+        0,
+        format!("监听 127.0.0.1:{}", info.port),
+    );
+    Ok(info)
+}
+
+/// 运行统计：请求数、失败数、平均耗时与最近 20 次调用。
+#[tauri::command]
+pub fn model_api_stats() -> crate::app::model_api::ModelApiStats {
+    crate::app::model_api::stats()
+}
+
+/// 带 Key 真发一次 `/v1/models` 的自检。
+#[tauri::command]
+pub async fn model_api_probe() -> std::result::Result<crate::app::model_api::ModelApiProbe, String>
+{
+    crate::app::model_api::probe().await.map_err(err_text)
+}
+
 /// 手动停止接口（会记住「用户要它关着」，重启后不会自己回来）。
 #[tauri::command]
 pub async fn model_api_stop(

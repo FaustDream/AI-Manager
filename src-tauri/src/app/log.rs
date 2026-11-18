@@ -109,6 +109,11 @@ pub struct Line {
     /// 这一串重复里**最后一次**出现的时间；配合 `repeat` 说明「最近还在发生」。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_ts: Option<String>,
+    /// 物理行号（`app.jsonl` 中从 0 开始）。只由 `query` 填充，用来定位上下文；
+    /// 写盘时不带这个字段（`skip_serializing_if`），日志文件格式保持不变。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub seq: Option<usize>,
 }
 
 impl Line {
@@ -450,6 +455,7 @@ pub fn log(level: Level, module: &str, message: impl Into<String>) {
         batch: None,
         repeat: None,
         last_ts: None,
+        seq: None,
     });
 }
 
@@ -477,6 +483,7 @@ pub fn action(action: &str, trigger: &str, ok: bool, ms: u64, message: impl Into
         batch: None,
         repeat: None,
         last_ts: None,
+        seq: None,
     });
 }
 
@@ -701,6 +708,7 @@ pub fn fail(module: &str, action: &str, message: impl Into<String>, evidence: im
         batch: None,
         repeat: None,
         last_ts: None,
+        seq: None,
     });
 }
 
@@ -729,6 +737,7 @@ pub fn ui(level: Level, action: Option<&str>, message: impl Into<String>, eviden
         batch: None,
         repeat: None,
         last_ts: None,
+        seq: None,
     });
 }
 
@@ -754,6 +763,7 @@ pub fn item(item: Item) {
         batch: item.batch,
         repeat: None,
         last_ts: None,
+        seq: None,
     });
 }
 
@@ -835,10 +845,13 @@ pub fn query(filter: &LogFilter) -> Result<Vec<Line>> {
     };
     let limit = filter.limit.unwrap_or(200).min(2000);
     let mut out: Vec<Line> = Vec::new();
-    // 从后往前收，收够就停：日志页只看最近的，不必解析整份文件
-    for raw in text.lines().rev() {
-        if let Ok(line) = serde_json::from_str::<Line>(raw) {
+    // 从后往前收，收够就停：日志页只看最近的，不必解析整份文件。
+    // `seq` 是文件里的物理行号，供「上下文」按同一行定位；它不写盘，只在查询结果里带出。
+    let raws: Vec<&str> = text.lines().collect();
+    for (seq, raw) in raws.iter().enumerate().rev() {
+        if let Ok(mut line) = serde_json::from_str::<Line>(raw) {
             if matches_filter(&line, filter) {
+                line.seq = Some(seq);
                 out.push(line);
             }
             if out.len() >= limit {
@@ -848,6 +861,112 @@ pub fn query(filter: &LogFilter) -> Result<Vec<Line>> {
     }
     out.reverse();
     Ok(out)
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 一条日志的上下文窗口：前后各若干行，`anchor` 是它在文件里的物理行号。
+///
+/// 排障时真正有用的是「出错前后还发生了什么」，单看一行错误永远拼不出因果。
+/// 读整份文件再切片而不是按时间倒查：上下文必须按**文件顺序**取，时间戳只用于兜底定位。
+#[derive(Debug, Clone, Serialize)]
+pub struct LogContext {
+    pub lines: Vec<Line>,
+    /// 锚点行号；定位失败时为 None（文件已被清空或轮转掉）
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub anchor: Option<usize>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub from: usize,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub to: usize,
+}
+
+/// 上下文最多向两侧各取 500 行：再多就失去「局部」的意义，界面也翻不动。
+const CONTEXT_MAX: usize = 500;
+
+/// 取一条日志的前后文。`anchor` 是 `query` 返回的 `seq`，`ts` 用来在文件变化后
+/// 兜底定位（实时行没有 seq，只有时间戳）。
+pub fn context(
+    anchor: Option<usize>,
+    ts: Option<&str>,
+    before: usize,
+    after: usize,
+) -> Result<LogContext> {
+    let path = logs_dir().join("app.jsonl");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LogContext {
+                lines: Vec::new(),
+                anchor: None,
+                from: 0,
+                to: 0,
+            })
+        }
+        Err(e) => {
+            return Err(crate::app::error::AppError::new(
+                ErrorKind::Io,
+                format!("读取日志失败：{}（{e}）", path.display()),
+            ))
+        }
+    };
+    let raws: Vec<&str> = text.lines().collect();
+    let total = raws.len();
+    if total == 0 {
+        return Ok(LogContext {
+            lines: Vec::new(),
+            anchor: None,
+            from: 0,
+            to: 0,
+        });
+    }
+
+    // seq 能对上时间戳才认：日志被清空/轮转后，旧 seq 会指向别的行
+    let same_row = |index: usize| -> bool {
+        match ts.filter(|t| !t.is_empty()) {
+            Some(t) => serde_json::from_str::<Line>(raws[index])
+                .map(|line| line.ts == t)
+                .unwrap_or(false),
+            None => true,
+        }
+    };
+    let index = anchor
+        .filter(|index| *index < total && same_row(*index))
+        .or_else(|| {
+            ts.filter(|t| !t.is_empty()).and_then(|t| {
+                raws.iter().rposition(|raw| {
+                    serde_json::from_str::<Line>(raw)
+                        .map(|line| line.ts == t)
+                        .unwrap_or(false)
+                })
+            })
+        });
+    let Some(index) = index else {
+        return Ok(LogContext {
+            lines: Vec::new(),
+            anchor: None,
+            from: 0,
+            to: 0,
+        });
+    };
+
+    let before = before.min(CONTEXT_MAX);
+    let after = after.min(CONTEXT_MAX);
+    let from = index.saturating_sub(before);
+    let to = (index + after + 1).min(total);
+    let mut lines = Vec::with_capacity(to - from);
+    for (offset, raw) in raws[from..to].iter().enumerate() {
+        if let Ok(mut line) = serde_json::from_str::<Line>(raw) {
+            line.seq = Some(from + offset);
+            lines.push(line);
+        }
+    }
+    Ok(LogContext {
+        lines,
+        anchor: Some(index),
+        from,
+        to,
+    })
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1085,7 +1204,10 @@ pub fn export(path: &Path, filter: &LogFilter) -> Result<usize> {
     let mut text = String::new();
     for line in &rows {
         if jsonl {
-            text.push_str(&serde_json::to_string(line).unwrap_or_default());
+            // 导出是给机器/别人看的日志资产，不该带查询辅助字段 `seq`
+            let mut row = line.clone();
+            row.seq = None;
+            text.push_str(&serde_json::to_string(&row).unwrap_or_default());
         } else {
             // 导出的文本要和人读日志同样详细：只留 message 会让事后复盘
             // 丢掉环节和证据——那正是排障时唯一有用的部分
@@ -1247,6 +1369,35 @@ mod tests {
 
         let span = span().unwrap();
         assert!(span.earliest.is_none() && span.latest.is_none());
+    }
+
+    /// 上下文按物理行切片：锚点行、两侧行数与 seq 都要对得上，
+    /// 否则界面点一行看到的是另一段日志，比不显示更误导。
+    #[test]
+    fn context_slices_physical_lines_and_keeps_seq() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        init_at(Level::Debug, dir.path()).unwrap();
+        let mut rows = String::new();
+        for index in 0..5 {
+            rows.push_str(&format!(
+                "{{\"ts\":\"2026-11-17T10:0{index}:00+08:00\",\"level\":\"info\",\"module\":\"a\",\"message\":\"第{index}行\"}}\n"
+            ));
+        }
+        std::fs::write(dir.path().join("app.jsonl"), rows).unwrap();
+
+        let ctx = context(Some(2), Some("2026-11-17T10:02:00+08:00"), 1, 1).unwrap();
+        assert_eq!(ctx.anchor, Some(2));
+        assert_eq!((ctx.from, ctx.to), (1, 4));
+        assert_eq!(
+            ctx.lines.iter().map(|line| line.seq).collect::<Vec<_>>(),
+            vec![Some(1), Some(2), Some(3)]
+        );
+
+        // 行号被轮转/清空改写后，必须按时间戳找回同一行
+        let ctx = context(Some(99), Some("2026-11-17T10:04:00+08:00"), 0, 0).unwrap();
+        assert_eq!(ctx.anchor, Some(4));
+        assert_eq!(ctx.lines[0].message, "第4行");
     }
 
     /// 老日志行没有 schema 字段，不能因为加字段就读不出来。
@@ -1586,6 +1737,7 @@ mod tests {
             batch: None,
             repeat: None,
             last_ts: None,
+            seq: None,
         }
     }
 

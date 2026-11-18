@@ -1,17 +1,16 @@
 // 账号中心：八列列定义驱动 + 拖动排序 + 列宽持久化 + 操作列 + 详情面板。
 // 行 key = iid（四处共用的主键）；界面任何位置不渲染 uid（契约 17）。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { errKind, errText } from '@/lib/ipc';
-import { Select, SkeletonRows, StateBlock } from '@/components/ui/form';
+import { SkeletonRows, StateBlock } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { ICONS } from '@/components/ui/icons';
 import { fmtMs } from '@/lib/format';
 import type { AccountView } from '@/lib/types';
-import { attentionRank, COLUMNS, type Cell } from './columns';
+import { COLUMNS, type Cell } from './columns';
 import { DetailPanel } from './detail';
 import { OPS_WIDTH, RestoreDialog, RowActions, SwitchDialog } from './actions';
 import { AddAccountDialog, AccountToolbar } from './toolbar';
@@ -66,19 +65,10 @@ export default function AccountCenterPage() {
   const [restoreTarget, setRestoreTarget] = useState<AccountView | null>(null);
   // 查询失败是运行时状态：接口这轮报错就标红，成功后自动消失，不落库
   const [queryErrors, setQueryErrors] = useState<Record<string, string>>({});
-  const [sortMode, setSortMode] = useState<'manual' | 'attention'>('manual');
   const rows = accounts.data ?? [];
 
-  // 「需处理优先」是临时排序，不改 sort_order
-  const visible = useMemo(
-    () =>
-      sortMode === 'attention'
-        ? [...rows].sort((a, b) => attentionRank(a) - attentionRank(b))
-        : rows,
-    [rows, sortMode],
-  );
-
-  const canDrag = sortMode === 'manual';
+  // 列表顺序就是后端保存的 sort_order：用户手动拖到哪，下次打开还在哪
+  const visible = rows;
 
   const selectedRow = rows.find((r) => r.iid === selected) ?? null;
   const currentSet = useMemo(() => new Set(current.data ?? []), [current.data]);
@@ -176,7 +166,7 @@ export default function AccountCenterPage() {
   const { busy, run: runBusy } = useBusy();
 
   // ---- 拖动排序：指针逻辑在 use-row-drag，这里只负责持久化 ----
-  const { dragging, dropAt, startDrag } = useRowDrag(visible, canDrag ? busy : 'locked', async (iids) => {
+  const { dragging, dropAt, startDrag } = useRowDrag(visible, busy, async (iids) => {
     
       if ((await runCmd('account_reorder', { iids })) === undefined) return;
       qc.invalidateQueries({ queryKey: ['accounts'] });
@@ -362,13 +352,6 @@ export default function AccountCenterPage() {
       qc.invalidateQueries({ queryKey: ['accounts'] });
     });
 
-  const exportList = () =>
-    runBusy('export', async () => {
-      const path = await runCmd('account_export');
-      if (path === undefined) return;
-      toast(`账号清单已导出：${path}`);
-    });
-
   // 添加账号的整条链路（关客户端 → 备份登录态 → 打开登录页 → 扫描）都在弹窗里，
   // 页面只负责在扫完后刷新列表——弹窗中途不关，用户才看得到「正在做什么」。
   const afterAddScanned = () => {
@@ -472,29 +455,6 @@ export default function AccountCenterPage() {
         onDiagnose={batchDiagnose}
       />
 
-      {/* 导出与排序：只影响展示，不写库 */}
-      <div className="flex flex-wrap items-center gap-1.5 text-xs">
-        <span className="flex-1" />
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={exportList}
-          loading={busy === 'export'}
-          disabled={!!busy}
-          title="导出当前全部账号（不含凭据），CSV 可直接用表格打开"
-        >
-          导出清单
-        </Button>
-        <Select
-          value={sortMode}
-          title="手动顺序可拖动调整；需处理优先只是临时排序，不改保存的顺序"
-          onChange={(e) => setSortMode(e.target.value as 'manual' | 'attention')}
-        >
-          <option value="manual">手动顺序</option>
-          <option value="attention">需处理优先</option>
-        </Select>
-      </div>
-
       {/* 窄窗口只在表格自己身上横向滚动，操作列 sticky 在右侧始终可点；
           详情面板不跟着横向滚，避免整页左右晃 */}
       <div className="overflow-x-auto">
@@ -580,13 +540,11 @@ export default function AccountCenterPage() {
               >
                 <td
                   className="px-1 py-1.5 text-center text-muted select-none"
-                  style={{ cursor: canDrag ? 'grab' : 'default', touchAction: 'none' }}
-                  onPointerDown={(e) => {
-                    if (canDrag) startDrag(e, row.iid);
-                  }}
-                  title={canDrag ? '拖动排序' : '切回「手动顺序」且不筛选标签后可拖动'}
+                  style={{ cursor: 'grab', touchAction: 'none' }}
+                  onPointerDown={(e) => startDrag(e, row.iid)}
+                  title="拖动排序"
                 >
-                  {canDrag ? '⠿' : '·'}
+                  ⠿
                 </td>
                 {table.map((col) => (
                   <td

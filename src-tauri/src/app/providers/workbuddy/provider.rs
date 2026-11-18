@@ -231,6 +231,14 @@ impl Provider for WorkBuddyProvider {
         })
     }
 
+    async fn credit_rewards(
+        &self,
+        cred: &Credential,
+        http: &dyn Http,
+    ) -> Result<crate::app::providers::workbuddy::RewardCredits> {
+        self.reward_credits(cred, http).await
+    }
+
     async fn checkin(&self, cred: &Credential, http: &dyn Http) -> Result<ActionResult> {
         if !self.requires_checkin() {
             return Ok(ActionResult {

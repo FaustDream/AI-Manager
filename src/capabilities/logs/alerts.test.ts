@@ -22,6 +22,8 @@ function line(ts: string): LogLine {
     batch: null,
     repeat: null,
     last_ts: null,
+    // 物理行号只由查询结果填充：测试夹具里没有文件行号
+    seq: null,
   };
 }
 

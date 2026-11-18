@@ -52,7 +52,7 @@ pub trait CheckinStore {
         last: DateTime<Local>,
         clock: &dyn Clock,
     ) -> Option<DateTime<Local>>;
-    /// 契约 6：同一天多次写入只保留最后一次（upsert 而非 insert）。
+    /// 契约 6：同一天只保留第一笔余额作为当天基线（insert 而非覆盖）。
     fn note_balance(&self, iid: &str, balance: f64, clock: &dyn Clock) -> Result<bool>;
     fn balance_on(&self, iid: &str, day: &str) -> Option<f64>;
 }
