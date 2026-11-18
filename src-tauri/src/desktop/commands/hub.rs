@@ -13,10 +13,8 @@ pub fn target_keys(names: &[String]) -> Vec<crate::contracts::TargetKey> {
 }
 
 /// 技能 + MCP + 平台清单，一次读完。
-#[tauri::command]
-
 pub async fn hub_snapshot(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<crate::app::hub::HubSnapshot, String> {
     let hub = state.hub.clone();
     crate::app::runtime::blocking(move || crate::app::hub::snapshot(&hub))
@@ -25,10 +23,8 @@ pub async fn hub_snapshot(
 }
 
 /// 从某个平台批量把技能收进技能库（「从软件保存到库」）。
-#[tauri::command]
-
 pub async fn hub_skill_import_many(
-    state: State<'_, AppState>,
+    state: &AppState,
     target: String,
     names: Vec<String>,
 ) -> std::result::Result<crate::app::hub::ImportReport, String> {
@@ -66,10 +62,8 @@ pub async fn hub_skill_import_many(
 }
 
 /// 部署技能到选中的平台。`overwrite=true` 才允许盖掉内容不同的同名副本。
-#[tauri::command]
-
 pub async fn hub_skill_deploy(
-    state: State<'_, AppState>,
+    state: &AppState,
     name: String,
     targets: Vec<String>,
     overwrite: Option<bool>,
@@ -104,10 +98,8 @@ pub async fn hub_skill_deploy(
 }
 
 /// 从平台移除技能（只删本工具部署的副本）。
-#[tauri::command]
-
 pub async fn hub_skill_remove(
-    state: State<'_, AppState>,
+    state: &AppState,
     name: String,
     targets: Vec<String>,
 ) -> std::result::Result<crate::app::hub::DeployReport, String> {
@@ -137,10 +129,8 @@ pub async fn hub_skill_remove(
 }
 
 /// 从某个平台把技能导入库。
-#[tauri::command]
-
 pub async fn hub_skill_import(
-    state: State<'_, AppState>,
+    state: &AppState,
     target: String,
     name: String,
 ) -> std::result::Result<crate::app::hub::skills::SkillInfo, String> {
@@ -165,10 +155,8 @@ pub struct McpImportReport {
 }
 
 /// 手动导入：把一个本地技能目录复制进技能库。
-#[tauri::command]
-
 pub async fn hub_skill_import_local(
-    state: State<'_, AppState>,
+    state: &AppState,
     path: String,
 ) -> std::result::Result<crate::app::hub::skills::SkillInfo, String> {
     let hub = state.hub.clone();
@@ -187,10 +175,8 @@ pub async fn hub_skill_import_local(
 }
 
 /// 手动创建：把一段 SKILL.md 正文落成库里的一个技能。
-#[tauri::command]
-
 pub async fn hub_skill_create(
-    state: State<'_, AppState>,
+    state: &AppState,
     name: String,
     text: String,
 ) -> std::result::Result<crate::app::hub::skills::SkillInfo, String> {
@@ -209,10 +195,8 @@ pub async fn hub_skill_create(
 }
 
 /// 把一条「软件自带」的 MCP 收进分发库（原位打标记，再按需写到其他平台）。
-#[tauri::command]
-
 pub async fn hub_mcp_claim(
-    state: State<'_, AppState>,
+    state: &AppState,
     name: String,
     source: String,
     targets: Vec<String>,
@@ -250,10 +234,8 @@ pub async fn hub_mcp_claim(
 }
 
 /// 粘贴一段 MCP 配置，写到选中的平台。
-#[tauri::command]
-
 pub async fn hub_mcp_import(
-    state: State<'_, AppState>,
+    state: &AppState,
     text: String,
     targets: Vec<String>,
 ) -> std::result::Result<McpImportReport, String> {
@@ -281,10 +263,8 @@ pub async fn hub_mcp_import(
 }
 
 /// 从选中的平台删掉一条 MCP（只删本工具写的）。
-#[tauri::command]
-
 pub async fn hub_mcp_remove(
-    state: State<'_, AppState>,
+    state: &AppState,
     name: String,
     targets: Vec<String>,
 ) -> std::result::Result<crate::app::hub::DeployReport, String> {
@@ -296,10 +276,8 @@ pub async fn hub_mcp_remove(
 }
 
 /// 把一条已存在的 MCP 条目写到更多平台（MCP 表每行的「部署」）。
-#[tauri::command]
-
 pub async fn hub_mcp_deploy(
-    state: State<'_, AppState>,
+    state: &AppState,
     name: String,
     targets: Vec<String>,
 ) -> std::result::Result<crate::app::hub::DeployReport, String> {

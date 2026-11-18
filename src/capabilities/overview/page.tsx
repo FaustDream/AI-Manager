@@ -15,7 +15,7 @@ import { CreditFlowChart } from '@/components/credit-flow';
 import { CreditPlatformSplit } from '@/components/credit-platforms';
 import { CreditTrend } from '@/components/credit-trend';
 import type { AccountView, AppConfig, CreditFlowReport, HealthReport, TrendPoint } from '@/lib/types';
-import { SectionTitle } from './metric';
+import { SectionTitle, Metric } from './metric';
 import { SessionsSection } from './sessions-section';
 import { UsageSection } from './usage-section';
 
@@ -131,6 +131,26 @@ export default function OverviewPage() {
   const report = health.data;
   const rows = accounts.data ?? [];
 
+  // KPI 摘要条：区间进账 / 区间消耗 / 当前余额 / 凭据临期。
+  // 前两项跟随所选区间（与下图同一份裁剪后的点，数字必然对得上）；
+  // 余额是存量、临期是账号事实，都与区间无关。
+  const earnedSum = useMemo(
+    () => flowPoints.reduce((sum, point) => sum + point.earned, 0),
+    [flowPoints],
+  );
+  const spentSum = useMemo(
+    () => flowPoints.reduce((sum, point) => sum + point.spent, 0),
+    [flowPoints],
+  );
+  const balanceSum = useMemo(
+    () => rows.reduce((sum, row) => sum + (row.balance ?? 0), 0),
+    [rows],
+  );
+  const kpiRange =
+    customOpen && customFrom
+      ? `${customFrom} ~ ${customTo || todayIso()}`
+      : rangeNote(days);
+
   // 7 天内到期的积分合计：告警里逐账号提醒，这里给一个总数，决定「要不要现在去用掉」
   const expiringCredit = useMemo(() => {
     const now = Date.now();
@@ -183,7 +203,7 @@ export default function OverviewPage() {
   }, [report, rows, qc, staleAfterMs]);
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="stagger flex flex-col gap-3">
       <div className="flex items-center gap-2">
         <h1 className="text-base font-semibold">仪表盘</h1>
         <span className="flex-1" />
@@ -226,7 +246,42 @@ export default function OverviewPage() {
 
       {report && report.accounts.total > 0 && (
         <>
-          <section className="rounded-lg border border-line bg-card p-3">
+          {/* 第一层：四个数字回答「进了多少、花了多少、还剩多少、有没有要紧事」 */}
+          {flow.isLoading ? (
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="h-[92px] animate-pulse rounded-lg bg-hover" />
+              ))}
+            </div>
+          ) : (
+            <section className="grid grid-cols-2 gap-3 md:grid-cols-4" aria-label="关键指标">
+              <Metric
+                label={`进账 · ${kpiRange}`}
+                value={fmtAmount(earnedSum)}
+                tone="ok"
+                hint="所选区间内全部账号收到的积分合计，与下方收支图同一口径"
+              />
+              <Metric
+                label={`消耗 · ${kpiRange}`}
+                value={fmtAmount(spentSum)}
+                hint="所选区间内全部账号用掉的积分合计，与下方收支图同一口径"
+              />
+              <Metric
+                label="当前余额"
+                value={fmtAmount(balanceSum)}
+                hint="全部账号最新余额合计（存量，不受区间影响）"
+              />
+              <Metric
+                label="凭据临期"
+                value={String(report.accounts.expiring)}
+                tone={report.accounts.expiring > 0 ? 'warn' : 'default'}
+                hint="3 天内凭据到期的账号数：去账号中心刷新凭据或重新授权"
+                onClick={() => go('account-center')}
+              />
+            </section>
+          )}
+
+          <section className="rounded-lg border border-line bg-card p-3 shadow-card">
             <SectionTitle
               right={
                 <span className="flex flex-wrap items-center gap-1">

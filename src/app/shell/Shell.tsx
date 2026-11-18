@@ -23,6 +23,8 @@ import { Button, cn } from '@/components/ui/button';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { onIdle } from '@/lib/idle';
 import { CommandPalette, type PaletteItem } from './CommandPalette';
+import { QuitButton } from './QuitButton';
+import { useDesktopNotifications } from '@/lib/notify';
 import { focusSession } from '@/lib/nav';
 import type { Filter, Page, SessionRow } from '@/lib/types';
 import { hideSplash } from '@/lib/splash';
@@ -69,6 +71,9 @@ export function Shell() {
     // 挂载完成通知后端：IPC 通道正常（ui_ready 的意义见 Rust 侧注释）
     void runCmd('ui_ready');
   }, []);
+
+  // 桌面通知：接替托盘的被动提醒（签到完成 / 登录结果 / 凭据临期）
+  useDesktopNotifications();
 
   // 首屏渲染完 → 空闲时间把其余页面 chunk 逐个拉下来。
   // 一次全开等于和首屏抢带宽（dev 下一个页面是几十个模块），所以串行、每步等空闲。
@@ -241,6 +246,8 @@ export function Shell() {
         >
           <RefreshCw size={14} />
         </Button>
+        {/* 浏览器化后的正式停止入口：确认后结束后端进程 */}
+        <QuitButton />
         {/* 切页进度线：贴在 header 底边，只做「正在换页」的提示，不占布局、不挡内容 */}
         <span
           aria-hidden

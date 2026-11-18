@@ -6,9 +6,8 @@ use crate::app::error::ErrorKind;
 // ------------------------------------------------------------ 会话
 
 /// 增量扫描会话索引：扫完 emit `session:scan` 并返回报告。
-#[tauri::command]
 pub async fn session_scan(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<crate::app::sessions::SessionScanReport, String> {
     let service = state.sessions.clone();
     let report = match service.scan().await {
@@ -34,10 +33,8 @@ pub async fn session_scan(
 }
 
 /// 列表页：只读 app.db，客户端正在写也不影响。
-#[tauri::command]
-
 pub async fn session_page(
-    state: State<'_, AppState>,
+    state: &AppState,
     cursor: Option<String>,
     limit: Option<usize>,
     filter: Option<crate::app::sessions::Filter>,
@@ -50,10 +47,8 @@ pub async fn session_page(
 }
 
 /// 正文预览：按行 key 找正文。只读、只取头尾。
-#[tauri::command]
-
 pub async fn session_preview(
-    state: State<'_, AppState>,
+    state: &AppState,
     key: String,
 ) -> std::result::Result<crate::app::sessions::Preview, String> {
     let service = state.sessions.clone();
@@ -61,8 +56,6 @@ pub async fn session_preview(
 }
 
 /// 这批会话会临时关闭哪些**正在运行**的客户端（界面在确认框里点名）。
-#[tauri::command]
-
 pub async fn session_running_clients(
     keys: Vec<String>,
 ) -> std::result::Result<Vec<String>, String> {
@@ -72,10 +65,8 @@ pub async fn session_running_clients(
 }
 
 /// 当前筛选下的全部行 key（不分页），给「选中全部」用。
-#[tauri::command]
-
 pub async fn session_keys(
-    state: State<'_, AppState>,
+    state: &AppState,
     filter: crate::app::sessions::Filter,
 ) -> std::result::Result<Vec<String>, String> {
     let service = state.sessions.clone();
@@ -83,20 +74,16 @@ pub async fn session_keys(
 }
 
 /// 三个下拉的取值与计数（来源 / 账号 / 状态）。
-#[tauri::command]
-
 pub async fn session_facets(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<crate::app::sessions::Facets, String> {
     let service = state.sessions.clone();
     service.facets().await.map_err(err_text)
 }
 
 /// 归档 / 取消归档。只写本地标记，不动客户端库，所以不用关客户端。
-#[tauri::command]
-
 pub async fn session_archive(
-    state: State<'_, AppState>,
+    state: &AppState,
     keys: Vec<String>,
     on: bool,
 ) -> std::result::Result<usize, String> {
@@ -114,10 +101,8 @@ pub async fn session_archive(
 ///
 /// 这是不可逆动作，门槛放在后端而不是只靠界面置灰：绕过界面直接调命令也删不掉
 /// 一条还在用的会话。删完返回报告并 emit `session:purge`。
-#[tauri::command]
-
 pub async fn session_purge(
-    state: State<'_, AppState>,
+    state: &AppState,
     keys: Vec<String>,
 ) -> std::result::Result<crate::app::sessions::delete::PurgeReport, String> {
     let service = state.sessions.clone();
@@ -181,16 +166,12 @@ pub async fn session_purge(
 }
 
 /// 自动归档的保留天数（0 = 关闭）。
-#[tauri::command]
-
-pub async fn session_retention(state: State<'_, AppState>) -> std::result::Result<u32, String> {
+pub async fn session_retention(state: &AppState) -> std::result::Result<u32, String> {
     Ok(state.sessions.retention_days().await)
 }
 
-#[tauri::command]
-
 pub async fn session_retention_set(
-    state: State<'_, AppState>,
+    state: &AppState,
     days: u32,
 ) -> std::result::Result<u32, String> {
     let days = state
@@ -213,10 +194,8 @@ pub async fn session_retention_set(
 // ------------------------------------------------------------ v3：置顶 / 改名 / 隐藏 / 标签
 
 /// 置顶 / 取消置顶。只写本地标记，客户端与扫描都无感。
-#[tauri::command]
-
 pub async fn session_pin(
-    state: State<'_, AppState>,
+    state: &AppState,
     keys: Vec<String>,
     on: bool,
 ) -> std::result::Result<usize, String> {
@@ -230,10 +209,8 @@ pub async fn session_pin(
 }
 
 /// 本地改名（`title = None` 表示恢复客户端原标题）。改名即锁定：扫描永不覆盖。
-#[tauri::command]
-
 pub async fn session_rename(
-    state: State<'_, AppState>,
+    state: &AppState,
     key: String,
     title: Option<String>,
 ) -> std::result::Result<(), String> {
@@ -247,10 +224,8 @@ pub async fn session_rename(
 }
 
 /// 隐藏 / 取消隐藏。Trae 家族的「彻底删除」就是写隐藏墓碑，取消隐藏=恢复显示。
-#[tauri::command]
-
 pub async fn session_hide(
-    state: State<'_, AppState>,
+    state: &AppState,
     keys: Vec<String>,
     on: bool,
 ) -> std::result::Result<usize, String> {
@@ -264,10 +239,8 @@ pub async fn session_hide(
 }
 
 /// 全量替换一个会话的标签。
-#[tauri::command]
-
 pub async fn session_tag_set(
-    state: State<'_, AppState>,
+    state: &AppState,
     key: String,
     tags: Vec<String>,
 ) -> std::result::Result<usize, String> {
@@ -283,10 +256,8 @@ pub async fn session_tag_set(
 // ------------------------------------------------------------ v3：导出 / 打开 / 建议 / 统计
 
 /// 导出会话正文到 `data/exports/`（markdown / json），返回报告。
-#[tauri::command]
-
 pub async fn session_export(
-    state: State<'_, AppState>,
+    state: &AppState,
     keys: Vec<String>,
     format: String,
 ) -> std::result::Result<crate::app::sessions::ExportReport, String> {
@@ -305,12 +276,7 @@ pub async fn session_export(
 
 /// 打开正文所在文件夹。正文在 SQLite 库里的来源（Qoder / ZCode / Trae）没有
 /// 可打开的文件，返回 `false` 让界面提示，而不是硬开一个没用的目录。
-#[tauri::command]
-
-pub async fn session_open_body(
-    state: State<'_, AppState>,
-    key: String,
-) -> std::result::Result<bool, String> {
+pub async fn session_open_body(state: &AppState, key: String) -> std::result::Result<bool, String> {
     let dir = state.sessions.body_dir(key).await.map_err(err_text)?;
     let Some(dir) = dir else {
         return Ok(false);
@@ -330,8 +296,6 @@ pub async fn session_open_body(
 
 /// 打开该会话所属的客户端（复用账号中心的启动逻辑）。
 /// 插件会话等没有独立客户端的来源返回 `false`。
-#[tauri::command]
-
 pub async fn session_open_client(key: String) -> std::result::Result<bool, String> {
     let platform = crate::app::runtime::blocking(move || {
         crate::app::sessions::preview::parse_key(&key)
@@ -354,20 +318,16 @@ pub async fn session_open_client(key: String) -> std::result::Result<bool, Strin
 
 /// 未命名会话的标题建议（首条用户消息截短），返回 `[key, 建议]` 列表。
 /// 纯只读；由界面在「一键治理」弹窗里人工确认后再调 `session_rename`。
-#[tauri::command]
-
 pub async fn session_suggest_titles(
-    state: State<'_, AppState>,
+    state: &AppState,
     keys: Vec<String>,
 ) -> std::result::Result<Vec<(String, String)>, String> {
     state.sessions.suggest_titles(keys).await.map_err(err_text)
 }
 
 /// 会话维度统计（仪表盘「会话」区块）。
-#[tauri::command]
-
 pub async fn session_stats(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<crate::app::sessions::SessionStats, String> {
     state.sessions.stats().await.map_err(err_text)
 }

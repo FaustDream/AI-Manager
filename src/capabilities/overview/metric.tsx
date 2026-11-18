@@ -25,6 +25,8 @@ export function Metric({
   exact,
   hint,
   delta,
+  tone = 'default',
+  onClick,
 }: {
   label: string;
   value: string;
@@ -33,19 +35,39 @@ export function Metric({
   /** 解释与口径：进 tooltip，不上屏 */
   hint?: string;
   delta?: ReactNode;
+  /** 数值语义色：进账用 ok、临期告警用 warn；默认不着色 */
+  tone?: 'default' | 'ok' | 'warn';
+  /** 给了就是可点瓦片（整块是按钮），用于「点数字去处理」的入口 */
+  onClick?: () => void;
 }) {
-  return (
-    <div className="rounded-lg border border-line bg-card p-4" title={hint}>
+  const valueCls = cn(
+    'mt-1 text-2xl font-semibold tabular-nums tracking-[-.03em]',
+    tone === 'ok' && 'text-ok',
+    tone === 'warn' && 'text-warn',
+  );
+  const body = (
+    <>
       <div className="flex items-center justify-between gap-2 text-xs text-fg2">
         {label}
         {delta}
       </div>
-      <div
-        className="mt-1 text-2xl font-semibold tabular-nums tracking-[-.03em]"
-        title={exact}
-      >
+      <div className={valueCls} title={exact}>
         {value}
       </div>
+    </>
+  );
+  const cls =
+    'rounded-lg border border-line bg-card p-4 shadow-card transition-shadow hover:shadow-card-hover';
+  if (onClick) {
+    return (
+      <button type="button" className={cn(cls, 'cursor-pointer text-left')} title={hint} onClick={onClick}>
+        {body}
+      </button>
+    );
+  }
+  return (
+    <div className={cls} title={hint}>
+      {body}
     </div>
   );
 }

@@ -5,9 +5,9 @@
 # AI Manager
 
 **You have three AI coding clients, and you spend the day switching between their logins.**
-This tool puts switching, check-in, sessions and skills into one window.
+This tool puts switching, check-in, sessions and skills into one browser page.
 
-Windows desktop · multi-account login switching · daily check-in & credits · local session library · skills & MCP distribution
+Windows · local backend + browser UI · multi-account login switching · daily check-in & credits · local session library · skills & MCP distribution
 
 [![CI](https://github.com/FaustDream/AI-Manager/actions/workflows/ci.yml/badge.svg)](https://github.com/FaustDream/AI-Manager/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/FaustDream/AI-Manager?style=flat-square)](https://github.com/FaustDream/AI-Manager/releases)
@@ -24,7 +24,9 @@ Windows desktop · multi-account login switching · daily check-in & credits · 
 
 Qoder, WorkBuddy, Trae and ZCode each keep their own login state, their own credential file, and their own daily check-in. With a few accounts, switching becomes manual labour: open the client, find the account, log in again, and one missed day breaks the streak.
 
-AI Manager folds all of it into one window: it scans every account already logged in on this machine and switches with one click, records check-ins and credits automatically, indexes sessions so you can browse, delete and restore them in one place, and imports skills or MCP servers once to distribute them to multiple clients.
+AI Manager folds all of it into one page: it scans every account already logged in on this machine and switches with one click, records check-ins and credits automatically, indexes sessions so you can browse, delete and restore them in one place, and imports skills or MCP servers once to distribute them to multiple clients.
+
+Since 2.0.26 the interface lives in your browser: a local backend serves the page and the API on `127.0.0.1`, and credentials never leave this machine. There is no desktop window, tray icon or autostart.
 
 ## Features
 
@@ -35,7 +37,7 @@ AI Manager folds all of it into one window: it scans every account already logge
 | Sessions | Browse and preview the local session library, delete to trash, restore |
 | Skills & MCP | Import, distribute to each client, remove to trash, collect official skills |
 | Logs | Action log and runtime log, date-range review, export |
-| Settings | Launch at startup, tray behaviour, general options |
+| Settings | Themes, desktop notifications, scheduled jobs, storage and recycle bin |
 
 ## Screens
 
@@ -76,40 +78,38 @@ Both artifacts live in [Releases](https://github.com/FaustDream/AI-Manager/relea
 | `AI-Manager-<ver>-windows-x64-setup.exe` | Normal install. Goes to `%LOCALAPPDATA%\Programs\AI Manager`, no admin rights, uninstall keeps `data\` |
 | `AI-Manager-<ver>-windows-x64-portable.zip` | Unzip and run. Move the whole folder to migrate |
 
-Requirements: Windows 10 1803 or later (uses the system WebView2 runtime, bundled on Windows 11). No .NET, no administrator rights.
+Requirements: Windows 10 or later plus a modern browser (Edge, Chrome, …). No .NET, no WebView2, no administrator rights.
 
-> Closing the window does not quit: the app stays in the tray to keep running the daily check-in. To really exit, right-click the tray icon and choose "退出" (Quit).
+> Start with `start.cmd`: it launches the local backend and opens the page. The minimized console window is the backend's log console. Closing the browser tab does **not** stop the backend — use the power button in the page's top bar to really quit.
 
 > **Unsigned build.** On first launch Windows SmartScreen may show "Windows protected your PC" — choose "More info" → "Run anyway". Every release ships a `SHA256SUMS.txt` so you can verify what you downloaded.
 
 ## Build from source
 
-Prerequisites: Rust stable, Node.js 22, WebView2 (bundled on Windows 11). Building the installer additionally needs NSIS.
+Prerequisites: Rust stable, Node.js 22. Building the installer additionally needs NSIS.
 
 ```bash
 npm ci
 
-# Development: one command starts Vite + the web debug shell and opens a browser
+# Daily use: build once if needed, start the backend, open the browser
+start.cmd
+
+# Development: one command starts Vite + the backend and opens a browser
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-run.ps1
 
 # Manual equivalent
-npm run dev                                     # terminal 1: Vite dev server (127.0.0.1:5273)
-cd src-tauri && cargo run --bin ai-manager-web  # terminal 2: web debug shell (127.0.0.1:5274)
+npm run dev                              # terminal 1: Vite dev server (127.0.0.1:5273)
+cd src-tauri && cargo run --bin ai-manager  # terminal 2: local backend (127.0.0.1:5274)
 # then open http://127.0.0.1:5273 in a browser
 
-# The desktop shell is only for validating tray / single-instance / native-window behavior
-cd src-tauri && cargo run --bin ai-manager
-
-# Release build
+# Release build (frontend first: dist/ is hosted by the exe at runtime)
 npm run build
-cd src-tauri && cargo build --release --features custom-protocol
+cd src-tauri && cargo build --release
 ```
 
-`--bin` is required: `src-tauri` has two binaries (the desktop shell `ai-manager` and the web debug shell `ai-manager-web`) and Cargo has no default target. Development and routine self-testing use the web shell, not the local desktop app.
+`src-tauri` has a single binary, `ai-manager`: a local axum service that hosts the built frontend from its own `dist/` folder and exposes `/cmd` plus `/events` on the same port. A release folder therefore needs `ai-manager.exe` + `dist/` + `start.cmd` together — a missing `dist/` means a 404 page.
 
-`custom-protocol` is also required, otherwise the release build tries to reach devUrl and shows a blank window.
-
-The web debug shell binds `127.0.0.1` only and shares the single-instance lock with the desktop shell, so the two cannot run at once.
+The backend binds `127.0.0.1` only and holds the single-instance lock, so a second copy is refused by design (two schedulers must not write the same database).
 
 The pre-commit gates match CI:
 
@@ -140,7 +140,7 @@ Account credentials are encrypted with Windows DPAPI and bound to the current Wi
 
 ## Known limitations
 
-- Windows only: depends on DPAPI and WebView2
+- Windows only: credentials depend on Windows DPAPI
 - The account vault does not migrate: copying `data/` over still requires a fresh login
 - Upgrading from v1: the v1 data importer is gone; the app neither reads nor deletes the old directory
 

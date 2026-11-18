@@ -1,188 +1,227 @@
-//! 网页调试壳的分发器测试。放在集成测试里有一个硬理由：mock 运行时会把
-//! tauri 的 app 代码单元拖进测试 exe（连带 comctl32 v6 导入），lib 单测
-//! 二进制没有 manifest 会直接 STATUS_ENTRYPOINT_NOT_FOUND；集成测试 exe
-//! 由 build.rs 的 rustc-link-arg-tests 嵌了 manifest，没有这个问题。
+//! HTTP 壳全链路验证：真实 axum HTTP（/cmd + /events）+ 真实命令函数，
+//! 直接持有 AppState，不经过任何桌面运行时。
+//!
+//! 安全面：缺自定义头 / 恶意 Origin 必须 403；本机 Origin（dev 5273 与
+//! 托管自身 5274）与无 Origin 的本机工具放行。静态托管：命中文件给文件、
+//! 未知路径回落 index.html（SPA）。
 
-use ai_manager::desktop::{self, web::dispatch};
+use ai_manager::desktop::{self, web, AppState};
 use serde_json::{json, Value};
-use tauri::Manager;
-
-/// 用 `set_data_dir_for_test` 把数据目录钉到独立临时目录（CORE-03），
-/// 再走与两个壳完全一致的 `init_state` 装配——测试的 AppState 与生产同源。
-/// 每个测试文件是独立进程，互不污染 override。
-struct TestCtx {
-    _dir: tempfile::TempDir,
-    _app: tauri::App<tauri::test::MockRuntime>,
-    handle: tauri::AppHandle<tauri::test::MockRuntime>,
-}
 
 /// `set_data_dir_for_test` 是进程级 override：并行测试会互相改目录，
-/// 导致 SQLite 锁到别人的临时库。这里用异步锁把整个用例串起来。
+/// 导致 SQLite 锁到别人的临时库。用异步锁把整条用例串起来——同步
+/// MutexGuard 持锁跨 await 会阻塞运行时线程（clippy::await_holding_lock）。
 static DATA_DIR_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn test_app() -> TestCtx {
+/// 独立临时数据目录（CORE-03：测试绝不碰真实 data/）+ 与生产同源的 init_state。
+/// TempDir 必须活到用例结束：提前 drop 会把正在用的库删掉。
+struct TestCtx {
+    _dir: tempfile::TempDir,
+    state: AppState,
+}
+
+fn test_ctx() -> TestCtx {
     let dir = tempfile::tempdir().expect("tempdir");
     ai_manager::app::paths::set_data_dir_for_test(dir.path());
     let state = desktop::init_state(None).expect("init_state");
-    let app = tauri::test::mock_app();
-    app.manage(state);
-    let handle = app.app_handle().clone();
-    TestCtx {
-        _dir: dir,
-        _app: app,
-        handle,
-    }
+    TestCtx { _dir: dir, state }
+}
+
+async fn call(state: &AppState, name: &str, args: Value) -> Result<Value, String> {
+    web::dispatch(state, name, &args).await
 }
 
 #[tokio::test]
-async fn dispatch_roundtrips_simple_commands() {
+async fn app_version_over_dispatch() {
     let _guard = DATA_DIR_LOCK.lock().await;
-    let ctx = test_app();
-    let data = dispatch(&ctx.handle, "app_version", &json!({}))
+    let ctx = test_ctx();
+    let v = call(&ctx.state, "app_version", json!({})).await.unwrap();
+    assert_eq!(v, json!(env!("CARGO_PKG_VERSION")));
+}
+
+#[tokio::test]
+async fn unknown_command_returns_args_error() {
+    let _guard = DATA_DIR_LOCK.lock().await;
+    let ctx = test_ctx();
+    let err = call(&ctx.state, "no_such_command", json!({}))
         .await
-        .expect("app_version 应成功");
-    assert_eq!(data, Value::String(env!("CARGO_PKG_VERSION").to_string()));
+        .unwrap_err();
+    let parsed: Value = serde_json::from_str(&err).unwrap();
+    // args_error 走 ErrorKind::Invalid（序列化 kind=invalid），前端 errMsg 同口径
+    assert_eq!(parsed["kind"], "invalid");
 }
 
 #[tokio::test]
-async fn unknown_command_is_a_structured_error() {
+async fn missing_arg_returns_args_error() {
     let _guard = DATA_DIR_LOCK.lock().await;
-    let ctx = test_app();
-    let err = dispatch(&ctx.handle, "definitely_not_a_command", &json!({}))
+    let ctx = test_ctx();
+    // account_set_alias 需要 iid / alias，空参必须报「缺少参数」
+    let err = call(&ctx.state, "account_set_alias", json!({}))
         .await
-        .expect_err("未知命令必须报错");
-    assert!(err.contains("未知命令"), "错误原文：{err}");
-    assert!(
-        err.contains("kind"),
-        "错误必须带 kind（前端 errText 依赖）：{err}"
-    );
+        .unwrap_err();
+    let parsed: Value = serde_json::from_str(&err).unwrap();
+    assert_eq!(parsed["kind"], "invalid");
+    assert!(parsed["message"].as_str().unwrap().contains("iid"));
 }
 
 #[tokio::test]
-async fn missing_required_arg_fails_before_business_runs() {
+async fn full_http_roundtrip_and_security() {
     let _guard = DATA_DIR_LOCK.lock().await;
-    let ctx = test_app();
-    let err = dispatch(&ctx.handle, "account_switch", &json!({}))
-        .await
-        .expect_err("缺 iid 必须报参数错");
-    assert!(err.contains("iid"), "错误要指名缺哪个参数：{err}");
-}
-
-#[tokio::test]
-async fn session_page_reads_empty_index() {
-    let _guard = DATA_DIR_LOCK.lock().await;
-    let ctx = test_app();
-    let data = dispatch(
-        &ctx.handle,
-        "session_page",
-        &json!({ "cursor": null, "limit": 5, "filter": null }),
-    )
-    .await
-    .expect("空索引上分页查询应成功");
-    assert!(data.is_object(), "返回应是 Page 对象：{data}");
-}
-
-/// Result 型命令的回包必须解包成裸载荷：invoke 的语义是「成功给载荷」，
-/// 整包序列化会产出 `{"Ok":…}` 壳——前端拿壳当数组用直接崩
-/// （rows.reduce is not a function，2026-11-08 网页版排查）。
-#[tokio::test]
-async fn result_commands_return_bare_payload() {
-    let _guard = DATA_DIR_LOCK.lock().await;
-    let ctx = test_app();
-    let data = dispatch(&ctx.handle, "account_list", &json!({}))
-        .await
-        .expect("account_list 应成功");
-    assert!(data.is_array(), "Result 命令必须解包，而不是包成壳：{data}");
-}
-
-/// 失败的 Result 命令必须走 Err 通道：失败被包进 `Ok({"Err":…})` 会让
-/// 前端把错误当成功（ok:true + Err 载荷）。
-#[tokio::test]
-async fn result_command_failures_are_errors() {
-    let _guard = DATA_DIR_LOCK.lock().await;
-    let ctx = test_app();
-    let err = dispatch(
-        &ctx.handle,
-        "activity_daily_status",
-        &json!({ "iid": "workbuddy:no-such@intl" }),
-    )
-    .await
-    .expect_err("失败命令必须走 Err，而不是 Ok 包着 Err 壳");
-    assert!(err.contains("kind"), "错误必须带 kind：{err}");
-}
-
-/// HTTP 全链路（axum 路由 + 安全面 + 回包形状）：临时端口起真服务，
-/// 用 reqwest 打三类请求——缺自定义头、伪造 Origin、正常调用。
-#[tokio::test]
-async fn http_layer_enforces_guard_and_envelope() {
-    use ai_manager::desktop::web;
-
-    let _guard = DATA_DIR_LOCK.lock().await;
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    ai_manager::app::paths::set_data_dir_for_test(dir.path());
-    let state = desktop::init_state(None).expect("init_state");
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    // serve 的 future 持有 App 本体（非 Send），不能 tokio::spawn——
-    // 在专用线程上 block_on，与 bin 入口的跑法一致；MockRuntime 没有
-    // tao 的主线程限制，可以在这个线程上直接建
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        let app = tauri::test::mock_app();
-        rt.block_on(web::serve(listener, app, state))
-            .expect("serve");
-    });
+    let TestCtx { _dir, state } = test_ctx();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { web::serve(listener, state).await.unwrap() });
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/cmd/app_version");
 
-    // 1) 缺自定义头：浏览器跨站请求会被强制先走预检（我们不回预检），
-    //    直连 POST 也必须被安全面拦下
-    let res = client.post(&url).send().await.expect("request");
-    assert_eq!(res.status(), reqwest::StatusCode::FORBIDDEN, "缺头必须 403");
+    // 缺自定义头 → 403（CSRF 防线）
+    let resp = client.post(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
 
-    // 2) 带头但 Origin 可疑：同样 403
-    let res = client
+    // 恶意 Origin → 403
+    let resp = client
         .post(&url)
         .header("x-ai-manager-web", "1")
-        .header("Origin", "http://evil.example")
+        .header("Origin", "https://evil.example")
         .send()
         .await
-        .expect("request");
-    assert_eq!(
-        res.status(),
-        reqwest::StatusCode::FORBIDDEN,
-        "坏 Origin 必须 403"
-    );
+        .unwrap();
+    assert_eq!(resp.status(), 403);
 
-    // 3) 正常调用：回包 {ok:true, data}，data 是版本号
-    let res = client
+    // 本机工具形态（带头、无 Origin）→ 200 + 真实数据
+    let resp = client
         .post(&url)
         .header("x-ai-manager-web", "1")
-        .json(&json!({}))
         .send()
         .await
-        .expect("request");
-    assert!(res.status().is_success());
-    let body: Value = res.json().await.expect("json");
-    assert_eq!(body["ok"], true, "回包：{body}");
-    assert_eq!(body["data"], env!("CARGO_PKG_VERSION"), "回包：{body}");
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["data"], json!(env!("CARGO_PKG_VERSION")));
 
-    // 4) 未知命令：HTTP 200 + ok:false（与 invoke 的 reject 语义对齐）
-    let res = client
-        .post(format!("http://{addr}/cmd/definitely_not_a_command"))
+    // 托管页面同源形态：生产里页面与命令通道同端口（5274），浏览器对同源
+    // POST 也会带 Origin，白名单漏了它整个界面就全 403。
+    let resp = client
+        .post(&url)
         .header("x-ai-manager-web", "1")
-        .json(&json!({}))
+        .header("Origin", "http://127.0.0.1:5274")
         .send()
         .await
-        .expect("request");
-    let body: Value = res.json().await.expect("json");
-    assert_eq!(body["ok"], false, "回包：{body}");
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // 白名单外的本机端口不在信任面内（测试服务器自己就是随机端口）
+    let resp = client
+        .post(&url)
+        .header("x-ai-manager-web", "1")
+        .header("Origin", format!("http://{addr}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // dev server 的 Origin → 放行
+    let resp = client
+        .post(&url)
+        .header("x-ai-manager-web", "1")
+        .header("Origin", "http://127.0.0.1:5273")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // 未知命令 → 200 + ok:false + 结构化 args 错误
+    let resp = client
+        .post(format!("http://{addr}/cmd/no_such_command"))
+        .header("x-ai-manager-web", "1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    let err: Value = serde_json::from_str(body["error"].as_str().unwrap()).unwrap();
+    assert_eq!(err["kind"], "invalid");
+    drop(_dir);
+}
+
+#[tokio::test]
+async fn static_hosting_serves_files_and_spa_fallback() {
+    let _guard = DATA_DIR_LOCK.lock().await;
+    let TestCtx { _dir, state } = test_ctx();
+    // 临时 dist：index.html + 一个 js 产物，验证托管与回落
+    let dist = tempfile::tempdir().unwrap();
+    std::fs::write(dist.path().join("index.html"), "<html>spa-entry</html>").unwrap();
+    std::fs::create_dir_all(dist.path().join("assets")).unwrap();
+    std::fs::write(dist.path().join("assets/app.js"), "console.log(1)").unwrap();
+    std::env::set_var("AIMANAGER_WEB_DIST", dist.path());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { web::serve(listener, state).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    // 根路径 → index.html
+    let resp = client.get(format!("http://{addr}/")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/html"));
+    assert!(resp.text().await.unwrap().contains("spa-entry"));
+
+    // 真实产物 → 对应 mime
+    let resp = client
+        .get(format!("http://{addr}/assets/app.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/javascript"));
+
+    // SPA 路由（无对应文件）→ 回落 index.html
+    let resp = client
+        .get(format!("http://{addr}/accounts"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp.text().await.unwrap().contains("spa-entry"));
+
+    // 路径穿越 → 不给文件，回落 index（防线在拼接之前）。
+    // 必须用裸 TCP 发未归一化的路径：reqwest 会在客户端把 /../ 折叠掉，测不到防线。
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        sock.write_all(b"GET /../secret HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut raw = String::new();
+        sock.read_to_string(&mut raw).await.unwrap();
+        assert!(raw.contains("200"), "穿越路径应回落 index：{raw}");
+        assert!(
+            raw.contains("spa-entry"),
+            "穿越路径不得返回任何真实文件：{raw}"
+        );
+    }
+
+    std::env::remove_var("AIMANAGER_WEB_DIST");
+    drop(_dir);
+}
+
+#[test]
+fn error_text_is_the_json_the_frontend_parses() {
+    // 前端 errText 认识 {kind, message}；命令的 error 字符串就是 AppError 的
+    // serde 形状（desktop::err_text 只做 to_string），这里直接钉住序列化契约
+    let e =
+        ai_manager::app::error::AppError::new(ai_manager::app::error::ErrorKind::Io, "连接超时");
+    let text = serde_json::to_string(&e).unwrap();
+    let parsed: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(parsed["kind"], "io");
+    assert_eq!(parsed["message"], "连接超时");
 }

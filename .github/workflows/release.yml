@@ -4,8 +4,8 @@
 #   AI-Manager-<ver>-windows-x64-setup.exe   per-user 安装包（免管理员，卸载保留 data\）
 #   AI-Manager-<ver>-windows-x64-portable.zip 免安装 zip（解压即用）
 #
-# 版本号以 packaging/nsis/ai-manager.nsi 的 PRODUCT_VERSION 为准。发版前须同步五处
-#（见 AGENTS.md §6.1）：Cargo.toml、tauri.conf.json、package.json + package-lock.json、
+# 版本号以 packaging/nsis/ai-manager.nsi 的 PRODUCT_VERSION 为准。发版前须同步四处
+#（见 AGENTS.md §6.1）：Cargo.toml、package.json + package-lock.json、
 # ai-manager.nsi、README.txt；打 tag 前先改齐再推。
 name: release
 
@@ -44,12 +44,12 @@ jobs:
       - name: 前端测试门禁
         run: npm test
 
-      - name: 构建前端（dist 是 tauri build 的 frontendDist）
+      - name: 构建前端（dist 由 exe 运行时静态托管，是产物硬输入）
         run: npm run build
 
-      # custom-protocol 必须显式带上：否则 release exe 去连 devUrl，用户看到白屏
+      # 浏览器形态：纯 axum 后端，无需任何 feature；前端走同级 dist/ 托管
       - name: 构建 release 可执行
-        run: cargo build --release --features custom-protocol
+        run: cargo build --release
         working-directory: src-tauri
 
       # release/ 被 .gitignore 忽略，克隆里不存在；makensis 与 Compress-Archive
@@ -68,6 +68,8 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP "stage-$ver"
           New-Item -ItemType Directory $stage | Out-Null
           Copy-Item src-tauri\target\release\ai-manager.exe $stage
+          Copy-Item dist (Join-Path $stage 'dist') -Recurse
+          Copy-Item start.cmd $stage
           Copy-Item packaging\nsis\README.txt $stage
           Compress-Archive -Path "$stage\*" -DestinationPath "release\AI-Manager-$ver-windows-x64-portable.zip" -Force
 

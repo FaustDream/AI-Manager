@@ -477,19 +477,15 @@ fn contract_18_time_crosses_ipc_as_machine_readable() {
 // ---------------------------------------------------------------- 契约 19
 #[test]
 fn contract_19_no_stdout_writes() {
-    // 例外只有两处，都是**控制台子系统**的 bin 入口（stdout 是它们唯一的输出渠道）：
-    //   - `main.rs`：命令行入口（`--scan`）；
-    //   - `bin/ai-manager-web.rs`：网页调试模式入口，不带 windows_subsystem 属性，
+    // 例外只有一处，是**控制台子系统**的 bin 入口（stdout 是它唯一的输出渠道）：
+    //   - `bin/ai-manager.rs`：浏览器化后的唯一入口，不带 windows_subsystem 属性，
     //     终端里的启动提示只能走 stdout。
-    // 业务与界面代码（`app/`、`desktop/`）一律不得写 stdout——release 桌面版是
-    // windows 子系统，没有控制台，写了等于把日志丢掉。
-    let hits = grep_source_except(
-        &["println!", "print!", "dbg!"],
-        &["main.rs", "ai-manager-web.rs"],
-    );
+    // 业务与界面代码（`app/`、`desktop/`）一律不得写 stdout——日志统一走 log 模块，
+    // 壳层写 stdout 会让无控制台运行时的输出凭空消失。
+    let hits = grep_source_except(&["println!", "print!", "dbg!"], &["ai-manager.rs"]);
     assert!(
         hits.is_empty(),
-        "源码中不得出现 stdout 写入（两个控制台 bin 入口除外）：{hits:?}"
+        "源码中不得出现 stdout 写入（控制台 bin 入口除外）：{hits:?}"
     );
 }
 

@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'node:path';
 
-// Tauri 前端。产物落 dist/，tauri.conf.json 的 frontendDist 指向 ../dist。
+// 浏览器形态前端。产物落 dist/：debug 后端从仓库根 dist 托管，release 从 exe 同级 dist。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -15,10 +15,10 @@ export default defineConfig({
     // 本项目用专属端口 + strictPort：被占用就报错，绝不静默漂移
     port: 5273,
     strictPort: true,
-    // 只绑 IPv4 回环：WebView2 解析 localhost 走 127.0.0.1
+    // 只绑 IPv4 回环：与后端一致，不对局域网暴露
     host: '127.0.0.1',
-    // 网页调试模式：命令与实时事件转发给 ai-manager-web（桌面 WebView 不走这层，
-    // 它直接用 Tauri IPC；端口与 src-tauri/src/desktop/web.rs 的 WEB_PORT 成对）
+    // dev 模式：命令与实时事件转发给后端（端口与 src-tauri/src/desktop/web.rs 的
+    // WEB_PORT 成对；生产单端口同源，不走这层代理）
     proxy: {
       '/cmd': { target: 'http://127.0.0.1:5274', changeOrigin: false },
       '/events': { target: 'http://127.0.0.1:5274', changeOrigin: false },

@@ -25,7 +25,7 @@ This application reads and writes credentials, so the following are highest prio
 
 - **Credential exposure** — ciphertext under `data/` decryptable by a different Windows user; plaintext tokens appearing in logs, exports or the UI
 - **Unauthorised writes** — rewriting client config files without confirmation (`data/backups/` exists so that this stays reversible)
-- **Local port exposure** — the web debug shell (`ai-manager-web`) is supposed to bind `127.0.0.1` only and validate the `x-ai-manager-web` header plus an Origin allowlist; bypassing either is a vulnerability
+- **Local port exposure** — the local backend (`ai-manager`) is supposed to bind `127.0.0.1` only and validate the `x-ai-manager-web` header plus an Origin allowlist; bypassing either is a vulnerability
 - **Path traversal** — writing outside `data/` through a crafted path when importing a skill or MCP server
 
 ## Out of scope

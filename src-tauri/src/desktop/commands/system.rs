@@ -4,57 +4,26 @@
 use super::*;
 use crate::app::error::ErrorKind;
 
-/// 健康报告。顺带刷新托盘提示——窗口最小化时，托盘是唯一还能看见应用的地方。
-#[tauri::command]
+/// 健康报告。浏览器化后托盘已退役，临期/新鲜度提醒改由前端桌面通知承担
+/// （数据源就是本报告里的 accounts.expiring 与 credits_at）。
 pub async fn system_health(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<crate::app::health::HealthReport, String> {
     let db = state.db.clone();
-    let report = crate::app::runtime::blocking(move || crate::app::health::report(&db))
+    crate::app::runtime::blocking(move || crate::app::health::report(&db))
         .await
         .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
-        .map_err(err_text)?;
-
-    if let Some(tray) = app.tray_by_id("main-tray") {
-        let _ = tray.set_tooltip(Some(tray_tooltip(&report)));
-    }
-    Ok(report)
-}
-
-/// 托盘提示：版本之外只带两句「要人看」的事实——凭据临期数量与积分数据的新鲜度。
-/// 这是「待处理告警」下线后唯一残留的被动提醒，刻意保持一句话的信息量。
-fn tray_tooltip(report: &crate::app::health::HealthReport) -> String {
-    // 托盘提示不露版本号：界面里除「设置 → 当前版本」外不出现版本信息
-    let mut parts = vec!["AI Manager".to_string()];
-    if report.accounts.expiring > 0 {
-        parts.push(format!(
-            "{} 个账号凭据 3 天内到期",
-            report.accounts.expiring
-        ));
-    }
-    if let Some(at) = report.credits_at {
-        let minutes = (crate::app::timeutil::now_ms() - at).max(0) / 60_000;
-        let fresh = if minutes < 1 {
-            "刚刚".into()
-        } else {
-            format!("{minutes} 分钟前")
-        };
-        parts.push(format!("积分数据 {fresh}"));
-    }
-    parts.join(" · ")
+        .map_err(err_text)
 }
 
 /// 平台能力矩阵：纯内存表，不读盘、不联网，同步返回。
 /// 界面用它把「平台限制」和「本应用还没做」区分开，用户不用点按钮试错。
-#[tauri::command]
 pub fn platform_capabilities() -> crate::app::capability::CapabilityMatrix {
     crate::app::capability::matrix()
 }
 
 /// 导出诊断包，返回文件路径。前端只负责提示「在哪」。
-#[tauri::command]
-pub async fn diagnose_bundle(state: State<'_, AppState>) -> std::result::Result<String, String> {
+pub async fn diagnose_bundle(state: &AppState) -> std::result::Result<String, String> {
     let db = state.db.clone();
     let path = crate::app::runtime::blocking(move || crate::app::health::export_bundle(&db))
         .await
@@ -71,7 +40,6 @@ pub async fn diagnose_bundle(state: State<'_, AppState>) -> std::result::Result<
 }
 
 /// 检查更新：只查 GitHub Releases，不下载不替换。
-#[tauri::command]
 pub async fn update_check() -> std::result::Result<crate::app::update::UpdateInfo, String> {
     let http = crate::app::net::RealHttp::new();
     crate::app::update::check(&http, env!("CARGO_PKG_VERSION"))
@@ -79,9 +47,8 @@ pub async fn update_check() -> std::result::Result<crate::app::update::UpdateInf
         .map_err(err_text)
 }
 
-#[tauri::command]
 pub async fn config_snapshot_list(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<Vec<crate::app::config_history::Snapshot>, String> {
     let db = state.db.clone();
     crate::app::runtime::blocking(move || crate::app::config_history::list(&db))
@@ -91,9 +58,8 @@ pub async fn config_snapshot_list(
 }
 
 /// 回滚一条配置快照。`schedules` 回滚后要唤醒调度循环，否则新规则要等重启才生效。
-#[tauri::command]
 pub async fn config_snapshot_restore(
-    state: State<'_, AppState>,
+    state: &AppState,
     id: String,
 ) -> std::result::Result<crate::app::config_history::Snapshot, String> {
     let db = state.db.clone();
@@ -115,8 +81,7 @@ pub async fn config_snapshot_restore(
     Ok(restored)
 }
 
-#[tauri::command]
-pub async fn config_snapshot_clear(state: State<'_, AppState>) -> std::result::Result<(), String> {
+pub async fn config_snapshot_clear(state: &AppState) -> std::result::Result<(), String> {
     let db = state.db.clone();
     crate::app::runtime::blocking(move || crate::app::config_history::clear(&db))
         .await

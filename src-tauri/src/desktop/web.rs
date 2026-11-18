@@ -1,26 +1,24 @@
-//! 网页调试壳：把桌面壳的同一套命令面挂成本机 HTTP，前端在浏览器里直连。
+//! HTTP 壳：把命令面挂成本机 HTTP，并托管前端静态产物，浏览器是唯一界面。
 //!
-//! - `POST /cmd/<命令名>`：与 Tauri invoke 同语义（成功 `{"ok":true,"data":…}`，
-//!   失败 `{"ok":false,"error":…}`，error 就是前端 `errText` 认识的那串 JSON）。
-//! - `GET /events`：SSE，转发 `app::events` 统一事件总线（与桌面壳共用一条路径）。
+//! - `POST /cmd/<命令名>`：成功 `{"ok":true,"data":…}`，失败 `{"ok":false,"error":…}`，
+//!   error 就是前端 `errText` 认识的那串 JSON。
+//! - `GET /events`：SSE，转发 `app::events` 统一事件总线。
+//! - 其余 GET：托管 `paths::web_dist()` 下的前端产物（vite build 输出），
+//!   找不到文件回落 index.html（SPA 路由）。单端口同源，无需 CORS。
 //!
-//! 命令复用的诀窍：壳进程持有一个**从不 run()** 的真实 Tauri 应用（不建窗口、
-//! 不起事件循环），借它的 Manager 语义把 AppState 变成命令函数认识的
-//! `State`——命令函数**原样**被调，不存在第二套转接逻辑。
-//! 名单与 `generate_handler!` 一一对应：改命令两处一起改。
+//! 命令函数直接收 `&AppState`，不存在第二套转接逻辑。
+//! 分发表是命令名单的唯一登记处：改命令同步改这里（D8）。
 //!
 //! 安全面：只绑 127.0.0.1；`/cmd` 必须带自定义头 `x-ai-manager-web`（强制浏览器
 //! 跨站请求先走预检，而本服务不回预检——任何网页都发不起 CSRF）；带 Origin 时
-//! 只认本机 dev server。curl 等本机工具不带 Origin，放行（本机进程本就在边界内）。
+//! 只认本机 dev server（5273）与本服务自身（5274，同源页面的 POST 会带它）。
+//! curl 等本机工具不带 Origin，放行（本机进程本就在边界内）。
 
 use crate::app::error::{AppError, ErrorKind};
 use crate::desktop::AppState;
 use serde_json::Value;
-use tauri::Manager;
 
-/// HTTP 层。运行时由调用方给定（bin 用真实 Wry 并在主线程 build，
-/// 集成测试用 MockRuntime）；App 本体随 serve 的 future 走 block_on
-/// 的线程，axum 状态里只放 Send + Sync 的 AppHandle。
+/// HTTP 层。AppState 直接进 axum 状态，命令函数收 &AppState。
 mod http {
     use super::{args_error, dispatch};
     use crate::desktop::AppState;
@@ -31,40 +29,34 @@ mod http {
     use axum::{Json, Router};
     use serde_json::{json, Value};
     use std::sync::Arc;
-    use tauri::Manager;
 
-    /// 网页壳的命令通道端口。5273 是 vite dev server，这里错开一位；
+    /// 命令通道端口。5273 是 vite dev server，这里错开一位；
     /// vite.config.ts 的 proxy 与本常量必须成对改。bin 入口用它绑定。
     pub const WEB_PORT: u16 = 5274;
 
-    /// listener 与预构建的 App 都由调用方传入：bin 用固定端口 + 真实 Wry
-    /// （便于给占用提示；tao 要求事件循环建在主线程），测试用临时端口 +
-    /// MockRuntime 做全链路验证。
-    pub async fn serve<R: tauri::Runtime>(
-        listener: tokio::net::TcpListener,
-        app: tauri::App<R>,
-        state: AppState,
-    ) -> std::io::Result<()> {
-        app.manage(state);
-        let handle: Arc<tauri::AppHandle<R>> = Arc::new(app.app_handle().clone());
-
+    /// listener 由调用方传入：bin 用固定端口（便于给占用提示），
+    /// 测试用临时端口做全链路验证。
+    pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::io::Result<()> {
+        let dist = crate::app::paths::web_dist();
         let router = Router::new()
             .route("/cmd/{name}", post(cmd_entry))
             .route("/events", get(events_sse))
             .layer(axum::middleware::from_fn(security_guard))
-            .with_state(handle);
+            .fallback(static_entry)
+            .with_state((Arc::new(state), Arc::new(dist)));
 
         let addr = listener.local_addr()?;
-        // 终端提示由 bin 入口负责（契约 19：desktop 层不写 stdout），这里只进日志
+        // 终端提示由 bin 入口负责（契约 19：壳层不写 stdout），这里只进日志
         crate::app::log::log(
             crate::app::log::Level::Info,
             "app",
-            format!("网页调试壳就绪：http://{addr}（/cmd + /events）"),
+            format!("HTTP 壳就绪：http://{addr}（页面 + /cmd + /events）"),
         );
         axum::serve(listener, router).await
     }
 
     /// 安全面：见模块注释。只拦「浏览器身份可疑」的请求，不拦本机工具。
+    /// 只作用于 /cmd 与 /events；静态页面是普通 GET 导航，不带这些头。
     async fn security_guard(
         req: axum::extract::Request,
         next: axum::middleware::Next,
@@ -76,7 +68,13 @@ mod http {
             .get(header::ORIGIN)
             .and_then(|v| v.to_str().ok())
         {
-            let trusted = matches!(origin, "http://127.0.0.1:5273" | "http://localhost:5273");
+            let trusted = matches!(
+                origin,
+                "http://127.0.0.1:5273"
+                    | "http://localhost:5273"
+                    | "http://127.0.0.1:5274"
+                    | "http://localhost:5274"
+            );
             if !trusted {
                 return (StatusCode::FORBIDDEN, "Origin 不受信任").into_response();
             }
@@ -94,8 +92,8 @@ mod http {
         next.run(req).await
     }
 
-    async fn cmd_entry<R: tauri::Runtime>(
-        AxumState(app): AxumState<Arc<tauri::AppHandle<R>>>,
+    async fn cmd_entry(
+        AxumState((state, _dist)): AxumState<(Arc<AppState>, Arc<std::path::PathBuf>)>,
         axum::extract::Path(name): axum::extract::Path<String>,
         body: axum::body::Bytes,
     ) -> Json<Value> {
@@ -112,7 +110,7 @@ mod http {
                 }
             }
         };
-        let reply = match dispatch(&app, &name, &v).await {
+        let reply = match dispatch(&state, &name, &v).await {
             Ok(data) => json!({ "ok": true, "data": data }),
             Err(error) => json!({ "ok": false, "error": error }),
         };
@@ -131,6 +129,71 @@ mod http {
                 Err(_) => None,
             });
         Sse::new(stream).keep_alive(KeepAlive::default())
+    }
+
+    /// 静态产物托管：GET 命中文件给文件，其余回落 index.html（SPA 路由）。
+    /// 不引 tower-http：就这一条回落逻辑，几十行直白代码比一层抽象更合适。
+    async fn static_entry(
+        AxumState((_state, dist)): AxumState<(Arc<AppState>, Arc<std::path::PathBuf>)>,
+        req: axum::extract::Request,
+    ) -> axum::response::Response {
+        use axum::http::{header, Method, StatusCode};
+
+        if req.method() != Method::GET && req.method() != Method::HEAD {
+            return (StatusCode::METHOD_NOT_ALLOWED, "只接受 GET").into_response();
+        }
+        let raw = req.uri().path().trim_start_matches('/');
+        // 路径穿越防线：拒绝 ..、盘符与反斜杠。正常产物路径只有字母数字与 -._/
+        let safe =
+            !raw.is_empty() && !raw.contains("..") && !raw.contains(':') && !raw.contains('\\');
+        let target = if safe {
+            dist.join(raw)
+        } else {
+            dist.join("index.html")
+        };
+        let target = if target.is_file() {
+            target
+        } else {
+            dist.join("index.html")
+        };
+        match tokio::fs::read(&target).await {
+            Ok(bytes) => {
+                let mime = mime_of(&target);
+                let mut resp = ([(header::CONTENT_TYPE, mime)], bytes).into_response();
+                // index.html 不许缓存：前端文件夹覆盖更新后，刷新必须拿到新入口
+                if target.file_name().and_then(|n| n.to_str()) == Some("index.html") {
+                    resp.headers_mut()
+                        .insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+                }
+                resp
+            }
+            Err(_) => (
+                StatusCode::NOT_FOUND,
+                "前端产物缺失：先执行 npm run build（dist/ 是托管的输入）",
+            )
+                .into_response(),
+        }
+    }
+
+    /// 扩展名 → Content-Type。只列 vite 产物实际会出现的几类。
+    fn mime_of(path: &std::path::Path) -> &'static str {
+        match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+            "html" => "text/html; charset=utf-8",
+            "js" | "mjs" => "text/javascript; charset=utf-8",
+            "css" => "text/css; charset=utf-8",
+            "json" | "map" => "application/json; charset=utf-8",
+            "svg" => "image/svg+xml",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "ico" => "image/x-icon",
+            "woff2" => "font/woff2",
+            "woff" => "font/woff",
+            "ttf" => "font/ttf",
+            "txt" => "text/plain; charset=utf-8",
+            "wasm" => "application/wasm",
+            _ => "application/octet-stream",
+        }
     }
 }
 
@@ -159,27 +222,26 @@ fn arg<T: serde::de::DeserializeOwned>(v: &Value, key: &str) -> Result<T, String
         .map_err(|e| args_error(&format!("参数 {key} 不合法：{e}")))
 }
 
-/// 命令分发：名单与 `desktop/mod.rs` 的 `generate_handler!` 一一对应。
-/// 每条命令一行转接，业务都在 `app/`——与桌面壳的命令文件同一套函数。
-/// 对运行时泛型：serve 用真实 Wry 的 handle，集成测试（tests/web.rs）用 MockRuntime。
-pub async fn dispatch<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    name: &str,
-    v: &Value,
-) -> Result<Value, String> {
+/// 命令分发：本表是命令名单的唯一登记处（D8），与前端 `cmd.ts` 的
+/// `CmdReturn` 一一对应（tests/command_surface.rs 钉死这份一致性）。
+/// 每条命令一行转接，业务都在 `app/`。
+pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, String> {
     use crate::desktop::commands as cmd;
 
     match name {
         // ------------------------------------------------------------ shell
         // 这批命令不会失败：包一层 Ok 对齐 to_json 的 Result 形状
-        "ui_ready" => to_json(Ok(cmd::shell::ui_ready(app.state::<AppState>()))),
+        "ui_ready" => to_json(Ok(cmd::shell::ui_ready(state))),
         "app_version" => to_json(Ok(cmd::shell::app_version())),
-        // 网页模式没有窗口与托盘：这两个命令留空壳，前端调用不报错
+        // app_quit 真退出：先回包再延迟 exit（见命令注释），前端据此显示「已退出」
         "app_quit" => {
-            crate::app::log::flush();
+            cmd::shell::app_quit();
             Ok(Value::Null)
         }
-        "app_show_window" => Ok(Value::Null),
+        "app_show_window" => {
+            cmd::shell::app_show_window();
+            Ok(Value::Null)
+        }
         "open_external" => {
             let url = arg(v, "url")?;
             to_json(cmd::shell::open_external(url))
@@ -188,31 +250,27 @@ pub async fn dispatch<R: tauri::Runtime>(
             let url = arg(v, "url")?;
             to_json(cmd::shell::open_private_browser(url))
         }
-        "model_api_info" => to_json(cmd::shell::model_api_info(app.state::<AppState>()).await),
-        "model_api_start" => to_json(cmd::shell::model_api_start(app.state::<AppState>()).await),
-        "model_api_stop" => to_json(cmd::shell::model_api_stop(app.state::<AppState>()).await),
-        "model_api_restart" => {
-            to_json(cmd::shell::model_api_restart(app.state::<AppState>()).await)
-        }
+        "model_api_info" => to_json(cmd::shell::model_api_info(state).await),
+        "model_api_start" => to_json(cmd::shell::model_api_start(state).await),
+        "model_api_stop" => to_json(cmd::shell::model_api_stop(state).await),
+        "model_api_restart" => to_json(cmd::shell::model_api_restart(state).await),
         "model_api_stats" => to_json(Ok(cmd::shell::model_api_stats())),
         "model_api_probe" => to_json(cmd::shell::model_api_probe().await),
-        "model_api_models" => to_json(cmd::shell::model_api_models(app.state::<AppState>()).await),
+        "model_api_models" => to_json(cmd::shell::model_api_models(state).await),
         "model_api_set_port" => {
             let port = arg(v, "port")?;
-            to_json(cmd::shell::model_api_set_port(app.state::<AppState>(), port).await)
+            to_json(cmd::shell::model_api_set_port(state, port).await)
         }
-        "model_api_regenerate_key" => {
-            to_json(cmd::shell::model_api_regenerate_key(app.state::<AppState>()).await)
-        }
+        "model_api_regenerate_key" => to_json(cmd::shell::model_api_regenerate_key(state).await),
 
         // ------------------------------------------------------------ settings
         "settings_get" => {
             let key = arg(v, "key")?;
-            to_json(cmd::settings::settings_get(app.state::<AppState>(), key).await)
+            to_json(cmd::settings::settings_get(state, key).await)
         }
         "settings_set" => {
             let (key, value) = (arg(v, "key")?, arg(v, "value")?);
-            to_json(cmd::settings::settings_set(app.state::<AppState>(), key, value).await)
+            to_json(cmd::settings::settings_set(state, key, value).await)
         }
         "config_get" => to_json(Ok(cmd::settings::config_get())),
         "config_set" => {
@@ -231,75 +289,81 @@ pub async fn dispatch<R: tauri::Runtime>(
         }
 
         // ------------------------------------------------------------ accounts
-        "account_list" => to_json(cmd::accounts::account_list(app.state::<AppState>()).await),
+        "account_list" => to_json(cmd::accounts::account_list(state).await),
         "account_set_alias" => {
             let (iid, alias) = (arg(v, "iid")?, arg(v, "alias")?);
-            to_json(cmd::accounts::account_set_alias(app.state::<AppState>(), iid, alias).await)
+            to_json(cmd::accounts::account_set_alias(state, iid, alias).await)
         }
         "account_reward_credits" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::accounts::account_reward_credits(app.state::<AppState>(), iid).await)
+            to_json(cmd::accounts::account_reward_credits(state, iid).await)
         }
         "account_set_enabled" => {
             let (iid, enabled) = (arg(v, "iid")?, arg(v, "enabled")?);
-            to_json(cmd::accounts::account_set_enabled(app.state::<AppState>(), iid, enabled).await)
+            to_json(cmd::accounts::account_set_enabled(state, iid, enabled).await)
         }
         "account_reorder" => {
             let iids = arg(v, "iids")?;
-            to_json(cmd::accounts::account_reorder(app.state::<AppState>(), iids).await)
+            to_json(cmd::accounts::account_reorder(state, iids).await)
         }
         "account_delete" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::accounts::account_delete(app.state::<AppState>(), iid).await)
+            to_json(cmd::accounts::account_delete(state, iid).await)
         }
-        "account_scan" => to_json(cmd::accounts::account_scan(app.state::<AppState>()).await),
+        "account_scan" => to_json(cmd::accounts::account_scan(state).await),
+        // 豆包浏览器登录四件套：桌面壳时代漏登记在分发表里，浏览器化补齐
+        "doubao_browser_list" => to_json(cmd::accounts::doubao_browser_list().await),
+        "doubao_browser_login_start" => {
+            let browser_id = arg(v, "browser_id")?;
+            to_json(cmd::accounts::doubao_browser_login_start(state, browser_id).await)
+        }
+        "doubao_browser_login_status" => {
+            to_json(cmd::accounts::doubao_browser_login_status().await)
+        }
+        "doubao_browser_login_cancel" => {
+            to_json(cmd::accounts::doubao_browser_login_cancel().await)
+        }
+        "account_switchable" => to_json(cmd::accounts::account_switchable().await),
         "account_add_cookie" => {
             let (platform, cookie, name) =
                 (arg(v, "platform")?, arg(v, "cookie")?, arg(v, "name")?);
-            to_json(
-                cmd::accounts::account_add_cookie(app.state::<AppState>(), platform, cookie, name)
-                    .await,
-            )
+            to_json(cmd::accounts::account_add_cookie(state, platform, cookie, name).await)
         }
         "account_login_start" => {
             let platform = arg(v, "platform")?;
-            to_json(cmd::accounts::account_login_start(app.state::<AppState>(), platform).await)
+            to_json(cmd::accounts::account_login_start(state, platform).await)
         }
         "account_reauth_start" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::accounts::account_reauth_start(app.state::<AppState>(), iid).await)
+            to_json(cmd::accounts::account_reauth_start(state, iid).await)
         }
-        "account_refresh_all" => {
-            to_json(cmd::accounts::account_refresh_all(app.state::<AppState>()).await)
-        }
+        "account_refresh_all" => to_json(cmd::accounts::account_refresh_all(state).await),
         "account_refresh_credential" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::accounts::account_refresh_credential(app.state::<AppState>(), iid).await)
+            to_json(cmd::accounts::account_refresh_credential(state, iid).await)
         }
         "account_refresh_credentials" => {
             let iids = arg(v, "iids")?;
-            to_json(cmd::accounts::account_refresh_credentials(app.state::<AppState>(), iids).await)
+            to_json(cmd::accounts::account_refresh_credentials(state, iids).await)
         }
         "account_switch" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::accounts::account_switch(app.state::<AppState>(), iid).await)
+            to_json(cmd::accounts::account_switch(state, iid).await)
         }
         "account_switch_codebuddy" => {
             let (iid, target) = (arg(v, "iid")?, arg(v, "target")?);
-            to_json(
-                cmd::accounts::account_switch_codebuddy(app.state::<AppState>(), iid, target).await,
-            )
+            to_json(cmd::accounts::account_switch_codebuddy(state, iid, target).await)
         }
         "account_codebuddy_targets" => {
-            to_json(cmd::accounts::account_codebuddy_targets(app.state::<AppState>()).await)
+            to_json(cmd::accounts::account_codebuddy_targets(state).await)
         }
         "account_restore_sessions" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::accounts::account_restore_sessions(app.state::<AppState>(), iid).await)
+            to_json(cmd::accounts::account_restore_sessions(state, iid).await)
         }
         "account_uid" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::accounts::account_uid(app.state::<AppState>(), iid).await)
+            to_json(cmd::accounts::account_uid(state, iid).await)
         }
         "account_current" => to_json(cmd::accounts::account_current().await),
         "account_add_prepare" => {
@@ -312,66 +376,62 @@ pub async fn dispatch<R: tauri::Runtime>(
         }
         "account_set_note" => {
             let (iid, note) = (arg(v, "iid")?, arg(v, "note")?);
-            to_json(cmd::accounts::account_set_note(app.state::<AppState>(), iid, note).await)
+            to_json(cmd::accounts::account_set_note(state, iid, note).await)
         }
 
         // ------------------------------------------------------------ hub
-        "hub_snapshot" => to_json(cmd::hub::hub_snapshot(app.state::<AppState>()).await),
+        "hub_snapshot" => to_json(cmd::hub::hub_snapshot(state).await),
         "hub_skill_import_many" => {
             let (target, names) = (arg(v, "target")?, arg(v, "names")?);
-            to_json(cmd::hub::hub_skill_import_many(app.state::<AppState>(), target, names).await)
+            to_json(cmd::hub::hub_skill_import_many(state, target, names).await)
         }
         "hub_skill_import_local" => {
             let path = arg(v, "path")?;
-            to_json(cmd::hub::hub_skill_import_local(app.state::<AppState>(), path).await)
+            to_json(cmd::hub::hub_skill_import_local(state, path).await)
         }
         "hub_skill_create" => {
             let (name, text) = (arg(v, "name")?, arg(v, "text")?);
-            to_json(cmd::hub::hub_skill_create(app.state::<AppState>(), name, text).await)
+            to_json(cmd::hub::hub_skill_create(state, name, text).await)
         }
         "hub_mcp_claim" => {
             let (name, source, targets) = (arg(v, "name")?, arg(v, "source")?, arg(v, "targets")?);
-            to_json(cmd::hub::hub_mcp_claim(app.state::<AppState>(), name, source, targets).await)
+            to_json(cmd::hub::hub_mcp_claim(state, name, source, targets).await)
         }
         "hub_skill_deploy" => {
             let (name, targets, overwrite) =
                 (arg(v, "name")?, arg(v, "targets")?, arg(v, "overwrite")?);
-            to_json(
-                cmd::hub::hub_skill_deploy(app.state::<AppState>(), name, targets, overwrite).await,
-            )
+            to_json(cmd::hub::hub_skill_deploy(state, name, targets, overwrite).await)
         }
         "hub_skill_remove" => {
             let (name, targets) = (arg(v, "name")?, arg(v, "targets")?);
-            to_json(cmd::hub::hub_skill_remove(app.state::<AppState>(), name, targets).await)
+            to_json(cmd::hub::hub_skill_remove(state, name, targets).await)
         }
         "hub_skill_import" => {
             let (target, name) = (arg(v, "target")?, arg(v, "name")?);
-            to_json(cmd::hub::hub_skill_import(app.state::<AppState>(), target, name).await)
+            to_json(cmd::hub::hub_skill_import(state, target, name).await)
         }
         "hub_mcp_import" => {
             let (text, targets) = (arg(v, "text")?, arg(v, "targets")?);
-            to_json(cmd::hub::hub_mcp_import(app.state::<AppState>(), text, targets).await)
+            to_json(cmd::hub::hub_mcp_import(state, text, targets).await)
         }
         "hub_mcp_remove" => {
             let (name, targets) = (arg(v, "name")?, arg(v, "targets")?);
-            to_json(cmd::hub::hub_mcp_remove(app.state::<AppState>(), name, targets).await)
+            to_json(cmd::hub::hub_mcp_remove(state, name, targets).await)
         }
         "hub_mcp_deploy" => {
             let (name, targets) = (arg(v, "name")?, arg(v, "targets")?);
-            to_json(cmd::hub::hub_mcp_deploy(app.state::<AppState>(), name, targets).await)
+            to_json(cmd::hub::hub_mcp_deploy(state, name, targets).await)
         }
 
         // ------------------------------------------------------------ sessions
-        "session_scan" => to_json(cmd::sessions::session_scan(app.state::<AppState>()).await),
+        "session_scan" => to_json(cmd::sessions::session_scan(state).await),
         "session_page" => {
             let (cursor, limit, filter) = (arg(v, "cursor")?, arg(v, "limit")?, arg(v, "filter")?);
-            to_json(
-                cmd::sessions::session_page(app.state::<AppState>(), cursor, limit, filter).await,
-            )
+            to_json(cmd::sessions::session_page(state, cursor, limit, filter).await)
         }
         "session_preview" => {
             let key = arg(v, "key")?;
-            to_json(cmd::sessions::session_preview(app.state::<AppState>(), key).await)
+            to_json(cmd::sessions::session_preview(state, key).await)
         }
         "session_running_clients" => {
             let keys = arg(v, "keys")?;
@@ -379,47 +439,45 @@ pub async fn dispatch<R: tauri::Runtime>(
         }
         "session_keys" => {
             let filter = arg(v, "filter")?;
-            to_json(cmd::sessions::session_keys(app.state::<AppState>(), filter).await)
+            to_json(cmd::sessions::session_keys(state, filter).await)
         }
-        "session_facets" => to_json(cmd::sessions::session_facets(app.state::<AppState>()).await),
+        "session_facets" => to_json(cmd::sessions::session_facets(state).await),
         "session_archive" => {
             let (keys, on) = (arg(v, "keys")?, arg(v, "on")?);
-            to_json(cmd::sessions::session_archive(app.state::<AppState>(), keys, on).await)
+            to_json(cmd::sessions::session_archive(state, keys, on).await)
         }
         "session_purge" => {
             let keys = arg(v, "keys")?;
-            to_json(cmd::sessions::session_purge(app.state::<AppState>(), keys).await)
+            to_json(cmd::sessions::session_purge(state, keys).await)
         }
-        "session_retention" => {
-            to_json(cmd::sessions::session_retention(app.state::<AppState>()).await)
-        }
+        "session_retention" => to_json(cmd::sessions::session_retention(state).await),
         "session_retention_set" => {
             let days = arg(v, "days")?;
-            to_json(cmd::sessions::session_retention_set(app.state::<AppState>(), days).await)
+            to_json(cmd::sessions::session_retention_set(state, days).await)
         }
         "session_pin" => {
             let (keys, on) = (arg(v, "keys")?, arg(v, "on")?);
-            to_json(cmd::sessions::session_pin(app.state::<AppState>(), keys, on).await)
+            to_json(cmd::sessions::session_pin(state, keys, on).await)
         }
         "session_rename" => {
             let (key, title) = (arg(v, "key")?, arg(v, "title")?);
-            to_json(cmd::sessions::session_rename(app.state::<AppState>(), key, title).await)
+            to_json(cmd::sessions::session_rename(state, key, title).await)
         }
         "session_hide" => {
             let (keys, on) = (arg(v, "keys")?, arg(v, "on")?);
-            to_json(cmd::sessions::session_hide(app.state::<AppState>(), keys, on).await)
+            to_json(cmd::sessions::session_hide(state, keys, on).await)
         }
         "session_tag_set" => {
             let (key, tags) = (arg(v, "key")?, arg(v, "tags")?);
-            to_json(cmd::sessions::session_tag_set(app.state::<AppState>(), key, tags).await)
+            to_json(cmd::sessions::session_tag_set(state, key, tags).await)
         }
         "session_export" => {
             let (keys, format) = (arg(v, "keys")?, arg(v, "format")?);
-            to_json(cmd::sessions::session_export(app.state::<AppState>(), keys, format).await)
+            to_json(cmd::sessions::session_export(state, keys, format).await)
         }
         "session_open_body" => {
             let key = arg(v, "key")?;
-            to_json(cmd::sessions::session_open_body(app.state::<AppState>(), key).await)
+            to_json(cmd::sessions::session_open_body(state, key).await)
         }
         "session_open_client" => {
             let key = arg(v, "key")?;
@@ -427,89 +485,86 @@ pub async fn dispatch<R: tauri::Runtime>(
         }
         "session_suggest_titles" => {
             let keys = arg(v, "keys")?;
-            to_json(cmd::sessions::session_suggest_titles(app.state::<AppState>(), keys).await)
+            to_json(cmd::sessions::session_suggest_titles(state, keys).await)
         }
-        "session_stats" => to_json(cmd::sessions::session_stats(app.state::<AppState>()).await),
+        "session_stats" => to_json(cmd::sessions::session_stats(state).await),
 
         // ------------------------------------------------------------ activity
         "activity_overview" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::activity::activity_overview(app.state::<AppState>(), iid).await)
+            to_json(cmd::activity::activity_overview(state, iid).await)
         }
         "activity_claim" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::activity::activity_claim(app.state::<AppState>(), iid).await)
+            to_json(cmd::activity::activity_claim(state, iid).await)
         }
         "activity_depart" => {
             let (iid, location) = (arg(v, "iid")?, arg(v, "location")?);
-            to_json(cmd::activity::activity_depart(app.state::<AppState>(), iid, location).await)
+            to_json(cmd::activity::activity_depart(state, iid, location).await)
         }
         "activity_daily_status" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::activity::activity_daily_status(app.state::<AppState>(), iid).await)
+            to_json(cmd::activity::activity_daily_status(state, iid).await)
         }
         "activity_pref_set" => {
             let (iid, enabled, location) =
                 (arg(v, "iid")?, arg(v, "enabled")?, arg(v, "location")?);
-            to_json(
-                cmd::activity::activity_pref_set(app.state::<AppState>(), iid, enabled, location)
-                    .await,
-            )
+            to_json(cmd::activity::activity_pref_set(state, iid, enabled, location).await)
         }
 
         // ------------------------------------------------------------ checkin
         "checkin_credits" => {
             let (iids, trigger) = (arg(v, "iids")?, arg(v, "trigger")?);
-            to_json(cmd::checkin::checkin_credits(app.state::<AppState>(), iids, trigger).await)
+            to_json(cmd::checkin::checkin_credits(state, iids, trigger).await)
         }
         "checkin_detail" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::checkin::checkin_detail(app.state::<AppState>(), iid).await)
+            to_json(cmd::checkin::checkin_detail(state, iid).await)
         }
         "checkin_run" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::checkin::checkin_run(app.state::<AppState>(), iid).await)
+            to_json(cmd::checkin::checkin_run(state, iid).await)
         }
         "checkin_batch" => {
             let iids = arg(v, "iids")?;
-            to_json(cmd::checkin::checkin_batch(app.state::<AppState>(), iids).await)
+            to_json(cmd::checkin::checkin_batch(state, iids).await)
         }
-        "daily_state" => to_json(Ok(cmd::checkin::daily_state(app.state::<AppState>()))),
-        "daily_run_now" => to_json(cmd::checkin::daily_run_now(app.state::<AppState>()).await),
+        "daily_state" => to_json(Ok(cmd::checkin::daily_state(state))),
+        "daily_run_now" => to_json(cmd::checkin::daily_run_now(state).await),
         "zcode_claim_plans" => {
             let iid = arg(v, "iid")?;
-            to_json(cmd::checkin::zcode_claim_plans(app.state::<AppState>(), iid).await)
+            to_json(cmd::checkin::zcode_claim_plans(state, iid).await)
         }
         "zcode_claim_run" => {
             let (iid, plan_id) = (arg(v, "iid")?, arg(v, "plan_id")?);
-            to_json(cmd::checkin::zcode_claim_run(app.state::<AppState>(), iid, plan_id).await)
+            to_json(cmd::checkin::zcode_claim_run(state, iid, plan_id).await)
         }
         "credit_trend" => {
             let (iid, days) = (arg(v, "iid")?, arg(v, "days")?);
-            to_json(cmd::checkin::credit_trend(app.state::<AppState>(), iid, days).await)
+            to_json(cmd::checkin::credit_trend(state, iid, days).await)
         }
         "credit_claims_recent" => {
             let limit = arg(v, "limit")?;
-            to_json(cmd::checkin::credit_claims_recent(app.state::<AppState>(), limit).await)
+            to_json(cmd::checkin::credit_claims_recent(state, limit).await)
         }
         "credit_flow" => {
             let days = arg(v, "days")?;
-            to_json(cmd::checkin::credit_flow(app.state::<AppState>(), days).await)
+            to_json(cmd::checkin::credit_flow(state, days).await)
         }
 
         // ------------------------------------------------------------ schedule
-        "schedule_list" => to_json(cmd::schedule::schedule_list(app.state::<AppState>()).await),
+        "schedule_list" => to_json(cmd::schedule::schedule_list(state).await),
         "schedule_save" => {
             let input = arg(v, "input")?;
-            to_json(cmd::schedule::schedule_save(app.state::<AppState>(), input).await)
+            to_json(cmd::schedule::schedule_save(state, input).await)
         }
         "schedule_delete" => {
             let id = arg(v, "id")?;
-            to_json(cmd::schedule::schedule_delete(app.state::<AppState>(), id).await)
+            to_json(cmd::schedule::schedule_delete(state, id).await)
         }
         "schedule_run" => {
             let id = arg(v, "id")?;
-            to_json(cmd::schedule::schedule_run(app.state::<AppState>(), id).await)
+            to_json(cmd::schedule::schedule_run(state, id).await)
         }
 
         // ------------------------------------------------------------ logs
@@ -557,36 +612,22 @@ pub async fn dispatch<R: tauri::Runtime>(
         }
 
         // ------------------------------------------------------------ system
-        // system_health 带 AppHandle<Wry>（托盘提示），mock 运行时调不动；
-        // 网页模式没有托盘，直接走同一个业务函数。
-        "system_health" => {
-            let db = app.state::<AppState>().db.clone();
-            to_json(
-                crate::app::runtime::blocking(move || crate::app::health::report(&db))
-                    .await
-                    .map_err(|e| super::err_text(AppError::new(ErrorKind::Io, e.to_string())))
-                    .and_then(|r| r.map_err(super::err_text)),
-            )
-        }
-        "diagnose_bundle" => to_json(cmd::system::diagnose_bundle(app.state::<AppState>()).await),
+        "system_health" => to_json(cmd::system::system_health(state).await),
+        "diagnose_bundle" => to_json(cmd::system::diagnose_bundle(state).await),
         "platform_capabilities" => to_json(Ok(cmd::system::platform_capabilities())),
         "update_check" => to_json(cmd::system::update_check().await),
-        "config_snapshot_list" => {
-            to_json(cmd::system::config_snapshot_list(app.state::<AppState>()).await)
-        }
+        "config_snapshot_list" => to_json(cmd::system::config_snapshot_list(state).await),
         "config_snapshot_restore" => {
             let id = arg(v, "id")?;
-            to_json(cmd::system::config_snapshot_restore(app.state::<AppState>(), id).await)
+            to_json(cmd::system::config_snapshot_restore(state, id).await)
         }
-        "config_snapshot_clear" => {
-            to_json(cmd::system::config_snapshot_clear(app.state::<AppState>()).await)
-        }
+        "config_snapshot_clear" => to_json(cmd::system::config_snapshot_clear(state).await),
 
         // ------------------------------------------------------------ usage
-        "usage_scan" => to_json(cmd::usage::usage_scan(app.state::<AppState>()).await),
+        "usage_scan" => to_json(cmd::usage::usage_scan(state).await),
         "usage_overview" => {
             let days = arg(v, "days")?;
-            to_json(cmd::usage::usage_overview(app.state::<AppState>(), days).await)
+            to_json(cmd::usage::usage_overview(state, days).await)
         }
 
         // ------------------------------------------------------------ maintenance

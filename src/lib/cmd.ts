@@ -1,10 +1,10 @@
 // 命令调用面（架构评审 C1）：命令名单与形状在这一张表里钉死，
-// 错误 kind→话术、忙碌态都收在这里——页面只表达意图，不碰 invoke/toast 的细节。
-// 名单与 src-tauri 侧 generate_handler! 一一对应：改命令先改这张表（tsc 会红）。
+// 错误 kind→话术、忙碌态都收在这里——页面只表达意图，不碰传输/toast 的细节。
+// 名单与 src-tauri 侧 web.rs 的分发表一一对应：改命令先改这张表（tsc 会红）。
 import { useCallback, useRef, useState } from 'react';
 import { toast } from '@/components/ui/toast';
-// 命令面不直接碰 invoke：传输分流（Tauri / 网页 HTTP）统一在 ipc.call，
-// 这里漏用一次，网页调试模式里所有命令就会一起趴下
+// 命令面不直接 fetch：传输（HTTP /cmd + 安全头）统一在 ipc.call，
+// 这里漏用一次，那条命令就会被后端安全面 403
 import { call, errKind, errText } from './ipc';
 import type {
   AppConfig,

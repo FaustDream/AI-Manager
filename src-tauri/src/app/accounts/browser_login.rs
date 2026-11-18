@@ -158,7 +158,7 @@ pub fn start(db: Arc<Db>, browser_id: Option<String>) -> Result<BrowserLoginStat
         active: true,
     });
 
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         run(db, browser_id).await;
     });
     Ok(status())

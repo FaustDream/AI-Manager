@@ -31,7 +31,7 @@ Screenshots go into `assets/` and must be sanitised. This is the one place in th
 
 - Use **demo accounts** (`demo-01` style names), never real account nicknames
 - Mask emails, phone numbers, avatars, balance figures, token prefixes and session titles
-- Window at 1180×760 (the default size), cropped to content height
+- Browser viewport at 1180×760, cropped to content height
 - Three shots: account center → `01-accounts.png`, sessions → `02-sessions.png`, skills & MCP → `03-hub.png`
 - Save as PNG at 2× resolution; do not rename the three `img` references in the READMEs
 

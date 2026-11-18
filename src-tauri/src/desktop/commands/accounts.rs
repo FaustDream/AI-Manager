@@ -5,9 +5,8 @@ use crate::app::error::ErrorKind;
 
 // ------------------------------------------------------------------ 账号中心
 
-#[tauri::command]
 pub async fn account_list(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<Vec<crate::app::accounts::AccountView>, String> {
     let db = state.db.clone();
     // 数据库调用必须在阻塞线程里跑，否则界面在等结果期间没有响应
@@ -28,9 +27,8 @@ pub async fn account_list(
 }
 
 /// 设置账号别名；传空字符串恢复平台昵称。别名单独存 kv，重扫不会覆盖。
-#[tauri::command]
 pub async fn account_set_alias(
-    state: State<'_, AppState>,
+    state: &AppState,
     iid: String,
     alias: String,
 ) -> std::result::Result<String, String> {
@@ -42,19 +40,16 @@ pub async fn account_set_alias(
 }
 
 /// 平台奖励积分明细：按包名聚合的剩余/总量/到期（对应网页「套餐与积分」）。
-#[tauri::command]
-
 pub async fn account_reward_credits(
-    state: State<'_, AppState>,
+    state: &AppState,
     iid: String,
 ) -> std::result::Result<crate::app::providers::workbuddy::RewardCredits, String> {
     state.checkin.reward_credits(&iid).await.map_err(err_text)
 }
 
 /// 启用/停用账号：只影响自动签到与自动积分轮询，手动单账号操作仍可执行。
-#[tauri::command]
 pub async fn account_set_enabled(
-    state: State<'_, AppState>,
+    state: &AppState,
     iid: String,
     enabled: bool,
 ) -> std::result::Result<bool, String> {
@@ -67,10 +62,8 @@ pub async fn account_set_enabled(
     .map_err(err_text)
 }
 
-#[tauri::command]
-
 pub async fn account_reorder(
-    state: State<'_, AppState>,
+    state: &AppState,
     iids: Vec<String>,
 ) -> std::result::Result<(), String> {
     let db = state.db.clone();
@@ -80,12 +73,7 @@ pub async fn account_reorder(
         .map_err(err_text)
 }
 
-#[tauri::command]
-
-pub async fn account_delete(
-    state: State<'_, AppState>,
-    iid: String,
-) -> std::result::Result<bool, String> {
+pub async fn account_delete(state: &AppState, iid: String) -> std::result::Result<bool, String> {
     let db = state.db.clone();
     crate::app::runtime::blocking(move || crate::app::accounts::repo::delete(&db, &iid))
         .await
@@ -95,10 +83,8 @@ pub async fn account_delete(
 
 /// 扫描各客户端登录态并入库。
 /// 走 `spawn_blocking`：读客户端库 + DPAPI/AES 解密是纯阻塞活，放主线程会让窗口变灰。
-#[tauri::command]
-
 pub async fn account_scan(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<crate::app::accounts::ScanReport, String> {
     let db = state.db.clone();
     // 结果由调用方记账：启动扫描在后台落动作行，界面手动扫描由前端命令面回传
@@ -111,9 +97,8 @@ pub async fn account_scan(
 /// 用 Cookie 添加账号（豆包这类「没有可借用登录流程」的平台）。
 ///
 /// 返回新账号的 iid：同一份 Cookie 重复添加会落回同一行，界面按 iid 就能判重。
-#[tauri::command]
 pub async fn account_add_cookie(
-    state: State<'_, AppState>,
+    state: &AppState,
     platform: String,
     cookie: String,
     name: String,
@@ -141,7 +126,6 @@ pub async fn account_add_cookie(
 // ---------------------------------------------------------------- 豆包浏览器登录
 
 /// 探测本机可用的 Chrome / Edge（只判断 exe 在不在，不碰用户日常浏览器）。
-#[tauri::command]
 pub async fn doubao_browser_list(
 ) -> std::result::Result<Vec<crate::app::accounts::browser_login::BrowserInfo>, String> {
     crate::app::runtime::blocking(crate::app::accounts::browser_login::discover_browsers)
@@ -151,9 +135,8 @@ pub async fn doubao_browser_list(
 
 /// 发起豆包浏览器登录：起一个独立临时会话窗口，后台轮询 cookie、核验身份并入库。
 /// 返回「已开始」的即时状态；后续进度走 `doubao:login` 事件，成功还会推 `account:login`。
-#[tauri::command]
 pub async fn doubao_browser_login_start(
-    state: State<'_, AppState>,
+    state: &AppState,
     browser_id: Option<String>,
 ) -> std::result::Result<crate::app::accounts::browser_login::BrowserLoginStatus, String> {
     let db = state.db.clone();
@@ -167,14 +150,12 @@ pub async fn doubao_browser_login_start(
 }
 
 /// 当前浏览器登录会话的状态（弹窗轮询用；有 `doubao:login` 事件时也可以只靠事件）。
-#[tauri::command]
 pub async fn doubao_browser_login_status(
 ) -> std::result::Result<crate::app::accounts::browser_login::BrowserLoginStatus, String> {
     Ok(crate::app::accounts::browser_login::status())
 }
 
 /// 取消进行中的豆包浏览器登录。
-#[tauri::command]
 pub async fn doubao_browser_login_cancel(
 ) -> std::result::Result<crate::app::accounts::browser_login::BrowserLoginStatus, String> {
     Ok(crate::app::accounts::browser_login::cancel())
@@ -183,10 +164,8 @@ pub async fn doubao_browser_login_cancel(
 /// 浏览器登录第一步：申请登录地址 → 后台等登录完成。
 /// **不自动打开浏览器**：界面自己给出链接和「在浏览器打开」，避免一次点击弹两个窗口。
 /// 登录成功后由后台任务入库并 emit `account:login`，界面据此刷新。
-#[tauri::command]
-
 pub async fn account_login_start(
-    state: State<'_, AppState>,
+    state: &AppState,
     platform: String,
 ) -> std::result::Result<crate::app::accounts::login::LoginStart, String> {
     let pending = crate::app::accounts::login::start(&platform)
@@ -219,10 +198,8 @@ pub async fn account_login_start(
 ///
 /// 凭据由 `login::save()` 自动保存：iid 相同 = 覆盖这个账号的凭据与到期时间；
 /// 登进了别的账号 = 作为新账号入库（返回值里带新 iid，界面据此提示）。
-#[tauri::command]
-
 pub async fn account_reauth_start(
-    state: State<'_, AppState>,
+    state: &AppState,
     iid: String,
 ) -> std::result::Result<crate::app::accounts::login::LoginStart, String> {
     let db = state.db.clone();
@@ -269,7 +246,7 @@ fn spawn_login_wait(
 ) {
     // 日志要用平台名，但 platform_key 会被 move 进阻塞闭包，先留一份
     let log_platform = platform_key.clone();
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         let result = crate::app::runtime::blocking(move || {
             crate::app::accounts::login::wait_for_login(&db, &platform_key, &ticket)
         })
@@ -310,10 +287,8 @@ fn spawn_login_wait(
 /// 不自己实现 token 续期——凭据真过期了就重新授权，走平台自己的登录页。
 ///
 /// 走阻塞线程：读客户端库 + 逐个解密凭据全是磁盘活，放主线程会让窗口变灰。
-#[tauri::command]
-
 pub async fn account_refresh_all(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<crate::app::accounts::refresh::RefreshReport, String> {
     let db = state.db.clone();
     let started = std::time::Instant::now();
@@ -354,10 +329,8 @@ pub async fn account_refresh_all(
 /// **不猜任何平台的 refresh 协议**。
 ///
 /// 走阻塞线程：重扫要读客户端文件、解密凭据，是纯磁盘活。
-#[tauri::command]
-
 pub async fn account_refresh_credential(
-    state: State<'_, AppState>,
+    state: &AppState,
     iid: String,
 ) -> std::result::Result<crate::app::accounts::RefreshCredentialOutcome, String> {
     let db = state.db.clone();
@@ -388,10 +361,8 @@ pub async fn account_refresh_credential(
 
 /// 批量刷新凭据：按平台分组，每家客户端只重扫一次。
 /// `iids` 为空表示刷新库里全部账号。
-#[tauri::command]
-
 pub async fn account_refresh_credentials(
-    state: State<'_, AppState>,
+    state: &AppState,
     iids: Option<Vec<String>>,
 ) -> std::result::Result<crate::app::accounts::RefreshCredentialsReport, String> {
     let db = state.db.clone();
@@ -440,10 +411,8 @@ pub async fn account_refresh_credentials(
 }
 
 /// 切换登录。会写客户端登录态文件：失败一律带结构化 kind，界面按 kind 给话术。
-#[tauri::command]
-
 pub async fn account_switch(
-    state: State<'_, AppState>,
+    state: &AppState,
     iid: String,
 ) -> std::result::Result<crate::app::accounts::SwitchResult, String> {
     let db = state.db.clone();
@@ -458,10 +427,8 @@ pub async fn account_switch(
 /// 用 WorkBuddy 国内版档案切换 CodeBuddy 软件 / IDEA 插件的登录。
 /// `target`：`"software"`（CodeBuddy 软件）或 `"idea"`（IDEA 插件）。
 /// 与 `account_switch` 分开：三端同号但一端一按钮，切谁只动谁。
-#[tauri::command]
-
 pub async fn account_switch_codebuddy(
-    state: State<'_, AppState>,
+    state: &AppState,
     iid: String,
     target: String,
 ) -> std::result::Result<crate::app::accounts::SwitchResult, String> {
@@ -477,10 +444,8 @@ pub async fn account_switch_codebuddy(
 
 /// CodeBuddy 系两个客户端（软件 / IDEA 插件）的当前登录状态。
 /// 详情页用它把「现在登的是谁 / 有没有装」显示清楚，切换后刷新。
-#[tauri::command]
-
 pub async fn account_codebuddy_targets(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<Vec<crate::app::providers::codebuddy::CodebuddyTargetStatus>, String> {
     let roots = state.sessions.roots().clone();
     crate::app::runtime::blocking(move || crate::app::providers::codebuddy::statuses(&roots))
@@ -490,10 +455,8 @@ pub async fn account_codebuddy_targets(
 
 /// 把已有会话按引用关联到当前登录账号（只有 WorkBuddy 有本机会话库）。
 /// 会写客户端库：写前自动备份，客户端没关就拒绝执行。
-#[tauri::command]
-
 pub async fn account_restore_sessions(
-    state: State<'_, AppState>,
+    state: &AppState,
     iid: String,
 ) -> std::result::Result<crate::app::sessions::restore::RestoreOutcome, String> {
     let db = state.db.clone();
@@ -515,12 +478,7 @@ pub async fn account_restore_sessions(
 /// 账号 UID。列表载荷里不带它（契约 17：界面不渲染 uid），
 /// 只有用户点「UID」时才按需取一次，复制到剪贴板。
 /// 口径与 v1 一致：WorkBuddy 国际版带 `@intl` 后缀。
-#[tauri::command]
-
-pub async fn account_uid(
-    state: State<'_, AppState>,
-    iid: String,
-) -> std::result::Result<String, String> {
+pub async fn account_uid(state: &AppState, iid: String) -> std::result::Result<String, String> {
     let db = state.db.clone();
     crate::app::runtime::blocking(move || {
         crate::app::accounts::repo::identity(&db, &iid)?
@@ -533,8 +491,6 @@ pub async fn account_uid(
 }
 
 /// 各客户端当前登录的账号（界面给行标「当前」）。
-#[tauri::command]
-
 pub async fn account_current() -> std::result::Result<Vec<String>, String> {
     crate::app::runtime::blocking(crate::app::accounts::current_iids)
         .await
@@ -542,8 +498,6 @@ pub async fn account_current() -> std::result::Result<Vec<String>, String> {
 }
 
 /// 现在能被切到客户端的账号 iid 集合。界面据此禁用「切不了」的切换按钮并说明原因。
-#[tauri::command]
-
 pub async fn account_switchable() -> std::result::Result<Vec<String>, String> {
     crate::app::runtime::blocking(move || {
         let db = crate::app::db::Db::open()?;
@@ -556,8 +510,6 @@ pub async fn account_switchable() -> std::result::Result<Vec<String>, String> {
 
 /// 添加账号第一步：退出该平台登录态并启动客户端。
 /// 第二步是用户自己在客户端里登录，然后点「扫描客户端」——见 `accounts::add` 的说明。
-#[tauri::command]
-
 pub async fn account_add_prepare(
     platform: String,
 ) -> std::result::Result<crate::app::accounts::add::AddOutcome, String> {
@@ -578,8 +530,6 @@ pub async fn account_add_prepare(
 }
 
 /// 只打开客户端（不动登录态）：自动启动失败时的手动兜底。
-#[tauri::command]
-
 pub async fn account_open_client(platform: String) -> std::result::Result<bool, String> {
     crate::app::runtime::blocking(move || crate::app::accounts::add::open_client(&platform))
         .await
@@ -590,10 +540,8 @@ pub async fn account_open_client(platform: String) -> std::result::Result<bool, 
 // ---------------------------------------------------------------- 备注
 
 /// 设置备注；空字符串表示清空。
-#[tauri::command]
-
 pub async fn account_set_note(
-    state: State<'_, AppState>,
+    state: &AppState,
     iid: String,
     note: String,
 ) -> std::result::Result<String, String> {

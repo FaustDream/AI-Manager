@@ -48,6 +48,32 @@ pub fn app_db() -> PathBuf {
     data_dir().join("app.db")
 }
 
+/// 前端静态产物目录（浏览器化后由 HTTP 壳托管，vite build 的输出）。
+/// 与 data/ 同一套「开发期指仓库根、生产与 exe 同级」的约定；
+/// 环境变量可覆盖，便于测试与自定义部署。
+pub fn web_dist() -> PathBuf {
+    if let Ok(dir) = std::env::var("AIMANAGER_WEB_DIST") {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir.trim());
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        project
+            .parent()
+            .map(|root| root.join("dist"))
+            .unwrap_or_else(|| project.join("dist"))
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.join("dist")))
+            .unwrap_or_else(|| PathBuf::from("dist"))
+    }
+}
+
 pub fn logs_dir() -> PathBuf {
     data_dir().join("logs")
 }

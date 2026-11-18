@@ -5,9 +5,9 @@
 # AI Manager
 
 **你有三个 AI 编程客户端，每天在它们的登录态之间来回切。**
-这个工具把切换、签到、会话、技能收进一个窗口。
+这个工具把切换、签到、会话、技能收进一个浏览器页面。
 
-Windows 桌面端 · 多账号登录态切换 · 每日签到与积分 · 本地会话库 · 技能与 MCP 分发
+Windows · 本机后端 + 浏览器界面 · 多账号登录态切换 · 每日签到与积分 · 本地会话库 · 技能与 MCP 分发
 
 [![CI](https://github.com/FaustDream/AI-Manager/actions/workflows/ci.yml/badge.svg)](https://github.com/FaustDream/AI-Manager/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/FaustDream/AI-Manager?style=flat-square)](https://github.com/FaustDream/AI-Manager/releases)
@@ -24,7 +24,9 @@ Windows 桌面端 · 多账号登录态切换 · 每日签到与积分 · 本地
 
 Qoder、WorkBuddy、Trae、ZCode 各有一套登录态，各存一份凭据，各自要签到。账号一多，切换就成了体力活：翻客户端、找账号、重新登录、忘签一天断掉连续记录。
 
-AI Manager 把这些收进一个窗口：扫出本机所有已登录账号，一键切过去；签到与积分自动记账；会话库统一浏览、删除与恢复；技能和 MCP 一次导入、分发到多个客户端。
+AI Manager 把这些收进一个页面：扫出本机所有已登录账号，一键切过去；签到与积分自动记账；会话库统一浏览、删除与恢复；技能和 MCP 一次导入、分发到多个客户端。
+
+2.0.26 起界面在浏览器里：本机后端在 `127.0.0.1` 上同时托管页面与接口，凭据不出本机。没有桌面窗口、托盘图标和开机自启。
 
 ## 功能
 
@@ -35,7 +37,7 @@ AI Manager 把这些收进一个窗口：扫出本机所有已登录账号，一
 | 会话 | 本地会话库浏览与预览、删除进回收站、可恢复 |
 | 技能 MCP | 技能与 MCP 导入、分发到各客户端、移除进回收站、官方技能收录 |
 | 日志 | 执行动作与运行日志双视图、按日期回看、导出 |
-| 设置 | 开机自启、托盘行为、通用选项 |
+| 设置 | 主题、桌面通知、定时任务、空间与回收站 |
 
 ## 界面
 
@@ -74,40 +76,38 @@ Trae 的登录态是设备绑定的加密格式，无法安全写回，请在 Tr
 | `AI-Manager-<ver>-windows-x64-setup.exe` | 常规安装。装到 `%LOCALAPPDATA%\Programs\AI Manager`，免管理员，卸载保留 `data\` |
 | `AI-Manager-<ver>-windows-x64-portable.zip` | 解压即用。换机器把整个文件夹拷走 |
 
-系统要求：Windows 10 1803 及以上（依赖系统自带的 WebView2 运行时，Win11 自带）。不需要 .NET，不需要管理员权限。
+系统要求：Windows 10 及以上 + 一个现代浏览器（Edge / Chrome 等）。不需要 .NET，不需要 WebView2，不需要管理员权限。
 
-> 关窗口不退出：程序收进托盘继续跑每日签到。要真正退出，右键托盘图标选「退出」。
+> 用 `start.cmd` 启动：它拉起本机后端并自动打开页面，最小化的控制台窗口就是后端日志窗口。关掉浏览器标签页**不会**停后端——要真正退出，点页面右上角的电源按钮。
 
 > **未签名构建。** 首次启动时 Windows SmartScreen 可能提示「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」即可。每个 Release 都附带 `SHA256SUMS.txt`，可自行校验下载内容。
 
 ## 从源码构建
 
-前置：Rust stable、Node.js 22、WebView2（Win11 自带）。打安装包另需 NSIS。
+前置：Rust stable、Node.js 22。打安装包另需 NSIS。
 
 ```bash
 npm ci
 
-# 开发：一条命令，自动启动 Vite + 网页调试壳，并用浏览器打开
+# 日常使用：缺产物先构建，然后拉后端 + 开浏览器
+start.cmd
+
+# 开发：一条命令，自动启动 Vite + 后端，并用浏览器打开
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-run.ps1
 
 # 手动等价：开两个终端
-npm run dev                                  # 终端 1：Vite 开发服务器（127.0.0.1:5273）
-cd src-tauri && cargo run --bin ai-manager-web  # 终端 2：网页调试壳（127.0.0.1:5274）
+npm run dev                                 # 终端 1：Vite 开发服务器（127.0.0.1:5273）
+cd src-tauri && cargo run --bin ai-manager   # 终端 2：本机后端（127.0.0.1:5274）
 # 然后浏览器打开 http://127.0.0.1:5273
 
-# 只有验证托盘 / 单实例 / 原生窗口等桌面专属行为时，才启动桌面壳
-cd src-tauri && cargo run --bin ai-manager
-
-# 发布构建
+# 发布构建（先前端：dist/ 由 exe 运行时托管）
 npm run build
-cd src-tauri && cargo build --release --features custom-protocol
+cd src-tauri && cargo build --release
 ```
 
-`--bin` 不能省：`src-tauri` 下有两个二进制（桌面壳 `ai-manager` 与网页调试壳 `ai-manager-web`），Cargo 没有默认目标。开发与日常自测一律用网页壳，不启动本地桌面端。
+`src-tauri` 只有一个二进制 `ai-manager`：本机 axum 服务，从自身同级 `dist/` 托管前端产物，并在同一端口提供 `/cmd` 与 `/events`。所以发布目录里 `ai-manager.exe` + `dist/` + `start.cmd` 必须齐备——漏带 `dist/` 页面直接 404。
 
-`custom-protocol` 也不能省，否则 release 版会去连 devUrl，表现为白屏。
-
-网页调试壳只绑 `127.0.0.1`，且与桌面壳共用单实例锁，两个不能同时开。
+后端只绑 `127.0.0.1`，并持有单实例锁：第二份实例会被拒绝，这是设计行为（两个调度器不能同时写同一个库）。
 
 提交前的门禁与 CI 一致：
 
@@ -138,7 +138,7 @@ data/trash/      移除项的回收站
 
 ## 已知限制
 
-- 仅 Windows：依赖 DPAPI 与 WebView2
+- 仅 Windows：凭据依赖 Windows DPAPI
 - 账号库不跨机器迁移：拷走 `data/` 之后仍需重新登录
 - 从 v1 升级：v1 数据导入器已下线，程序不会读取或删除旧版目录
 

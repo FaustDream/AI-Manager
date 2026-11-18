@@ -406,7 +406,7 @@ async fn serve(db: Arc<Db>, want: u16, key: String) -> Result<ModelApiInfo> {
 
     let (listener, port) = bind(want).await?;
     let (tx, rx) = tokio::sync::oneshot::channel();
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         let _ = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 let _ = rx.await;
@@ -1462,7 +1462,7 @@ enum StreamItem {
 /// 把豆包 SSE 解码成增量流。三种接口形态共用这一条管道，只是最后的编码不同。
 fn spawn_deltas(resp: reqwest::Response) -> tokio::sync::mpsc::Receiver<StreamItem> {
     let (tx, rx) = tokio::sync::mpsc::channel::<StreamItem>(64);
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         use futures_util::StreamExt;
         let mut stream = resp.bytes_stream();
         let mut decoder = sse::SseDecoder::new();
@@ -1537,7 +1537,7 @@ fn chat_stream(
 ) -> Response {
     let (tx, out) = tokio::sync::mpsc::channel::<std::result::Result<Bytes, Infallible>>(64);
     let model = model.to_string();
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         let mut delta_rx = delta_rx;
         let _ = tx
             .send(Ok(encode_chunk(
@@ -1654,7 +1654,7 @@ fn anthropic_stream(
 ) -> Response {
     let (tx, out) = tokio::sync::mpsc::channel::<std::result::Result<Bytes, Infallible>>(64);
     let model = model.to_string();
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         let mut delta_rx = delta_rx;
         let mut chars = 0usize;
         let _ = tx
@@ -1788,7 +1788,7 @@ fn responses_stream(
     let model = model.to_string();
     let id = id.to_string();
     let item_id = item_id.to_string();
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         let mut delta_rx = delta_rx;
         let mut full = String::new();
         let _ = tx

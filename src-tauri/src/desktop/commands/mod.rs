@@ -7,7 +7,6 @@ pub(crate) use super::{err_text, AppState};
 pub(crate) use crate::app::error::AppError;
 pub(crate) use crate::app::log::{self, Level};
 pub(crate) use crate::desktop::background::execute_schedule;
-pub(crate) use tauri::State;
 
 pub mod accounts;
 pub mod activity;

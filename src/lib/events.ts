@@ -1,15 +1,12 @@
-// 事件传输的统一入口：桌面 WebView 走 Tauri event，网页调试模式走 SSE（/events）。
-// 页面只管 listen(事件名, handler)，不感知传输差异；handler 形状与
-// @tauri-apps/api/event 的 listen 完全一致（e.payload 取载荷）。
-import { inTauri } from './ipc';
-import { listen as tauriListen } from '@tauri-apps/api/event';
+// 事件传输的统一入口：整页共用一条 SSE 连接（/events），按事件名分派。
+// 页面只管 listen(事件名, handler)，handler 形状保持 e.payload 取载荷。
+// 断线由浏览器 EventSource 自动重连；事件只是刷新提示，丢几条无碍。
 
 type Listener = (e: { payload: unknown }) => void;
 
 const listeners = new Map<string, Set<Listener>>();
 let source: EventSource | null = null;
 
-/** 网页模式：整页共用一条 SSE 连接，按事件名分派。断线由浏览器自动重连。 */
 function ensureSource(): void {
   if (source) return;
   source = new EventSource('/events');
@@ -28,14 +25,11 @@ function dispatch(event: string, data: string): void {
   }
 }
 
-/** 后端实时事件（桌面壳走 Tauri event，网页壳走 SSE）。返回解绑函数。 */
+/** 后端实时事件（SSE）。返回解绑函数。 */
 export async function listen<T>(
   event: string,
   handler: (e: { payload: T }) => void,
 ): Promise<() => void> {
-  if (inTauri) {
-    return tauriListen<T>(event, handler);
-  }
   ensureSource();
   const set = listeners.get(event) ?? new Set<Listener>();
   const listener = handler as Listener;

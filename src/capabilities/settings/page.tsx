@@ -1,8 +1,8 @@
-// 设置中心：通用（主题/开机自启）与维护（定时任务/空间/回收站/打开目录）。
+// 设置中心：通用（主题/桌面通知）与维护（定时任务/空间/回收站/打开目录）。
 // 日志与执行动作统一在 capabilities/logs，不在这里。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { confirmAction } from '@/components/ui/confirm';
-import { queryCmd, runCmd, useBusy, errMsg } from '@/lib/cmd';
+import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useEffect, useState } from 'react';
 
 import { fmtSize, fmtTime } from '@/lib/format';
@@ -14,12 +14,12 @@ import { DataTable, type Column } from '@/components/ui/table';
 import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { saveTheme, type ThemeChoice } from '@/lib/theme';
+import { disableNotify, enableNotify, notifyEnabled, notifySupported } from '@/lib/notify';
 import { HistoryPane } from './history';
 import type {
   AppConfig,
   CapabilityMatrix,
   CapabilityRow,
-  CloseAction,
   HealthReport,
   RuleKind,
   Schedule,
@@ -94,7 +94,7 @@ function TabBar({ tab, onChange }: { tab: TabKey; onChange: (t: TabKey) => void 
 
 function GeneralPane() {
   const [theme, setTheme] = useState<ThemeChoice>('');
-  const [autostart, setAutostart] = useState<boolean | null>(null);
+  const [notifyOn, setNotifyOn] = useState(false);
   const [version, setVersion] = useState('');
 
   useEffect(() => {
@@ -102,9 +102,7 @@ function GeneralPane() {
     queryCmd('settings_get', { key: 'ui.theme' })
       .then((v) => setTheme((v as ThemeChoice) || ''))
       .catch(() => {});
-    queryCmd('autostart_get')
-      .then(setAutostart)
-      .catch(() => setAutostart(false));
+    setNotifyOn(notifyEnabled());
   }, []);
 
   return (
@@ -137,28 +135,36 @@ function GeneralPane() {
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-24 text-muted">开机自启</span>
+            <span className="w-24 text-muted">桌面通知</span>
             <Checkbox
-              checked={autostart ?? false}
-              disabled={autostart === null}
+              checked={notifyOn}
+              disabled={!notifySupported()}
               onChange={async (e) => {
-                const enabled = e.target.checked;
-                setAutostart(enabled);
-                const done = await runCmd('autostart_set', { enabled }, {
-                  onError: (err) => {
-                    setAutostart(!enabled);
-                    toast(errMsg(err));
-                  },
-                });
-                if (done !== undefined)
-                  toast(enabled ? '已开机自启（写 HKCU Run）' : '已关闭开机自启');
+                if (e.target.checked) {
+                  const ok = await enableNotify();
+                  setNotifyOn(ok);
+                  toast(
+                    ok
+                      ? '已开启桌面通知（标签页在后台时提醒签到结果与凭据临期）'
+                      : '浏览器拒绝了通知权限，请在地址栏左侧的站点设置里允许',
+                  );
+                } else {
+                  disableNotify();
+                  setNotifyOn(false);
+                  toast('已关闭桌面通知');
+                }
               }}
             />
           </label>
+          <p className="mt-1 pl-28 text-xs text-muted">
+            {notifySupported()
+              ? '签到完成、登录结果、凭据临期会弹系统通知（页面在后台时）'
+              : '此浏览器不支持系统通知'}
+          </p>
         </div>
       </div>
       <p className="mt-2 text-xs text-muted">
-        签到节奏、网络与采集间隔等运行配置已移到下方「配置」区统一管理。
+        浏览器形态：启动用 start.cmd，退出用右上角电源按钮。签到节奏、网络与采集间隔等运行配置在下方「配置」区统一管理。
       </p>
     </div>
   );
@@ -305,33 +311,8 @@ function ConfigPane() {
             <span className="text-xs text-muted">每 15 分钟探测一轮，领取要过浏览器验证码</span>
           </label>
         </div>
-        <div>
-          <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">关闭按钮</span>
-            <Select
-              value={draft.window.close_action}
-              onChange={(e) => patch({ window: { ...draft.window, close_action: e.target.value as CloseAction } })}
-            >
-              <option value="tray">最小化到托盘（继续跑定时任务）</option>
-              <option value="exit">直接退出程序</option>
-            </Select>
-          </label>
-          <p className="mt-1 pl-32 text-xs text-muted">
-            {draft.window.close_action === 'tray'
-              ? '点 X 后窗口收进托盘，进程常驻；要退出请右键托盘图标 →「退出」。'
-              : '点 X 直接结束进程，定时签到不会继续跑；需要常驻请改回托盘。'}
-          </p>
-        </div>
-        <div>
-          <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">自启最小化</span>
-            <Checkbox
-              checked={draft.window.start_minimized}
-              onChange={(e) => patch({ window: { ...draft.window, start_minimized: e.target.checked } })}
-            />
-            <span className="text-xs text-muted">开机自启启动时收进托盘，不弹主窗口</span>
-          </label>
-        </div>
+        {/* 桌面时代的「关闭按钮 / 自启最小化」已随托盘退役：字段仍在配置里
+            （兼容旧 config.toml），但不再提供界面入口——浏览器形态没有窗口可关。 */}
       </div>
       <div className="mt-3 flex items-center gap-2">
         <Button

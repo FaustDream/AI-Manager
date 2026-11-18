@@ -4,9 +4,8 @@ use super::*;
 use crate::app::error::ErrorKind;
 
 /// 手动扫一轮本地用量（只读客户端文件，不代理、不改任何配置）。
-#[tauri::command]
 pub async fn usage_scan(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> std::result::Result<crate::app::usage::UsageScanReport, String> {
     let db = state.db.clone();
     let report = crate::app::runtime::blocking(move || {
@@ -35,9 +34,8 @@ pub async fn usage_scan(
 }
 
 /// 用量总览：按天 / 按平台 / 按模型。
-#[tauri::command]
 pub async fn usage_overview(
-    state: State<'_, AppState>,
+    state: &AppState,
     days: Option<i64>,
 ) -> std::result::Result<crate::app::usage::UsageOverview, String> {
     let db = state.db.clone();

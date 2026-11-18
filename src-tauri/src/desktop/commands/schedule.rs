@@ -5,11 +5,7 @@ use crate::app::error::ErrorKind;
 use crate::app::schedule::Schedule;
 
 /// 全部定时任务（首次读取会写入默认种子）。
-#[tauri::command]
-
-pub async fn schedule_list(
-    state: State<'_, AppState>,
-) -> std::result::Result<Vec<Schedule>, String> {
+pub async fn schedule_list(state: &AppState) -> std::result::Result<Vec<Schedule>, String> {
     let db = state.db.clone();
     crate::app::runtime::blocking(move || crate::app::schedule::list(&db))
         .await
@@ -18,10 +14,8 @@ pub async fn schedule_list(
 }
 
 /// 新建或更新一条。规则校验（时刻格式、间隔范围）在后端做，绕开界面也写不进坏配置。
-#[tauri::command]
-
 pub async fn schedule_save(
-    state: State<'_, AppState>,
+    state: &AppState,
     input: Schedule,
 ) -> std::result::Result<Schedule, String> {
     let db = state.db.clone();
@@ -31,12 +25,7 @@ pub async fn schedule_save(
         .map_err(err_text)
 }
 
-#[tauri::command]
-
-pub async fn schedule_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> std::result::Result<(), String> {
+pub async fn schedule_delete(state: &AppState, id: String) -> std::result::Result<(), String> {
     let db = state.db.clone();
     crate::app::runtime::blocking(move || crate::app::schedule::delete(&db, &id))
         .await
@@ -46,12 +35,7 @@ pub async fn schedule_delete(
 
 /// 立即执行一次（不看规则）。手动签到与「这条定时到底能不能跑」的验证都走它，
 /// 结果同样落一条 `trigger=user` 的执行记录——手动和定时在记录里必须分得清。
-#[tauri::command]
-
-pub async fn schedule_run(
-    state: State<'_, AppState>,
-    id: String,
-) -> std::result::Result<String, String> {
+pub async fn schedule_run(state: &AppState, id: String) -> std::result::Result<String, String> {
     let db = state.db.clone();
     let service = state.checkin.clone();
     let activity = state.activity.clone();

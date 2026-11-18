@@ -1,19 +1,26 @@
-AI Manager 2.0.25 · 免安装版（Windows x64）
-==========================================
+AI Manager 2.0.26 · 免安装版（Windows x64 · 浏览器形态）
+======================================================
+
+自 2.0.26 起改为浏览器承载：本机后端 + 浏览器页面，没有独立窗口 / 托盘 / 开机自启。
+用 start.cmd 启动、页面右上角电源按钮真正退出。
 
 一、怎么用
 ----------
 1. 把整个文件夹解压到任意位置（建议放到固定目录，别放临时目录）。
-2. 双击 ai-manager.exe 即可启动。不需要安装、不需要管理员权限、不需要 .NET。
-   系统要求：Windows 10 1803 及以上（依赖系统自带的 WebView2 运行时；Win11 自带）。
-3. 关窗口不会退出：程序收到托盘里继续跑每日签到。要真正退出，右键托盘图标选「退出」。
-4. 开机自启在「设置 → 通用」里打开，开关直接读写注册表 HKCU，不需要管理员。
+2. 双击 start.cmd 即可启动：它拉起本机后端并自动打开浏览器页面。
+   不需要安装、不需要管理员权限、不需要 .NET / WebView2。
+   系统要求：Windows 10 及以上 + 一个现代浏览器（Edge / Chrome 等）。
+3. 页面右上角电源按钮 = 真正退出后端进程（不是只关标签页）。
+   直接关浏览器标签页不会停后端；要停就点电源按钮，或在任务管理器结束 ai-manager.exe。
+4. 后端只监听 127.0.0.1，不对局域网暴露；同一时间只允许一个实例（防双调度器）。
 
 二、数据放哪
 ------------
 全部数据都在 exe 同级的 data\ 目录里：
 
-    ai-manager.exe
+    ai-manager.exe         本机后端（axum）
+    dist\                  前端页面（exe 运行时静态托管，勿删）
+    start.cmd              启动器
     data\app.db            账号、签到、积分、会话索引、技能与 MCP（SQLite）
     data\logs\             运行日志
     data\backups\          写客户端配置前的自动备份
@@ -30,14 +37,14 @@ AI Manager 2.0.25 · 免安装版（Windows x64）
 --------
 免安装版没有安装器，删掉程序文件就是卸载：
 
-- 想彻底清干净：先退出程序（托盘 → 退出），再删掉整个文件夹（含 data\）。
-- 只想删程序、留下数据：删掉 ai-manager.exe，保留 data\ 目录；以后换新版 exe
-  放回同一目录，数据照旧可用。
-- 如果开过开机自启，删文件夹前先在「设置 → 通用」里关掉，或手工删掉注册表
-  HKCU\Software\Microsoft\Windows\CurrentVersion\Run 下的 AIManager 值。
+- 想彻底清干净：先点页面电源按钮退出，再删掉整个文件夹（含 data\）。
+- 只想删程序、留下数据：删掉 ai-manager.exe / dist\ / start.cmd，保留 data\ 目录；
+  以后换新版放回同一目录，数据照旧可用。
+- 浏览器形态没有开机自启，无需清注册表。（旧桌面版若开过自启，注册表
+  HKCU\Software\Microsoft\Windows\CurrentVersion\Run 下的 AIManager 值安装版卸载时会自动清掉。）
 
 四、校验
 --------
-版本：2.0.25    产物：AI-Manager-2.0.25-windows-x64-portable.zip
-安装版请用 AI-Manager-2.0.25-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
+版本：2.0.26    产物：AI-Manager-2.0.26-windows-x64-portable.zip
+安装版请用 AI-Manager-2.0.26-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
 免管理员，卸载同样保留 data\）。

@@ -27,6 +27,11 @@
   --text-lg: 16px;
   --font-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: Consolas, monospace;
+
+  /* 卡片阴影两档：静置一档、悬浮一档。浏览器化样板（总览页）先用，
+     其余页第二期推广。深色主题下阴影加深，见各 data-theme 覆盖。 */
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.07);
+  --shadow-card-hover: 0 4px 14px rgb(16 24 40 / 0.10);
 }
 
 /* 深浅两套：系统偏好走媒体查询，显式选择用 data-theme 覆盖（后者同特异性但在后，必胜） */
@@ -36,6 +41,8 @@
     --color-line: #2a2e37; --color-line-strong: #3a404b; --color-card: #1d2026; --color-hover: #23272f;
     --color-accent: #5b8cff; --color-accent-strong: #7aa2ff; --color-on-accent: #0d1117;
     --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171;
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
+    --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.45);
     color-scheme: dark;
   }
 }
@@ -51,6 +58,8 @@
   --color-line: #2a2e37; --color-line-strong: #3a404b; --color-card: #1d2026; --color-hover: #23272f;
   --color-accent: #5b8cff; --color-accent-strong: #7aa2ff; --color-on-accent: #0d1117;
   --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
+  --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.45);
   color-scheme: dark;
 }
 
@@ -69,6 +78,8 @@
   --color-line: #3a352b; --color-line-strong: #4d4637; --color-card: #26221b; --color-hover: #2e2a21;
   --color-accent: #d19a4a; --color-accent-strong: #e0b06a; --color-on-accent: #1e1b16;
   --color-ok: #7fb069; --color-warn: #d9a441; --color-bad: #e07a6a;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
+  --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.45);
   color-scheme: dark;
 }
 
@@ -84,6 +95,16 @@ body {
   to { opacity: 1; transform: none; }
 }
 .view-enter { animation: fade-up 180ms ease-out; }
+
+/* 入场节奏：直接子项依次淡入上移，每项错开 40ms。
+   只表达「内容逐块到位」，不做退场；reduced-motion 由下方全局规则压平。 */
+.stagger > * { animation: fade-up 240ms ease-out both; }
+.stagger > *:nth-child(2) { animation-delay: 40ms; }
+.stagger > *:nth-child(3) { animation-delay: 80ms; }
+.stagger > *:nth-child(4) { animation-delay: 120ms; }
+.stagger > *:nth-child(5) { animation-delay: 160ms; }
+.stagger > *:nth-child(6) { animation-delay: 200ms; }
+.stagger > *:nth-child(n+7) { animation-delay: 240ms; }
 
 /*
  * 骨架延迟淡入：本地接口常在 20~50ms 内返回，骨架一闪而过反而像是「页面抖了一下」。

@@ -10,7 +10,20 @@ use crate::app::error::{AppError, ErrorKind, Result};
 use std::path::{Path, PathBuf};
 
 /// 先写同目录临时文件再 rename：读方永远看到完整内容或旧内容。
+///
+/// 外层套有界重试：杀软实时扫描会短暂锁住刚写出的临时文件，`MoveFileEx`
+/// 回 ACCESS_DENIED(5) / SHARING_VIOLATION(32)。这类瞬时锁等几十毫秒就消失，
+/// 重试救得回；持续性权限错误重试三次后照原样报出，不被吞掉。
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    retry_transient(|| write_atomic_once(path, bytes)).map_err(|e| {
+        AppError::new(
+            ErrorKind::WriteFailed,
+            format!("写入 {} 失败：{e}", path.display()),
+        )
+    })
+}
+
+fn write_atomic_once(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -28,13 +41,48 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if path.exists() {
         let _ = clear_readonly(path);
     }
-    replace_file(&tmp, path).map_err(|e| {
+    replace_file(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
-        AppError::new(
-            ErrorKind::WriteFailed,
-            format!("写入 {} 失败：{e}", path.display()),
-        )
     })
+}
+
+/// 瞬时占用错误的有界重试：最多 3 次，间隔 60ms 递增。
+/// 只认 Windows 的 5/32（杀软锁）；其余错误立即失败，重试没有意义。
+fn retry_transient<F>(mut op: F) -> std::io::Result<()>
+where
+    F: FnMut() -> std::io::Result<()>,
+{
+    let mut attempt = 0u32;
+    loop {
+        match op() {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                attempt += 1;
+                if attempt >= 3 || !is_transient_lock(&e) {
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(60 * u64::from(attempt)));
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn is_transient_lock(e: &std::io::Error) -> bool {
+    // 同一个占用有两种错误形态：std 的 fs 调用给 Win32 码（5 / 32），
+    // MoveFileExW 经 windows crate 给 HRESULT（0x80070005 / 0x80070020）。
+    // 只认前者，重试对真正发生的那条路径就形同虚设。
+    const HRESULT_ACCESS_DENIED: i32 = 0x80070005u32 as i32;
+    const HRESULT_SHARING_VIOLATION: i32 = 0x80070020u32 as i32;
+    matches!(
+        e.raw_os_error(),
+        Some(5) | Some(32) | Some(HRESULT_ACCESS_DENIED) | Some(HRESULT_SHARING_VIOLATION)
+    )
+}
+
+#[cfg(not(windows))]
+fn is_transient_lock(_e: &std::io::Error) -> bool {
+    false
 }
 
 /// 用临时文件替换目标文件。
@@ -253,6 +301,63 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains("tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "原子写不应留下临时文件");
+    }
+
+    /// 杀软实时扫描会短暂锁住刚写出的临时文件，MoveFileEx 回 5/32。
+    /// 重试必须救得回这种瞬时锁，且不能把持续性错误吞掉。
+    #[test]
+    fn transient_lock_is_retried_then_succeeds() {
+        let mut calls = 0;
+        let out = retry_transient(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(std::io::Error::from_raw_os_error(5))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(out.is_ok());
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn persistent_lock_gives_up_after_budget() {
+        let mut calls = 0;
+        let out = retry_transient(|| {
+            calls += 1;
+            Err(std::io::Error::from_raw_os_error(5))
+        });
+        assert!(out.is_err());
+        assert_eq!(calls, 3, "有界重试：不能无限转圈");
+    }
+
+    #[test]
+    fn non_transient_error_fails_immediately() {
+        let mut calls = 0;
+        let out = retry_transient(|| {
+            calls += 1;
+            Err(std::io::Error::from_raw_os_error(3))
+        });
+        assert!(out.is_err());
+        assert_eq!(calls, 1, "路径不存在这类错误重试没有意义");
+    }
+
+    /// MoveFileExW 的失败经 windows crate 转成 HRESULT：raw_os_error 是
+    /// 0x80070005 而不是 5。只认 Win32 码会让重试形同虚设——全量门禁里
+    /// codebuddy 的 prune_caches 用例就是这样被杀软锁失败的。
+    #[test]
+    fn hresult_access_denied_is_retried() {
+        let mut calls = 0;
+        let out = retry_transient(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(std::io::Error::from_raw_os_error(0x80070005u32 as i32))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(out.is_ok(), "HRESULT 形式的拒绝访问同样是瞬时锁");
+        assert_eq!(calls, 3);
     }
 
     /// 跨盘搬移靠它兜底：文件和目录都要能复制。

@@ -5,8 +5,6 @@ use crate::app::error::ErrorKind;
 
 /// 结构化日志查询（按级别 / 模块 / 关键词）。
 /// 返回 `Result`：读日志失败要让界面说「读日志失败」，不能伪装成「没有符合条件的日志」。
-#[tauri::command]
-
 pub async fn log_query(
     filter: crate::app::log::LogFilter,
 ) -> std::result::Result<Vec<crate::app::log::Line>, String> {
@@ -21,8 +19,6 @@ pub async fn log_query(
 ///
 /// 走独立命令而不是让每个业务命令自己写日志：命令有几十条，只有前端知道
 /// 「用户点了什么、参数是什么、等了多久」，后端各写各的必然漏。
-#[tauri::command]
-
 pub fn log_action(
     action: String,
     trigger: String,
@@ -38,8 +34,6 @@ pub fn log_action(
 ///
 /// **不进执行动作视图**（读不是「动作」），但必须留痕且必须带证据：界面上只剩一句
 /// toast 时，`evidence` 里的错误原文是唯一能定位问题的东西。
-#[tauri::command]
-
 pub fn log_ui(
     level: String,
     action: Option<String>,
@@ -56,15 +50,12 @@ pub fn log_ui(
 }
 
 /// 清空当前日志与历史轮转文件；只动 `data/logs/`，不碰其他数据。
-#[tauri::command]
 pub fn log_clear() -> std::result::Result<(), String> {
     crate::app::log::clear().map_err(err_text)
 }
 
 /// 导出日志到文件；不给路径就落到 `data/logs/export-<时间戳>.txt`。
 /// 返回一句可以直接显示的话（行数 + 落在哪）。
-#[tauri::command]
-
 pub async fn log_export(
     path: Option<String>,
     filter: crate::app::log::LogFilter,
@@ -85,8 +76,6 @@ pub async fn log_export(
 }
 
 /// 现存日志的时间跨度：日期筛选用它限定可选范围，选不到没有数据的日子。
-#[tauri::command]
-
 pub async fn log_span() -> std::result::Result<crate::app::log::LogSpan, String> {
     crate::app::runtime::blocking(crate::app::log::span)
         .await
@@ -96,8 +85,6 @@ pub async fn log_span() -> std::result::Result<crate::app::log::LogSpan, String>
 
 /// 日志聚合：按「模块 + 动作 + 结果 + 级别」统计最近 2 万行。
 /// 回答「哪一类在反复出问题」，而不是让人在几千行里数同一个错误。
-#[tauri::command]
-
 pub async fn log_stats(
     filter: crate::app::log::LogFilter,
 ) -> std::result::Result<Vec<crate::app::log::LogStat>, String> {
@@ -111,8 +98,6 @@ pub async fn log_stats(
 ///
 /// `anchor` 优先（查询结果里的物理行号），`ts` 兜底（实时行没有行号，
 /// 或日志被清空/轮转导致行号失效）。前后行数由界面传入，后端只做上限裁剪。
-#[tauri::command]
-
 pub async fn log_context(
     anchor: Option<usize>,
     ts: Option<String>,

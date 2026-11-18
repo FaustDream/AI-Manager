@@ -24,7 +24,7 @@ pub fn spawn_scheduler(
     use std::collections::HashSet;
     use std::sync::Mutex;
 
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         // 等首屏稳定再开始判点，别和账号列表抢 SQLite 的读连接
         tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_secs(20)) => {},
@@ -72,7 +72,7 @@ pub fn spawn_scheduler(
                 let running = running.clone();
                 let db = db.clone();
                 let id = item.id.clone();
-                tauri::async_runtime::spawn(async move {
+                crate::app::runtime::runtime().spawn(async move {
                     let fresh = crate::app::runtime::blocking({
                         let id = id.clone();
                         move || crate::app::schedule::take_due(&db, &id, chrono::Local::now())
@@ -200,7 +200,7 @@ async fn run_schedule(
 /// 每 15 分钟探测一轮，找到可领的就领第一个——领取会开浏览器过验证码，
 /// 所以必须是用户主动打开的开关。
 pub fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>) {
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
             let enabled = crate::app::config::get().activity.zcode_auto_claim;
@@ -228,7 +228,7 @@ pub fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>) {
 /// 5 分钟轮询 + 手动刷新已经能覆盖「外部新增/删除后列表更新」，
 /// 且不新增 `notify` 依赖。
 pub fn spawn_session_scan(service: Arc<crate::app::sessions::Service>) {
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(8)).await;
         loop {
             let started = std::time::Instant::now();
@@ -268,7 +268,7 @@ pub fn spawn_session_scan(service: Arc<crate::app::sessions::Service>) {
 ///
 /// 只读客户端落盘文件，慢一点没关系；失败只记日志，不影响任何业务。
 pub fn spawn_usage_scan(db: Arc<Db>) {
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         loop {
             let db = db.clone();
@@ -299,9 +299,9 @@ pub fn spawn_usage_scan(db: Arc<Db>) {
 
 /// 事件桥（源侧）：把 lib 层的两个广播源接进统一事件总线
 /// （日志实时行 → `log:line`；新领取记录 → `claim:recorded`）。
-/// 桌面壳与网页壳共用，任何壳启动都要调它。
+/// 前端经 `desktop::web` 的 SSE 订阅总线，壳启动时必须调它。
 pub fn spawn_source_bridges() {
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         let mut rx = log::subscribe_live();
         loop {
             match rx.recv().await {
@@ -316,7 +316,7 @@ pub fn spawn_source_bridges() {
 
     // 领取记录是本地台账：签到 / ZCode 活动 / 猫猫旅行任一路径写成功后推一条，
     // 详情面板据此立刻重取，不用等用户点刷新或下一轮轮询。
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         let mut rx = crate::app::checkin::store::subscribe_claims();
         loop {
             match rx.recv().await {
@@ -330,37 +330,12 @@ pub fn spawn_source_bridges() {
     });
 }
 
-/// 事件桥（WebView 侧，仅桌面壳）：把总线上的事件转发给前端。
-/// 网页壳不调它——`desktop::web` 直接订阅总线走 SSE。
-pub fn spawn_webview_bridge(app: tauri::AppHandle) {
-    use tauri::Emitter;
-
-    tauri::async_runtime::spawn(async move {
-        let mut rx = crate::app::events::subscribe();
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    let _ = app.emit(&event.name, event.payload);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break,
-            }
-        }
-    });
-}
-
-/// 桌面壳的完整事件桥：源侧 + WebView 转发。
-pub fn spawn_event_bridges(app: tauri::AppHandle) {
-    spawn_source_bridges();
-    spawn_webview_bridge(app);
-}
-
 /// 启动自动扫描账号：界面不再提供「扫描客户端」按钮，账号同步改为开机后台执行。
 ///
 /// 延后 2 秒再跑：先让窗口上屏，扫描要读多个客户端目录，不该和冷启动抢 IO。
 /// 增量扫描本身很快；失败只记日志，不阻塞窗口。
 pub fn spawn_startup_scan(db: Arc<Db>) {
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let started = std::time::Instant::now();
         match crate::app::runtime::blocking(move || crate::app::accounts::scan_all(&db)).await {
@@ -392,7 +367,7 @@ pub fn spawn_startup_scan(db: Arc<Db>) {
 /// 启动自动同步技能（STAGES §7.1）。开关在 kv `hub.auto_sync`，缺省视为开（对齐 v1）。
 /// 挪到启动 20 秒后执行，别跟账号列表抢首屏；MCP 不参与（见 `skills::sync_all` 的注释）。
 pub fn spawn_hub_auto_sync(db: Arc<Db>, hub: Arc<crate::app::hub::Hub>) {
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         let enabled = crate::app::runtime::blocking(move || {
             db.kv_get("hub.auto_sync")
                 .ok()
@@ -423,7 +398,7 @@ pub fn spawn_hub_auto_sync(db: Arc<Db>, hub: Arc<crate::app::hub::Hub>) {
 /// 首次启动会自动生成 API Key；端口/Key 都存本地 kv。启动失败只记日志不阻塞主流程。
 /// 用户上次在设置页手动「停止」过就不自动起——那是明确意图，不该被开机流程覆盖。
 pub fn spawn_model_api(db: Arc<Db>) {
-    tauri::async_runtime::spawn(async move {
+    crate::app::runtime::runtime().spawn(async move {
         // 等首屏稳定再绑端口，别和账号列表抢资源
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         match crate::app::model_api::autostart(db).await {
