@@ -111,8 +111,9 @@ export function Dialog({
         aria-modal="true"
         aria-label={title}
         className={cn(
-          // 面板：淡入+上移 4px；退场只淡出并下移 2px。遮罩只淡不位移，两层都位移会「抖两下」
-          closing ? 'view-exit' : 'view-enter',
+          // 面板：淡入 + 上移 4px + 97%→100% 缩放（退场只淡出并下移 2px）。
+          // 遮罩只淡不位移，两层都位移会「抖两下」
+          closing ? 'view-exit' : 'dialog-in',
           'flex max-h-[85vh] w-full flex-col overflow-hidden rounded-xl border border-line bg-bg',
           'shadow-[0_1px_2px_rgba(16,24,40,.06),0_18px_44px_-14px_rgba(16,24,40,.34)]',
           wide ? 'max-w-[560px]' : 'max-w-[420px]',
