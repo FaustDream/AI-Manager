@@ -1,4 +1,4 @@
-//! 进程检测、静默启动、单实例、开机自启。全部走 Windows API。
+//! 进程检测、静默启动、单实例。全部走 Windows API。
 //!
 //! 三条硬要求：
 //!   - **外部命令不得弹控制台**（契约 20 / AGENTS 红线 11）：CreateProcessW 必须带
@@ -18,17 +18,13 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
-    HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ,
+    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, KEY_READ,
 };
 use windows::Win32::System::Threading::{
     CreateMutexW, CreateProcessW, OpenProcess, TerminateProcess, CREATE_NO_WINDOW,
     CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
     PROCESS_TERMINATE, STARTF_USESHOWWINDOW, STARTUPINFOW,
 };
-
-const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const AUTOSTART_NAME: &str = "AIManager";
 
 /// 给定进程名（如 `WorkBuddy.exe`）是否正在运行。比较时不区分大小写。
 pub fn process_running(names: &[&str]) -> bool {
@@ -387,94 +383,6 @@ pub fn acquire_single_instance(name: &str) -> Result<Option<SingleInstance>> {
     Ok(Some(SingleInstance { _handle: handle }))
 }
 
-/// 开机自启现在是否开着：Run 值存在**且带 `--autostart` 参数**。
-///
-/// 只查「值存在」不够——旧版本写的是裸 exe 路径，那种值开机拉起识别不出
-/// 「这是自启」，「自启最小化」随之失效（见 `repair_autostart`）。
-pub fn autostart_enabled() -> bool {
-    reg_read_string(HKEY_CURRENT_USER, RUN_KEY, AUTOSTART_NAME)
-        .is_some_and(|value| is_autostart_command(&value))
-}
-
-/// Run 值是否为当前写法（带 `--autostart` 参数）。
-fn is_autostart_command(value: &str) -> bool {
-    value.contains("--autostart")
-}
-
-/// 自愈旧格式的 Run 值：存在但缺 `--autostart` 就按当前写法重写。
-///
-/// 老版本写入的值开机拉起不带参数，`desktop::run()` 识别不出自启场景，
-/// 「自启最小化」永远不生效。启动时顺手修一次，下一次开机就正常。
-pub fn repair_autostart() {
-    let Some(value) = reg_read_string(HKEY_CURRENT_USER, RUN_KEY, AUTOSTART_NAME) else {
-        return; // 没开自启：没有值可修
-    };
-    if is_autostart_command(&value) {
-        return;
-    }
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    match set_autostart(true, &exe) {
-        Ok(()) => crate::app::log::log(
-            crate::app::log::Level::Info,
-            "app",
-            format!(
-                "开机自启 Run 值是旧格式（缺 --autostart），已按当前写法重写：{}",
-                exe.display()
-            ),
-        ),
-        Err(e) => crate::app::log::log(
-            crate::app::log::Level::Warn,
-            "app",
-            format!("开机自启 Run 值是旧格式且重写失败：{}", e.message),
-        ),
-    }
-}
-
-pub fn set_autostart(enabled: bool, exe: &Path) -> Result<()> {
-    let subkey = HSTRING::from(RUN_KEY);
-    let mut hkey = HKEY::default();
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            &subkey,
-            0,
-            KEY_READ | KEY_SET_VALUE,
-            &mut hkey,
-        )
-    };
-    if status.0 != 0 {
-        return Err(AppError::new(
-            ErrorKind::Io,
-            format!("打开开机自启注册表项失败：{status:?}"),
-        ));
-    }
-
-    let name = HSTRING::from(AUTOSTART_NAME);
-    let result = if enabled {
-        // 带 --autostart：开机自启启动时进程据此识别「这是自启拉起」，
-        // 配合配置「自启后最小化到托盘」决定是否弹主窗口（见 desktop/mod.rs）。
-        let value = HSTRING::from(format!("\"{}\" --autostart", exe.display()));
-        let wide = value.as_wide();
-        let bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2) };
-        unsafe { RegSetValueExW(hkey, &name, 0, REG_SZ, Some(bytes)) }
-    } else {
-        unsafe { RegDeleteValueW(hkey, &name) }
-    };
-    unsafe {
-        let _ = RegCloseKey(hkey);
-    }
-    if result.0 != 0 {
-        return Err(AppError::new(
-            ErrorKind::Io,
-            format!("设置开机自启失败：{result:?}"),
-        ));
-    }
-    Ok(())
-}
-
 /// 把已有主窗口叫到前台（第二个实例启动时用）。
 /// 窗口可能被收进托盘（隐藏）或最小化，两种状态都要还原成可见。
 pub fn focus_window(title: &str) -> bool {
@@ -564,14 +472,5 @@ mod tests {
     fn hidden_spawn_suppresses_console() {
         assert!(base_flags(true).contains(CREATE_NO_WINDOW));
         assert!(!base_flags(true).contains(DETACHED_PROCESS));
-    }
-
-    /// 旧版本写的 Run 值只有裸 exe 路径，那种值开机拉起识别不出「这是自启」；
-    /// 只有带 `--autostart` 的当前写法才算数。
-    #[test]
-    fn autostart_command_requires_flag() {
-        assert!(is_autostart_command(r#""C:\x\ai-manager.exe" --autostart"#));
-        assert!(!is_autostart_command(r#""C:\x\ai-manager.exe""#));
-        assert!(!is_autostart_command(""));
     }
 }

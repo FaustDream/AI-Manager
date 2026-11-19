@@ -824,7 +824,6 @@ const LEGACY_READ_ACTIONS: &[&str] = &[
     "daily_state",
     "log_query",
     "settings_get",
-    "autostart_get",
     "schedule_list",
     "maintenance_space",
     "maintenance_trash",

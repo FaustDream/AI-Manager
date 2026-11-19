@@ -3,6 +3,8 @@
 // 口径：
 // - 开关是浏览器侧偏好，存 localStorage（不进后端配置——它只对本浏览器有意义）；
 // - 权限必须由用户手势触发申请（设置页的开关），页面加载时不偷偷弹权限框；
+// - 浏览器权限是硬门槛：开关开着但权限没给，通知一条都发不出去。所以状态展示
+//   以权限为准（`notifyPermission()`），别让开关看起来是开的；
 // - 事件类提醒只在标签页退到后台时发：看着页面时 toast/列表已经在说话，
 //   再弹系统通知是重复噪音；凭据临期是每天一次的要紧事，可见时也发。
 import { useEffect } from 'react';
@@ -12,8 +14,16 @@ import type { HealthReport, LoginOutcome, RoundResult } from './types';
 
 const KEY = 'aim:notify';
 
+export type NotifyPermission = 'granted' | 'denied' | 'default' | 'unsupported';
+
 export function notifySupported(): boolean {
   return typeof window !== 'undefined' && 'Notification' in window;
+}
+
+/** 浏览器侧的授权现状。`unsupported` = 环境里没有 Notification（含非安全上下文）。 */
+export function notifyPermission(): NotifyPermission {
+  if (!notifySupported()) return 'unsupported';
+  return Notification.permission;
 }
 
 /** 用户开关 + 浏览器权限都到位才算启用。 */
@@ -25,13 +35,22 @@ export function notifyEnabled(): boolean {
   );
 }
 
+/**
+ * 申请浏览器通知权限（必须由用户手势调用）。
+ *
+ * 只有 `default`（还没问过）才会弹授权框；`denied` 之后浏览器不再弹，
+ * 只能让用户去站点设置里改——这一步在设置页给文案指路，别指望再点一次就出来。
+ */
+export async function requestNotifyPermission(): Promise<NotifyPermission> {
+  if (!notifySupported()) return 'unsupported';
+  if (Notification.permission !== 'default') return Notification.permission;
+  const result = await Notification.requestPermission();
+  return result;
+}
+
 /** 设置页开关调用：申请权限（用户手势内），成功才落开关。 */
 export async function enableNotify(): Promise<boolean> {
-  if (!notifySupported()) return false;
-  let permission = Notification.permission;
-  if (permission === 'default') {
-    permission = await Notification.requestPermission();
-  }
+  const permission = await requestNotifyPermission();
   if (permission !== 'granted') {
     localStorage.removeItem(KEY);
     return false;
@@ -55,6 +74,28 @@ export function notify(title: string, body: string, tag?: string): void {
     };
   } catch {
     // 个别环境（无通知守护进程等）构造即抛：提醒丢了不影响主流程
+  }
+}
+
+/**
+ * 设置页「试一条」：只验证浏览器这条路通不通，不要求开着开关。
+ * 返回是否真的交给了浏览器（构造异常或权限不足都算失败）。
+ */
+export function notifyTest(): boolean {
+  if (notifyPermission() !== 'granted') return false;
+  try {
+    const n = new Notification('AI Manager 测试通知', {
+      body: '看到这条说明桌面通知已经可用',
+      tag: 'aim-test',
+      icon: '/favicon.png',
+    });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+    };
+    return true;
+  } catch {
+    return false;
   }
 }
 

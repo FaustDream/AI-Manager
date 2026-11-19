@@ -65,16 +65,6 @@ pub async fn network_selfcheck(
     Ok(report)
 }
 
-pub fn autostart_get() -> bool {
-    crate::app::process::autostart_enabled()
-}
-
-pub fn autostart_set(enabled: bool) -> std::result::Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
-    crate::app::process::set_autostart(enabled, &exe).map_err(err_text)
-}
-
 pub fn log_level(level: String) -> std::result::Result<(), String> {
     let parsed = Level::parse_lossy(&level);
     log::set_level(parsed);

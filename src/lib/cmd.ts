@@ -192,8 +192,6 @@ export interface CmdArgs {
   maintenance_trash: void;
   maintenance_purge_trash: { tag: string | null };
   maintenance_open_data: void;
-  autostart_get: void;
-  autostart_set: { enabled: boolean };
 }
 
 /** 每个命令一行：成功返回值（Result<T, _> 只留 T）。 */
@@ -317,8 +315,6 @@ export interface CmdReturn {
   maintenance_trash: SpaceEntry[];
   maintenance_purge_trash: number;
   maintenance_open_data: void;
-  autostart_get: boolean;
-  autostart_set: void;
 }
 
 export type CmdName = keyof CmdReturn;
@@ -463,8 +459,6 @@ const CMD_LABELS: Record<string, string> = {
   maintenance_trash: '读取维护回收站',
   maintenance_purge_trash: '清空维护回收站',
   maintenance_open_data: '打开数据目录',
-  autostart_get: '读取开机自启',
-  autostart_set: '设置开机自启',
   schedule_list: '读取定时任务',
   schedule_save: '保存定时任务',
   schedule_delete: '删除定时任务',
@@ -518,7 +512,6 @@ const KEY_ACTIONS = new Set<string>([
   'hub_mcp_remove',
   'hub_mcp_claim',
   'settings_set',
-  'autostart_set',
   'model_api_regenerate_key',
   'model_api_set_port',
   'model_api_start',

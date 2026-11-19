@@ -1,6 +1,6 @@
 [package]
 name = "ai-manager"
-version = "2.0.26"
+version = "2.0.27"
 edition = "2021"
 description = "AI Manager：签到 / 会话 / 技能分发一体化工作台（本机后端 + 浏览器界面）"
 

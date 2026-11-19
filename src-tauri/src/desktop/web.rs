@@ -278,11 +278,6 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             to_json(cmd::settings::config_set(config))
         }
         "network_selfcheck" => to_json(cmd::settings::network_selfcheck().await),
-        "autostart_get" => to_json(Ok(cmd::settings::autostart_get())),
-        "autostart_set" => {
-            let enabled = arg(v, "enabled")?;
-            to_json(cmd::settings::autostart_set(enabled))
-        }
         "log_level" => {
             let level = arg(v, "level")?;
             to_json(cmd::settings::log_level(level))

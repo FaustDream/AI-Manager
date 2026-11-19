@@ -14,7 +14,16 @@ import { DataTable, type Column } from '@/components/ui/table';
 import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { saveTheme, type ThemeChoice } from '@/lib/theme';
-import { disableNotify, enableNotify, notifyEnabled, notifySupported } from '@/lib/notify';
+import {
+  disableNotify,
+  enableNotify,
+  notifyEnabled,
+  notifyPermission,
+  notifySupported,
+  notifyTest,
+  requestNotifyPermission,
+  type NotifyPermission,
+} from '@/lib/notify';
 import { HistoryPane } from './history';
 import type {
   AppConfig,
@@ -95,14 +104,27 @@ function TabBar({ tab, onChange }: { tab: TabKey; onChange: (t: TabKey) => void 
 function GeneralPane() {
   const [theme, setTheme] = useState<ThemeChoice>('');
   const [notifyOn, setNotifyOn] = useState(false);
+  const [perm, setPerm] = useState<NotifyPermission>('unsupported');
   const [version, setVersion] = useState('');
 
+  // 权限可能被用户在浏览器站点设置里改（页面本身收不到事件），
+  // 所以每次窗口重新获得焦点都按真实权限校正一次开关显示。
   useEffect(() => {
     queryCmd('app_version').then(setVersion).catch(() => {});
     queryCmd('settings_get', { key: 'ui.theme' })
       .then((v) => setTheme((v as ThemeChoice) || ''))
       .catch(() => {});
-    setNotifyOn(notifyEnabled());
+    const sync = () => {
+      setNotifyOn(notifyEnabled());
+      setPerm(notifyPermission());
+    };
+    sync();
+    window.addEventListener('focus', sync);
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      window.removeEventListener('focus', sync);
+      document.removeEventListener('visibilitychange', sync);
+    };
   }, []);
 
   return (
@@ -137,34 +159,80 @@ function GeneralPane() {
           <label className="flex items-center gap-4 text-sm">
             <span className="w-24 text-muted">桌面通知</span>
             <Checkbox
-              checked={notifyOn}
+              // 开关状态以「浏览器权限 + 本地开关」双满足为准：
+              // 权限没给时哪怕本地开着也发不出去，不能让开关骗人。
+              checked={notifyOn && perm === 'granted'}
               disabled={!notifySupported()}
               onChange={async (e) => {
-                if (e.target.checked) {
-                  const ok = await enableNotify();
-                  setNotifyOn(ok);
-                  toast(
-                    ok
-                      ? '已开启桌面通知（标签页在后台时提醒签到结果与凭据临期）'
-                      : '浏览器拒绝了通知权限，请在地址栏左侧的站点设置里允许',
-                  );
-                } else {
+                if (!e.target.checked) {
                   disableNotify();
                   setNotifyOn(false);
+                  setPerm(notifyPermission());
                   toast('已关闭桌面通知');
+                  return;
+                }
+                const permission = await requestNotifyPermission();
+                setPerm(permission);
+                if (permission === 'granted') {
+                  const ok = await enableNotify();
+                  setNotifyOn(ok);
+                  toast('已开启桌面通知：标签页在后台时会提醒签到结果、登录结果与凭据临期');
+                } else if (permission === 'denied') {
+                  setNotifyOn(false);
+                  toast(
+                    '浏览器拒绝了通知权限。点地址栏左侧的站点设置 → 通知 → 允许，再回来打开这个开关',
+                  );
+                } else if (permission === 'unsupported') {
+                  setNotifyOn(false);
+                  toast('当前页面不是安全上下文或不支持系统通知，无法开启');
+                } else {
+                  setNotifyOn(false);
+                  toast('授权没有完成（可能关掉了授权框），再点一次开关即可重新申请');
                 }
               }}
             />
           </label>
           <p className="mt-1 pl-28 text-xs text-muted">
-            {notifySupported()
-              ? '签到完成、登录结果、凭据临期会弹系统通知（页面在后台时）'
-              : '此浏览器不支持系统通知'}
+            {perm === 'unsupported'
+              ? '此浏览器不支持系统通知'
+              : perm === 'granted'
+                ? '浏览器权限已允许 · 签到完成、登录结果、凭据临期会弹系统通知（标签页在后台时）'
+                : perm === 'denied'
+                  ? '浏览器已拒绝通知权限：点地址栏左侧的站点设置 → 通知 → 允许，再回来打开开关'
+                  : '还没授权：打开开关时浏览器会弹出授权框，点「允许」即可'}
           </p>
+          {perm === 'granted' && (
+            <p className="mt-1 pl-28 text-xs">
+              <button
+                type="button"
+                className="text-accent underline-offset-2 hover:underline"
+                onClick={() => {
+                  const sent = notifyTest();
+                  if (!notifyOn) {
+                    toast('先打开上面的开关，再来试发（权限已允许，开关还没开）');
+                    return;
+                  }
+                  toast(
+                    sent
+                      ? '已发出测试通知：没看到请检查 Windows 通知中心是否把浏览器静音了'
+                      : '测试通知没有发出去：确认系统通知没被关闭',
+                  );
+                }}
+              >
+                发一条测试通知
+              </button>
+              <span className="pl-2 text-muted">授权后立即验证能不能真弹出来</span>
+            </p>
+          )}
         </div>
       </div>
       <p className="mt-2 text-xs text-muted">
         浏览器形态：启动用 start.cmd，退出用右上角电源按钮。签到节奏、网络与采集间隔等运行配置在下方「配置」区统一管理。
+      </p>
+      <p className="mt-1 text-xs text-muted">
+        启动方式：本工具用命令行启动（start.cmd），不提供「开机自启」——没有桌面壳，就没有「登录后自动拉起」这件事。
+        需要开机就跑，把 start.cmd 的快捷方式放进「启动」文件夹即可。后端启动后会一直跑（关掉页面也不退），
+        随时重新打开 http://127.0.0.1:5274 就能接着用。
       </p>
     </div>
   );
