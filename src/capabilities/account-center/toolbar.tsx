@@ -16,6 +16,8 @@ import { Dialog } from '@/components/ui/dialog';
 import { Input, Select, Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { errText } from '@/lib/ipc';
+import { useProgress } from '@/lib/progress';
+import type { BatchProgress } from '@/lib/progress';
 import type { AccountView, AddOutcome, BrowserLoginStatus, LoginOutcome } from '@/lib/types';
 
 /** 可添加的平台。顺序 = 下拉框顺序。zcode_zai / zcode_zai_cn 只走浏览器登录
@@ -61,6 +63,10 @@ export function AccountToolbar({
   onRefreshCredentials: () => void;
   onCheckin: () => void;
 }) {
+  // 批量动作的实时读数：后端 progress 事件 → 「3 / 12」。总数只有后端知道，
+  // 前端只累加完成数；拿不到（事件丢了）就退回原来的省略号文案，不编数字。
+  const checkinProgress = useProgress('checkin_batch');
+  const creditsProgress = useProgress('checkin_credits');
   return (
     <div className="flex flex-wrap items-center gap-2">
       {/* 主按钮给「添加账号」：这是这个页面唯一的正经工作流。
@@ -77,7 +83,7 @@ export function AccountToolbar({
         disabled={!!busy}
         title="调平台接口重查余额与配额（会联网）"
       >
-        {busy === 'credits' ? '刷新中…' : '刷新积分'}
+        {busy === 'credits' ? tailText('刷新中', creditsProgress) : '刷新积分'}
         <ActionTag>平台余额</ActionTag>
       </Button>
       {/* 与「刷新积分」的区别：积分刷的是平台余额，这里刷的是**本地库与客户端登录态** */}
@@ -107,7 +113,7 @@ export function AccountToolbar({
         disabled={!!busy}
         title="对当前筛选的账号逐个执行今日签到（会调平台签到接口）"
       >
-        {busy === 'checkin' ? '签到中…' : '批量签到'}
+        {busy === 'checkin' ? tailText('签到中', checkinProgress) : '批量签到'}
         <ActionTag>今日签到</ActionTag>
       </Button>
     </div>
@@ -122,6 +128,16 @@ export function AccountToolbar({
  */
 function ActionTag({ children }: { children: string }) {
   return <span className="text-xs font-normal text-muted">{children}</span>;
+}
+
+/**
+ * 按钮正在跑时的文案：`刷新中 3/12`。
+ *
+ * 没有读数（后端没发 start、或事件在途中丢了）就退回 `刷新中…`——
+ * 宁可少显示，也不能让界面编一个「大概到哪了」的数字。
+ */
+function tailText(verb: string, p: BatchProgress | null): string {
+  return p && p.running && p.total > 0 ? `${verb} ${p.done}/${p.total}` : `${verb}…`;
 }
 
 /** 弹窗状态：正在取链接 → 等浏览器授权 / 启动客户端 → 已就绪 → 失败。

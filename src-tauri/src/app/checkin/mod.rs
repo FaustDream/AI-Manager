@@ -16,6 +16,7 @@ use crate::app::db::Db;
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::log::{self, Item, Outcome};
 use crate::app::net::Http;
+use crate::app::progress;
 use crate::app::providers;
 use crate::app::runtime::blocking;
 use crate::contracts::{CheckinStore, Ledger};
@@ -496,6 +497,9 @@ impl Service {
         let started = std::time::Instant::now();
         // 失败行要显示账号名而不是 uid：先取一次名字表，查不到就退回平台前缀
         let names = self.account_names().await;
+        if total > 0 {
+            progress::start("checkin_credits", &batch_id, total);
+        }
 
         let semaphore = Arc::new(Semaphore::new(3));
         let mut tasks = tokio::task::JoinSet::new();
@@ -538,8 +542,16 @@ impl Service {
         let mut out = Vec::new();
         while let Some(joined) = tasks.join_next().await {
             if let Ok(pair) = joined {
+                let tag = if pair.1.error.is_none() { "ok" } else { "fail" };
+                progress::tick("checkin_credits", &batch_id, tag);
                 out.push(pair);
+            } else {
+                // 任务被取消/panic：这一项不会进 out，但用户看到的计数必须往前走
+                progress::tick("checkin_credits", &batch_id, "fail");
             }
+        }
+        if total > 0 {
+            progress::end("checkin_credits", &batch_id);
         }
 
         // 失败明细：界面上的「N 个查询失败」必须能和日志对上账
@@ -1170,6 +1182,10 @@ impl Service {
         log::item(log::Item::marker("批次", &batch_id).note(format!(
             "开始 | 动作=批量签到 | 账号数={total} | 并发={max_concurrent} | 间隔={gap_ms}ms"
         )));
+        // 界面按钮旁的「N / total」：总数只有这里知道，完成数前端按 tick 累加
+        if total > 0 {
+            progress::start("checkin_batch", &batch_id, total);
+        }
 
         let mut round = RoundResult {
             scanned: total,
@@ -1195,24 +1211,34 @@ impl Service {
 
         let mut failures: Vec<String> = Vec::new();
         while let Some(joined) = tasks.join_next().await {
-            match joined {
+            // 结果分类与进度标签一起算：分类写在 match 里，标签必须同源，
+            // 否则「成功 3」和条上的 3 格可能对不上
+            let outcome = match joined {
                 Ok((subject, Ok(result))) => {
                     round.due += 1;
                     if result.ok && !result.already {
                         round.success += 1;
+                        "ok"
                     } else if result.ok {
                         round.already += 1;
+                        "skip"
                     } else {
                         round.failed += 1;
                         failures.push(format!("{subject} → {}", result.message));
+                        "fail"
                     }
                 }
                 Ok((subject, Err(e))) => {
                     round.failed += 1;
                     failures.push(format!("{subject} → {}", e.message));
+                    "fail"
                 }
-                Err(_) => round.failed += 1,
-            }
+                Err(_) => {
+                    round.failed += 1;
+                    "fail"
+                }
+            };
+            progress::tick("checkin_batch", &batch_id, outcome);
         }
         round.at = self.now_text();
         round.message = round.summary();
@@ -1225,6 +1251,9 @@ impl Service {
             trigger,
             started,
         );
+        if total > 0 {
+            progress::end("checkin_batch", &batch_id);
+        }
         round
     }
 
@@ -1285,10 +1314,17 @@ impl Service {
                 round.scanned,
                 targets.len()
             )));
+            // 分母用 due.len()：今日已签的账号不进这一轮，不该出现在进度里
+            progress::start("checkin_round", &batch_id, due.len());
         }
         let mut failures: Vec<String> = Vec::new();
         for iid in &due {
             let (subject, outcome) = self.checkin_traced(iid, Some(&batch_id)).await;
+            let tag = match &outcome {
+                Ok(r) if r.ok && !r.already => "ok",
+                Ok(r) if r.ok => "skip",
+                _ => "fail",
+            };
             match outcome {
                 Ok(result) if result.ok && !result.already => round.success += 1,
                 Ok(result) if result.ok => round.already += 1,
@@ -1301,6 +1337,10 @@ impl Service {
                     failures.push(format!("{subject} → {}", e.message));
                 }
             }
+            progress::tick("checkin_round", &batch_id, tag);
+        }
+        if !due.is_empty() {
+            progress::end("checkin_round", &batch_id);
         }
 
         round.at = self.now_text();
