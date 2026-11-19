@@ -47,7 +47,7 @@ export function UsageSection() {
   const perCall = data && data.total.calls > 0 ? Math.round(data.total.tokens / data.total.calls) : 0;
 
   return (
-    <section className="rounded-lg border border-line bg-card p-3">
+    <section className="rounded-lg border border-line bg-card shadow-card p-3">
       <SectionTitle
         right={
           <span className="flex flex-wrap items-center gap-1">

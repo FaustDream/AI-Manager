@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseChoice, parseFlag, parseSet } from './ui-state';
+import { FONT_CHOICES, loadFontChoice, parseChoice, parseFlag, parseSet } from './ui-state';
 
 describe('parseFlag', () => {
   it('缺省时用回退值', () => {
@@ -25,6 +25,23 @@ describe('parseChoice', () => {
 
   it('只接受白名单里的值', () => {
     expect(parseChoice('account', 'source', values)).toBe('account');
+  });
+});
+
+// 字号档位（P1-13）：纯显示偏好，脏值绝不能把界面卡在一个不存在的档位上。
+describe('字号档位', () => {
+  it('只有标准与大两档', () => {
+    expect([...FONT_CHOICES]).toEqual(['standard', 'large']);
+  });
+
+  it('白名单外的值回退标准', () => {
+    expect(parseChoice('huge', 'standard', FONT_CHOICES)).toBe('standard');
+    expect(parseChoice(null, 'standard', FONT_CHOICES)).toBe('standard');
+    expect(parseChoice('large', 'standard', FONT_CHOICES)).toBe('large');
+  });
+
+  it('node 环境没有 localStorage 也不抛错，回退标准', () => {
+    expect(loadFontChoice()).toBe('standard');
   });
 });
 

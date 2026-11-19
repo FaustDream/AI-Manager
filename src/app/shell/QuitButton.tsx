@@ -33,6 +33,7 @@ export function QuitButton() {
         size="sm"
         variant="ghost"
         title="退出 AI Manager（结束后端进程）"
+        aria-label="退出 AI Manager"
         loading={busy}
         disabled={busy}
         onClick={() => void doQuit()}

@@ -176,6 +176,7 @@ function Chip({ label, active, onClick }: { label: string; active: boolean; onCl
         active ? 'border-accent bg-accent/10 text-fg' : 'border-line text-muted hover:bg-hover hover:text-fg'
       }`}
       onClick={onClick}
+      aria-pressed={active}
     >
       {label}
     </button>

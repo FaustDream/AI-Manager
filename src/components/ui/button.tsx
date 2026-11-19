@@ -82,7 +82,10 @@ export function Button({
         variant === 'primary' &&
           'border-accent bg-accent text-on-accent enabled:hover:border-accent-strong enabled:hover:bg-accent-strong',
         variant === 'ghost' && 'border-transparent text-fg2 enabled:hover:text-fg',
-        variant === 'danger' && 'border-bad text-bad',
+        // 不可逆动作用**实底**（总纲 P0-7）：红框红字在一排描边按钮里读不出份量，
+        // 实底 + 白字才是「这一下删掉就没了」的视觉重量。
+        variant === 'danger' &&
+          'border-bad bg-bad text-on-accent enabled:hover:border-bad-strong enabled:hover:bg-bad-strong',
         size === 'sm' && 'rounded-sm px-2 py-0.5 text-xs',
         // 光标与透明度按状态显式给，不靠 disabled: 变体互相覆盖
         loading ? 'cursor-progress' : disabled ? 'cursor-default opacity-55' : 'cursor-pointer',

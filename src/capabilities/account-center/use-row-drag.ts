@@ -13,6 +13,37 @@ export interface DropTarget {
   before: boolean;
 }
 
+/**
+ * 键盘上移/下移（总纲 P2-11）：与拖拽走同一条 `account_reorder`。
+ * 到边界或不认识这个 id 时返回 null —— 调用方据此**不发命令**，
+ * 免得每次按到顶都白写一次盘、白刷一次列表。
+ */
+export function moveBy(ids: string[], iid: string, delta: number): string[] | null {
+  const from = ids.indexOf(iid);
+  if (from < 0) return null;
+  const to = from + delta;
+  if (to < 0 || to >= ids.length) return null;
+  const next = [...ids];
+  next.splice(from, 1);
+  next.splice(to, 0, iid);
+  return next;
+}
+
+/** 拖拽落点：语义 = **移除源行之后**的插入位置（before=false 表示插到目标行之后）。 */
+export function insertAt(
+  ids: string[],
+  iid: string,
+  target: string,
+  before: boolean,
+): string[] | null {
+  if (iid === target) return null;
+  const next = ids.filter((id) => id !== iid);
+  const at = next.indexOf(target);
+  if (at < 0) return null;
+  next.splice(before ? at : at + 1, 0, iid);
+  return next;
+}
+
 export function useRowDrag(
   rows: AccountView[],
   busy: string | null,
@@ -80,11 +111,14 @@ export function useRowDrag(
       setDragging(null);
       // 落点在提交前读 state：闭包里的 dropAt 可能是旧值
       setDropAt((drop) => {
-        if (drag && drop && drag.iid !== drop.iid) {
-          const ids = rowsRef.current.map((r) => r.iid).filter((id) => id !== drag.iid);
-          const at = ids.indexOf(drop.iid);
-          ids.splice(drop.before ? at : at + 1, 0, drag.iid);
-          void commitRef.current(ids);
+        if (drag && drop) {
+          const ids = insertAt(
+            rowsRef.current.map((r) => r.iid),
+            drag.iid,
+            drop.iid,
+            drop.before,
+          );
+          if (ids) void commitRef.current(ids);
         }
         return null;
       });

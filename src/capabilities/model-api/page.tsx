@@ -242,7 +242,7 @@ ANTHROPIC_MODEL=<模型 ID>`,
   ];
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="stagger flex flex-col gap-3">
       <Card>
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold">豆包接口反代</h2>

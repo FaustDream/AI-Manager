@@ -22,7 +22,7 @@ export function SessionsSection() {
   const data = stats.data;
 
   return (
-    <section className="rounded-lg border border-line bg-card p-3">
+    <section className="rounded-lg border border-line bg-card shadow-card p-3">
       <SectionTitle
         right={
           <Button size="sm" variant="ghost" onClick={() => navigate('sessions')}>

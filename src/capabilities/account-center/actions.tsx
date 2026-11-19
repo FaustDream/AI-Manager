@@ -27,26 +27,32 @@ function RowAction({
   onClick,
   disabled,
   title,
+  label,
   danger,
 }: {
   children: ReactNode;
   onClick: () => void;
   disabled?: boolean;
   title?: string;
+  /** 读屏用的短名（「切换登录」）。title 是长解释，不适合当无障碍名称。 */
+  label: string;
   danger?: boolean;
 }) {
   return (
     <button
       type="button"
-      className={`flex h-6 w-7 items-center justify-center rounded-sm transition-colors ${
+      // 点击区 28×28（总纲 P1-11）：图标仍是 15px，但可点面积够手指与触控板命中。
+      // 只加高不加宽——OPS_WIDTH 由 ACTION_SLOTS 算出，动宽度会牵动整表列宽。
+      className={`flex h-7 w-7 items-center justify-center rounded-sm transition-colors ${
         disabled
           ? 'cursor-default text-muted opacity-40'
           : danger
-            ? 'text-bad hover:bg-bad/10'
-            : 'text-accent hover:bg-accent/10'
+            ? 'cursor-pointer text-bad hover:bg-bad/10'
+            : 'cursor-pointer text-accent hover:bg-accent/10'
       }`}
       disabled={disabled}
       title={title}
+      aria-label={label}
       onClick={onClick}
     >
       {children}
@@ -90,6 +96,7 @@ export function RowActions({
           )}
         </span>
         <RowAction
+          label="切换登录"
           onClick={onSwitch}
           disabled={!row.has_secret || isCurrent || busy || !switchable}
           title={
@@ -105,6 +112,7 @@ export function RowActions({
           <IconSwitch size={15} />
         </RowAction>
         <RowAction
+          label="恢复对话"
           onClick={onRestore}
           disabled={!canRestore || !isCurrent || busy}
           title={
@@ -118,6 +126,7 @@ export function RowActions({
           <IconHistory size={15} />
         </RowAction>
         <RowAction
+          label={row.enabled ? '停用账号' : '启用账号'}
           onClick={onToggleEnabled}
           disabled={busy}
           title={
@@ -128,7 +137,7 @@ export function RowActions({
         >
           <IconPower size={15} />
         </RowAction>
-        <RowAction danger onClick={onDelete} disabled={busy} title="删除：只从本机账号库移除，不动客户端登录态">
+        <RowAction danger label="删除账号" onClick={onDelete} disabled={busy} title="删除：只从本机账号库移除，不动客户端登录态">
           <IconDelete size={15} />
         </RowAction>
       </div>

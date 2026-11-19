@@ -17,6 +17,8 @@
   --color-ok: #16a34a;
   --color-warn: #d97706;
   --color-bad: #dc2626;
+  /* 危险按钮的悬停色：实底红要有「按下去更深」的一档，键位与 accent-strong 对齐 */
+  --color-bad-strong: #b91c1c;
 
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -40,7 +42,7 @@
     --color-bg: #16181d; --color-fg: #e6e8ec; --color-fg2: #b6bdc8; --color-muted: #9aa3af;
     --color-line: #2a2e37; --color-line-strong: #3a404b; --color-card: #1d2026; --color-hover: #23272f;
     --color-accent: #5b8cff; --color-accent-strong: #7aa2ff; --color-on-accent: #0d1117;
-    --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171;
+    --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171; --color-bad-strong: #fca5a5;
     --shadow-card: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
     --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.45);
     color-scheme: dark;
@@ -50,14 +52,14 @@
   --color-bg: #ffffff; --color-fg: #1c1f23; --color-fg2: #4b5563; --color-muted: #6b7280;
   --color-line: #e5e7eb; --color-line-strong: #cbd5e1; --color-card: #f8fafc; --color-hover: #f1f5f9;
   --color-accent: #2563eb; --color-accent-strong: #1d4ed8; --color-on-accent: #ffffff;
-  --color-ok: #16a34a; --color-warn: #d97706; --color-bad: #dc2626;
+  --color-ok: #16a34a; --color-warn: #d97706; --color-bad: #dc2626; --color-bad-strong: #b91c1c;
   color-scheme: light;
 }
 [data-theme="dark"] {
   --color-bg: #16181d; --color-fg: #e6e8ec; --color-fg2: #b6bdc8; --color-muted: #9aa3af;
   --color-line: #2a2e37; --color-line-strong: #3a404b; --color-card: #1d2026; --color-hover: #23272f;
   --color-accent: #5b8cff; --color-accent-strong: #7aa2ff; --color-on-accent: #0d1117;
-  --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171;
+  --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171; --color-bad-strong: #fca5a5;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
   --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.45);
   color-scheme: dark;
@@ -68,7 +70,7 @@
   --color-bg: #f6f2ea; --color-fg: #3b352c; --color-fg2: #6b6252; --color-muted: #8f8574;
   --color-line: #e3dccd; --color-line-strong: #cfc5ae; --color-card: #fffdf8; --color-hover: #efe9dc;
   --color-accent: #a05a2c; --color-accent-strong: #864a23; --color-on-accent: #ffffff;
-  --color-ok: #48804a; --color-warn: #b7791f; --color-bad: #c0453e;
+  --color-ok: #48804a; --color-warn: #b7791f; --color-bad: #c0453e; --color-bad-strong: #a63a34;
   color-scheme: light;
 }
 
@@ -77,10 +79,22 @@
   --color-bg: #1e1b16; --color-fg: #e8e2d5; --color-fg2: #c2b9a6; --color-muted: #a49a87;
   --color-line: #3a352b; --color-line-strong: #4d4637; --color-card: #26221b; --color-hover: #2e2a21;
   --color-accent: #d19a4a; --color-accent-strong: #e0b06a; --color-on-accent: #1e1b16;
-  --color-ok: #7fb069; --color-warn: #d9a441; --color-bad: #e07a6a;
+  --color-ok: #7fb069; --color-warn: #d9a441; --color-bad: #e07a6a; --color-bad-strong: #eb9384;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
   --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.45);
   color-scheme: dark;
+}
+
+/*
+ * 字号档位（总纲 P1-13）：标准维持原值，「大」每档 +1px。
+ * 只覆盖 --text-* 四个令牌，所有 text-xs/sm/md/lg 自动跟随，不用逐组件改类名。
+ * 这是纯显示偏好，由 localStorage（aim.ui.font）驱动 data-font，不进 config.toml。
+ */
+[data-font="large"] {
+  --text-xs: 13px;
+  --text-sm: 14px;
+  --text-md: 15px;
+  --text-lg: 17px;
 }
 
 body {
@@ -88,6 +102,21 @@ body {
   background: var(--color-bg);
   color: var(--color-fg);
   font: var(--text-md)/1.55 var(--font-sans);
+}
+
+/*
+ * 键盘焦点环（总纲 P0-6）：全应用一条规则，不为每个组件各写一遍。
+ * 只认 :focus-visible —— 鼠标点击不出现环（否则每次点按钮都套一圈蓝框，很脏），
+ * Tab 走键盘时必现。outline 会自动跟随元素自身圆角，所以这里不改 border-radius。
+ */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+/* 表格行、列表项这类贴着容器的元素：环画在内侧，否则被 overflow 裁掉半圈 */
+tr:focus-visible,
+[role="option"]:focus-visible {
+  outline-offset: -2px;
 }
 
 @keyframes fade-up {

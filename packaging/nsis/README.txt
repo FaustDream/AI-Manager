@@ -1,4 +1,4 @@
-AI Manager 2.0.27 · 免安装版（Windows x64 · 浏览器形态）
+AI Manager 2.0.29 · 免安装版（Windows x64 · 浏览器形态）
 ======================================================
 
 自 2.0.26 起改为浏览器承载：本机后端 + 浏览器页面，没有独立窗口 / 托盘 / 开机自启。
@@ -45,6 +45,6 @@ AI Manager 2.0.27 · 免安装版（Windows x64 · 浏览器形态）
 
 四、校验
 --------
-版本：2.0.27    产物：AI-Manager-2.0.27-windows-x64-portable.zip
-安装版请用 AI-Manager-2.0.27-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
+版本：2.0.29    产物：AI-Manager-2.0.29-windows-x64-portable.zip
+安装版请用 AI-Manager-2.0.29-windows-x64-setup.exe（装到 %LOCALAPPDATA%\Programs\AI Manager，
 免管理员，卸载同样保留 data\）。

@@ -2,9 +2,12 @@
 // 页面只回答「每列渲染什么」——加一列 = 加一行定义。
 // 账号中心（capabilities/account-center/columns.ts）是这套范式的蓝本，
 // 这里把它下沉成可复用的表体；账号中心自己的表带拖拽/列宽调整，仍保留原实现。
-import type { CSSProperties, MouseEvent, ReactNode } from 'react';
+import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import { cn } from './button';
 import { SkeletonRows, StateBlock } from './form';
+
+/** 行被激活的事件：鼠标点击或键盘 Enter/Space。两者都带 ctrl/meta，多选判断通用。 */
+export type RowActivateEvent = MouseEvent<HTMLTableRowElement> | KeyboardEvent<HTMLTableRowElement>;
 
 export interface Column<R> {
   key: string;
@@ -46,8 +49,13 @@ export interface DataTableProps<R> {
   skeletonRows?: number;
   /** 无数据时的整行内容；传 null 表示不渲染空行（空态在表格外自绘） */
   empty?: ReactNode;
-  /** 行点击：带原生事件，页面可据此判断 Ctrl / Cmd 做多选（不传事件就没法区分） */
-  onRowClick?: (row: R, event: MouseEvent<HTMLTableRowElement>) => void;
+  /**
+   * 行点击：带原生事件，页面可据此判断 Ctrl / Cmd 做多选（不传事件就没法区分）。
+   * 给了它，行就自动键盘可达（tabIndex + Enter/Space + ↑↓），见 P1-9。
+   */
+  onRowClick?: (row: R, event: RowActivateEvent) => void;
+  /** 当前选中行的 key：只用来出 aria-selected，不参与样式（样式仍走 rowClassName） */
+  selectedKey?: string | null;
   /** 行右键：自定义上下文菜单（原生菜单已被 context-menu.ts 全局拦掉） */
   onRowContextMenu?: (row: R, event: MouseEvent<HTMLTableRowElement>) => void;
   rowClassName?: (row: R) => string;
@@ -80,6 +88,7 @@ export function DataTable<R>({
   skeletonRows = 4,
   empty,
   onRowClick,
+  selectedKey,
   onRowContextMenu,
   rowClassName,
   stickyHead,
@@ -122,37 +131,72 @@ export function DataTable<R>({
             </td>
           </tr>
         )}
-        {rows.map((row) => (
-          <tr
-            key={rowKey(row)}
-            className={rowClassName?.(row)}
-            onClick={onRowClick ? (event) => onRowClick(row, event) : undefined}
-            onContextMenu={
-              onRowContextMenu ? (event) => onRowContextMenu(row, event) : undefined
-            }
-          >
-            {lead && <td className={cn(cellCls(dense), 'whitespace-nowrap')}>{lead.cell(row)}</td>}
-            {columns.map((col) => (
-              <td
-                key={col.key}
-                className={cn(
-                  cellCls(dense),
-                  // 单行是默认：换行会把整行撑高，而同排其他列都单行
-                  !col.wrap && 'whitespace-nowrap',
-                  col.truncate && 'overflow-hidden text-ellipsis',
-                  col.align === 'right' && 'text-right tabular-nums',
-                  col.className,
-                )}
-                title={col.title?.(row)}
-              >
-                {col.cell(row)}
-              </td>
-            ))}
-            {trail && (
-              <td className={cn(cellCls(dense), 'whitespace-nowrap text-right')}>{trail.cell(row)}</td>
-            )}
-          </tr>
-        ))}
+        {rows.map((row) => {
+          const key = rowKey(row);
+          return (
+            <tr
+              key={key}
+              className={rowClassName?.(row)}
+              // 行可点就必须键盘可达（P1-9）：以前只有 onClick，Tab 停不上去，
+              // 键盘用户根本打不开详情。role/aria-selected 让读屏也能报「第几行、选没选」。
+              tabIndex={onRowClick ? 0 : undefined}
+              role={onRowClick ? 'row' : undefined}
+              aria-selected={
+                onRowClick && selectedKey !== undefined ? key === selectedKey : undefined
+              }
+              onClick={onRowClick ? (event) => onRowClick(row, event) : undefined}
+              onKeyDown={
+                onRowClick
+                  ? (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault(); // Space 默认会滚页
+                        onRowClick(row, event);
+                        return;
+                      }
+                      const step =
+                        event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+                      if (!step) return;
+                      event.preventDefault();
+                      // 只在同一张表内移动：分组视图有多张表，跨表跳会丢掉分组上下文
+                      const siblings = Array.from(
+                        event.currentTarget.parentElement?.querySelectorAll<HTMLTableRowElement>(
+                          'tr[tabindex="0"]',
+                        ) ?? [],
+                      );
+                      const at = siblings.indexOf(event.currentTarget);
+                      siblings[at + step]?.focus();
+                    }
+                  : undefined
+              }
+              onContextMenu={
+                onRowContextMenu ? (event) => onRowContextMenu(row, event) : undefined
+              }
+            >
+              {lead && <td className={cn(cellCls(dense), 'whitespace-nowrap')}>{lead.cell(row)}</td>}
+              {columns.map((col) => (
+                <td
+                  key={col.key}
+                  className={cn(
+                    cellCls(dense),
+                    // 单行是默认：换行会把整行撑高，而同排其他列都单行
+                    !col.wrap && 'whitespace-nowrap',
+                    col.truncate && 'overflow-hidden text-ellipsis',
+                    col.align === 'right' && 'text-right tabular-nums',
+                    col.className,
+                  )}
+                  title={col.title?.(row)}
+                >
+                  {col.cell(row)}
+                </td>
+              ))}
+              {trail && (
+                <td className={cn(cellCls(dense), 'whitespace-nowrap text-right')}>
+                  {trail.cell(row)}
+                </td>
+              )}
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );

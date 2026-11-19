@@ -1,11 +1,18 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { cn } from './button';
 
-// 原生 <dialog> 的轻包装：模态、点背景不关（防误触），Esc 允许关。
+// 模态弹窗：Esc 可关，点背景也可关。
 //
 // 结构固定为「头 / 身 / 尾」三段：头尾各一条 hairline，只有中间那段滚动——
 // 内容长的弹窗（技能部署、回收站）滚起来标题和按钮不动，用户不会失去位置感。
+//
+// 焦点纪律（总纲 P1-10）：打开时焦点进面板、Tab 在面板内循环、关闭后归还给
+// 触发它的那个元素。少了这三条，键盘用户会「焦点跑到弹窗背后的页面上」，
+// 按 Tab 一路点到看不见的按钮，等于弹窗对键盘不可用。
+const FOCUSABLE =
+  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
 export function Dialog({
   open,
   title,
@@ -24,14 +31,49 @@ export function Dialog({
   onClose: () => void;
   wide?: boolean;
 }) {
+  const panel = useRef<HTMLDivElement | null>(null);
+  // onClose 基本都是调用方现写的箭头函数。**绝不能进 effect 依赖**：
+  // 那样父组件每次重渲染（例如在弹窗里打一个字）都会重跑效应、把焦点拽回第一个元素，
+  // 输入框直接没法连续输入。用 ref 读最新值，效应只跟 open 走。
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
   useEffect(() => {
     if (!open) return;
+    // 记住是谁打开的：关闭后把焦点还回去，键盘用户不会掉到页面顶部
+    const opener = document.activeElement as HTMLElement | null;
+    const node = panel.current;
+    const items = () => Array.from(node?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
+    // 初始聚焦给第一个可聚焦元素（通常是关闭按钮或第一个输入框）
+    items()[0]?.focus();
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        closeRef.current();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const list = items();
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      const active = document.activeElement;
+      // 首尾循环：Shift+Tab 从第一个绕到最后一个，Tab 从最后一个绕回第一个
+      if (e.shiftKey && (active === first || !node?.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      // 触发者可能已经被卸载（例如确认后那一行被删了），isConnected 兜一层
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [open]);
 
   if (!open) return null;
   return (
@@ -42,6 +84,7 @@ export function Dialog({
       }}
     >
       <div
+        ref={panel}
         role="dialog"
         aria-modal="true"
         aria-label={title}

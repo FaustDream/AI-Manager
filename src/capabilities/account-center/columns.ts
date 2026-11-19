@@ -29,6 +29,8 @@ export type Cell = {
 export interface ColumnDefEx {
   key: string;
   header: string;
+  /** 列头悬停说明：口径容易被误读的列（凭据到期 / 积分）在这里一句话说清 */
+  headerTitle?: string;
   width: number;
   min: number;
   /** errors：本次刷新拿到的查询失败原因（运行时状态，不落库） */
@@ -229,7 +231,30 @@ export const COLUMNS: ColumnDefEx[] = [
       title: a.source ? `凭据来源：${a.source}` : undefined,
     }),
   },
-  { key: 'login', header: '凭据到期', width: 150, min: 110, cell: loginCell },
-  { key: 'credit', header: '积分 / 配额', width: 128, min: 90, cell: creditCell },
-  { key: 'checkin', header: '签到', width: 104, min: 70, cell: checkinCell },
+  {
+    key: 'login',
+    header: '凭据到期',
+    // 口径速查（附录 A）：凭据 = 登录授权。这一列最容易被读成「有没有登录」，
+    // 而它只说到期日——切换登录靠的是本机凭据文件，不是这个日期。
+    headerTitle: '登录授权的剩余有效期，与「当前登录」无关；也不是积分到期',
+    width: 150,
+    min: 110,
+    cell: loginCell,
+  },
+  {
+    key: 'credit',
+    header: '积分 / 配额',
+    headerTitle: '积分 = 平台返回的可用余额；配额 = 额度型平台最紧窗口的剩余百分比',
+    width: 128,
+    min: 90,
+    cell: creditCell,
+  },
+  {
+    key: 'checkin',
+    header: '签到',
+    headerTitle: '今天签没签到。图标即结论，悬停看原因；「约 HH:MM」是下次自动签到时间',
+    width: 104,
+    min: 70,
+    cell: checkinCell,
+  },
 ];

@@ -302,6 +302,29 @@ function LogsPane() {
     markSeen(newestAlertAt(alertRows));
   };
 
+  /**
+   * 排障预设（P2-15）：一次把视图 / 级别 / 时间窗三处拨到位，并清掉上一次
+   * 残留的模块与关键词——否则「今天失败」会被上次的筛选悄悄缩小范围。
+   */
+  const applyPreset = (kind: 'today-fail' | 'week-alert') => {
+    setModule('');
+    setKeyword('');
+    setOutcome('');
+    setTrigger('');
+    setSubject('');
+    setFromDay(null);
+    setToDay(null);
+    if (kind === 'today-fail') {
+      setView('all');
+      setMinLevel('error');
+      setWindowKey('today');
+      setShowOk(false);
+    } else {
+      setWindowKey('7d');
+      openAlerts();
+    }
+  };
+
   useEffect(() => {
     if (nearBottom.current) {
       tailRef.current?.scrollIntoView({ block: 'end' });
@@ -312,9 +335,9 @@ function LogsPane() {
     setContextAnchor({ anchor: line.seq ?? null, ts: line.ts, before, after: before });
 
   return (
-    <div className="flex h-[calc(100vh-7.5rem)] flex-col gap-2">
+    <div className="stagger flex h-[calc(100vh-7.5rem)] flex-col gap-2">
       {/* 工具栏：视图 / 时间窗 / 筛选 / 计数。放在滚动容器外面——筛选条件不该跟着日志滚走 */}
-      <div className="rounded-lg border border-line bg-card">
+      <div className="rounded-lg border border-line bg-card shadow-card">
         <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
           <div className="flex items-center gap-1 rounded-md border border-line p-0.5">
             <Button
@@ -363,6 +386,26 @@ function LogsPane() {
           </div>
           {view !== 'claims' && (
             <>
+              {/* 排障预设（P2-15）：最常问的两句话「今天哪里失败了」「这周有什么异常」
+                  以前要手动改视图 + 级别 + 时间窗三处，这里一键到位。 */}
+              <span className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => applyPreset('today-fail')}
+                  title="全部日志 + 只看 error + 今天"
+                >
+                  今天失败
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => applyPreset('week-alert')}
+                  title="异常视图（warn 及以上）+ 近 7 天"
+                >
+                  近 7 天异常
+                </Button>
+              </span>
               {view !== 'alert' && (
                 <Select
                   value={minLevel ?? ''}
@@ -594,7 +637,7 @@ function LogsPane() {
       {/* 日志列表：页面上唯一会滚动的区域；「滚到底部」跟的是它 */}
       <div
         ref={listRef}
-        className="min-h-0 flex-1 overflow-auto rounded-lg border border-line bg-card"
+        className="min-h-0 flex-1 overflow-auto rounded-lg border border-line bg-card shadow-card"
         onScroll={() => {
           const el = listRef.current;
           if (el) nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;

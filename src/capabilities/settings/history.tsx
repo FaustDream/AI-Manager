@@ -12,7 +12,7 @@ import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { fmtSize, fmtTime } from '@/lib/format';
-import { CHANGELOG } from '@/lib/changelog';
+import { CHANGELOG, releaseHighlights } from '@/lib/changelog';
 import type { ConfigSnapshot, UpdateInfo } from '@/lib/types';
 
 /** 配置值是 JSON 时格式化，否则原样——历史里也可能存的是纯字符串。 */
@@ -81,7 +81,7 @@ export function HistoryPane() {
   return (
     <div className="flex min-w-0 flex-col gap-3">
       {/* 摘要行：详情（查看/回滚逐条）收进对话框，设置页不再被长列表撑高 */}
-      <div className="rounded-lg border border-line bg-card p-4">
+      <div className="rounded-lg border border-line bg-card shadow-card p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold">配置历史</h2>
           <span className="text-xs text-muted">
@@ -162,7 +162,7 @@ export function HistoryPane() {
 
       {/* 与「配置历史」「回收站」同构：p-4 + 单行摘要，不额外加 mb，
           这样三张卡在设置页里的高度完全一致；更新结果也收进同一行。 */}
-      <div className="rounded-lg border border-line bg-card p-4">
+      <div className="rounded-lg border border-line bg-card shadow-card p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold">关于与更新</h2>
           {update &&
@@ -204,6 +204,25 @@ export function HistoryPane() {
             导出诊断包
           </Button>
         </div>
+
+        {/* 检查出新版就把版本号与要点摘要直接摆出来（P1-6）：
+            以前只有一个「检测到可用更新」的标签，要点还得再点一次「更新说明」。 */}
+        {update?.has_update && (
+          <div className="mt-2 text-xs leading-relaxed">
+            <span className="text-muted">当前 {update.current} → 最新 </span>
+            <span className="font-semibold text-fg">{update.latest}</span>
+            {update.published_at && (
+              <span className="text-muted"> · 发布于 {update.published_at.slice(0, 10)}</span>
+            )}
+            {releaseHighlights(update.notes).length > 0 && (
+              <ul className="mt-1 list-disc pl-5 text-muted">
+                {releaseHighlights(update.notes).map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {bundlePath && (
           <div className="mt-2 flex items-center gap-2 text-xs">

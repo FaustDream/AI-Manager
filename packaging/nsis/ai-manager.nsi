@@ -19,7 +19,7 @@
 Unicode true
 
 !define PRODUCT_NAME "AI Manager"
-!define PRODUCT_VERSION "2.0.27"
+!define PRODUCT_VERSION "2.0.29"
 !define PRODUCT_PUBLISHER "FaustDream"
 !define PRODUCT_EXE "ai-manager.exe"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\AI Manager"

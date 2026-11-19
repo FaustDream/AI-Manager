@@ -109,9 +109,13 @@ function expiringAlertDue(): boolean {
 }
 
 /**
- * 挂在 Shell 上的通知订阅：签到轮询完成 / 账号登录结果 / ZCode 领取，
- * 外加启动时一次凭据临期体检（数据源 = system_health 的 accounts.expiring）。
+ * 挂在 Shell 上的通知订阅：签到轮询 / 活动轮询 / 账号登录结果 / ZCode 领取 /
+ * 领取入账，外加启动时一次凭据临期体检（数据源 = system_health 的 accounts.expiring）。
  * 未启用时订阅照常建立但 notify 静默跳过——开关随时打开随时生效，不用重挂。
+ *
+ * 刻意不通知的事件：`credits:round` 每 5 分钟一轮且载荷只有账号数（拿不到失败数，
+ * 全绿也弹就是纯噪音）、`log:line` 逐行推、`session:scan` 与 `accounts:scanned`
+ * 是后台同步完成信号，用户没有要做的动作。
  */
 export function useDesktopNotifications(): void {
   useEffect(() => {
@@ -142,6 +146,22 @@ export function useDesktopNotifications(): void {
       listen<string>('zcode:claim', (e) => {
         if (!document.hidden) return;
         notify('ZCode 自动领取', e.payload, 'zcode-claim');
+      }),
+    );
+    // 活动轮询（猫猫旅行 / 每日问候）：与签到同一档，后台跑完给一条汇总。
+    track(
+      listen<string>('activity:round', (e) => {
+        if (!document.hidden) return;
+        notify('活动轮询完成', e.payload, 'activity-round');
+      }),
+    );
+    // 领取入账：三条路径（签到 / ZCode / 旅行）写台账成功后都会推。
+    // 一轮可能连推多条，统一用同一个 tag —— 后一条顶掉前一条，不刷屏；
+    // 正文不带账号 iid（那是内部标识），只告诉用户去哪儿看。
+    track(
+      listen<string>('claim:recorded', () => {
+        if (!document.hidden) return;
+        notify('有新的领取入账', '去账号中心 → 点开账号详情，可看领取台账', 'claim-recorded');
       }),
     );
 

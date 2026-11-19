@@ -102,3 +102,25 @@ export function usePersistedSet(key: string): [Set<string>, (next: Set<string>) 
   );
   return [value, update];
 }
+
+/**
+ * 界面字号档位（总纲 P1-13）。纯显示偏好，落 localStorage 而非 config.toml——
+ * 后者是业务配置唯一真源，字号跟机器/浏览器走更合理。
+ */
+export type FontChoice = 'standard' | 'large';
+export const FONT_CHOICES: readonly FontChoice[] = ['standard', 'large'];
+export const FONT_KEY = 'font';
+
+/** 读档位：缺失、被策略禁用、旧版本脏值一律回退「标准」。 */
+export function loadFontChoice(): FontChoice {
+  return parseChoice(store()?.getItem(PREFIX + FONT_KEY) ?? null, 'standard', FONT_CHOICES);
+}
+
+/** 写档位：写不进去也返回 true 语义由调用方决定——这里只保证不抛错。 */
+export function saveFontChoice(choice: FontChoice): void {
+  try {
+    store()?.setItem(PREFIX + FONT_KEY, choice);
+  } catch {
+    /* 隐私模式：只在本次会话生效 */
+  }
+}

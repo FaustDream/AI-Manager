@@ -68,17 +68,27 @@ export function AccountToolbar({
       <Button variant="primary" onClick={onAdd} disabled={!!busy}>
         添加账号
       </Button>
-      <Button onClick={onRefresh} loading={busy === 'credits'} disabled={!!busy}>
+      {/* 四个动作各挂一枚语义角标（P0-5）：光看「刷新积分 / 刷新账号状态 / 刷新凭据」
+          三个「刷新」分不出刷的是什么，语义以前只藏在 title 里，不悬停就看不到。
+          角标常驻且**不随加载态变化**，按钮宽度因此稳定。 */}
+      <Button
+        onClick={onRefresh}
+        loading={busy === 'credits'}
+        disabled={!!busy}
+        title="调平台接口重查余额与配额（会联网）"
+      >
         {busy === 'credits' ? '刷新中…' : '刷新积分'}
+        <ActionTag>平台余额</ActionTag>
       </Button>
       {/* 与「刷新积分」的区别：积分刷的是平台余额，这里刷的是**本地库与客户端登录态** */}
       <Button
         onClick={onRefreshState}
         loading={busy === 'refresh-state'}
         disabled={!!busy}
-        title="重扫客户端登录态，并用凭据包校正各账号的到期时间与「当前登录」标记"
+        title="重扫客户端登录态，并用凭据包校正各账号的到期时间与「当前登录」标记（不查平台余额）"
       >
         {busy === 'refresh-state' ? '刷新中…' : '刷新账号状态'}
+        <ActionTag>本机状态</ActionTag>
       </Button>
       {/* 与「刷新账号状态」的区别：那个是全量重扫；这个针对当前筛选的一批账号，
           逐个给出「更新了 / 已是最新 / 需重新授权」的结论，且**不会因为未过期就跳过** */}
@@ -89,12 +99,29 @@ export function AccountToolbar({
         title="对当前筛选的账号逐个重扫客户端，把最新凭据与有效期写回本地库（不管是否过期都会刷）"
       >
         {busy === 'refresh-credentials' ? '刷新中…' : '刷新凭据'}
+        <ActionTag>登录授权</ActionTag>
       </Button>
-      <Button onClick={onCheckin} loading={busy === 'checkin'} disabled={!!busy}>
+      <Button
+        onClick={onCheckin}
+        loading={busy === 'checkin'}
+        disabled={!!busy}
+        title="对当前筛选的账号逐个执行今日签到（会调平台签到接口）"
+      >
         {busy === 'checkin' ? '签到中…' : '批量签到'}
+        <ActionTag>今日签到</ActionTag>
       </Button>
     </div>
   );
+}
+
+/**
+ * 动作语义角标：一句话说清「这个动作作用于什么」。
+ *
+ * 不做成 Tag 组件：它不是状态、不可点、也不该抢主文案的视觉重量，
+ * 就是一段更小的弱化文字。加载中也不变，按钮宽度才锁得住。
+ */
+function ActionTag({ children }: { children: string }) {
+  return <span className="text-xs font-normal text-muted">{children}</span>;
 }
 
 /** 弹窗状态：正在取链接 → 等浏览器授权 / 启动客户端 → 已就绪 → 失败。
@@ -134,6 +161,8 @@ export function AddAccountDialog({
   const [adding, setAdding] = useState(false);
   const [cookieError, setCookieError] = useState('');
   const [browserStatus, setBrowserStatus] = useState<BrowserLoginStatus | null>(null);
+  // 授权页是否被打开过：只用于失败归因，不参与渲染，所以用 ref（监听器读它不会有旧值）
+  const openedRef = useRef(false);
 
   // 打开弹窗、或换平台，就立刻要一条新的登录链接——用户不需要再点一次「登录」
   const loadLink = useCallback(async () => {
@@ -148,6 +177,7 @@ export function AddAccountDialog({
     setStage('working');
     setError('');
     setLoginUrl('');
+    openedRef.current = false; // 换了平台就是新一条链接，归因从零开始算
     try {
       const info = await queryCmd('account_login_start', { platform });
       setLoginUrl(info.url);
@@ -196,7 +226,16 @@ export function AddAccountDialog({
         onScanned();
         onClose();
       } else {
-        setError(e.payload.message);
+        // 超时归因（P0-4）：同一个「等待超时」有两种完全不同的原因，
+        // 用「授权页到底打开过没有」把它们分开——否则用户只能对着超时干瞪眼。
+        // 读 ref 而不是 state：监听器只订阅一次，闭包里的 state 会是旧值。
+        setError(
+          e.payload.message +
+            '\n' +
+            (openedRef.current
+              ? '授权页已打开过：回到那个浏览器窗口完成登录，再点「重新打开登录页」重试。'
+              : '授权页从未打开：先确认默认浏览器能正常打开网页，国际版平台还要确认系统代理已开。'),
+        );
         setStage('failed');
       }
     });
@@ -500,7 +539,9 @@ export function AddAccountDialog({
           </p>
         )}
 
-        {stage === 'waiting' && <LoginLink url={loginUrl} />}
+        {stage === 'waiting' && (
+          <LoginLink url={loginUrl} onOpened={() => (openedRef.current = true)} />
+        )}
 
         {stage === 'failed' && (
           <p className="whitespace-pre-wrap rounded-md border border-line border-l-[3px] border-l-bad bg-card px-3 py-2 text-sm text-fg2">
@@ -552,7 +593,16 @@ async function openLoginPage(url: string): Promise<string | null> {
  *
  * `autoOpen` 只给「重新授权」用：用户的意图就是去登录，不该再让他在对话框里找按钮。
  */
-function LoginLink({ url, autoOpen = false }: { url: string; autoOpen?: boolean }) {
+function LoginLink({
+  url,
+  autoOpen = false,
+  onOpened,
+}: {
+  url: string;
+  autoOpen?: boolean;
+  /** 授权页真的被打开过一次：调用方据此给超时归因（P0-4） */
+  onOpened?: () => void;
+}) {
   // 复制反馈：剪贴板写入没有任何系统提示，按钮自己「已复制」一秒半才算闭环
   const [copied, setCopied] = useState(false);
   // 已用哪个浏览器打开过；null = 还没打开
@@ -571,6 +621,7 @@ function LoginLink({ url, autoOpen = false }: { url: string; autoOpen?: boolean 
   const open = async () => {
     const browser = await openLoginPage(url);
     setOpened(browser ?? '默认浏览器');
+    onOpened?.();
   };
 
   useEffect(() => {
@@ -610,10 +661,23 @@ function LoginLink({ url, autoOpen = false }: { url: string; autoOpen?: boolean 
           {copied ? '已复制' : '复制链接'}
         </Button>
       </div>
-      {opened && (
-        <p className="text-xs text-muted">
+      {opened ? (
+        <p className="text-xs leading-relaxed text-muted">
           已在 <span className="text-fg">{opened}</span>{' '}
           的无痕窗口打开。那边没有你平时的登录状态，登进去的一定是当场输入的这个账号。
+          <span className="mt-1 block text-fg2">
+            请在那个页面完成登录授权，完成后这里会自动识别并关闭，不用回来点任何按钮。
+          </span>
+        </p>
+      ) : (
+        // 没打开过授权页 = 超时的高发原因（默认浏览器异常 / 代理没开）。
+        // 与「打开了但没登完」分开说，用户才知道该去修浏览器还是回去登录（P0-4）。
+        <p className="text-xs leading-relaxed text-muted">
+          点上面的按钮打开登录页，在页面里完成登录授权；
+          <span className="text-fg2">完成后这里会自动识别并关闭，不用回来点任何按钮。</span>
+          <span className="mt-1 block">
+            页面打不开或一直转圈：先检查默认浏览器是否正常、国际版平台还要确认系统代理已开。
+          </span>
         </p>
       )}
     </div>

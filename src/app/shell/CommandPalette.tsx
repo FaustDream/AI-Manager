@@ -29,6 +29,7 @@ export function CommandPalette({ items, placeholder }: { items: PaletteItem[]; p
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const filtered = useMemo(
     () => items.filter((item) => matches(`${item.title} ${item.hint ?? ''} ${item.group}`, query)),
@@ -51,8 +52,19 @@ export function CommandPalette({ items, placeholder }: { items: PaletteItem[]; p
         setOpen(false);
       }
     };
+    // 顶栏「搜索 ⌘K」按钮走这个事件（P1-12）：面板自己管开合，
+    // 壳层不必把 open 提升成受控状态——与 aim:navigate 同一套约定。
+    const onOpen = () => {
+      setOpen(true);
+      setQuery('');
+      setIndex(0);
+    };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('aim:palette', onOpen);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('aim:palette', onOpen);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -63,6 +75,12 @@ export function CommandPalette({ items, placeholder }: { items: PaletteItem[]; p
     setIndex(0);
   }, [query]);
 
+  // 方向键走到视口外的条目要跟着滚，否则「选中了但看不见」
+  useEffect(() => {
+    if (!open) return;
+    listRef.current?.querySelector<HTMLElement>(`[data-index="${index}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [index, open]);
+
   if (!open) return null;
 
   const runAt = (position: number) => {
@@ -72,20 +90,30 @@ export function CommandPalette({ items, placeholder }: { items: PaletteItem[]; p
     item.run();
   };
 
+  const optionId = (position: number) => `aim-palette-opt-${position}`;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-[12vh]"
       onClick={() => setOpen(false)}
     >
       <div
-        className="w-[min(560px,92vw)] overflow-hidden rounded-lg border border-line bg-card shadow-xl"
+        className="w-[min(560px,92vw)] overflow-hidden rounded-lg border border-line bg-card shadow-card-hover"
         onClick={(event) => event.stopPropagation()}
       >
         <input
           ref={inputRef}
           value={query}
           placeholder={placeholder ?? '搜索页面或动作…（Esc 关闭）'}
-          className="w-full border-b border-line bg-transparent px-3 py-2.5 text-sm outline-none"
+          className="w-full border-b border-line bg-transparent px-3 py-2.5 text-sm outline-none focus-visible:outline-none"
+          // combobox 语义（P2-18）：读屏据此报「组合框，已展开，当前第 N 项」。
+          // 键盘逻辑完全复用原来那套，只是把状态说出来。
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="aim-palette-list"
+          aria-autocomplete="list"
+          aria-activedescendant={filtered.length > 0 ? optionId(index) : undefined}
+          aria-label="搜索页面、动作与会话"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'ArrowDown') {
@@ -100,13 +128,25 @@ export function CommandPalette({ items, placeholder }: { items: PaletteItem[]; p
             }
           }}
         />
-        <div className="max-h-[52vh] overflow-auto py-1">
+        <div
+          ref={listRef}
+          id="aim-palette-list"
+          role="listbox"
+          aria-label="搜索结果"
+          className="max-h-[52vh] overflow-auto py-1"
+        >
           {filtered.length === 0 && (
             <p className="px-3 py-4 text-center text-xs text-muted">没有匹配的页面或动作。</p>
           )}
           {filtered.map((item, position) => (
             <button
               key={item.id}
+              id={optionId(position)}
+              data-index={position}
+              role="option"
+              aria-selected={position === index}
+              // 焦点始终留在输入框（combobox 模式），条目本身不进 Tab 序列
+              tabIndex={-1}
               className={cn(
                 'flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm',
                 position === index ? 'bg-hover' : 'hover:bg-hover',

@@ -27,7 +27,7 @@ describe('errMsg', () => {
   });
 
   it('未登记 kind 只报 message，不加废话', () => {
-    expect(errMsg(appError('io', '磁盘满了'))).toBe('磁盘满了');
+    expect(errMsg(appError('cancelled', '用户取消'))).toBe('用户取消');
   });
 
   it('调用方可以覆盖指引（按动作定制话术）', () => {
@@ -39,6 +39,45 @@ describe('errMsg', () => {
   it('kind 解析失败时退回纯 message', () => {
     expect(errMsg('不是 AppError')).toBe('不是 AppError');
     expect(errKind('不是 AppError')).toBeNull();
+  });
+});
+
+// P0-1：国际版在未开系统代理时必然超时，而浏览器能上网——用户会认定「软件坏了」。
+// io 是最杂的一类错误（超时 / 磁盘满 / 权限），必须按原文分流，不能一律劝人开代理。
+describe('errMsg 的网络与本机指引', () => {
+  it('io 里的超时类原文指向系统代理与网络自检', () => {
+    for (const message of ['请求超时', 'operation timed out', '连接被拒绝', 'dns error']) {
+      const text = errMsg(appError('io', message));
+      expect(text.startsWith(message)).toBe(true);
+      expect(text).toContain('代理');
+      expect(text).toContain('自检');
+    }
+  });
+
+  it('io 里的磁盘/权限类原文不劝人开代理', () => {
+    const text = errMsg(appError('io', '磁盘满了'));
+    expect(text).toContain('磁盘');
+    expect(text).not.toContain('代理');
+  });
+
+  it('调用方给的 io 指引优先于内置分流', () => {
+    expect(errMsg(appError('io', '请求超时'), { io: '先看客户端是否还开着' })).toBe(
+      '请求超时\n先看客户端是否还开着',
+    );
+  });
+
+  it('凭据与档案类错误各自指向下一步', () => {
+    expect(errMsg(appError('auth_expired', '登录态过期'))).toContain('重新登录');
+    expect(errMsg(appError('session_state_missing', '没有档案'))).toContain('登录一次');
+    expect(errMsg(appError('profile_mismatch', '档案不匹配'))).toContain('重新登录');
+    expect(errMsg(appError('crypto', '解密失败'))).toContain('Windows');
+    expect(errMsg(appError('crypto', '解密失败'))).toContain('当前用户');
+  });
+
+  it('平台限制与写盘失败不甩锅给网络', () => {
+    expect(errMsg(appError('unsupported', '不支持'))).toContain('平台');
+    expect(errMsg(appError('write_failed', '写不进去'))).toContain('磁盘');
+    expect(errMsg(appError('provider', '接口异常'))).toContain('刷新凭据');
   });
 });
 
@@ -106,6 +145,29 @@ describe('命令面传输', () => {
   it('runCmd 同样走 HTTP /cmd，成功值不被吞', async () => {
     stubHttp(11);
     await expect(runCmd('account_list')).resolves.toBe(11);
+    vi.unstubAllGlobals();
+  });
+
+  // P0-2：toast 正文只给人话 + 下一步，kind / 参数 / 原文这类排障字段折进「详情」。
+  // 新手读得懂第一行，专业用户点开还能拿到全部证据（日志里同样留全量）。
+  it('失败 toast 正文不含排障字段，证据放进 detail', async () => {
+    const { useToasts } = await import('@/components/ui/toast');
+    useToasts.setState({ items: [] });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ ok: false, error: appError('io', '请求超时') }), {
+          status: 200,
+        }),
+      ),
+    );
+    await expect(runCmd('account_scan')).resolves.toBeUndefined();
+    const [item] = useToasts.getState().items;
+    expect(item.text).toContain('请求超时');
+    expect(item.text).not.toContain('kind=');
+    expect(item.text).not.toContain('原文=');
+    expect(item.detail).toContain('kind=io');
+    expect(item.detail).toContain('原文=请求超时');
     vi.unstubAllGlobals();
   });
 });

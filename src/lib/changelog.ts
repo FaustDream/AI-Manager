@@ -56,3 +56,26 @@ export function parseChangelog(text: string): ChangeEntry[] {
 }
 
 export const CHANGELOG: ChangeEntry[] = parseChangelog(raw);
+
+/** 摘要里不放的行：下载产物、安装指引这类不是「这版改了什么」。 */
+const NOT_A_CHANGE = /^(下载|安装|产物|校验|sha256|full changelog)/i;
+
+/**
+ * 从 GitHub 发布说明里挑最多 3 条改动要点（P1-6）。
+ *
+ * 发布说明是整段 Markdown（可能含多个版本分组与下载清单），直接铺进卡片会把
+ * 「关于与更新」撑得比其它卡高一大截；这里只取前几条要点，全文仍走「更新说明」弹窗。
+ */
+export function releaseHighlights(notes: string, max = 3): string[] {
+  const out: string[] = [];
+  for (const line of notes.split(/\r?\n/)) {
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (!bullet) continue;
+    // 去掉 Markdown 强调与行内代码标记，摘要里不需要这些符号
+    const text = bullet[1].replace(/\*\*|__|`/g, '').trim();
+    if (!text || NOT_A_CHANGE.test(text)) continue;
+    out.push(text);
+    if (out.length >= max) break;
+  }
+  return out;
+}

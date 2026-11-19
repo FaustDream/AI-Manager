@@ -284,7 +284,7 @@ export function DetailPanel({
   const quotaLeft = tightest === null ? null : Math.max(0, 100 - tightest);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-line bg-card">
+    <div className="overflow-hidden rounded-lg border border-line bg-card shadow-card">
       {/* 头部：只留身份与主操作。改名/备注/凭据动作归属「账号信息」卡，
           CodeBuddy 切换归属它的状态行——动作放在它操作的东西旁边（dashboard-design：
           the action one click away），标题行不再堆八个按钮 */}

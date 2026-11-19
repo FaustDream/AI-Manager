@@ -10,12 +10,12 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { errText } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Input, Select, SkeletonRows } from '@/components/ui/form';
 import { Notice, Tag } from '@/components/ui';
-import { DataTable } from '@/components/ui/table';
+import { DataTable, type RowActivateEvent } from '@/components/ui/table';
 import { toast } from '@/components/ui/toast';
 import { usePersistedChoice, usePersistedSet } from '@/lib/ui-state';
 import { onFocusSession, takePreset } from '@/lib/nav';
@@ -193,7 +193,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
 
   // 行点击：Ctrl / Cmd + 点击 = 切换该行选中（多选），普通点击 = 打开预览。
   // 两种交互共用一个选择集：全选后再 Ctrl 点掉某行就是「减选」。
-  const rowClick = (row: SessionRow, event: MouseEvent<HTMLTableRowElement>) => {
+  const rowClick = (row: SessionRow, event: RowActivateEvent) => {
     if (event.ctrlKey || event.metaKey) {
       toggle(checked, setChecked, rowKey(row));
       return;
@@ -513,7 +513,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
     (filter.tags?.length ?? 0) > 0;
 
   return (
-    <div className="flex h-[calc(100vh-118px)] flex-col gap-3 overflow-auto">
+    <div className="stagger flex h-[calc(100vh-118px)] flex-col gap-3 overflow-auto">
       <div className={selected ? 'flex min-h-0 flex-1 flex-col gap-3 lg:flex-row' : 'flex flex-col gap-3'}>
         {/* ---------------------------------------------------------- 列表区 */}
         <section className={selected ? 'flex min-h-0 min-w-0 flex-1 flex-col gap-2' : 'flex min-h-0 flex-col gap-2'}>
@@ -847,6 +847,19 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
             )}
           </div>
 
+          {/* 删除门槛与回收站边界（P1-4）：以前只写在按钮 title 里，不悬停看不到，
+              用户会以为「彻底删除」也能像账号那样从回收站找回。 */}
+          {!filter.hidden && (
+            <p className="text-xs leading-relaxed text-muted">
+              {archived
+                ? '已归档会话可直接彻底删除；想让它回到活跃列表，用「取消归档」。'
+                : '「可见」会话要先归档才能彻底删除——这道门槛是防误删。'}
+              彻底删除会从对应客户端真正删掉数据，
+              <span className="text-bad">不进回收站、无法恢复</span>
+              （回收站只管账号）；只想让它从列表消失，用「隐藏」。
+            </p>
+          )}
+
           <div className="min-h-[140px] flex-1 overflow-auto">
             {listQuery.isLoading ? (
               // 骨架行必须待在 <tbody> 里：直接塞进 div 会被浏览器搬出表格
@@ -906,6 +919,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                   ),
                 }}
                 onRowClick={rowClick}
+                selectedKey={selected}
                 onRowContextMenu={(row, event) => {
                   event.preventDefault();
                   // 右键未选中的行：把选中集换成这一行，动作语义直观
@@ -952,6 +966,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                         ),
                       }}
                       onRowClick={rowClick}
+                      selectedKey={selected}
                       onRowContextMenu={(row, event) => {
                         event.preventDefault();
                         if (!checked.has(rowKey(row))) {
@@ -978,7 +993,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
         {/* ---------------------------------------------------------- 详情分栏 */}
         {/* 宽屏挂在列表右侧（42%），窄屏回落到列表下方——同一块 DOM，断点切换 */}
         {selected && (
-          <aside className="max-h-[40%] w-full flex-none overflow-auto rounded-lg border border-line bg-card p-3 lg:max-h-none lg:w-[42%] lg:max-w-[560px]">
+          <aside className="max-h-[40%] w-full flex-none overflow-auto rounded-lg border border-line bg-card shadow-card p-3 lg:max-h-none lg:w-[42%] lg:max-w-[560px]">
             {preview.isLoading && (
               <div className="space-y-2 py-3">
                 {[0, 1, 2].map((i) => (
@@ -997,6 +1012,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                     size="sm"
                     variant="ghost"
                     title="关闭预览"
+                    aria-label="关闭预览"
                     onClick={() => setSelected(null)}
                   >
                     ×
@@ -1081,13 +1097,15 @@ function FilterChip({
   return (
     <button
       type="button"
-      className={`rounded-md px-2 py-1 text-sm ${
+      className={`cursor-pointer rounded-md px-2 py-1 text-sm ${
         active
           ? 'bg-accent font-medium text-on-accent'
           : 'border border-line text-muted hover:bg-hover hover:text-fg'
       }`}
       onClick={onClick}
       title={title}
+      // 选中态不能只靠底色表达（P2-10）：读屏靠 aria-pressed，视觉上还有字重差
+      aria-pressed={active}
     >
       {label}
     </button>

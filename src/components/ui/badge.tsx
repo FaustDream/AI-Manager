@@ -31,7 +31,11 @@ export function Tag({
 }
 
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('rounded-lg border border-line bg-card p-4', className)} {...props} />;
+  // 区块卡片的唯一外观：圆角 + hairline + card 底 + 一档阴影。
+  // 阴影两档（静置 / 悬浮）由 index.css 令牌给值，深浅主题各自覆盖。
+  return (
+    <div className={cn('rounded-lg border border-line bg-card p-4 shadow-card', className)} {...props} />
+  );
 }
 
 export function Notice({

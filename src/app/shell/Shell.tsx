@@ -14,6 +14,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   Users, MessagesSquare, Blocks, Settings, RefreshCw, ScrollText, LayoutDashboard, Network,
+  Search, ArrowLeft,
 } from 'lucide-react';
 import { MotionConfig, motion } from 'motion/react';
 import { capabilities } from '@/app/router';
@@ -28,7 +29,7 @@ import { useDesktopNotifications } from '@/lib/notify';
 import { focusSession } from '@/lib/nav';
 import type { Filter, Page, SessionRow } from '@/lib/types';
 import { hideSplash } from '@/lib/splash';
-import { loadTheme } from '@/lib/theme';
+import { loadFont, loadTheme } from '@/lib/theme';
 import { Suspense } from 'react';
 import { StateBlock } from '@/components/ui/form';
 
@@ -65,9 +66,14 @@ export function Shell() {
   const [pending, startTransition] = useTransition();
   // 连点保护：只认最后一次点击，先到的回包不许把页面切回去
   const latest = useRef(active);
+  // 导航栈（P2-12）：跨页跳转（总览点数字 → 账号中心）之后能原路返回。
+  // 用 ref 存栈 + 一个布尔驱动按钮显隐：栈本身不参与渲染，没必要每次进栈都重渲染整壳。
+  const history = useRef<string[]>([]);
+  const [backTo, setBackTo] = useState<string | null>(null);
 
   useEffect(() => {
     void loadTheme();
+    loadFont(); // 同步落地：字号只读 localStorage，不用等后端
     // 挂载完成通知后端：IPC 通道正常（ui_ready 的意义见 Rust 侧注释）
     void runCmd('ui_ready');
   }, []);
@@ -101,7 +107,7 @@ export function Shell() {
    * 换页之前：模块没到位时旧页面原地不动，用户只会看到顶栏多了一条细线。
    */
   const go = useCallback(
-    (id: string) => {
+    (id: string, opts?: { back?: boolean }) => {
       latest.current = id;
       setActive(id);
       if (id === view) {
@@ -111,6 +117,13 @@ export function Shell() {
       }
       const cap = caps.find((c) => c.manifest.id === id);
       if (!cap) return;
+      // 前进才入栈；返回自己未消费掉的栈，否则「返回」会在两页之间来回弹
+      if (!opts?.back) {
+        history.current = [...history.current.slice(-19), view];
+        setBackTo(view);
+      } else {
+        setBackTo(history.current[history.current.length - 1] ?? null);
+      }
       setSwitching(true);
       void cap
         .load()
@@ -128,6 +141,13 @@ export function Shell() {
     [caps, view],
   );
 
+  /** 返回上一页：只弹栈，不再入栈。*/
+  const back = useCallback(() => {
+    const prev = history.current.pop();
+    if (prev) go(prev, { back: true });
+    else setBackTo(null);
+  }, [go]);
+
   // 能力页之间的轻量跳转：总览等页面只发事件，不必知道导航是怎么实现的。
   // 只在能力清单里存在的 id 生效，避免页面写错 id 时整页空白。
   useEffect(() => {
@@ -140,6 +160,24 @@ export function Shell() {
   }, [caps, go]);
 
   const current = caps.find((c) => c.manifest.id === view) ?? caps[0];
+
+  // 数字键 1…N 直达对应能力页。**只在没有输入焦点、且不带修饰键时生效**：
+  // 否则在搜索框里打「2」会跳页。不用 Alt+← 做返回——那是浏览器自己的后退，
+  // 抢过来会把整个应用退出去（浏览器形态的硬约束）。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      const el = document.activeElement;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement)?.isContentEditable) return;
+      const at = Number(event.key);
+      if (!Number.isInteger(at) || at < 1 || at > navCaps.length) return;
+      event.preventDefault();
+      go(navCaps[at - 1].manifest.id);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navCaps, go]);
 
   // 会话快搜（Ctrl+K）：最近的 30 条进面板，命中后跳会话页并打开预览。
   // 正文级搜索在会话页（FTS）；面板只做标题级的快速定位。
@@ -218,14 +256,16 @@ export function Shell() {
       <header className="relative flex items-center gap-2 border-b border-line px-5 py-2.5">
         {/* 窗口收到最小宽度时导航整体横向收拢滚动，按钮自身不压缩、文字不折行 */}
         <nav className="flex min-w-0 gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {navCaps.map((cap) => {
+          {navCaps.map((cap, at) => {
             const Icon = ICONS[cap.manifest.id] ?? Users;
             return (
               <button
                 key={cap.manifest.id}
-                className={`flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-sm whitespace-nowrap ${
+                className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-sm whitespace-nowrap ${
                   active === cap.manifest.id ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
                 }`}
+                title={`${cap.manifest.title}（快捷键 ${at + 1}）`}
+                aria-current={active === cap.manifest.id ? 'page' : undefined}
                 onClick={() => go(cap.manifest.id)}
               >
                 <Icon size={15} />
@@ -235,10 +275,36 @@ export function Shell() {
           })}
         </nav>
         <span className="flex-1" />
+        {/* 返回（P2-12）：只在真的走过跨页跳转后出现，标题里说清回到哪一页 */}
+        {backTo && (
+          <Button
+            size="sm"
+            variant="ghost"
+            title={`返回${caps.find((c) => c.manifest.id === backTo)?.manifest.title ?? '上一页'}`}
+            aria-label="返回上一页"
+            onClick={back}
+          >
+            <ArrowLeft size={14} />
+            返回
+          </Button>
+        )}
+        {/* 命令面板的显性入口（P1-12）：⌘K 以前是隐藏能力，界面上没有任何提示 */}
+        <Button
+          size="sm"
+          variant="ghost"
+          title="搜索页面 / 动作 / 会话（Ctrl+K）"
+          aria-label="打开搜索面板"
+          onClick={() => window.dispatchEvent(new CustomEvent('aim:palette'))}
+        >
+          <Search size={14} />
+          搜索
+          <kbd className="rounded-sm border border-line px-1 text-[10px] text-muted">Ctrl K</kbd>
+        </Button>
         <Button
           size="sm"
           variant="ghost"
           title="立即跑一轮每日轮询"
+          aria-label="立即跑一轮每日轮询"
           onClick={async () => {
             // 结果由事件桥 checkin:round 统一失效 ['accounts']，这里不猜完成时刻
             if ((await runCmd('daily_run_now')) !== undefined) toast('已开始跑一轮每日轮询');

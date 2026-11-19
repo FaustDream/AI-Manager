@@ -337,11 +337,33 @@ const KIND_HINT: Record<string, string> = {
   auth_expired: '登录态已失效，请在客户端重新登录后再扫描一次',
   rate_limited: '平台限流了，稍等几分钟再试；也可以在设置里调低签到并发',
   activity_closed: '平台活动暂未开放或已结束，过一段时间再试',
+  provider: '平台接口没按预期返回：先点「刷新凭据」，仍失败就在客户端重新登录该账号',
+  crypto: '本机凭据解密失败：Windows 加密绑定当前用户，换机器或换用户后需重新登录',
+  write_failed: '写入本机文件失败：检查磁盘空间与杀毒软件的实时扫描后重试',
+  session_state_missing: '该客户端还没有可读的登录态：在客户端里登录一次该账号，再扫描',
+  profile_mismatch: '登录态档案与当前账号不符：在客户端里重新登录一次该账号',
+  unsupported: '该平台不提供这个能力（平台限制，不是本工具漏做）',
 };
+
+/**
+ * io 是最杂的一类：超时、磁盘满、权限拒绝都归它。**不能一律劝人开代理**——
+ * 磁盘满了让人去开代理只会更迷惑。按原文分流成「网络」与「本机读写」两条路。
+ *
+ * 网络那条的措辞对齐总纲 P0-1：国际版域名直连必然超时，而浏览器能上网，
+ * 用户第一反应是「软件坏了」，所以要把「系统代理」这个真实原因直接说出来。
+ */
+const NET_WORDS = /超时|timeout|timed out|连接|connect|dns|代理|proxy|network| unreachable/i;
+function ioHint(message: string): string {
+  return NET_WORDS.test(message)
+    ? '若浏览器能上网而这里超时，多半是系统代理没开：设置 → 诊断与记录 → 运行自检，或按系统「Internet 选项」启用代理'
+    : '本机读写失败：检查磁盘空间、目录权限与杀毒软件的实时扫描后重试';
+}
 
 /** 错误话术：message 为主体，kind 有指引时补一行下一步。 */
 export function errMsg(e: unknown, hint?: Record<string, string>): string {
-  const guide = { ...KIND_HINT, ...hint }[errKind(e) ?? ''];
+  const kind = errKind(e) ?? '';
+  const overrides = { ...hint };
+  const guide = overrides[kind] ?? KIND_HINT[kind] ?? (kind === 'io' ? ioHint(errText(e)) : undefined);
   const text = errText(e);
   return guide ? `${text}\n${guide}` : text;
 }
@@ -658,13 +680,15 @@ export async function runCmd<K extends CmdName>(
   } catch (e) {
     // 关键动作进「执行动作」，其余至少进日志——两者都不记的话，
     // 用户点完只看到一句 toast，事后没有任何痕迹
+    const evidence = failureSummary(e, args);
     if (KEY_ACTIONS.has(cmd)) {
-      logAction(cmd, args, false, Math.round(performance.now() - started), failureSummary(e, args));
+      logAction(cmd, args, false, Math.round(performance.now() - started), evidence);
     } else {
       logUiFailure(cmd, e, args);
     }
+    // 正文给人话，证据折进「详情」（P0-2）：日志里仍是同一份全量，两边不会各说一套
     if (opts?.onError) opts.onError(e);
-    else toast(errMsg(e, opts?.hint));
+    else toast(errMsg(e, opts?.hint), undefined, evidence);
     return undefined;
   }
 }

@@ -14,7 +14,7 @@ import { COLUMNS, type Cell } from './columns';
 import { DetailPanel } from './detail';
 import { OPS_WIDTH, RestoreDialog, RowActions, SwitchDialog } from './actions';
 import { AddAccountDialog, AccountToolbar } from './toolbar';
-import { useRowDrag } from './use-row-drag';
+import { moveBy, useRowDrag } from './use-row-drag';
 
 /// 打开列表时补刷余额的陈旧阈值：超过它就当场刷一轮。
 /// 取 90 秒 —— 后台默认 5 分钟一跳，用户在两次轮询之间打开页面时，
@@ -174,6 +174,19 @@ export default function AccountCenterPage() {
   });
 
   const widthOf = (key: string, fallback: number) => widths[key] ?? fallback;
+
+  /** 键盘上移/下移（P2-11）：与拖拽同一条命令；到边界时 moveBy 给 null，不发请求。 */
+  const moveRow = async (iid: string, delta: number) => {
+    if (busy) return;
+    const iids = moveBy(
+      visible.map((r) => r.iid),
+      iid,
+      delta,
+    );
+    if (!iids) return;
+    if ((await runCmd('account_reorder', { iids })) === undefined) return;
+    qc.invalidateQueries({ queryKey: ['accounts'] });
+  };
 
   // 表格最小宽度 = 拖动列 + 各列实际宽度 + 操作列。跟着列宽/删列自动变，
   // 不再写死一个数字（写死了删掉一列就多出一截空白滚动区）。
@@ -424,7 +437,7 @@ export default function AccountCenterPage() {
   const table = useMemo(() => COLUMNS, []);
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="stagger flex flex-col gap-2.5">
       <AccountToolbar
         busy={busy}
         onAdd={() => setAddOpen(true)}
@@ -446,6 +459,7 @@ export default function AccountCenterPage() {
                 key={col.key}
                 className="relative select-none overflow-hidden whitespace-nowrap border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted"
                 style={{ width: widthOf(col.key, col.width) }}
+                title={col.headerTitle}
               >
                 {col.header}
                 <span
@@ -506,6 +520,17 @@ export default function AccountCenterPage() {
                 key={row.iid}
                 data-iid={row.iid}
                 onClick={() => setSelected(row.iid)}
+                // 账号表是自有实现（带拖拽/列宽），键盘可达性在这里自己补：
+                // 与 DataTable 同一套约定——Tab 停在行上，Enter 打开详情。
+                tabIndex={0}
+                role="row"
+                aria-selected={selected === row.iid}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setSelected(row.iid);
+                  }
+                }}
                 className={`cursor-pointer ${selected === row.iid ? 'bg-hover' : ''} ${
                   isDragging ? 'opacity-40' : ''
                 }`}
@@ -519,11 +544,24 @@ export default function AccountCenterPage() {
               >
                 <td
                   className="px-1 py-1.5 text-center text-muted select-none"
-                  style={{ cursor: 'grab', touchAction: 'none' }}
-                  onPointerDown={(e) => startDrag(e, row.iid)}
-                  title="拖动排序"
+                  style={{ touchAction: 'none' }}
                 >
-                  ⠿
+                  {/* 拖拽柄同时是键盘入口（P2-11）：Alt+↑/↓ 走同一个 account_reorder。
+                      不在操作列再加两个按钮——那会把刻意收窄过的操作列重新撑宽。 */}
+                  <button
+                    type="button"
+                    className="cursor-grab rounded-sm px-0.5 hover:text-fg"
+                    onPointerDown={(e) => startDrag(e, row.iid)}
+                    onKeyDown={(e) => {
+                      if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+                      e.preventDefault();
+                      void moveRow(row.iid, e.key === 'ArrowUp' ? -1 : 1);
+                    }}
+                    title="拖动排序；键盘：Alt+↑ 上移 / Alt+↓ 下移"
+                    aria-label={`调整「${row.name}」的顺序：拖动，或按 Alt+↑ / Alt+↓`}
+                  >
+                    ⠿
+                  </button>
                 </td>
                 {table.map((col) => (
                   <td
@@ -560,6 +598,14 @@ export default function AccountCenterPage() {
         </tbody>
       </table>
       </div>
+
+      {/* 排序的两条入口都写在这里：拖拽以前只有柄上的 title，不悬停就发现不了（P2-11） */}
+      {visible.length > 1 && (
+        <p className="text-xs text-muted">
+          排序：拖动最左侧的 ⠿ 手柄，或选中手柄后按 <span className="text-fg2">Alt+↑ / Alt+↓</span> 上下移一位；
+          表头右边缘可拖动调列宽、双击复位。
+        </p>
+      )}
 
       <DetailPanel
         account={selectedRow}

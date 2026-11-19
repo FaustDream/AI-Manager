@@ -70,7 +70,7 @@ function PaneCard({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-line bg-card p-3">
+    <div className="rounded-lg border border-line bg-card shadow-card p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">
           {title}
@@ -236,7 +236,7 @@ export default function HubPage() {
           ))}
         </div>
         <p className="skeleton-in text-xs text-muted">正在读取各软件的技能目录…</p>
-        <div className="rounded-lg border border-line bg-card p-3">
+        <div className="rounded-lg border border-line bg-card shadow-card p-3">
           <div className="mb-2 h-4 w-28 animate-pulse rounded bg-hover" />
           <table className="w-full border-collapse">
             <tbody>
@@ -289,7 +289,7 @@ export default function HubPage() {
   );
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="stagger flex flex-col gap-3">
       {/* 分发中心 = 分发库 + 本工具写过的 MCP；单个软件 = 该软件的技能副本与 MCP 配置 */}
       <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
         <button
@@ -318,6 +318,14 @@ export default function HubPage() {
 
       {tab === 'distribute' && (
         <>
+          {/* 概念图例（P1-5）：「我的技能在哪、发到哪」是这一页最常被问住的两件事，
+              三个词条各一句话摆在页首，不用去翻 README。 */}
+          <p className="text-xs leading-relaxed text-muted">
+            <span className="text-fg2">分发库</span> = 本工具维护、可部署到各软件的技能与 MCP（不是全部技能汇总）；
+            <span className="text-fg2"> 个人技能</span> = 你自己写或导入的；
+            <span className="text-fg2"> 收录技能</span> = 从官方仓库收进来的。
+            部署 = 把库里的一份复制到所选软件，之后各软件独立更新。
+          </p>
           {conflicts.length > 0 && (
             <Notice tone="warn">
               {conflicts.length} 个技能的平台副本与库不一致（启动自动同步会在下次启动时刷新已部署的平台）。
@@ -360,9 +368,10 @@ export default function HubPage() {
               hint="个人技能与收录来的官方技能 · 本工具维护并分发"
               actions={
                 <span className="flex items-center gap-3 text-xs text-muted">
+                  {/* 形状 + 颜色双通道（P2-10）：色觉障碍与灰度打印下也能分清三种状态 */}
                   <span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-ok" />最新</span>
-                  <span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-warn" />待更新</span>
-                  <span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-line-strong" />未部署</span>
+                  <span className="flex items-center gap-1"><i className="h-2 w-2 rotate-45 bg-warn" />待更新</span>
+                  <span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full border border-line-strong" />未部署</span>
                 </span>
               }
             >
@@ -424,14 +433,15 @@ export default function HubPage() {
                           return (
                             <span key={t.key} className="flex justify-center">
                               <button
-                                className={`h-2.5 w-2.5 cursor-pointer rounded-full transition-transform hover:scale-125 ${
+                                className={`h-2.5 w-2.5 cursor-pointer transition-transform hover:scale-125 ${
                                   state === 'synced'
-                                    ? 'bg-ok'
+                                    ? 'rounded-full bg-ok'
                                     : state === 'stale'
-                                      ? 'bg-warn ring-2 ring-warn/30'
-                                      : 'bg-line-strong'
+                                      ? 'rotate-45 bg-warn'
+                                      : 'rounded-full border border-line-strong bg-transparent'
                                 }`}
                                 title={`${t.label}：${STATE_LABEL[state] ?? state}`}
+                                aria-label={`${skill.name} 在 ${t.label}：${STATE_LABEL[state] ?? state}，点击去该软件页`}
                                 onClick={() => setTab(t.key)}
                               />
                             </span>
@@ -539,7 +549,7 @@ export default function HubPage() {
 
       {activeTarget && (
         <>
-          <div className="rounded-lg border border-line bg-card p-3 text-sm">
+          <div className="rounded-lg border border-line bg-card shadow-card p-3 text-sm">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <span className="font-semibold">{activeTarget.label}</span>
               <span className="text-xs text-muted">

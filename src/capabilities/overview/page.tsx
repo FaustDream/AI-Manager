@@ -11,6 +11,7 @@ import { Input, StateBlock } from '@/components/ui/form';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { fmtAmount, fmtTime } from '@/lib/format';
 import { errText } from '@/lib/ipc';
+import { usePersistedFlag } from '@/lib/ui-state';
 import { CreditFlowChart } from '@/components/credit-flow';
 import { CreditPlatformSplit } from '@/components/credit-platforms';
 import { CreditTrend } from '@/components/credit-trend';
@@ -175,6 +176,7 @@ export default function OverviewPage() {
 
   const autoRefreshing = useRef(false);
   const lastAutoTry = useRef(0);
+  const [trustDismissed, setTrustDismissed] = usePersistedFlag('trust-note-dismissed', false);
 
   // 积分不是实时接口：超过 10 分钟就自动刷一轮，否则「已用掉的积分」会一直挂在告警里
   useEffect(() => {
@@ -218,8 +220,30 @@ export default function OverviewPage() {
         )}
       </div>
 
+      {/* 首启安全信任说明（P1-2）：浏览器形态下用户第一反应是「我的账号是不是被传到网上了」，
+          这里一次讲清边界，点「知道了」后不再出现（纯显示偏好，落 localStorage）。 */}
+      {!trustDismissed && (
+        <div className="flex items-start gap-2 rounded-lg border border-line bg-card shadow-card px-3 py-2">
+          <p className="text-xs leading-relaxed text-muted">
+            <span className="font-medium text-fg">只在本机运行。</span>
+            服务只绑 127.0.0.1，局域网与公网都访问不到；账号凭据经 Windows DPAPI 加密后存在
+            <span className="font-mono text-fg2"> data\ </span>
+            目录，不上传任何服务器。联网只发生在你点刷新/签到，或后台定时任务向对应平台发请求时。
+          </p>
+          <span className="flex-1" />
+          <button
+            type="button"
+            className="shrink-0 cursor-pointer rounded-sm text-xs text-muted hover:text-fg"
+            onClick={() => setTrustDismissed(true)}
+            aria-label="不再显示这条安全说明"
+          >
+            知道了
+          </button>
+        </div>
+      )}
+
       {health.isError && (
-        <div className="rounded-lg border border-line bg-card">
+        <div className="rounded-lg border border-line bg-card shadow-card">
           <StateBlock
             kind="error"
             title="读健康报告失败"

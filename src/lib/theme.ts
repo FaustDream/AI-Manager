@@ -1,6 +1,10 @@
 // 主题：跟随系统 / 浅 / 深 / 经典浅 / 经典深。选择持久化在 kv（键 ui.theme，与 v1 一致）。
 // 全部颜色走 index.css 的令牌表，每种主题定义同一套键——换肤只换值不换结构。
+//
+// 字号档位也在这里落到 documentElement（同一件事：把外观偏好写成根属性），
+// 但**存储位置不同**：主题是 kv，字号是 localStorage（纯显示偏好，见 ui-state.ts）。
 import { queryCmd } from '@/lib/cmd';
+import { loadFontChoice, saveFontChoice, type FontChoice } from '@/lib/ui-state';
 
 export type ThemeChoice = '' | 'light' | 'dark' | 'classic-light' | 'classic-dark';
 
@@ -11,6 +15,25 @@ export function applyTheme(choice: ThemeChoice): void {
   } else {
     root.removeAttribute('data-theme');
   }
+}
+
+/** 字号：标准档不设属性（用 @theme 默认值），大档覆盖 --text-* 四个令牌。 */
+export function applyFont(choice: FontChoice): void {
+  const root = document.documentElement;
+  if (choice === 'large') root.setAttribute('data-font', 'large');
+  else root.removeAttribute('data-font');
+}
+
+/** 启动时读一次并落地：字号不落后端，首屏即生效，不会先小后大闪一下。 */
+export function loadFont(): FontChoice {
+  const choice = loadFontChoice();
+  applyFont(choice);
+  return choice;
+}
+
+export function saveFont(choice: FontChoice): void {
+  applyFont(choice);
+  saveFontChoice(choice);
 }
 
 export async function loadTheme(): Promise<ThemeChoice> {

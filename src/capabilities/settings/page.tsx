@@ -13,7 +13,8 @@ import { Checkbox, Input, Select, SkeletonBlock, SkeletonRows } from '@/componen
 import { DataTable, type Column } from '@/components/ui/table';
 import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
-import { saveTheme, type ThemeChoice } from '@/lib/theme';
+import { saveFont, saveTheme, type ThemeChoice } from '@/lib/theme';
+import { loadFontChoice, type FontChoice } from '@/lib/ui-state';
 import {
   disableNotify,
   enableNotify,
@@ -47,7 +48,7 @@ type TabKey = 'general' | 'schedule' | 'maintenance' | 'diagnostics';
 export default function SettingsPage() {
   const [tab, setTab] = useState<TabKey>('general');
   return (
-    <div className="flex flex-col gap-3">
+    <div className="stagger flex flex-col gap-3">
       <TabBar tab={tab} onChange={setTab} />
       {tab === 'general' && (
         <>
@@ -83,7 +84,7 @@ function TabBar({ tab, onChange }: { tab: TabKey; onChange: (t: TabKey) => void 
     { key: 'diagnostics', label: '诊断与记录' },
   ];
   return (
-    <div className="flex flex-wrap gap-1 rounded-lg border border-line bg-card p-1">
+    <div className="flex flex-wrap gap-1 rounded-lg border border-line bg-card shadow-card p-1">
       {tabs.map((t) => (
         <button
           key={t.key}
@@ -103,6 +104,7 @@ function TabBar({ tab, onChange }: { tab: TabKey; onChange: (t: TabKey) => void 
 
 function GeneralPane() {
   const [theme, setTheme] = useState<ThemeChoice>('');
+  const [font, setFont] = useState<FontChoice>('standard');
   const [notifyOn, setNotifyOn] = useState(false);
   const [perm, setPerm] = useState<NotifyPermission>('unsupported');
   const [version, setVersion] = useState('');
@@ -111,6 +113,7 @@ function GeneralPane() {
   // 所以每次窗口重新获得焦点都按真实权限校正一次开关显示。
   useEffect(() => {
     queryCmd('app_version').then(setVersion).catch(() => {});
+    setFont(loadFontChoice());
     queryCmd('settings_get', { key: 'ui.theme' })
       .then((v) => setTheme((v as ThemeChoice) || ''))
       .catch(() => {});
@@ -128,7 +131,7 @@ function GeneralPane() {
   }, []);
 
   return (
-    <div className="rounded-lg border border-line bg-card p-4">
+    <div className="rounded-lg border border-line bg-card shadow-card p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">通用</h2>
         <span className="flex-1" />
@@ -176,7 +179,7 @@ function GeneralPane() {
                 if (permission === 'granted') {
                   const ok = await enableNotify();
                   setNotifyOn(ok);
-                  toast('已开启桌面通知：标签页在后台时会提醒签到结果、登录结果与凭据临期');
+                  toast('已开启桌面通知：标签页在后台时会提醒签到与活动轮询、登录结果、领取入账与凭据临期');
                 } else if (permission === 'denied') {
                   setNotifyOn(false);
                   toast(
@@ -196,7 +199,7 @@ function GeneralPane() {
             {perm === 'unsupported'
               ? '此浏览器不支持系统通知'
               : perm === 'granted'
-                ? '浏览器权限已允许 · 签到完成、登录结果、凭据临期会弹系统通知（标签页在后台时）'
+                ? '浏览器权限已允许 · 签到与活动轮询、登录结果、领取入账、凭据临期会弹系统通知（标签页在后台时）'
                 : perm === 'denied'
                   ? '浏览器已拒绝通知权限：点地址栏左侧的站点设置 → 通知 → 允许，再回来打开开关'
                   : '还没授权：打开开关时浏览器会弹出授权框，点「允许」即可'}
@@ -225,6 +228,25 @@ function GeneralPane() {
             </p>
           )}
         </div>
+        <div>
+          <label className="flex items-center gap-4 text-sm">
+            <span className="w-24 text-muted">界面字号</span>
+            <Select
+              value={font}
+              onChange={(e) => {
+                const value = e.target.value as FontChoice;
+                setFont(value);
+                saveFont(value);
+              }}
+            >
+              <option value="standard">标准</option>
+              <option value="large">大（每档 +1px）</option>
+            </Select>
+          </label>
+          <p className="mt-1 pl-28 text-xs text-muted">
+            正文、表格与说明文字一起放大；只影响本机显示，不写进运行配置
+          </p>
+        </div>
       </div>
       <p className="mt-2 text-xs text-muted">
         浏览器形态：启动用 start.cmd，退出用右上角电源按钮。签到节奏、网络与采集间隔等运行配置在下方「配置」区统一管理。
@@ -234,7 +256,34 @@ function GeneralPane() {
         需要开机就跑，把 start.cmd 的快捷方式放进「启动」文件夹即可。后端启动后会一直跑（关掉页面也不退），
         随时重新打开 http://127.0.0.1:5274 就能接着用。
       </p>
+      {/* 快捷键就地可查（P1-12）：命令面板以前是「知道的人才知道」的隐藏能力 */}
+      <div className="mt-3 border-t border-line pt-2">
+        <h3 className="text-xs font-semibold text-fg2">快捷键</h3>
+        <ul className="mt-1 grid gap-x-6 gap-y-0.5 text-xs text-muted md:grid-cols-2">
+          <li>
+            <Kbd>Ctrl</Kbd> + <Kbd>K</Kbd> 搜索页面 / 动作 / 会话（顶栏「搜索」同效）
+          </li>
+          <li>
+            <Kbd>1</Kbd>…<Kbd>7</Kbd> 直达对应能力页（输入框内不触发）
+          </li>
+          <li>
+            <Kbd>↑</Kbd> <Kbd>↓</Kbd> 在列表 / 表格行之间移动，<Kbd>Enter</Kbd> 打开
+          </li>
+          <li>
+            <Kbd>Esc</Kbd> 关闭弹窗与面板，焦点回到原处
+          </li>
+        </ul>
+      </div>
     </div>
+  );
+}
+
+/** 键帽：只用于快捷键说明，不做成可点元素。 */
+function Kbd({ children }: { children: string }) {
+  return (
+    <kbd className="rounded-sm border border-line bg-bg px-1 font-sans text-[11px] text-fg2">
+      {children}
+    </kbd>
   );
 }
 
@@ -259,7 +308,7 @@ function ConfigPane() {
   const patch = (change: Partial<AppConfig>) => setDraft({ ...draft, ...change });
 
   return (
-    <div className="rounded-lg border border-line bg-card p-4">
+    <div className="rounded-lg border border-line bg-card shadow-card p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">配置</h2>
         <span className="flex-1" />
@@ -268,7 +317,7 @@ function ConfigPane() {
       <div className="grid gap-4 md:grid-cols-2">
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">签到并发</span>
+            <span className="w-28 shrink-0 text-muted" title="同时跑几个账号的签到。调大更快，但同一平台短时间请求过多更容易被限流；网络差或常失败时调回 1-2。">签到并发</span>
             <Select
               value={String(draft.checkin.max_concurrent)}
               onChange={(e) => patch({ checkin: { ...draft.checkin, max_concurrent: numOr(e.target.value, 3) } })}
@@ -283,7 +332,7 @@ function ConfigPane() {
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">账号间隔</span>
+            <span className="w-28 shrink-0 text-muted" title="两个账号之间等多久再发下一个。调大更稳、更不容易被限流，代价是一轮签到更慢；0 = 不等待。">账号间隔</span>
             <Select
               value={String(draft.checkin.gap_ms)}
               onChange={(e) => patch({ checkin: { ...draft.checkin, gap_ms: numOr(e.target.value, 0) } })}
@@ -298,7 +347,7 @@ function ConfigPane() {
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">请求超时</span>
+            <span className="w-28 shrink-0 text-muted" title="单次请求最多等多少秒。走代理或平台慢时调大，能少一些「超时」失败；调太小会把本来能成的请求判成失败。">请求超时</span>
             <Input
               type="number"
               min={3}
@@ -312,7 +361,7 @@ function ConfigPane() {
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">GET 重试</span>
+            <span className="w-28 shrink-0 text-muted" title="只读请求（查积分/查状态）失败后再试几次。调大能扛偶发抖动，但一轮耗时变长；写动作不重试，避免重复提交。">GET 重试</span>
             <Select
               value={String(draft.network.get_retry)}
               onChange={(e) => patch({ network: { ...draft.network, get_retry: numOr(e.target.value, 1) } })}
@@ -327,7 +376,7 @@ function ConfigPane() {
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">用量采集间隔</span>
+            <span className="w-28 shrink-0 text-muted" title="后台多久扫一次各账号用量。调小数据更新更快、请求更多；调大更省，但仪表盘数字会更旧。">用量采集间隔</span>
             <Select
               value={String(draft.usage.scan_interval_min)}
               onChange={(e) => patch({ usage: { ...draft.usage, scan_interval_min: numOr(e.target.value, 30) } })}
@@ -342,7 +391,7 @@ function ConfigPane() {
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">仪表盘补刷</span>
+            <span className="w-28 shrink-0 text-muted" title="打开仪表盘时，数据比这个时长旧就自动补刷一次。调小更实时（打开就联网），调大打开更快但可能看到旧数字。">仪表盘补刷</span>
             <Select
               value={String(draft.dashboard.stale_refresh_min)}
               onChange={(e) => patch({ dashboard: { ...draft.dashboard, stale_refresh_min: numOr(e.target.value, 10) } })}
@@ -357,7 +406,7 @@ function ConfigPane() {
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">旅行记录条数</span>
+            <span className="w-28 shrink-0 text-muted" title="每个账号在详情页保留多少条旅行/活动记录。只影响显示与本机存储，不影响平台数据。">旅行记录条数</span>
             <Input
               type="number"
               min={10}
@@ -371,7 +420,7 @@ function ConfigPane() {
         </div>
         <div className="flex items-center">
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted">ZCode 自动领取</span>
+            <span className="w-28 shrink-0 text-muted" title="开启后每 15 分钟探测一轮可领奖励并尝试领取。领取要过浏览器验证码，失败会记进日志；关掉则只在详情页手动领。">ZCode 自动领取</span>
             <Checkbox
               checked={draft.activity.zcode_auto_claim}
               onChange={(e) => patch({ activity: { ...draft.activity, zcode_auto_claim: e.target.checked } })}
@@ -453,7 +502,7 @@ const KNOWN_LIMITS: { scope: string; title: string; detail: string; workaround?:
 
 function LimitsPane() {
   return (
-    <div className="rounded-lg border border-line bg-card p-4">
+    <div className="rounded-lg border border-line bg-card shadow-card p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">已知限制</h2>
         <span className="flex-1" />
@@ -534,7 +583,7 @@ function CapabilityPane() {
     : [];
 
   return (
-    <div className="rounded-lg border border-line bg-card p-4">
+    <div className="rounded-lg border border-line bg-card shadow-card p-4">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">平台能力</h2>
         <span className="flex-1" />
@@ -580,7 +629,7 @@ function SelfcheckPane() {
   const [report, setReport] = useState<SelfcheckReport | null>(null);
 
   return (
-    <div className="rounded-lg border border-line bg-card p-4">
+    <div className="rounded-lg border border-line bg-card shadow-card p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">网络自检</h2>
         <span className="flex-1" />
@@ -666,7 +715,7 @@ function RuntimePane() {
   const report = health.data;
 
   return (
-    <div className="rounded-lg border border-line bg-card p-4">
+    <div className="rounded-lg border border-line bg-card shadow-card p-4">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">运行与存储</h2>
         <span className="flex-1" />
@@ -734,7 +783,7 @@ function ArchiveEntryPane() {
   });
   const total = archived.data?.total ?? 0;
   return (
-    <div className="rounded-lg border border-line bg-card p-4">
+    <div className="rounded-lg border border-line bg-card shadow-card p-4">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">已归档会话</h2>
         <span className="text-xs text-muted">
@@ -770,7 +819,7 @@ function MaintenancePane() {
   return (
     <div className="flex min-w-0 flex-col gap-3">
       {/* 摘要行：批次明细与逐批删除收进对话框，设置页不再被回收站列表撑高 */}
-      <div className="rounded-lg border border-line bg-card p-4">
+      <div className="rounded-lg border border-line bg-card shadow-card p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold">平台技能回收站</h2>
           <span className="text-xs text-muted">
@@ -997,10 +1046,18 @@ function ScheduleCard() {
     });
 
   return (
-    <div className="rounded-lg border border-line bg-card p-4">
+    <div className="rounded-lg border border-line bg-card shadow-card p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">定时任务</h2>
       </div>
+
+      {/* 冲突语义（P2-5）：口径取自 desktop/background.rs::spawn_scheduler 的真实行为，
+          不是「应该会排队」的想象——同 id 靠 running 集合跳过，不同 id 各自 spawn。 */}
+      <p className="mb-2 text-xs leading-relaxed text-muted">
+        同一条任务不会叠着跑：上一轮还没结束，这次到点就<span className="text-fg2">跳过</span>（不排队、也不补跑）。
+        不同任务同时到点会<span className="text-fg2">并行</span>执行——两条都打同一个平台更容易被限流，建议把时刻错开。
+        规则改完即时生效；后端刚启动的头 20 秒不判点。
+      </p>
 
       {list.isLoading && <SkeletonBlock rows={3} />}
       {(list.data ?? []).length === 0 && <p className="text-sm text-muted">还没有定时任务。</p>}
