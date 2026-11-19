@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { cn } from './button';
 
@@ -38,6 +38,23 @@ export function Dialog({
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
+  /*
+   * 退场要「先画完再拆节点」：open 变 false 时不能立刻 return null，
+   * 否则最后一帧直接消失，退场动画根本没机会播放。这里多留 120ms 再卸载，
+   * 与 .overlay-out / .view-exit 的时长保持一致（多留会让人以为按钮点不动）。
+   */
+  const [visible, setVisible] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setVisible(true);
+      return;
+    }
+    if (!visible) return;
+    const timer = window.setTimeout(() => setVisible(false), 120);
+    return () => window.clearTimeout(timer);
+  }, [open, visible]);
+  const closing = visible && !open;
+
   useEffect(() => {
     if (!open) return;
     // 记住是谁打开的：关闭后把焦点还回去，键盘用户不会掉到页面顶部
@@ -75,11 +92,16 @@ export function Dialog({
     };
   }, [open]);
 
-  if (!open) return null;
+  if (!visible) return null;
   return (
     <div
-      className="overlay-in fixed inset-0 z-40 flex items-center justify-center bg-[rgba(16,20,28,.42)] p-6"
+      className={cn(
+        'fixed inset-0 z-40 flex items-center justify-center bg-[rgba(16,20,28,.42)] p-6',
+        closing ? 'overlay-out' : 'overlay-in',
+      )}
       onMouseDown={(e) => {
+        // 退场中的这一层已经不再「活着」，再点一下不该重复关（会二次归还焦点）
+        if (closing) return;
         if (e.target === e.currentTarget) onClose();
       }}
     >
@@ -89,8 +111,9 @@ export function Dialog({
         aria-modal="true"
         aria-label={title}
         className={cn(
-          // 面板用 view-enter（淡入+上移 4px），遮罩只淡入：两层都用位移会「抖两下」
-          'view-enter flex max-h-[85vh] w-full flex-col overflow-hidden rounded-xl border border-line bg-bg',
+          // 面板：淡入+上移 4px；退场只淡出并下移 2px。遮罩只淡不位移，两层都位移会「抖两下」
+          closing ? 'view-exit' : 'view-enter',
+          'flex max-h-[85vh] w-full flex-col overflow-hidden rounded-xl border border-line bg-bg',
           'shadow-[0_1px_2px_rgba(16,24,40,.06),0_18px_44px_-14px_rgba(16,24,40,.34)]',
           wide ? 'max-w-[560px]' : 'max-w-[420px]',
         )}

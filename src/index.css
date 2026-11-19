@@ -143,6 +143,12 @@ body {
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
+  /* 环从外侧「收」到 2px 并淡入：直接硬生生弹出一圈蓝框，在密集表格里很扎眼 */
+  animation: focus-ring var(--dur-1) var(--ease-out);
+}
+@keyframes focus-ring {
+  from { outline-color: transparent; outline-offset: 4px; }
+  to { outline-color: var(--color-accent); outline-offset: 2px; }
 }
 /* 表格行、列表项这类贴着容器的元素：环画在内侧，否则被 overflow 裁掉半圈 */
 tr:focus-visible,
@@ -162,6 +168,21 @@ tr:focus-visible,
   to { opacity: 1; }
 }
 .overlay-in { animation: fade-in var(--dur-2) ease-out; }
+
+/*
+ * 退场：比入场快一档（120ms vs 180ms）。关闭是用户主动动作，动画慢了会被当成「卡住」；
+ * 用 ease-in 让末尾加速消失，收尾干净。
+ */
+@keyframes fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.overlay-out { animation: fade-out var(--dur-1) ease-in forwards; }
+@keyframes fade-up-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(2px); }
+}
+.view-exit { animation: fade-up-out var(--dur-1) ease-in forwards; }
 
 /*
  * 不确定进度：一块 30% 宽的指示条从左穿到右。

@@ -20,6 +20,7 @@ import { MotionConfig, motion } from 'motion/react';
 import { capabilities } from '@/app/router';
 import { ToastHost, toast } from '@/components/ui/toast';
 import { ConfirmHost } from '@/components/ui/confirm';
+import { BackToTop } from './BackToTop';
 import { Button, cn } from '@/components/ui/button';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { onIdle } from '@/lib/idle';
@@ -376,6 +377,7 @@ export function Shell() {
         </Suspense>
       </main>
 
+      <BackToTop viewKey={current?.manifest.id ?? ''} />
       <ToastHost />
       <ConfirmHost />
       </div>
