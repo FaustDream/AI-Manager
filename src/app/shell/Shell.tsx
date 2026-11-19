@@ -358,6 +358,9 @@ export function Shell() {
       <CommandPalette items={paletteItems} placeholder="搜索页面 / 动作 / 会话…（Esc 关闭）" />
 
       <main className="flex-1 overflow-auto px-5 pb-6 pt-4">
+        {/* 宽屏内容宽度（V-04）：表格/日志页吃满，叙事页限到 1600px 居中。
+            否则在 2K 以上屏，总览的卡片会被拉成一长条，眼睛要横着扫。 */}
+        <div className={cn('w-full', current?.manifest.fluid ? null : 'mx-auto max-w-[1600px]')}>
         {/* 兜底边界：只有「首屏第一页」会真的用到它——之后的切页都在 go() 里等到
             chunk 到位才换，不会走到 fallback。 */}
         <Suspense fallback={<PageSkeleton />}>
@@ -375,6 +378,7 @@ export function Shell() {
             <StateBlock kind="error" title="没有找到任何能力目录" />
           )}
         </Suspense>
+        </div>
       </main>
 
       <BackToTop viewKey={current?.manifest.id ?? ''} />

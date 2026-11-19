@@ -16,6 +16,9 @@ export interface Manifest {
   /// 不显示在顶部导航与命令面板；只能通过 `aim:navigate` 打开（如设置页里的入口）。
   /// 归档会话这类「低频、从别处进入」的能力用它，避免占一个一级标签。
   hidden?: boolean;
+  /// 内容区吃满宽度。表格/日志这类「列多、信息密度高」的页面必须给，
+  /// 否则宽屏上两侧留白比表格还宽；叙事页（总览、设置）不给，限制到 1600px 读起来才不散。
+  fluid?: boolean;
 }
 
 export interface Capability {
