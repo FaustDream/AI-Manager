@@ -47,12 +47,15 @@ const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
 /**
  * 入场动画。**不从 opacity 0 起步**：0 起步意味着那一帧什么都没有，
  * 快速连点时看起来像闪一下白底。0.55 → 1 已经够表达「新内容进来了」。
+ *
+ * 方向：前进时从下方 6px 升上来，后退时从上方 6px 落下来。只做纵向——
+ * 横向滑页在浏览器里会和「前进/后退手势」抢语义，短页面还会挤出一条横向滚动条。
  */
 const PAGE_MOTION = {
-  initial: { opacity: 0.55, y: 6 },
   animate: { opacity: 1, y: 0 },
   transition: { duration: 0.16, ease: 'easeOut' },
 } as const;
+const PAGE_Y = 6;
 
 export function Shell() {
   const caps = useMemo(() => capabilities(), []);
@@ -71,6 +74,8 @@ export function Shell() {
   // 用 ref 存栈 + 一个布尔驱动按钮显隐：栈本身不参与渲染，没必要每次进栈都重渲染整壳。
   const history = useRef<string[]>([]);
   const [backTo, setBackTo] = useState<string | null>(null);
+  // 切页方向：1 = 前进（从下方进），-1 = 后退（从上方进）
+  const dir = useRef(1);
 
   useEffect(() => {
     void loadTheme();
@@ -126,6 +131,9 @@ export function Shell() {
         setBackTo(history.current[history.current.length - 1] ?? null);
       }
       setSwitching(true);
+      const fromIdx = navCaps.findIndex((c) => c.manifest.id === view);
+      const toIdx = navCaps.findIndex((c) => c.manifest.id === id);
+      dir.current = opts?.back || (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx) ? -1 : 1;
       void cap
         .load()
         .then(() => {
@@ -139,7 +147,7 @@ export function Shell() {
           toast('页面加载失败，请刷新后重试');
         });
     },
-    [caps, view],
+    [caps, navCaps, view],
   );
 
   /** 返回上一页：只弹栈，不再入栈。*/
@@ -367,7 +375,7 @@ export function Shell() {
           {current ? (
             <motion.div
               key={current.manifest.id}
-              initial={PAGE_MOTION.initial}
+              initial={{ opacity: 0.55, y: dir.current * PAGE_Y }}
               animate={PAGE_MOTION.animate}
               transition={PAGE_MOTION.transition}
             >
@@ -403,13 +411,13 @@ function PageSkeleton() {
   return (
     <div className="flex flex-col gap-2.5" aria-busy="true">
       <div className="flex items-center gap-2">
-        <div className="h-7 w-24 animate-pulse rounded-md bg-hover" />
-        <div className="h-7 w-24 animate-pulse rounded-md bg-hover" />
-        <div className="h-7 w-24 animate-pulse rounded-md bg-hover" />
+        <div className="h-7 w-24 skeleton-block rounded-md bg-hover" />
+        <div className="h-7 w-24 skeleton-block rounded-md bg-hover" />
+        <div className="h-7 w-24 skeleton-block rounded-md bg-hover" />
       </div>
       <div className="mt-1 space-y-2">
         {Array.from({ length: 9 }).map((_, index) => (
-          <div key={index} className="h-9 animate-pulse rounded-md bg-hover" />
+          <div key={index} className="h-9 skeleton-block rounded-md bg-hover" />
         ))}
       </div>
     </div>

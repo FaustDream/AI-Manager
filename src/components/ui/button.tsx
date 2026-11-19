@@ -75,7 +75,12 @@ export function Button({
       className={cn(
         'relative inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-line px-3 py-1 text-sm',
         // transform 一并进过渡：按下时 80ms 内下沉 1px，释放时回弹到 0（不加过冲）
-        'transition-[background-color,border-color,color,opacity,transform] duration-[var(--dur-1)]',
+        // transform 与 translate 一并进过渡：Tailwind v4 的位移类走的是 `translate`
+        // 属性而不是 `transform`，只写 transform 的话悬停抬升会「啪」地跳过去
+        'transition-[background-color,border-color,color,opacity,transform,translate] duration-[var(--dur-1)]',
+        // 悬停上浮 1px：位移不算「特效」，是让指针下的按钮先「抬」一点再按下沉，
+        // 一抬一沉凑成完整的按压触感；做不到就只剩一个色块变色
+        'enabled:hover:-translate-y-px',
         // 按下反馈：只对可用状态生效。加载中再按一下会抖，用户会以为点重了
         'enabled:active:translate-y-px enabled:active:scale-[.98]',
         // 悬停只对可用状态生效：禁用/加载中不换底色，主按钮才不会「白字配透明底」

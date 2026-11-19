@@ -237,7 +237,7 @@ export default function HubPage() {
         </div>
         <p className="skeleton-in text-xs text-muted">正在读取各软件的技能目录…</p>
         <div className="rounded-lg border border-line bg-card shadow-card p-3">
-          <div className="mb-2 h-4 w-28 animate-pulse rounded bg-hover" />
+          <div className="mb-2 h-4 w-28 skeleton-block rounded bg-hover" />
           <table className="w-full border-collapse">
             <tbody>
               <SkeletonRows rows={5} cols={4} />

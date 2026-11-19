@@ -997,7 +997,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
             {preview.isLoading && (
               <div className="space-y-2 py-3">
                 {[0, 1, 2].map((i) => (
-                  <div key={i} className="h-4 animate-pulse rounded bg-hover" />
+                  <div key={i} className="h-4 skeleton-block rounded bg-hover" />
                 ))}
               </div>
             )}

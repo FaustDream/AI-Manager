@@ -1,7 +1,7 @@
 // 仪表盘与用量共用的小块：KPI 瓦片与区块标题。
 // 遵循 dashboard-design 技能的 KPI 瓦片模式：label + 大数值 + delta 徽章；
 // 解释性文字一律进 tooltip（title），瓦片上只留数字与一两个词的基线。
-import type { ReactNode } from 'react';
+import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/components/ui/button';
 import { fmtTokensExact } from '@/lib/format';
@@ -20,9 +20,48 @@ export function Delta({ cur, prev }: { cur: number; prev: number }) {
   );
 }
 
+/*
+ * 数值滚动（count-up）：只在 KPI 瓦片上做，400ms 三次缓出。
+ * 表格里一律不做——一排数字各自滚动，读数就变成了猜数。
+ * reduced-motion 下直接给终值，连一帧都不滚。
+ */
+const NO_MOTION =
+  typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function CountUp({ raw, format }: { raw: number; format: (n: number) => string }) {
+  const [shown, setShown] = useState(raw);
+  const from = useRef(raw);
+  useEffect(() => {
+    const start = from.current;
+    if (start === raw) return;
+    if (NO_MOTION) {
+      from.current = raw;
+      setShown(raw);
+      return;
+    }
+    const t0 = performance.now();
+    let raf = 0;
+    const step = (now: number) => {
+      const p = Math.min(1, (now - t0) / 400);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setShown(start + (raw - start) * eased);
+      if (p < 1) raf = requestAnimationFrame(step);
+      else from.current = raw;
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [raw]);
+  return <>{format(shown)}</>;
+}
+
+/** 指针跟随时瓦片的最大倾角。2.5° 是分界线：再大就不像仪表，像玩具。 */
+const TILT_MAX = 2.5;
+
 export function Metric({
   label,
   value,
+  raw,
+  format,
   exact,
   hint,
   delta,
@@ -31,6 +70,9 @@ export function Metric({
 }: {
   label: string;
   value: string;
+  /** 给了它 + `format` 就走数值滚动；字符串 value 只用于非数字型 KPI（如「无」） */
+  raw?: number;
+  format?: (n: number) => string;
   /** 换算成亿/万后的小数有取舍，悬浮给原数 */
   exact?: string;
   /** 解释与口径：进 tooltip，不上屏 */
@@ -57,6 +99,23 @@ export function Metric({
     return () => window.clearTimeout(timer);
   }, [value, tone]);
 
+  // 指针跟随的极轻倾斜：只有 KPI 瓦片，指针离开即回正，按压时同时微缩。
+  const [tilt, setTilt] = useState('');
+  const [pressed, setPressed] = useState(false);
+  const onMove = (e: ReactPointerEvent<HTMLElement>) => {
+    if (NO_MOTION || e.pointerType !== 'mouse') return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const nx = (e.clientX - rect.left) / rect.width - 0.5;
+    const ny = (e.clientY - rect.top) / rect.height - 0.5;
+    setTilt(
+      `perspective(700px) rotateX(${(-ny * TILT_MAX).toFixed(2)}deg) ` +
+        `rotateY(${(nx * TILT_MAX).toFixed(2)}deg) translateY(-1px)`,
+    );
+  };
+  const transform = `${tilt}${pressed ? ' scale(.995)' : ''}`.trim();
+
+  const display = raw !== undefined && format ? <CountUp raw={raw} format={format} /> : value;
+
   const valueCls = cn(
     'mt-1 text-2xl font-semibold tabular-nums tracking-[-.03em] transition-colors duration-[var(--dur-2)]',
     tone === 'ok' && 'text-ok',
@@ -70,29 +129,31 @@ export function Metric({
         {delta}
       </div>
       <div className={valueCls} title={exact}>
-        {value}
+        {display}
       </div>
     </>
   );
   const cls =
-    'rounded-lg border border-line bg-card p-4 shadow-card transition-shadow hover:shadow-card-hover';
+    'rounded-lg border border-line bg-card p-4 shadow-card transition-[box-shadow,transform] duration-[var(--dur-2)] hover:shadow-card-hover';
+  const motion = {
+    onPointerMove: onMove,
+    onPointerLeave: () => {
+      setTilt('');
+      setPressed(false);
+    },
+    onPointerDown: () => setPressed(true),
+    onPointerUp: () => setPressed(false),
+    style: transform ? { transform } : undefined,
+  };
   if (onClick) {
     return (
-      <button
-        type="button"
-        className={cn(
-          cls,
-          'cursor-pointer text-left transition-[box-shadow,transform] duration-[var(--dur-1)] active:scale-[.995]',
-        )}
-        title={hint}
-        onClick={onClick}
-      >
+      <button type="button" className={cn(cls, 'cursor-pointer text-left')} title={hint} onClick={onClick} {...motion}>
         {body}
       </button>
     );
   }
   return (
-    <div className={cls} title={hint}>
+    <div className={cls} title={hint} {...motion}>
       {body}
     </div>
   );

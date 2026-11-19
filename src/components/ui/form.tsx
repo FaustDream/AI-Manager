@@ -51,7 +51,7 @@ export function SkeletonRows({ rows = 5, cols = 4 }: { rows?: number; cols?: num
             <td key={c} className="skeleton-in border-b border-line px-2.5 py-3">
               {/* 行间 60ms 相位差：整片同时呼吸像「一个灰块」在闪，错开才像逐行在填 */}
               <span
-                className="block h-3 animate-pulse rounded-sm bg-hover"
+                className="block h-3 skeleton-block rounded-sm bg-hover"
                 style={{ animationDelay: r < 6 ? `${r * 60}ms` : undefined }}
               />
             </td>
@@ -80,7 +80,7 @@ export function SkeletonBlock({
       {Array.from({ length: rows }, (_, index) => (
         <div
           key={index}
-          className="h-4 animate-pulse rounded-sm bg-hover"
+          className="h-4 skeleton-block rounded-sm bg-hover"
           style={{ animationDelay: index < 6 ? `${index * 60}ms` : undefined }}
         />
       ))}

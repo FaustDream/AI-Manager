@@ -224,6 +224,52 @@ tr:focus-visible,
 }
 .skeleton-in { animation: skeleton-in 160ms ease-out 120ms both; }
 
+/*
+ * 骨架单块扫光：每块自己的光泽从左侧扫过，按行相位错开。
+ * 刻意**不做整页统一扫**——那是给整个界面盖一层白布，读起来像加载条卡住；
+ * 单块扫光只说「这一格在等数据」。
+ */
+@keyframes skeleton-sweep {
+  0% { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+.skeleton-block {
+  background-color: var(--color-hover);
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in oklab, var(--color-fg) 12%, transparent) 50%,
+    transparent 80%
+  );
+  background-size: 55% 100%;
+  background-repeat: no-repeat;
+  background-position: 180% 0;
+  animation: skeleton-sweep 1.45s var(--ease-std) infinite;
+}
+
+/*
+ * 极光底纹：两层超大半径径向渐变，38s 一轮极慢漂移，透明度上限 0.12。
+ * 只挂在叙事页（仪表盘）顶部，表格页不挂——读表时底色在动会分神。
+ * 不是粒子、不是视差：这里只有「颜色在呼吸」，没有任何几何位移。
+ */
+@keyframes aurora-drift {
+  0% { transform: translate3d(-1.5%, -1%, 0) scale(1.04); }
+  50% { transform: translate3d(1.5%, 1%, 0) scale(1.1); }
+  100% { transform: translate3d(-1.5%, -1%, 0) scale(1.04); }
+}
+.aurora-glow {
+  position: absolute;
+  inset: -6% -3% auto -3%;
+  height: 460px;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(56% 62% at 16% 0%, color-mix(in oklab, var(--color-accent) 26%, transparent), transparent 70%),
+    radial-gradient(52% 58% at 84% 4%, color-mix(in oklab, var(--color-ok) 20%, transparent), transparent 72%);
+  opacity: 0.12;
+  animation: aurora-drift 38s var(--ease-std) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 1ms !important;

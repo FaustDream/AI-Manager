@@ -205,7 +205,10 @@ export default function OverviewPage() {
   }, [report, rows, qc, staleAfterMs]);
 
   return (
-    <div className="stagger flex flex-col gap-4">
+    <div className="stagger relative flex flex-col gap-4">
+      {/* 极光底纹（叙事页专属）：只在仪表盘顶部铺一层极淡的慢渐变，
+          表格页不挂——读表时底色在动会分神。不拦截指针。 */}
+      <div className="aurora-glow" aria-hidden />
       <div className="flex items-center gap-2">
         <h1 className="text-base font-semibold">仪表盘</h1>
         <span className="flex-1" />
@@ -274,7 +277,7 @@ export default function OverviewPage() {
           {flow.isLoading ? (
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="h-[92px] animate-pulse rounded-lg bg-hover" />
+                <div key={i} className="h-[92px] skeleton-block rounded-lg bg-hover" />
               ))}
             </div>
           ) : (
@@ -282,22 +285,30 @@ export default function OverviewPage() {
               <Metric
                 label={`进账 · ${kpiRange}`}
                 value={fmtAmount(earnedSum)}
+                raw={earnedSum}
+                format={fmtAmount}
                 tone="ok"
                 hint="所选区间内全部账号收到的积分合计，与下方收支图同一口径"
               />
               <Metric
                 label={`消耗 · ${kpiRange}`}
                 value={fmtAmount(spentSum)}
+                raw={spentSum}
+                format={fmtAmount}
                 hint="所选区间内全部账号用掉的积分合计，与下方收支图同一口径"
               />
               <Metric
                 label="当前余额"
                 value={fmtAmount(balanceSum)}
+                raw={balanceSum}
+                format={fmtAmount}
                 hint="全部账号最新余额合计（存量，不受区间影响）"
               />
               <Metric
                 label="凭据临期"
                 value={String(report.accounts.expiring)}
+                raw={report.accounts.expiring}
+                format={(n) => String(Math.round(n))}
                 tone={report.accounts.expiring > 0 ? 'warn' : 'default'}
                 hint="3 天内凭据到期的账号数：去账号中心刷新凭据或重新授权"
                 onClick={() => go('account-center')}
@@ -392,12 +403,12 @@ export default function OverviewPage() {
 
             {chartMode === 'flow' ? (
               flow.isLoading ? (
-                <div className="h-[240px] animate-pulse rounded-md bg-hover" />
+                <div className="h-[240px] skeleton-block rounded-md bg-hover" />
               ) : (
                 <CreditFlowChart points={flowPoints} platforms={platformFlows} />
               )
             ) : trend.isLoading ? (
-              <div className="h-[240px] animate-pulse rounded-md bg-hover" />
+              <div className="h-[240px] skeleton-block rounded-md bg-hover" />
             ) : (
               <CreditTrend points={trendPoints} />
             )}
@@ -421,7 +432,7 @@ export default function OverviewPage() {
 
           {/* 第二层：同样一份账目按软件拆开，看「钱花在哪」 */}
           {flow.isLoading ? (
-            <div className="h-[180px] animate-pulse rounded-lg bg-hover" />
+            <div className="h-[180px] skeleton-block rounded-lg bg-hover" />
           ) : (
             <CreditPlatformSplit
               platforms={platformFlows}
