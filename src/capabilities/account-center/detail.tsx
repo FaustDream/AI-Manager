@@ -7,7 +7,7 @@
 // 后者在签到列和头部标签里已经答过一遍。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Input, Textarea } from '@/components/ui/form';
 import type { ReactNode } from 'react';
 
@@ -50,6 +50,41 @@ const claimColumns: Column<CreditClaim>[] = [
     cell: (row) => row.description,
   },
 ];
+
+/**
+ * 额度利用率条：首次从 0 长到目标（延迟 80ms 让文字先落位），之后 used 变化直接过渡。
+ * 刷新额度是低频动作，硬切的话用户看不出「这一条到底动没动」。
+ * role=progressbar 让读屏能报出已用百分比，而不是只看到一行小字。
+ */
+function QuotaBar({ used, color }: { used: number; color: string }) {
+  const target = Math.min(100, used);
+  const [pct, setPct] = useState(0);
+  const mounted = useRef(false);
+  useEffect(() => {
+    if (mounted.current) {
+      setPct(target);
+      return;
+    }
+    mounted.current = true;
+    const timer = window.setTimeout(() => setPct(target), 80);
+    return () => window.clearTimeout(timer);
+  }, [target]);
+  return (
+    <div
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(target)}
+      aria-label="额度已用比例"
+      className="h-1.5 overflow-hidden rounded-full bg-hover"
+    >
+      <div
+        className="h-full rounded-full transition-[width,background-color] duration-[var(--dur-4)] ease-[var(--ease-std)]"
+        style={{ width: `${pct}%`, background: color }}
+      />
+    </div>
+  );
+}
 
 function Stat({
   label,
@@ -428,9 +463,7 @@ export function DetailPanel({
                       已用 {used.toFixed(0)}% · 剩 {left.toFixed(0)}%
                     </span>
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-hover">
-                    <div className="h-full rounded-full" style={{ width: `${Math.min(100, used)}%`, background: color }} />
-                  </div>
+                  <QuotaBar used={used} color={color} />
                 </div>
               );
             })}

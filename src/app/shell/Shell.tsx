@@ -161,6 +161,29 @@ export function Shell() {
 
   const current = caps.find((c) => c.manifest.id === view) ?? caps[0];
 
+  /*
+   * 切页进度线的最短显示时长（200ms）：本地 chunk 常在 30~60ms 内到位，
+   * 只按布尔显隐的话，线会闪一下就没——比不显示更像「坏了一下」。
+   * 这里把「开始时间」记下来，结束时补足到 200ms 再淡出。
+   */
+  const busy = switching || pending;
+  const [lineVisible, setLineVisible] = useState(false);
+  const lineShownAt = useRef(0);
+  useEffect(() => {
+    if (busy) {
+      lineShownAt.current = Date.now();
+      setLineVisible(true);
+      return;
+    }
+    const remain = 200 - (Date.now() - lineShownAt.current);
+    if (remain <= 0) {
+      setLineVisible(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setLineVisible(false), remain);
+    return () => window.clearTimeout(timer);
+  }, [busy]);
+
   // 数字键 1…N 直达对应能力页。**只在没有输入焦点、且不带修饰键时生效**：
   // 否则在搜索框里打「2」会跳页。不用 Alt+← 做返回——那是浏览器自己的后退，
   // 抢过来会把整个应用退出去（浏览器形态的硬约束）。
@@ -261,7 +284,7 @@ export function Shell() {
             return (
               <button
                 key={cap.manifest.id}
-                className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-sm whitespace-nowrap ${
+                className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-sm whitespace-nowrap transition-colors duration-[var(--dur-1)] ${
                   active === cap.manifest.id ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
                 }`}
                 title={`${cap.manifest.title}（快捷键 ${at + 1}）`}
@@ -280,11 +303,15 @@ export function Shell() {
           <Button
             size="sm"
             variant="ghost"
+            className="group"
             title={`返回${caps.find((c) => c.manifest.id === backTo)?.manifest.title ?? '上一页'}`}
             aria-label="返回上一页"
             onClick={back}
           >
-            <ArrowLeft size={14} />
+            <ArrowLeft
+              size={14}
+              className="transition-transform duration-[var(--dur-1)] group-hover:-translate-x-0.5"
+            />
             返回
           </Button>
         )}
@@ -314,14 +341,17 @@ export function Shell() {
         </Button>
         {/* 浏览器化后的正式停止入口：确认后结束后端进程 */}
         <QuitButton />
-        {/* 切页进度线：贴在 header 底边，只做「正在换页」的提示，不占布局、不挡内容 */}
+        {/* 切页进度线：贴在 header 底边，只做「正在换页」的提示，不占布局、不挡内容。
+            轨道常驻极淡，指示块循环穿过——从「闪一下」变成「看得出在走」。 */}
         <span
           aria-hidden
           className={cn(
-            'pointer-events-none absolute inset-x-0 bottom-0 h-0.5 bg-accent/60 transition-opacity duration-150',
-            switching || pending ? 'opacity-100' : 'opacity-0',
+            'pointer-events-none absolute inset-x-0 bottom-0 h-0.5 overflow-hidden transition-opacity duration-[var(--dur-1)]',
+            lineVisible ? 'opacity-100' : 'opacity-0',
           )}
-        />
+        >
+          <span className="indeterminate-bar block h-full w-[30%] bg-accent/60" />
+        </span>
       </header>
 
       <CommandPalette items={paletteItems} placeholder="搜索页面 / 动作 / 会话…（Esc 关闭）" />

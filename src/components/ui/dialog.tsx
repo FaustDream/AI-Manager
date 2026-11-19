@@ -78,7 +78,7 @@ export function Dialog({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(16,20,28,.42)] p-6"
+      className="overlay-in fixed inset-0 z-40 flex items-center justify-center bg-[rgba(16,20,28,.42)] p-6"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -89,6 +89,7 @@ export function Dialog({
         aria-modal="true"
         aria-label={title}
         className={cn(
+          // 面板用 view-enter（淡入+上移 4px），遮罩只淡入：两层都用位移会「抖两下」
           'view-enter flex max-h-[85vh] w-full flex-col overflow-hidden rounded-xl border border-line bg-bg',
           'shadow-[0_1px_2px_rgba(16,24,40,.06),0_18px_44px_-14px_rgba(16,24,40,.34)]',
           wide ? 'max-w-[560px]' : 'max-w-[420px]',

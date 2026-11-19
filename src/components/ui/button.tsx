@@ -30,11 +30,12 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children?: ReactNode;
 }
 
-/** 12px spinner：用令牌色 currentColor，深浅主题自动跟随。 */
-function Spinner() {
+/** spinner：默认 12px，sm 按钮用 10px（12px 在 py-0.5 的小按钮里偏重）。
+ *  颜色用 currentColor，深浅主题与各变体自动跟随。 */
+function Spinner({ small }: { small?: boolean }) {
   return (
     <svg
-      className="h-3 w-3 shrink-0 animate-spin"
+      className={`${small ? 'h-2.5 w-2.5' : 'h-3 w-3'} shrink-0 animate-spin`}
       viewBox="0 0 24 24"
       fill="none"
       aria-hidden
@@ -73,7 +74,10 @@ export function Button({
       disabled={busy}
       className={cn(
         'relative inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-line px-3 py-1 text-sm',
-        'transition-[background-color,border-color,color,opacity] duration-150',
+        // transform 一并进过渡：按下时 80ms 内下沉 1px，释放时回弹到 0（不加过冲）
+        'transition-[background-color,border-color,color,opacity,transform] duration-[var(--dur-1)]',
+        // 按下反馈：只对可用状态生效。加载中再按一下会抖，用户会以为点重了
+        'enabled:active:translate-y-px enabled:active:scale-[.98]',
         // 悬停只对可用状态生效：禁用/加载中不换底色，主按钮才不会「白字配透明底」
         'enabled:hover:bg-hover',
         // 默认变体也要显式给文字色：不给的话，disabled 时浏览器会套自己的灰字，
@@ -93,13 +97,13 @@ export function Button({
       )}
       {...props}
     >
-      {loading && <Spinner />}
+      {loading && <Spinner small={size === 'sm'} />}
       {/* 文字包一层：加载中只降一档不透明度，宽度与文案都不变。
           必须是 inline-flex：preflight 把 svg 设成了块级，用 inline-block 包的话
           「图标 + 文字」会被拆成上下两行——按钮看着像一张小卡片。 */}
       <span
         className={cn(
-          'inline-flex items-center gap-1.5 transition-opacity duration-150',
+          'inline-flex items-center gap-1.5 transition-opacity duration-[var(--dur-1)]',
           loading && 'opacity-70',
         )}
       >

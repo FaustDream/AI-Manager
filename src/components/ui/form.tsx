@@ -49,7 +49,11 @@ export function SkeletonRows({ rows = 5, cols = 4 }: { rows?: number; cols?: num
         <tr key={r}>
           {Array.from({ length: cols }, (_, c) => (
             <td key={c} className="skeleton-in border-b border-line px-2.5 py-3">
-              <span className="block h-3 animate-pulse rounded-sm bg-hover" />
+              {/* 行间 60ms 相位差：整片同时呼吸像「一个灰块」在闪，错开才像逐行在填 */}
+              <span
+                className="block h-3 animate-pulse rounded-sm bg-hover"
+                style={{ animationDelay: r < 6 ? `${r * 60}ms` : undefined }}
+              />
             </td>
           ))}
         </tr>
@@ -74,7 +78,11 @@ export function SkeletonBlock({
   return (
     <div className={cn('skeleton-in space-y-2', className)} aria-busy="true">
       {Array.from({ length: rows }, (_, index) => (
-        <div key={index} className="h-4 animate-pulse rounded-sm bg-hover" />
+        <div
+          key={index}
+          className="h-4 animate-pulse rounded-sm bg-hover"
+          style={{ animationDelay: index < 6 ? `${index * 60}ms` : undefined }}
+        />
       ))}
     </div>
   );
@@ -93,7 +101,8 @@ export function StateBlock({
   onRetry?: () => void;
 }) {
   return (
-    <div className="p-8 text-center">
+    // view-enter：空/错误态常常是「查完才知道」，直接硬切出来会让内容区跳一下
+    <div className="view-enter p-8 text-center">
       <p className={`text-sm ${kind === 'error' ? 'text-bad' : 'text-fg2'}`}>{title}</p>
       {detail && <p className="mt-1 text-xs text-muted">{detail}</p>}
       {kind === 'error' && onRetry && (

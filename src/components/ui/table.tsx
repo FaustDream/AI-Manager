@@ -136,7 +136,12 @@ export function DataTable<R>({
           return (
             <tr
               key={key}
-              className={rowClassName?.(row)}
+              // 悬停底色只给可点行：不可点的行亮一下会诱导用户去点，点了没反应更像坏了
+              className={cn(
+                'transition-colors duration-[var(--dur-1)]',
+                onRowClick && 'cursor-pointer hover:bg-hover/60',
+                rowClassName?.(row),
+              )}
               // 行可点就必须键盘可达（P1-9）：以前只有 onClick，Tab 停不上去，
               // 键盘用户根本打不开详情。role/aria-selected 让读屏也能报「第几行、选没选」。
               tabIndex={onRowClick ? 0 : undefined}

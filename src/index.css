@@ -34,6 +34,18 @@
      其余页第二期推广。深色主题下阴影加深，见各 data-theme 覆盖。 */
   --shadow-card: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.07);
   --shadow-card-hover: 0 4px 14px rgb(16 24 40 / 0.10);
+
+  /* 动效令牌：只给四档语义时长，组件里不再手写 150ms / 160ms 这类魔数。
+     dur-1 状态色（悬停/选中），dur-2 入场，dur-3 内容节奏，dur-4 进度填充。 */
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --dur-3: 240ms;
+  --dur-4: 400ms;
+
+  /* 缓动：入场先快后缓（ease-out），退场更快（ease-in），进度用 std。 */
+  --ease-out: cubic-bezier(.16, .84, .44, 1);
+  --ease-in: cubic-bezier(.4, 0, .84, .16);
+  --ease-std: cubic-bezier(.2, .7, .3, 1);
 }
 
 /* 深浅两套：系统偏好走媒体查询，显式选择用 data-theme 覆盖（后者同特异性但在后，必胜） */
@@ -102,7 +114,26 @@ body {
   background: var(--color-bg);
   color: var(--color-fg);
   font: var(--text-md)/1.55 var(--font-sans);
+  /* 只过渡底色与文字：切主题时不再整屏硬闪，其余元素（边框/阴影）保持即时 */
+  transition: background-color var(--dur-1) linear, color var(--dur-1) linear;
 }
+
+/*
+ * 滚动条统一（桌面端占比高，系统粗滚动条会破坏表格的克制感）：
+ * 8px、圆角、thumb 用 line-strong、hover 加深。轨道透明，不额外加色块。
+ * 已经显式隐藏的容器（顶栏导航 scrollbar-width:none）特异性更高，不受影响。
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
 
 /*
  * 键盘焦点环（总纲 P0-6）：全应用一条规则，不为每个组件各写一遍。
@@ -123,7 +154,25 @@ tr:focus-visible,
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
-.view-enter { animation: fade-up 180ms ease-out; }
+.view-enter { animation: fade-up var(--dur-2) ease-out; }
+
+/* 遮罩淡入：只淡不位移——遮罩跟着上移会让后面的内容「抖一下」 */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.overlay-in { animation: fade-in var(--dur-2) ease-out; }
+
+/*
+ * 不确定进度：一块 30% 宽的指示条从左穿到右。
+ * 与「透明度开关」的区别是用户能看出「还在走」，快速切页时不至于像闪了一下白线。
+ * 由 Shell 的切页线使用；组件自己管最短显示时长，这里只负责循环。
+ */
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.indeterminate-bar { animation: indeterminate 1.1s var(--ease-std) infinite; }
 
 /* 入场节奏：直接子项依次淡入上移，每项错开 40ms。
    只表达「内容逐块到位」，不做退场；reduced-motion 由下方全局规则压平。 */

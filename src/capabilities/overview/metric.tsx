@@ -2,6 +2,7 @@
 // 遵循 dashboard-design 技能的 KPI 瓦片模式：label + 大数值 + delta 徽章；
 // 解释性文字一律进 tooltip（title），瓦片上只留数字与一两个词的基线。
 import type { ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/components/ui/button';
 import { fmtTokensExact } from '@/lib/format';
 
@@ -40,10 +41,27 @@ export function Metric({
   /** 给了就是可点瓦片（整块是按钮），用于「点数字去处理」的入口 */
   onClick?: () => void;
 }) {
+  /*
+   * 数值变化闪一档（fg → accent → fg，约 320ms）：刷新后数字换了，用户往往是
+   * 先看见「这一块动了」才去读新值。只在默认色调上闪——ok/warn 是语义色，
+   * 覆盖成 accent 会让「进账/告警」读不出来。
+   */
+  const [flash, setFlash] = useState(false);
+  const prevValue = useRef(value);
+  useEffect(() => {
+    if (prevValue.current === value) return;
+    prevValue.current = value;
+    if (tone !== 'default') return;
+    setFlash(true);
+    const timer = window.setTimeout(() => setFlash(false), 320);
+    return () => window.clearTimeout(timer);
+  }, [value, tone]);
+
   const valueCls = cn(
-    'mt-1 text-2xl font-semibold tabular-nums tracking-[-.03em]',
+    'mt-1 text-2xl font-semibold tabular-nums tracking-[-.03em] transition-colors duration-[var(--dur-2)]',
     tone === 'ok' && 'text-ok',
     tone === 'warn' && 'text-warn',
+    flash && 'text-accent',
   );
   const body = (
     <>
@@ -60,7 +78,15 @@ export function Metric({
     'rounded-lg border border-line bg-card p-4 shadow-card transition-shadow hover:shadow-card-hover';
   if (onClick) {
     return (
-      <button type="button" className={cn(cls, 'cursor-pointer text-left')} title={hint} onClick={onClick}>
+      <button
+        type="button"
+        className={cn(
+          cls,
+          'cursor-pointer text-left transition-[box-shadow,transform] duration-[var(--dur-1)] active:scale-[.995]',
+        )}
+        title={hint}
+        onClick={onClick}
+      >
         {body}
       </button>
     );
@@ -99,6 +125,16 @@ export function ShareBar({
   tone?: 'accent' | 'bad';
   className?: string;
 }) {
+  /*
+   * 首次挂载从 0 长到目标（延迟 80ms 让列表先落位），之后 pct 变化直接过渡到新值。
+   * 排名条一眼要能看出「谁多谁少」，硬切的话刷新前后没有可比性。
+   */
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setReady(true), 80);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const target = Math.max(1.5, Math.min(100, pct));
   return (
     <span
       aria-hidden
@@ -109,10 +145,10 @@ export function ShareBar({
     >
       <span
         className={cn(
-          'absolute inset-y-0 left-0 rounded-full opacity-75 transition-opacity group-hover:opacity-100',
+          'absolute inset-y-0 left-0 rounded-full opacity-75 transition-[width,opacity] duration-[var(--dur-4)] ease-[var(--ease-std)] group-hover:opacity-100',
           tone === 'bad' ? 'bg-bad' : 'bg-accent',
         )}
-        style={{ width: `${Math.max(1.5, Math.min(100, pct))}%` }}
+        style={{ width: ready ? `${target}%` : '0%' }}
       />
     </span>
   );
