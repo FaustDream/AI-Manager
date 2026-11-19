@@ -55,7 +55,9 @@ export function BackToTop({ viewKey }: { viewKey: string }) {
       aria-hidden={!show}
       title="回到顶部"
       aria-label="回到顶部"
-      className={`fixed right-5 bottom-5 z-20 grid h-9 w-9 cursor-pointer place-items-center rounded-full border border-line bg-card text-fg2 shadow-card transition-[opacity,transform,box-shadow] duration-[var(--dur-2)] ease-[var(--ease-out)] hover:text-fg hover:shadow-card-hover ${
+      // bottom 让到 toast 上方（toast 常驻右下 20px 内）：两者叠在一起时按钮会被盖住，
+      // 且此刻用户正需要读提示，不该有个按钮压在提示上
+      className={`fixed right-4 bottom-[5.25rem] z-20 grid h-9 w-9 cursor-pointer place-items-center rounded-full border border-line bg-card text-fg2 shadow-card transition-[opacity,transform,box-shadow] duration-[var(--dur-2)] ease-[var(--ease-out)] hover:text-fg hover:shadow-card-hover ${
         show ? 'opacity-100' : 'pointer-events-none translate-y-2 opacity-0'
       }`}
     >

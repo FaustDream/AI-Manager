@@ -48,7 +48,7 @@ type TabKey = 'general' | 'schedule' | 'maintenance' | 'diagnostics';
 export default function SettingsPage() {
   const [tab, setTab] = useState<TabKey>('general');
   return (
-    <div className="stagger flex flex-col gap-3">
+    <div className="stagger flex flex-col gap-4">
       <TabBar tab={tab} onChange={setTab} />
       {tab === 'general' && (
         <>

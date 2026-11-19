@@ -106,7 +106,8 @@ export function SectionTitle({
   right?: ReactNode;
 }) {
   return (
-    <div className="mb-1.5 flex items-baseline gap-2">
+    // 标题与内容留 10px（V-05 的「卡片内行距」档），此前 6px 太贴，扫读时分不清区块边界
+    <div className="mb-2.5 flex items-baseline gap-2">
       <h3 className="text-xs font-semibold tracking-wide text-fg2">{children}</h3>
       <span className="flex-1" />
       {right && <span className="text-xs text-muted">{right}</span>}

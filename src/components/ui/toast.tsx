@@ -46,7 +46,7 @@ export function ToastHost() {
     // aria-live：toast 是「动作做完了没有」的唯一即时反馈，读屏必须能听到（P0-6）。
     // polite 而非 assertive：不打断用户正在读的内容。
     <div
-      className="fixed bottom-14 right-5 z-50 flex flex-col gap-2"
+      className="fixed right-4 bottom-4 z-50 flex flex-col gap-2"
       role="status"
       aria-live="polite"
       aria-atomic="false"
@@ -60,7 +60,8 @@ export function ToastHost() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 4, transition: { duration: 0.12 } }}
             transition={{ duration: 0.16, ease: 'easeOut' }}
-            className="max-w-[520px] cursor-pointer rounded-lg border border-line bg-card px-4 py-2.5 shadow-card"
+            // 窄窗口下不能横向溢出：max-w 用 min() 夹到「视口宽减两侧留白」
+            className="max-w-[min(520px,calc(100vw-2rem))] cursor-pointer rounded-lg border border-line bg-card px-4 py-2.5 shadow-card"
             onClick={() => useToasts.getState().dismiss(item.id)}
           >
             <div className="whitespace-pre-wrap">{item.text}</div>

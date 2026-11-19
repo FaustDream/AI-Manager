@@ -205,7 +205,7 @@ export default function OverviewPage() {
   }, [report, rows, qc, staleAfterMs]);
 
   return (
-    <div className="stagger flex flex-col gap-3">
+    <div className="stagger flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <h1 className="text-base font-semibold">仪表盘</h1>
         <span className="flex-1" />

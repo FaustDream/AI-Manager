@@ -289,7 +289,7 @@ export default function HubPage() {
   );
 
   return (
-    <div className="stagger flex flex-col gap-3">
+    <div className="stagger flex flex-col gap-4">
       {/* 分发中心 = 分发库 + 本工具写过的 MCP；单个软件 = 该软件的技能副本与 MCP 配置 */}
       <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
         <button
