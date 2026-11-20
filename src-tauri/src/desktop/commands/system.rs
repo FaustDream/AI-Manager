@@ -4,7 +4,7 @@
 use super::*;
 use crate::app::error::ErrorKind;
 
-/// 健康报告。浏览器化后托盘已退役，临期/新鲜度提醒改由前端桌面通知承担
+/// 健康报告。临期/新鲜度提醒由前端桌面通知承担
 /// （数据源就是本报告里的 accounts.expiring 与 credits_at）。
 pub async fn system_health(
     state: &AppState,

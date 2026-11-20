@@ -74,7 +74,7 @@ pub struct Schedule {
     pub id: String,
     pub name: String,
     pub action: ScheduleAction,
-    /// None 保留原来的全账号任务；Some 只执行这个账号的旅行。
+    /// None 保留全账号任务；Some 只执行这个账号的旅行。
     #[serde(default)]
     pub account_iid: Option<String>,
     pub kind: RuleKind,
@@ -327,7 +327,7 @@ fn load(db: &Db, now: DateTime<Local>) -> Result<Vec<Schedule>> {
     Ok(list)
 }
 
-/// 旧版「积分刷新」按小时（默认 1 小时）配下的任务，读到就收紧到 `SEED_CREDITS_MINUTES`。
+/// 按小时（默认 1 小时）配下的「积分刷新」任务，读到就收紧到 `SEED_CREDITS_MINUTES`。
 ///
 /// 判定必须窄：只认**默认种子那两个 id**（`credits-hourly` / `credits-10min`），
 /// 且必须是全局、`every`、启用、间隔正好 60 分钟。用户自己改过的 id 与间隔一律不动——

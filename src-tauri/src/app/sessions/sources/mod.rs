@@ -21,7 +21,7 @@ use std::collections::HashMap;
 ///
 /// 客户端一直在写自己的库，来源级指纹几乎每次都会变；但绝大多数会话的正文文件
 /// 没动过。按「文件元数据」缓存计数，重扫一个来源就从「读几十 MB 正文」变成
-/// 「几十次 stat」——这是 v1 里最有效的一条优化，不能省。
+/// 「几十次 stat」，不能省。
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct MsgCache {
     #[serde(default)]

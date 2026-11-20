@@ -1,9 +1,9 @@
-//! ZCode 活动套餐的查询与领取（v1 `zclaim.py` / `zcaptcha.py` 的直译）。
+//! ZCode 活动套餐的查询与领取。
 //!
 //! 领取必须带阿里云验证码参数（上游强制），验证码只能在浏览器里跑（官方 SDK）：
 //! 起一个只监听 127.0.0.1 随机端口的临时页面 → 用户在浏览器里完成无痕验证 →
 //! 参数 POST 回来 → 关服务。窗口关掉就结束，不留常驻端口——这不是 D3 禁的
-//! 「本机 IPC 端口」，是用户交互的回调通道，v1 同款。
+//! 「本机 IPC 端口」，是用户交互的回调通道。
 //! 活动来源两条：billing/preview（常规）与 marketing/touch（客户端弹窗），都查才不漏。
 
 use crate::app::error::{AppError, ErrorKind, Result};
@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 
 const API_BASE: &str = "https://zcode.z.ai";
-/// v1 同款：验证码页最长等 3 分钟，超时让用户重新发起。
+/// 验证码页最长等 3 分钟，超时让用户重新发起。
 const CAPTCHA_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_CAPTCHA: (&str, &str, &str) = ("cn", "no8xfe", "11xygtvd");
 
@@ -215,7 +215,7 @@ async fn submit(
         .map_err(|e| AppError::new(ErrorKind::Provider, format!("领取请求失败：{}", e.message)))?;
     if resp.status == 401 || resp.status == 403 {
         // 401/403 也可能是人机校验挑战，不能一律当成登录失效。
-        // v1 还会看响应头 x-aliyun-captcha-verify-param；我们的 HttpResponse 不带
+        // 响应头 x-aliyun-captcha-verify-param 我们的 HttpResponse 不带，
         // 响应头，用 body 判别，实测上游两种都会在 body 里带 captcha 字样。
         if resp.body.to_lowercase().contains("captcha") {
             return Err(AppError::new(ErrorKind::Provider, "需要重新完成人机校验"));
@@ -452,7 +452,7 @@ fn captcha_blocking() -> Result<(String, String)> {
         .map_err(|e| AppError::new(ErrorKind::Io, format!("读回调端口失败：{e}")))?
         .port();
     // 场景参数先按长期观测的默认值；上游下发参数的接口需要再打一次 configs，
-    // v1 拿匿名头去取，这里保持一致：取不到就用默认，不影响领取本身。
+    // 匿名头去取，取不到就用默认，不影响领取本身。
     let (region, prefix, scene_id) = DEFAULT_CAPTCHA;
     let page = captcha_page(region, prefix, scene_id);
     let url = format!("http://127.0.0.1:{port}/");

@@ -285,7 +285,7 @@ impl Service {
         blocking(move || SqliteSessions::new(&db).facets()).await?
     }
 
-    // -------------------------------------------------- v3：置顶 / 改名 / 隐藏 / 标签 / 导出
+    // -------------------------------------------------- 置顶 / 改名 / 隐藏 / 标签 / 导出
 
     /// 置顶 / 取消置顶（只写本地标记）。
     pub async fn pin(&self, keys: Vec<String>, on: bool) -> Result<usize> {
@@ -368,9 +368,9 @@ impl Service {
     }
 
     /// 会话维度统计（仪表盘用）。
-    pub async fn stats(&self) -> Result<SessionStats> {
+    pub async fn stats(&self, window: crate::app::window::DayWindow) -> Result<SessionStats> {
         let db = self.db.clone();
-        blocking(move || stats::stats(&db)).await?
+        blocking(move || stats::stats(&db, window)).await?
     }
 
     /// FTS 后台索引一批（后台任务与手动触发共用）。

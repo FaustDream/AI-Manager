@@ -1,6 +1,6 @@
 //! 「刷新积分」失败必须逐条留痕：前端 toast 里的「N 个查询失败」必须有后端 Error 行对应。
 //!
-//! 以前 `credits_batch` 把错误塞进 `CreditSnapshot.error` 就返回，界面能看到红字，
+//! 把错误塞进 `CreditSnapshot.error` 就返回时，界面能看到红字，
 //! 但 `app.jsonl` 里一条失败都没有——事后完全查不出「是哪几个账号、为什么失败」。
 
 mod support;
@@ -117,7 +117,7 @@ async fn credits_failures_are_logged_per_account() {
 
 /// 触发方必须原样进批次汇总：总览页积分过期的自动补刷传 `auto`，
 /// 日志里就不能标「手动」——否则排障时看不出这轮是谁触发的
-/// （v1.9.1 九类测试发现：自动补刷曾与手动按钮共用 `user`）。
+/// （自动补刷曾与手动按钮共用 `user` 时排障会分不清触发方）。
 #[tokio::test]
 async fn credits_batch_logs_client_trigger_verbatim() {
     let paths = TestPaths::new();

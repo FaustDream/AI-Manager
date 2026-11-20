@@ -26,7 +26,7 @@ pub struct RefreshReport {
     /// 本次扫描到的账号数（含已存在的）
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub scanned: usize,
-    /// 新增的（库里原来没有）
+    /// 新增的字段
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub added: usize,
     /// 有凭据的账号数
@@ -325,7 +325,7 @@ mod tests {
     fn unknown_expiry_is_left_alone() {
         let (_dir, db) = setup();
         seed(&db, "qoder:a", Some(5_000));
-        // 凭据包没有 expires_at（v1 用空串表示「不知道」）
+        // 凭据包没有 expires_at（空串表示「不知道」）
         repo::set_secret(&db, "qoder:a", &secret_with_expiry(""), None).unwrap();
 
         let report = sync_from_credentials(&db).unwrap();

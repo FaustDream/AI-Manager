@@ -2,7 +2,7 @@
 //!
 //! 四条前提决定了这个适配器的形状，别照着其它平台的样子改：
 //!
-//!  1. **不做签到/领取**。领取接口（`campaign/landing/checkin`）在 2026-11 实测会被
+//!  1. **不做签到/领取**。领取接口（`campaign/landing/checkin`）实测会被
 //!     风控，代价远大于每天 200 额度；用户要签到请去豆包客户端里点。所以本模块只保留
 //!     只读的面板查询，`Provider::checkin` 保持默认「不支持」。
 //!  2. **没有本地登录态可读**。豆包电脑版是 Electron，登录态在 Chromium 的加密
@@ -10,7 +10,7 @@
 //!     没有可回调的授权码。所以账号只能由用户**粘贴 Cookie** 添加
 //!     （`accounts::cookie`），`scan` 永远返回 0，`current_id` 永远 None。
 //!  3. **鉴权就是 doubao.com 的 Cookie**：没有 a_bogus / msToken 签名，
-//!     `device_id` 留空也能过（2026-10 实测，见 techysy/CreditDaddy#32）。
+//!     `device_id` 留空也能过（见 techysy/CreditDaddy#32）。
 //!  4. **平台不下发额度到期日**。官方口径是「赠送额度自发放起 30 天内有效」，但
 //!     面板只回累计额度与今日发放额，没有批次也没有到期时间。这里**不推算**：
 //!     推算出来的日期会被当成平台数据，比空着更容易误导。
@@ -175,7 +175,7 @@ impl Panel {
 /// 从 `detail` 的 `data` 里取额度。
 ///
 /// 不要求 `daily_signin` 任务存在：工作版 / 飞书企业账号没有签到任务，但额度面板
-/// 一样有值；以前把「缺任务」当错误，等于让这些账号连余额都查不到。
+/// 一样有值；把「缺任务」当错误会让这些账号连余额都查不到。
 fn parse_panel(data: &Value) -> Panel {
     let signin = data
         .get("tasks")
@@ -479,7 +479,7 @@ mod tests {
 
     #[tokio::test]
     async fn credits_still_work_for_accounts_without_signin_task() {
-        // 工作版账号以前会因为「没有签到任务」直接报错，连余额都查不到
+        // 工作版账号没有「签到任务」就报错的话，连余额都查不到
         let http = MockHttp::new();
         http.on(
             &detail_url(),

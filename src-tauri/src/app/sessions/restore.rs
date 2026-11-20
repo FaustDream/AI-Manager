@@ -26,7 +26,7 @@ pub struct RestoreOutcome {
 }
 
 /// 界面入口：只允许对**当前登录**的 WorkBuddy 账号恢复。
-/// 恢复的是「本版本里已有的全部会话」，等价 v1 手动点「恢复会话」的口径。
+/// 恢复的是「本版本里已有的全部会话」。
 pub fn for_account(db: &Db, roots: &Roots, iid: &str) -> Result<RestoreOutcome> {
     let (platform, account_id) = iid
         .split_once(':')

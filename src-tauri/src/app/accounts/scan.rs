@@ -1,7 +1,7 @@
 //! 扫描编排：遍历各平台 Provider，把产物**扫到一个就落库一个**。
 //!
 //! 顺序原则的原因：先把凭据加密写进去，再处理下一个，这样内存里同时存在的
-//! 明文 token 始终只有一个（v1 是整包解密，所有 token 同时在内存）。
+//! 明文 token 始终只有一个（整包解密会让所有 token 同时在内存）。
 
 use crate::app::accounts::credential::Credential;
 use crate::app::accounts::{repo, AccountIdentity};
@@ -17,7 +17,7 @@ pub struct ScanReport {
     /// 扫到的账号总数（含已存在的）
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub scanned: usize,
-    /// 新增的（库里原来没有）
+    /// 新增的字段
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub added: usize,
     /// 每个平台的明细：平台标签 → 条数
@@ -75,7 +75,7 @@ fn scan_providers(db: &Db, providers: Vec<Box<dyn providers::Provider>>) -> Resu
 
 /// 清理历史缺陷留下的「zcode:ZCode 账号」垃圾行。
 ///
-/// 旧版两个缺陷共同造出这种行：客户端 3.18 的 v2 加密解不开 → identity 全兜底 →
+/// 客户端 3.18 的 v2 加密解不开 → identity 全兜底 →
 /// 「ZCode 账号」同时成了显示名和 account_id，每次扫描都会再插一行。修复后同一份
 /// 登录会以正确身份入库，垃圾行留着只会一直「查不出积分」。**只删能确认与客户端
 /// 当前登录是同一份的**（identity 解出来相等），其余保留给用户手动处理。

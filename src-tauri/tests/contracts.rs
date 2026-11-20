@@ -292,8 +292,8 @@ fn fake_workbuddy(paths: &TestPaths) -> (ai_manager::app::clients::Roots, std::p
 #[test]
 fn contract_11_no_cross_version_sync_api() {
     // 编译期保证：SessionStore trait 里没有 build_plan / apply_item / sync_session。
-    // v1 的 transfer.import_from_other 与 with_other 参数已确认无调用方（死代码），
-    // v2 不定义这些方法——「不存在」本身就是这个测试的断言。
+    // transfer.import_from_other 与 with_other 参数已确认无调用方（死代码），
+    // 「不存在」本身就是这个测试的断言。
     fn _assert_trait_shape<T: SessionStore>() {}
     _assert_trait_shape::<ai_manager::app::sessions::Store>();
 }
@@ -478,7 +478,7 @@ fn contract_18_time_crosses_ipc_as_machine_readable() {
 #[test]
 fn contract_19_no_stdout_writes() {
     // 例外只有一处，是**控制台子系统**的 bin 入口（stdout 是它唯一的输出渠道）：
-    //   - `bin/ai-manager.rs`：浏览器化后的唯一入口，不带 windows_subsystem 属性，
+    //   - `bin/ai-manager.rs`：唯一入口，不带 windows_subsystem 属性，
     //     终端里的启动提示只能走 stdout。
     // 业务与界面代码（`app/`、`desktop/`）一律不得写 stdout——日志统一走 log 模块，
     // 壳层写 stdout 会让无控制台运行时的输出凭空消失。

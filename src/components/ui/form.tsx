@@ -88,7 +88,7 @@ export function SkeletonBlock({
   );
 }
 
-/** 三态之空/错误：七个列表共用同一套排版（v1 同款）。 */
+/** 三态之空/错误：七个列表共用同一套排版。 */
 export function StateBlock({
   kind,
   title,

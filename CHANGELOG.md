@@ -2,6 +2,16 @@
 
 格式：版本（日期）+ 一句话主题 + 要点；详细过程见 git log。
 
+## 2.0.30（2026-11-20）
+
+本机工作区整理：清理已失效的开发脚本、编译产物与过时文档，规范与忽略规则同步到现状。
+
+- 变更：删除 Tauri 桌面壳退役后遗留的 `src-tauri/icons/` 图标（android/ios 全分辨率、`icon.icns`、各尺寸 Square/StoreLogo 等 51 个），只保留 NSIS 安装包与快捷方式仍用的 `icon.ico`
+- 变更：`tools/` 清理失效脚本（快捷方式目标缺失的 webtest、Tauri 图标生成、PySide6 截图、WebView2 内存采样等）与 `.wb-run` 历史日志；保留 dev-run / build-release / wb-heavy-run / intl-doctor / wb-stability 工具链
+- 变更：`docs/` 删除已落地的规划文档（浏览器化迁移方案 / 用户体验优化总纲 / 界面动效与视觉优化）、一次性排查与开源手册、逆向分析目录及临时分享包，仅保留规则体系与验收截图
+- 变更：`target/debug` 清理历史编译产物（旧 `.rlib` / `.pdb` / incremental 缓存），释放约 14 GB；保留最新一组与 release 产物
+- 变更：`.gitignore` 移除指向已删路径的死规则；`AGENTS.md` §3 的 tools 描述与 `process.rs` 历史根因注释同步；本轮改动不影响运行逻辑
+
 ## 2.0.29（2026-11-19）
 
 分发链路恢复 + 交互动效第一档：浏览器形态的安装包、便携包与 CI 流水线全部改齐，废弃的桌面壳配置清掉，界面补上按压 / 进度 / 过渡这一层。

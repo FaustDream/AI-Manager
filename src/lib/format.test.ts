@@ -1,6 +1,6 @@
 // 前端第一条测试：时间/数值格式化的纯函数契约。
-// 「按本地时区显示」这条约定原先挂在 Rust 契约 18 上，但它测的是 chrono 自身；
-// 真正产出展示文本的是这里，所以契约落在这一层（TZ 由 vitest.config.ts 固定）。
+// 「按本地时区显示」测的是格式化函数自身，真正产出展示文本的也是这里，
+// 所以契约落在这一层（TZ 由 vitest.config.ts 固定）。
 import { describe, expect, it } from 'vitest';
 import {
   fmtAmount,

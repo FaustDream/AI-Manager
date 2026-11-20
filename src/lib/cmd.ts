@@ -141,7 +141,7 @@ export interface CmdArgs {
   session_open_body: { key: string };
   session_open_client: { key: string };
   session_suggest_titles: { keys: string[] };
-  session_stats: void;
+  session_stats: { from?: string | null; to?: string | null };
   activity_overview: { iid: string };
   activity_claim: { iid: string };
   activity_depart: { iid: string; location: number | null };
@@ -153,13 +153,13 @@ export interface CmdArgs {
   checkin_batch: { iids: string[] };
   daily_state: void;
   daily_run_now: void;
-  credit_trend: { iid?: string | null; days?: number | null };
+  credit_trend: { iid?: string | null; from?: string | null; to?: string | null };
   credit_claims_recent: { limit?: number | null };
-  credit_flow: { days?: number | null };
+  credit_flow: { from?: string | null; to?: string | null };
   system_health: void;
   platform_capabilities: void;
   usage_scan: void;
-  usage_overview: { days?: number | null };
+  usage_overview: { from?: string | null; to?: string | null };
   diagnose_bundle: void;
   update_check: void;
   config_snapshot_list: void;
@@ -637,9 +637,9 @@ function logAction(
 /**
  * 失败留痕：**所有命令**都要记，不只是关键动作。
  *
- * 以前这里只记「读失败」且是 warn，非关键动作的失败干脆没有任何记录 ——
- * 界面弹一句 toast 就消失了，事后完全查不出「刚才那个报错是什么」。
- * 现在统一记 error，并带上 `action`（哪个命令）与 `evidence`（kind + 原文）。
+ * 失败留痕：**所有命令**都要记，不只是关键动作，统一记 error，
+ * 并带上 `action`（哪个命令）与 `evidence`（kind + 原文）——否则界面弹一句 toast
+ * 就消失了，事后查不出「刚才那个报错是什么」。
  */
 function logUiFailure(cmd: string, error: unknown, args?: unknown) {
   const label = CMD_LABELS[cmd] ?? cmd;

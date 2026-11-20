@@ -514,7 +514,7 @@ pub fn deploy(hub: &Hub, name: &str, keys: &[TargetKey], overwrite: bool) -> Res
 
 /// 启动自动同步：把「本工具部署过、但内容落后于库」的平台副本按库版本刷新。
 ///
-/// 与旧版的差别：旧版按归属表连缺失的平台一起铺；现在没有归属表——
+/// 判定口径：
 /// 「库里有」不等于「应该到处都在」，**missing 不自动铺**，部署到哪些平台
 /// 仍由用户在界面里显式选。MCP 不参与：没有中心 MCP 库，无法判断归属。
 pub fn sync_all(hub: &Hub) -> DeployReport {

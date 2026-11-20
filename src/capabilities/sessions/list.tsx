@@ -1,8 +1,7 @@
 // 会话列表的共享主体：活跃页与「已归档会话」页唯一的实现。
-// 之前两页各写一份，筛选/分页/多选慢慢漂移（归档页连搜索都没有）；
-// 现在抽成一个组件，mode 只决定：状态口径、批量按钮集合与几个专属控件。
+// mode 只决定：状态口径、批量按钮集合与几个专属控件。
 //
-// v3 会话管理（docs/session-management-design.md）：置顶 / 本地改名 / 标签 /
+// 会话管理设计（docs/session-management-design.md）：置顶 / 本地改名 / 标签 /
 // 正文全文搜索 / 已隐藏视图 / 右键菜单 / 导出 / 未命名治理，全部落在这里。
 //
 // 列表只有一份：所有平台、所有账号的会话合在一起（不按平台拆标签页，也不显示
@@ -124,7 +123,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
     return () => io.disconnect();
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
-  // 搜索防抖：输入停止 250ms 才进 filter（此前每敲一个键就打一次后端分页）
+  // 搜索防抖：输入停止 250ms 才进 filter，避免每敲一个键就打一次后端分页
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const value = searchDraft.trim() || null;
@@ -1172,4 +1171,3 @@ function tagsFromFacets(_facets: Facets | undefined, _row: SessionRow): string[]
 function navigateArchive() {
   window.dispatchEvent(new CustomEvent('aim:navigate', { detail: 'sessions-archive' }));
 }
-

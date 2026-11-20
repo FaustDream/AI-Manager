@@ -6,7 +6,7 @@ export type ScanReport = {
  */
 scanned: number, 
 /**
- * 新增的（库里原来没有）
+ * 新增的字段
  */
 added: number, 
 /**

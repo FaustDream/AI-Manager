@@ -5,8 +5,8 @@
 //! - **设置界面**：`config_set` 更新内存并写回文件，立即生效（文件注释会被重写掉）。
 //!
 //! 代码里不再散落硬编码的阈值/间隔；确实无法配置化的（平台端点、协议常量）
-//! 在使用处注释说明。历史遗留的 kv 配置键（checkin.max_concurrent 等）在首次
-//! 生成配置文件时迁移进来并删除，老用户调过的值不丢。
+//! 在使用处注释说明。kv 配置键（checkin.max_concurrent 等）在首次
+//! 生成配置文件时迁移进来并删除，用户调过的值不丢。
 
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::{fsx, paths};

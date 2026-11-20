@@ -41,7 +41,7 @@ mod tests {
         )
     }
 
-    /// 用客户端的固定密钥造一个 `$wbEncrypted` 字段（等价于 v1 的 `seal_field`）
+    /// 用客户端的固定密钥造一个 `$wbEncrypted` 字段
     fn seal_with(nonce: &[u8], value: &str) -> Value {
         let key_id = wb_key_id();
         let aad = wb_aad(b"WBEV1", 2, &key_id, 1);
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn both_nonce_lengths_are_supported() {
-        // 客户端 12 字节；v1 的 seal_field 写 16 字节。两种都出现过
+        // 客户端 12 字节；也有 16 字节的，两种都出现过
         assert_eq!(open_field(&seal_with(&[1u8; 12], "a")).unwrap(), "a");
         assert_eq!(open_field(&seal_with(&[1u8; 16], "b")).unwrap(), "b");
     }
@@ -342,7 +342,7 @@ mod tests {
         );
     }
 
-    /// 旧版 `save_pack` 在 rename 失败时会同时丢掉正式档案、只留下完整 tmp。
+    /// rename 失败时可能同时丢掉正式档案、只留下完整 tmp。
     /// 这些账号必须能被认领回来，否则永远报「本机没有完整登录态档案」。
     #[test]
     fn orphan_tmp_pack_is_claimed_back() {

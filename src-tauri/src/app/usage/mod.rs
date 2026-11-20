@@ -1,6 +1,6 @@
 //! 本地用量采集：**只读**客户端落盘文件，不代理、不注入、不改任何配置。
 //!
-//! 数据来源（2026-11-06 实测）：
+//! 数据来源：
 //!   - WorkBuddy 国内版/国际版：`projects/<slug>/<id>.jsonl`，每条 assistant 消息带
 //!     `providerData.usage` 与 `rawUsage`（含平台实际扣费 `credit`）
 //!   - CodeBuddy：`history/<ws>/index.json` 的 `requests[].usage`（同样带 `credit`）
@@ -14,6 +14,7 @@
 use crate::app::clients::Roots;
 use crate::app::db::Db;
 use crate::app::error::Result;
+use crate::app::window::DayWindow;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -187,19 +188,15 @@ pub struct UsageOverview {
     pub coverage: Vec<SourceCoverage>,
 }
 
-pub fn overview(db: &Db, days: i64) -> Result<UsageOverview> {
-    let days = days.clamp(1, 90);
+/// 区间总览：按天 / 按平台 / 按模型。窗口由界面给定（`window.rs`），不设天数上限。
+pub fn overview(db: &Db, window: DayWindow) -> Result<UsageOverview> {
     let today = chrono::Local::now().date_naive();
-    let since = (today - chrono::Duration::days(days - 1))
-        .and_hms_opt(0, 0, 0)
-        .and_then(|at| at.and_local_timezone(chrono::Local).single())
-        .map(|at| at.timestamp_millis())
-        .unwrap_or(0);
+    let (since, until) = (window.start_ms(), window.end_ms());
 
     let mut day_map: BTreeMap<String, UsageDay> = BTreeMap::new();
     // 先把区间内每一天都铺成 0 值，图表才有完整的日期轴。
     // 只返回「有记录的天」会让相邻两点之间凭空连成斜线，看着像每天都在匀速上涨。
-    let mut cursor = today - chrono::Duration::days(days - 1);
+    let mut cursor = window.from;
     loop {
         let key = cursor.format("%Y-%m-%d").to_string();
         day_map.insert(
@@ -212,7 +209,7 @@ pub fn overview(db: &Db, days: i64) -> Result<UsageOverview> {
                 by_app: Vec::new(),
             },
         );
-        if cursor >= today {
+        if cursor >= window.to {
             break;
         }
         match cursor.succ_opt() {
@@ -238,10 +235,10 @@ pub fn overview(db: &Db, days: i64) -> Result<UsageOverview> {
         let mut stmt = conn.prepare(
             "SELECT date(created_at/1000,'unixepoch','localtime') AS d, platform,
                     SUM(total_tokens), COALESCE(SUM(credit),0), COUNT(*)
-             FROM token_usage_records WHERE created_at >= ?1
+             FROM token_usage_records WHERE created_at >= ?1 AND created_at <= ?2
              GROUP BY d, platform ORDER BY d",
         )?;
-        let rows = stmt.query_map([since], |row| {
+        let rows = stmt.query_map([since, until], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -292,10 +289,10 @@ pub fn overview(db: &Db, days: i64) -> Result<UsageOverview> {
 
         let mut stmt = conn.prepare(
             "SELECT model, SUM(total_tokens), COALESCE(SUM(credit),0), COUNT(*)
-             FROM token_usage_records WHERE created_at >= ?1
+             FROM token_usage_records WHERE created_at >= ?1 AND created_at <= ?2
              GROUP BY model ORDER BY SUM(total_tokens) DESC LIMIT 20",
         )?;
-        let rows = stmt.query_map([since], |row| {
+        let rows = stmt.query_map([since, until], |row| {
             Ok(UsageModel {
                 model: row.get(0)?,
                 tokens: row.get::<_, i64>(1)?,
@@ -430,7 +427,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
         let report = scan_all(&db, &Roots::system()).unwrap();
-        let overview = overview(&db, 30).unwrap();
+        let overview = overview(&db, DayWindow::last_days(30)).unwrap();
         println!(
             "扫描={} 新增={} 跳过={:?} 错误={:?}",
             report.scanned, report.inserted, report.skipped, report.errors
@@ -460,7 +457,7 @@ mod tests {
         std::fs::write(&file, format!("{}\n", wb_line("a", now))).unwrap();
         scan_all(&db, &roots).unwrap();
 
-        let report = overview(&db, 7).unwrap();
+        let report = overview(&db, DayWindow::last_days(7)).unwrap();
         assert_eq!(report.today.calls, 1);
         assert_eq!(report.today.tokens, 120);
         assert!((report.today.credit - 0.5).abs() < 1e-9);

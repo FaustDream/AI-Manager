@@ -212,7 +212,7 @@ impl Db {
                     [SCHEMA_VERSION],
                 )?;
             } else {
-                // 升级走增量迁移（v3 起恢复迁移通道）：全部是 ALTER/CREATE 增量语句，
+                // 升级走增量迁移：全部是 ALTER/CREATE 增量语句，
                 // 不动既有列，装好的环境无感升级。库比程序新才报错——降级运行会把
                 // 新结构当成旧结构用，产生难以排查的数据问题。
                 let stored: i64 =
@@ -243,11 +243,11 @@ impl Db {
         })
     }
 
-    /// v2 → v3：会话管理扩展（置顶 / 本地命名 / 标签 / 正文全文索引）。
+    /// 会话管理扩展（置顶 / 本地命名 / 标签 / 正文全文索引）。
     ///
     /// execute_batch 不是原子的：中途崩溃可能留下「一半迁移」的库。所以 ALTER 用
     /// 逐列检查兜底（重复执行不炸），CREATE 全部带 IF NOT EXISTS，版本号最后才写——
-    /// 任何一步失败，下一轮启动都能从 v2 原地重跑。
+    /// 任何一步失败，下一轮启动都能原地重跑。
     fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
         add_column(conn, "session_marks", "pinned_at", "TEXT")?;
         add_column(conn, "session_marks", "title_override", "TEXT")?;
@@ -278,7 +278,7 @@ impl Db {
         Ok(())
     }
 
-    /// v3 → v4：签到提交标记表（跨轮次幂等）。
+    /// 签到提交标记表（跨轮次幂等）。
     fn migrate_v3_to_v4(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS checkin_attempts (
@@ -293,10 +293,10 @@ impl Db {
         Ok(())
     }
 
-    /// v4 → v5：豆包不再签到（领取接口会被风控）。
+    /// 豆包不再签到（领取接口会被风控）。
     ///
     /// `requires_checkin` 是入表时写死的列，光改 Provider 管不到已有账号——
-    /// 不迁移的话老账号上仍会画出「签到」按钮，点了才报「不支持」。
+    /// 不迁移的话已有账号上仍会画出「签到」按钮，点了才报「不支持」。
     fn migrate_v4_to_v5(conn: &Connection) -> Result<()> {
         conn.execute(
             "UPDATE accounts SET requires_checkin = 0 WHERE platform = 'doubao'",
@@ -405,7 +405,7 @@ fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Resul
 mod tests {
     use super::*;
 
-    /// v2 的存量库打开后应无感升到 v3（v3 起恢复迁移通道），签到功能不受影响。
+    /// 存量库打开后应无感升到当前 schema 版本，签到功能不受影响。
     #[test]
     fn existing_v2_database_migrates_to_current_version() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -439,7 +439,7 @@ mod tests {
             .is_empty());
     }
 
-    /// v4 → v5：豆包老账号的 requires_checkin 必须被迁成 0，否则界面上还留着签到按钮。
+    /// 豆包账号的 requires_checkin 必须被迁成 0，否则界面上还留着签到按钮。
     #[test]
     fn doubao_accounts_lose_checkin_on_v5_migration() {
         let dir = tempfile::TempDir::new().unwrap();

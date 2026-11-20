@@ -1018,7 +1018,7 @@ fn ms_to_dt(ms: i64) -> Option<chrono::DateTime<Local>> {
 }
 
 /// 游标里必须同时有排序档位、置顶位、排序键与唯一键，否则数据增删会让翻页错位。
-/// 旧格式（无档位前缀）按时间档解读，兼容升级前发出的游标。
+/// 无档位前缀的游标按时间档解读，兼容既有游标。
 pub fn encode_cursor(sort: Sort, pinned: bool, value: i64, session_id: &str) -> String {
     B64.encode(format!(
         "{}{}|{value}:{session_id}",
@@ -1035,10 +1035,10 @@ pub fn decode_cursor(raw: &str) -> Result<(Sort, bool, i64, String)> {
         String::from_utf8(text).map_err(|_| AppError::new(ErrorKind::Invalid, "游标不是 UTF-8"))?;
     let (tag, rest) = match text.split_once('|') {
         Some((tag, rest)) => (tag, rest),
-        // 旧格式：last_at:session_id（无档位、无置顶位）
+        // 游标：last_at:session_id（无档位、无置顶位）
         None => ("", text.as_str()),
     };
-    // 旧格式只有 "t"，v3 起带置顶位："t1" / "t0"
+    // 档位只有 "t" 时不带置顶位："t1" / "t0" 带置顶位
     let (sort, pinned) = match tag.chars().next() {
         Some(c) => {
             let sort = Sort::from_tag(&c.to_string());
@@ -1254,7 +1254,7 @@ mod tests {
         assert_eq!(store.facets().unwrap().unnamed, 2);
     }
 
-    /// v3 筛选矩阵：置顶优先排序（含游标跨页）、只看置顶、本地命名参与搜索、
+    /// 筛选矩阵：置顶优先排序（含游标跨页）、只看置顶、本地命名参与搜索、
     /// 标签多选、已隐藏视图。page / keys / facets / count 四条路必须同口径。
     #[test]
     fn v3_filters_pinned_rename_tags_hidden() {

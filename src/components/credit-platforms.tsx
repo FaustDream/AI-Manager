@@ -38,11 +38,16 @@ function summarize(points: CreditFlowPoint[]) {
 export function CreditPlatformSplit({
   platforms,
   note,
+  flush = false,
 }: {
   platforms: CreditPlatformFlow[];
   /** 区间说明（最近 N 天 / 自定义起止），由页面统一口径 */
   note: string;
+  /** 嵌在别的卡里时去掉自己的边框与内边距（仪表盘左栏就是这么用的） */
+  flush?: boolean;
 }) {
+  // 自带卡壳 or 只出内容：两种形态共用同一份内部结构，避免出现两套表
+  const shell = flush ? 'min-w-0' : 'rounded-lg border border-line bg-card p-3';
   const [selected, setSelected] = useState<string | null>(null);
   const rows = useMemo<Row[]>(
     () =>
@@ -63,7 +68,7 @@ export function CreditPlatformSplit({
 
   if (rows.length === 0) {
     return (
-      <section className="rounded-lg border border-line bg-card p-3">
+      <section className={shell}>
         <div className="mb-2 flex flex-wrap items-baseline gap-2">
           <h3 className="text-xs font-semibold tracking-wide text-fg2">各软件消耗</h3>
           <span className="flex-1" />
@@ -77,14 +82,14 @@ export function CreditPlatformSplit({
   }
 
   return (
-    <section className="rounded-lg border border-line bg-card p-3">
-      <div className="mb-1 flex flex-wrap items-baseline gap-2">
+    <section className={shell}>
+      <div className="mb-1 flex flex-wrap items-baseline gap-2 px-3">
         <h3 className="text-xs font-semibold tracking-wide text-fg2">各软件消耗</h3>
         <span className="flex-1" />
         <span className="text-xs text-muted">{note}</span>
       </div>
 
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 px-1 text-xs text-muted">
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 px-3 text-xs text-muted">
         <span>
           合计到账 <span className="font-medium text-ok tabular-nums">+{fmtAmount(totalEarned)}</span>
         </span>
@@ -96,13 +101,14 @@ export function CreditPlatformSplit({
         )}
       </div>
 
-      <div className="px-1 pb-1 text-xs text-muted">
+      {/* 表头与行用同一份内边距（px-3）与列宽：差 8px 就会让整列数字看起来歪着 */}
+      <div className="px-3 pb-1 text-xs text-muted">
         <div className="flex items-center gap-3">
           <span className="min-w-0 flex-1">软件</span>
-          <span className="w-20 text-right">到账</span>
-          <span className="w-20 text-right">消耗</span>
-          <span className="w-20 text-right">净额</span>
-          <span className="w-24 text-right">期末余额</span>
+          <span className="w-[68px] text-right">到账</span>
+          <span className="w-[68px] text-right">消耗</span>
+          <span className="w-[68px] text-right">净额</span>
+          <span className="w-20 text-right">期末余额</span>
           <span className="w-10 text-right">占比</span>
         </div>
       </div>
@@ -133,14 +139,14 @@ export function CreditPlatformSplit({
                 <span className="truncate font-medium text-fg">{row.label}</span>
                 <span className="shrink-0 text-xs text-muted">{row.accounts} 个账号</span>
               </span>
-              <span className="relative w-20 text-right tabular-nums text-ok">
+              <span className="relative w-[68px] text-right tabular-nums text-ok">
                 {row.earned > 0 ? `+${fmtAmount(row.earned)}` : '—'}
               </span>
-              <span className="relative w-20 text-right tabular-nums text-bad">
+              <span className="relative w-[68px] text-right tabular-nums text-bad">
                 {row.spent > 0 ? `-${fmtAmount(row.spent)}` : '—'}
               </span>
-              <span className="relative w-20 text-right tabular-nums">{fmtDelta(row.net)}</span>
-              <span className="relative w-24 text-right tabular-nums">{fmtAmount(row.balance)}</span>
+              <span className="relative w-[68px] text-right tabular-nums">{fmtDelta(row.net)}</span>
+              <span className="relative w-20 text-right tabular-nums">{fmtAmount(row.balance)}</span>
               <span className="relative w-10 text-right text-xs tabular-nums text-muted">
                 {totalSpent > 0 ? shareText(share) : '—'}
               </span>

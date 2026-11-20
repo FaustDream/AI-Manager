@@ -1,4 +1,4 @@
-//! Qoder / Qoder CN 的 JetBrains 插件会话（实测 2026-11）。
+//! Qoder / Qoder CN 的 JetBrains 插件会话。
 //!
 //! 正源是 `~/.qoder{,-cn}/cache/projects/<项目>/conversation-history/<会话id>/<会话id>.jsonl`，
 //! 每行顶层是 `role`（user/assistant，与独立版 Qoder 的 `type` 字段不同名）+
@@ -53,7 +53,7 @@ fn fingerprint(root: &Path) -> String {
         "absent".into()
     } else {
         parts.sort();
-        // v3：正源从 projects 换到 cache/conversation-history、字段从 type 改为 role，强制存量重扫。
+        // 正源是 cache/conversation-history、字段用 role，布局/字段变更时强制存量重扫。
         format!("v3|{}", parts.join("|"))
     }
 }

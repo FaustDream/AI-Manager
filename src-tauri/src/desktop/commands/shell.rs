@@ -73,7 +73,7 @@ pub fn open_private_browser(url: String) -> std::result::Result<String, String> 
         .map_err(err_text)
 }
 
-/// 浏览器化后没有宿主窗口：命令保留为空操作，前端首屏流程不必为此分叉。
+/// 没有宿主窗口：命令保留为空操作，前端首屏流程不必为此分叉。
 pub fn app_show_window() {}
 
 // ---------------------------------------------------------------- 模型接口

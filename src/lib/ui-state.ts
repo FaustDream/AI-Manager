@@ -53,7 +53,7 @@ export function usePersistedFlag(
   return [value, update];
 }
 
-/** 字符串枚举的持久化：值不在白名单里就回退默认值，避免旧版本脏值把 UI 卡死。 */
+/** 字符串枚举的持久化：值不在白名单里就回退默认值，避免脏值把 UI 卡死。 */
 export function parseChoice<T extends string>(
   raw: string | null,
   fallback: T,
@@ -111,7 +111,7 @@ export type FontChoice = 'standard' | 'large';
 export const FONT_CHOICES: readonly FontChoice[] = ['standard', 'large'];
 export const FONT_KEY = 'font';
 
-/** 读档位：缺失、被策略禁用、旧版本脏值一律回退「标准」。 */
+/** 读档位：缺失、被策略禁用或值非法一律回退「标准」。 */
 export function loadFontChoice(): FontChoice {
   return parseChoice(store()?.getItem(PREFIX + FONT_KEY) ?? null, 'standard', FONT_CHOICES);
 }

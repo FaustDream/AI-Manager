@@ -196,7 +196,7 @@ async fn run_schedule(
     }
 }
 
-/// ZCode 活动自动领取（v1 行为，开关 kv `zcode_auto_claim` **默认关**）：
+/// ZCode 活动自动领取（开关 kv `zcode_auto_claim` **默认关**）：
 /// 每 15 分钟探测一轮，找到可领的就领第一个——领取会开浏览器过验证码，
 /// 所以必须是用户主动打开的开关。
 pub fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>) {
@@ -330,7 +330,7 @@ pub fn spawn_source_bridges() {
     });
 }
 
-/// 启动自动扫描账号：界面不再提供「扫描客户端」按钮，账号同步改为开机后台执行。
+/// 启动自动扫描账号：账号同步在开机后台执行。
 ///
 /// 延后 2 秒再跑：先让窗口上屏，扫描要读多个客户端目录，不该和冷启动抢 IO。
 /// 增量扫描本身很快；失败只记日志，不阻塞窗口。
@@ -364,7 +364,7 @@ pub fn spawn_startup_scan(db: Arc<Db>) {
     });
 }
 
-/// 启动自动同步技能（STAGES §7.1）。开关在 kv `hub.auto_sync`，缺省视为开（对齐 v1）。
+/// 启动自动同步技能（STAGES §7.1）。开关在 kv `hub.auto_sync`，缺省视为开。
 /// 挪到启动 20 秒后执行，别跟账号列表抢首屏；MCP 不参与（见 `skills::sync_all` 的注释）。
 pub fn spawn_hub_auto_sync(db: Arc<Db>, hub: Arc<crate::app::hub::Hub>) {
     crate::app::runtime::runtime().spawn(async move {
@@ -376,7 +376,7 @@ pub fn spawn_hub_auto_sync(db: Arc<Db>, hub: Arc<crate::app::hub::Hub>) {
                 .unwrap_or(true)
         })
         .await;
-        // 读开关失败按缺省开处理（对齐 v1）；panic 导致的 Err 也走这一支
+        // 读开关失败按缺省开处理；panic 导致的 Err 也走这一支
         if !enabled.unwrap_or(true) {
             return;
         }

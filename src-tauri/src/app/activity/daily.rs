@@ -1,6 +1,6 @@
 //! 每日活跃：成长中心（`/profile/growth-center`）的活跃判定，只读。
 //!
-//! 接口来自 Web 端 bundle 实测（2026-11-06，真实账号只读验证）：
+//! 接口来自 Web 端 bundle（真实账号只读验证）：
 //!   - `GET  /v2/activity/growth/tasks`        任务列表（进度 + 领取状态）
 //!   - `GET  /activity/growth/heatmap`         每月活跃地图（`cells[].score`）
 //!   - `GET  /activity/growth/streak`          连续活跃天数
@@ -8,7 +8,6 @@
 //! 活跃口径：heatmap 里**今天**的 `score > 0` 即算当日活跃。任务列表只用来回答
 //! 「还有哪些没完成」，本模块**绝不代领任务奖励**——那属于用户自己的动作。
 //!
-//! （曾经有过的「发一条『你好』补活跃」已移除：实测平台不计入活跃地图。）
 
 use super::Service;
 use crate::app::error::{AppError, ErrorKind, Result};

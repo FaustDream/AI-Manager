@@ -4,19 +4,15 @@ import type { SourceCount } from "./SourceCount";
 
 export type SessionStats = { 
 /**
- * 今天有活动的会话数（活跃口径）
+ * 区间内有活动的会话数（活跃口径）
  */
-today: number, 
-/**
- * 最近 7 天有活动的会话数（活跃口径）
- */
-week: number, 
+active: number, 
 /**
  * 会话总数（未隐藏，含已归档）
  */
 total: number, 
 /**
- * 未命名会话数（活跃口径，「去处理」落到未命名快筛）
+ * 未命名会话数（存量口径，未归档）
  */
 unnamed: number, 
 /**
@@ -24,10 +20,10 @@ unnamed: number,
  */
 archived: number, 
 /**
- * 按来源计数（含已归档）
+ * 按来源计数（区间口径）
  */
 by_source: Array<SourceCount>, 
 /**
- * 按项目计数 Top N（含已归档）
+ * 按项目计数 Top N（区间口径）
  */
 by_project: Array<ProjectCount>, };

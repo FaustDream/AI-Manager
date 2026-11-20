@@ -107,7 +107,7 @@ pub async fn session_purge(
 ) -> std::result::Result<crate::app::sessions::delete::PurgeReport, String> {
     let service = state.sessions.clone();
     let report = service.purge(keys).await.map_err(err_text)?;
-    // 一条都没删掉就是彻底失败：以前这里固定 Info，「135 条全部失败」在日志页
+    // 一条都没删掉就是彻底失败：固定 Info 时「135 条全部失败」在日志页
     // 按「只看错误」筛不出来，用户只能看到一句「删除完成」。
     let errors = report.errors.len();
     let level = if errors == 0 && report.refused == 0 {
@@ -191,7 +191,7 @@ pub async fn session_retention_set(
     Ok(days)
 }
 
-// ------------------------------------------------------------ v3：置顶 / 改名 / 隐藏 / 标签
+// ------------------------------------------------------------ 置顶 / 改名 / 隐藏 / 标签
 
 /// 置顶 / 取消置顶。只写本地标记，客户端与扫描都无感。
 pub async fn session_pin(
@@ -253,7 +253,7 @@ pub async fn session_tag_set(
     Ok(count)
 }
 
-// ------------------------------------------------------------ v3：导出 / 打开 / 建议 / 统计
+// ------------------------------------------------------------ 导出 / 打开 / 建议 / 统计
 
 /// 导出会话正文到 `data/exports/`（markdown / json），返回报告。
 pub async fn session_export(
@@ -325,9 +325,12 @@ pub async fn session_suggest_titles(
     state.sessions.suggest_titles(keys).await.map_err(err_text)
 }
 
-/// 会话维度统计（仪表盘「会话」区块）。
+/// 会话维度统计（仪表盘「会话」区块）。区间由界面给 `from` / `to`，不设天数上限。
 pub async fn session_stats(
     state: &AppState,
+    from: Option<String>,
+    to: Option<String>,
 ) -> std::result::Result<crate::app::sessions::SessionStats, String> {
-    state.sessions.stats().await.map_err(err_text)
+    let window = crate::app::window::DayWindow::parse(from.as_deref(), to.as_deref());
+    state.sessions.stats(window).await.map_err(err_text)
 }

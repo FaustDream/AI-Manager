@@ -1,36 +1,37 @@
 //! 会话维度的统计（仪表盘的「会话」区块）。
 //!
-//! 口径说明：这里的 total / by_source / by_project 是**全部未隐藏**的会话
-//! （含已归档——归档也是资产）；today / week / unnamed 按活跃口径
-//! （不含已归档），与「去会话页」按钮落地的列表视图对得上。
+//! 口径说明：
+//!   - `active` / `by_source` / `by_project` 是**区间口径**——窗口内有过活动
+//!     （`last_at` 落在区间里）且未归档的会话，三者分母一致，占比才对得上；
+//!   - `total` / `archived` / `unnamed` 是**存量口径**（未隐藏，含已归档）：
+//!     库存数字跟区间无关，换区间时不该变。
+//!
+//! 窗口由界面给定（`app/window.rs`），不设天数上限。
 
 use crate::app::db::Db;
 use crate::app::error::Result;
 use crate::app::sessions::store::{project_name, UNNAMED_TITLE};
-use chrono::{Local, TimeZone};
+use crate::app::window::DayWindow;
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct SessionStats {
-    /// 今天有活动的会话数（活跃口径）
+    /// 区间内有活动的会话数（活跃口径）
     #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub today: usize,
-    /// 最近 7 天有活动的会话数（活跃口径）
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub week: usize,
+    pub active: usize,
     /// 会话总数（未隐藏，含已归档）
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub total: usize,
-    /// 未命名会话数（活跃口径，「去处理」落到未命名快筛）
+    /// 未命名会话数（存量口径，未归档）
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub unnamed: usize,
     /// 已归档会话数
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub archived: usize,
-    /// 按来源计数（含已归档）
+    /// 按来源计数（区间口径）
     pub by_source: Vec<SourceCount>,
-    /// 按项目计数 Top N（含已归档）
+    /// 按项目计数 Top N（区间口径）
     pub by_project: Vec<ProjectCount>,
 }
 
@@ -56,10 +57,8 @@ pub struct ProjectCount {
 /// 项目排名的条数上限：仪表盘的排名列表超过 8 行就该滚动而不是铺开。
 const TOP_PROJECTS: usize = 8;
 
-pub fn stats(db: &Db) -> Result<SessionStats> {
-    let now_ms = Local::now().timestamp_millis();
-    let day_start = start_of_today_ms();
-    let week_start = now_ms - 7 * 24 * 3600 * 1000;
+pub fn stats(db: &Db, window: DayWindow) -> Result<SessionStats> {
+    let (start, end) = (window.start_ms(), window.end_ms());
 
     let mut out = SessionStats::default();
     db.read(|conn| {
@@ -68,14 +67,12 @@ pub fn stats(db: &Db) -> Result<SessionStats> {
              LEFT JOIN session_marks m
                ON m.source_key = s.source_key AND m.session_id = s.session_id
              WHERE m.hidden_at IS NULL";
-        out.today = conn.query_row(
-            &format!("SELECT COUNT(*) {active_sql} AND COALESCE(s.last_at, 0) >= ?1 AND COALESCE(m.archived_at, '') = ''"),
-            [day_start],
-            |r| r.get::<_, i64>(0),
-        )? as usize;
-        out.week = conn.query_row(
-            &format!("SELECT COUNT(*) {active_sql} AND COALESCE(s.last_at, 0) >= ?1 AND COALESCE(m.archived_at, '') = ''"),
-            [week_start],
+        // 区间条件：`last_at` 落在 [start, end]。`?1`/`?2` 在每条语句里都对应 (start, end)
+        let window_sql =
+            " AND COALESCE(s.last_at, 0) >= ?1 AND COALESCE(s.last_at, 0) <= ?2 AND COALESCE(m.archived_at, '') = ''";
+        out.active = conn.query_row(
+            &format!("SELECT COUNT(*) {active_sql}{window_sql}"),
+            [start, end],
             |r| r.get::<_, i64>(0),
         )? as usize;
         out.total = conn.query_row(
@@ -102,10 +99,10 @@ pub fn stats(db: &Db) -> Result<SessionStats> {
 
         // 按来源
         let mut stmt = conn.prepare(&format!(
-            "SELECT s.source_key, s.source_label, COUNT(*) {active_sql}
+            "SELECT s.source_key, s.source_label, COUNT(*) {active_sql}{window_sql}
              GROUP BY s.source_key, s.source_label ORDER BY COUNT(*) DESC, s.source_label"
         ))?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map([start, end], |row| {
             Ok(SourceCount {
                 source_key: row.get(0)?,
                 label: row.get(1)?,
@@ -119,9 +116,9 @@ pub fn stats(db: &Db) -> Result<SessionStats> {
         // 按项目：项目名要过 project_name 的归一化（slug 优先、哈希忽略），
         // 交给 Rust 聚合而不是在 SQL 里复刻这套规则
         let mut stmt = conn.prepare(&format!(
-            "SELECT s.slug, s.cwd {active_sql}"
+            "SELECT s.slug, s.cwd {active_sql}{window_sql}"
         ))?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map([start, end], |row| {
             let slug: String = row.get(0)?;
             let cwd: String = row.get(1)?;
             Ok(project_name(&slug, &cwd))
@@ -147,23 +144,11 @@ pub fn stats(db: &Db) -> Result<SessionStats> {
     })
 }
 
-/// 本地时区「今天 00:00」的毫秒时间戳。
-fn start_of_today_ms() -> i64 {
-    let midnight = Local::now()
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .unwrap_or_else(|| Local::now().date_naive().and_hms_opt(12, 0, 0).unwrap());
-    Local
-        .from_local_datetime(&midnight)
-        .single()
-        .map(|dt| dt.timestamp_millis())
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::sessions::store::RawRow;
+    use chrono::Local;
 
     /// 一次性把整源种进索引：replace_source 是**整源替换**，分次调用会互相清空。
     fn seed(db: &Db, rows: &[(&str, &str, i64, &str)]) {
@@ -188,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn counts_today_week_and_unnamed() {
+    fn counts_active_in_window_and_inventory_totals() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
         let now = Local::now().timestamp_millis();
@@ -203,12 +188,17 @@ mod tests {
         );
         crate::app::sessions::marks::hide(&db, &["qoder|qoder_cn||gone".to_string()]).unwrap();
 
-        let s = stats(&db).unwrap();
-        assert_eq!(s.today, 2, "今天活动：今天的 + 未命名");
-        assert_eq!(s.week, 2);
-        assert_eq!(s.total, 3, "隐藏行不算总数");
-        assert_eq!(s.unnamed, 1);
-        assert_eq!(s.by_source.len(), 1);
-        assert_eq!(s.by_source[0].count, 3);
+        // 近 7 天：今天的 + 未命名，30 天前那条不算
+        let week = stats(&db, DayWindow::last_days(7)).unwrap();
+        assert_eq!(week.active, 2, "区间活跃：今天的 + 未命名");
+        assert_eq!(week.total, 3, "隐藏行不算总数");
+        assert_eq!(week.unnamed, 1);
+        assert_eq!(week.by_source.len(), 1);
+        assert_eq!(week.by_source[0].count, 2, "来源排名与区间活跃同分母");
+
+        // 拉到 60 天：30 天前那条也进来
+        let wide = stats(&db, DayWindow::last_days(60)).unwrap();
+        assert_eq!(wide.active, 3);
+        assert_eq!(wide.by_source[0].count, 3);
     }
 }

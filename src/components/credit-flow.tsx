@@ -6,7 +6,7 @@
 // 两种模式：
 // - 传入 platforms（各软件明细）→ 按软件堆叠：每天一根柱拆成各家颜色，图例点选
 //   隐藏/显示某家，悬浮给出当日各家进/出与期末余额——这是仪表盘主图的默认形态；
-// - 不传（单软件的按天收支等场景）→ 简单的到账/消耗两色，与旧版口径一致。
+// - 不传（单软件的按天收支等场景）→ 简单的到账/消耗两色。
 //
 // 0 轴按「到账 : 消耗」的实际比例落位（限制在 35%~72%）：按 clamp 后的占比直接指定
 // yAxis 的 min/max。缩放条可拖拽细看（14 天以上才出现）。
@@ -266,9 +266,8 @@ export function CreditFlowChart({
           <span className="font-semibold tabular-nums">{fmtAmount(balance)}</span>
         </span>
         <span className="flex-1" />
-        <span className="text-muted">
-          {stackedPlatforms ? '柱按软件着色 · 点图例可隐藏对应软件' : '按日汇总 · 消耗为平台侧扣减'}
-        </span>
+        {/* 只有「按日汇总」需要解释口径；按软件堆叠时柱色与图例已经自解释，不再配说明文字 */}
+        {!stackedPlatforms && <span className="text-muted">按日汇总 · 消耗为平台侧扣减</span>}
       </div>
       <EChart
         option={option}

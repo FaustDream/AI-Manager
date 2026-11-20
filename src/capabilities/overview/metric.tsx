@@ -4,21 +4,6 @@
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/components/ui/button';
-import { fmtTokensExact } from '@/lib/format';
-
-/** 与昨日等长窗口对比的 delta 徽章。Token 用量是中性量：涨跌都不带红绿，只给方向。 */
-export function Delta({ cur, prev }: { cur: number; prev: number }) {
-  if (!(prev > 0)) return null;
-  const r = Math.round(((cur - prev) / prev) * 100);
-  const text =
-    Math.abs(r) > 999 ? (r > 0 ? '10×+' : '-99%') : r === 0 ? '±0%' : `${r > 0 ? '▲' : '▼'} ${Math.abs(r)}%`;
-  return (
-    <span className="text-xs tabular-nums text-muted" title={`昨日: ${fmtTokensExact(prev)}`}>
-      {text}
-      <span className="ml-1 text-muted">vs 昨日</span>
-    </span>
-  );
-}
 
 /*
  * 数值滚动（count-up）：只在 KPI 瓦片上做，400ms 三次缓出。
@@ -125,7 +110,8 @@ export function Metric({
   const body = (
     <>
       <div className="flex items-center justify-between gap-2 text-xs text-fg2">
-        {label}
+        {/* 瓦片只占半栏时，自定义区间的标签会顶到 delta 上：截断比撑破卡片好读 */}
+        <span className="min-w-0 truncate">{label}</span>
         {delta}
       </div>
       <div className={valueCls} title={exact}>
@@ -162,17 +148,60 @@ export function Metric({
 export function SectionTitle({
   children,
   right,
+  className,
 }: {
   children: ReactNode;
   right?: ReactNode;
+  /** 卡内已经有 `gap-3` 时传 `mb-0`：标题与内容的间距交给卡片的栅格，别叠成 22px */
+  className?: string;
 }) {
   return (
-    // 标题与内容留 10px（V-05 的「卡片内行距」档），此前 6px 太贴，扫读时分不清区块边界
-    <div className="mb-2.5 flex items-baseline gap-2">
+    // 标题与内容留 10px（V-05 的「卡片内行距」档），扫读时分得清区块边界
+    <div className={cn('mb-2.5 flex items-baseline gap-2', className)}>
       <h3 className="text-xs font-semibold tracking-wide text-fg2">{children}</h3>
       <span className="flex-1" />
       {right && <span className="text-xs text-muted">{right}</span>}
     </div>
+  );
+}
+
+/**
+ * 分段控件：仪表盘里所有「区间 / 视图」切换共用这一套外观。
+ * 外框 + 内钮 + accent 选中，与日志页「时间窗」同一口径：
+ * 同一个页面上不用裸文字按钮与浅底 hover 混出两种选中态，看着像两个产品的控件。
+ */
+export function Segmented({
+  value,
+  options,
+  onPick,
+  title,
+}: {
+  value: string;
+  options: { key: string; label: string; title?: string }[];
+  onPick: (key: string) => void;
+  /** 整组控件的说明：进外层 title，单个按钮的说明走 options[].title */
+  title?: string;
+}) {
+  return (
+    <span
+      className="flex flex-wrap items-center gap-0.5 rounded border border-line p-0.5"
+      title={title}
+    >
+      {options.map((item) => (
+        <button
+          key={item.key}
+          type="button"
+          className={cn(
+            'cursor-pointer rounded px-1.5 py-0.5 text-xs',
+            item.key === value ? 'bg-accent text-on-accent' : 'text-muted hover:text-fg',
+          )}
+          title={item.title}
+          onClick={() => onPick(item.key)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </span>
   );
 }
 

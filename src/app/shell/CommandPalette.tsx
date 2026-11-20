@@ -107,7 +107,6 @@ export function CommandPalette({ items, placeholder }: { items: PaletteItem[]; p
           placeholder={placeholder ?? '搜索页面或动作…（Esc 关闭）'}
           className="w-full border-b border-line bg-transparent px-3 py-2.5 text-sm outline-none focus-visible:outline-none"
           // combobox 语义（P2-18）：读屏据此报「组合框，已展开，当前第 N 项」。
-          // 键盘逻辑完全复用原来那套，只是把状态说出来。
           role="combobox"
           aria-expanded="true"
           aria-controls="aim-palette-list"

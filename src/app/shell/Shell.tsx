@@ -6,9 +6,9 @@
 //      旧页面（顶栏只多一条细进度线）。这样根本用不到「加载中骨架」这一幕；
 //   3. 真正的切换放进 `startTransition`：React 可以被打断，也不会因为一帧没准备好
 //      就把整块内容退回 fallback；
-//   4. 只做入场动画（0.16s 淡入 + 上移），不做退出动画。曾经的
+//   4. 只做入场动画（0.16s 淡入 + 上移），不做退出动画：带退场的
 //      `<AnimatePresence mode="wait">` 会在退场结束后用**自己的 state** 去挂新页面，
-//      那次渲染不在 transition 里，lazy 页面一挂起就退回灰条骨架——这就是用户看到的
+//      那次渲染不在 transition 里，lazy 页面一挂起就退回灰条骨架——用户看到的就是
 //      「切过去一片空白」。
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';

@@ -306,7 +306,7 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             to_json(cmd::accounts::account_delete(state, iid).await)
         }
         "account_scan" => to_json(cmd::accounts::account_scan(state).await),
-        // 豆包浏览器登录四件套：桌面壳时代漏登记在分发表里，浏览器化补齐
+        // 豆包浏览器登录四件套：已登记在分发表里。
         "doubao_browser_list" => to_json(cmd::accounts::doubao_browser_list().await),
         "doubao_browser_login_start" => {
             let browser_id = arg(v, "browser_id")?;
@@ -482,7 +482,10 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             let keys = arg(v, "keys")?;
             to_json(cmd::sessions::session_suggest_titles(state, keys).await)
         }
-        "session_stats" => to_json(cmd::sessions::session_stats(state).await),
+        "session_stats" => {
+            let (from, to) = (arg(v, "from")?, arg(v, "to")?);
+            to_json(cmd::sessions::session_stats(state, from, to).await)
+        }
 
         // ------------------------------------------------------------ activity
         "activity_overview" => {
@@ -535,16 +538,16 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             to_json(cmd::checkin::zcode_claim_run(state, iid, plan_id).await)
         }
         "credit_trend" => {
-            let (iid, days) = (arg(v, "iid")?, arg(v, "days")?);
-            to_json(cmd::checkin::credit_trend(state, iid, days).await)
+            let (iid, from, to) = (arg(v, "iid")?, arg(v, "from")?, arg(v, "to")?);
+            to_json(cmd::checkin::credit_trend(state, iid, from, to).await)
         }
         "credit_claims_recent" => {
             let limit = arg(v, "limit")?;
             to_json(cmd::checkin::credit_claims_recent(state, limit).await)
         }
         "credit_flow" => {
-            let days = arg(v, "days")?;
-            to_json(cmd::checkin::credit_flow(state, days).await)
+            let (from, to) = (arg(v, "from")?, arg(v, "to")?);
+            to_json(cmd::checkin::credit_flow(state, from, to).await)
         }
 
         // ------------------------------------------------------------ schedule
@@ -621,8 +624,8 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
         // ------------------------------------------------------------ usage
         "usage_scan" => to_json(cmd::usage::usage_scan(state).await),
         "usage_overview" => {
-            let days = arg(v, "days")?;
-            to_json(cmd::usage::usage_overview(state, days).await)
+            let (from, to) = (arg(v, "from")?, arg(v, "to")?);
+            to_json(cmd::usage::usage_overview(state, from, to).await)
         }
 
         // ------------------------------------------------------------ maintenance

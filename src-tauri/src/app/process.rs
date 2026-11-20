@@ -6,7 +6,7 @@
 //!   - **GUI 客户端不得继承本进程的控制台**：非 hidden 启动（`start_detached`、浏览器）
 //!     必须带 `DETACHED_PROCESS`。否则 AI Manager 一旦从终端/控制台被拉起，被它启动的
 //!     WorkBuddy 会绑定同一个控制台，终端一关客户端就跟着 STATUS_CONTROL_C_EXIT 退出
-//!     （反复重启根因之一，见 docs/workbuddy-反复重启排查.md §2.3）。
+//!     （这是历史上反复重启的根因之一）。
 //!   - **单实例句柄持有到进程退出**（AGENTS §6）：不手工 CloseHandle，
 //!     否则互斥体可能提前释放，第二次启动就能进来。
 

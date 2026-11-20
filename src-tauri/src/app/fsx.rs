@@ -182,7 +182,7 @@ pub fn copy_profile_skipping_caches(src: &Path, dst: &Path) -> Result<()> {
 
 /// 备份目录只留最近 keep 个条目，按修改时间从旧到新删。
 ///
-/// 只允许传「条目全部由本工具按批次新建」的目录：`session-restore/` 混有 v1 遗留、
+/// 只允许传「条目全部由本工具按批次新建」的目录：`session-restore/` 混有非本工具条目、
 /// `manual-*` / `switch-exp-*` 是人工快照，按 CORE-01 一律不传进来。
 pub fn prune_children(dir: &Path, keep: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -206,7 +206,7 @@ pub fn prune_children(dir: &Path, keep: usize) {
 /// 合并复制目录：目标中已有的文件被覆盖，**目标里多出来的文件保留**。
 ///
 /// WorkBuddy 的 `storage/` 下每个账号各有一份 `user-<uid>-personal`，
-/// 整体替换会把别的账号的本地数据一起删掉——v1 就是这么丢过一次。
+/// 整体替换会把别的账号的本地数据一起删掉。
 pub fn copy_dir_merge(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {

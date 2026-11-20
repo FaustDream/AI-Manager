@@ -19,6 +19,7 @@ use crate::app::net::Http;
 use crate::app::progress;
 use crate::app::providers;
 use crate::app::runtime::blocking;
+use crate::app::window::DayWindow;
 use crate::contracts::{CheckinStore, Ledger};
 use crate::types::{ActionResult, CreditSnapshot, StatusResult};
 use chrono::{DateTime, Local, TimeZone};
@@ -771,16 +772,12 @@ impl Service {
     ///
     /// 平台只给余额，不给消费明细；把每个账号相邻两天的余额差相加，
     /// 正数是到账、负数是消耗。缺数据的日子不补零，避免把「没记录」画成「没变化」。
-    pub async fn credit_flow(&self, days: i64) -> CreditFlowReport {
-        let days = days.clamp(1, 60);
+    /// 窗口由界面给定（`window.rs`），不设天数上限。
+    pub async fn credit_flow(&self, window: DayWindow) -> CreditFlowReport {
         let today = self.clock.today();
-        // 收支是「相邻两天的余额差」：多取一天当基线，否则「今天」只有一条快照、
-        // 永远算不出变动。基线日只参与计算，不返回给界面。
-        let since = (today - chrono::Duration::days(days))
-            .format("%Y-%m-%d")
-            .to_string();
-        // 界面窗口的起点：最近 days 天（days=1 即今天）
-        let display_from = (today - chrono::Duration::days(days - 1))
+        // 收支是「相邻两天的余额差」：窗口起点再往前取一天当基线，否则窗口第一天
+        // 只有一条快照、永远算不出变动。基线日只参与计算，不返回给界面。
+        let since = (window.from - chrono::Duration::days(1))
             .format("%Y-%m-%d")
             .to_string();
         let today_stamp = today.format("%Y-%m-%d").to_string();
@@ -814,10 +811,13 @@ impl Service {
             .collect();
         let mut platforms = aggregate_platforms(rows.clone(), &views, &latest, &today_stamp);
         let mut total = aggregate_flow(rows, &latest, &today_stamp);
-        // 裁掉基线日与更早的点：界面只看请求窗口内的日子
-        total.retain(|point| point.date >= display_from);
+        // 裁掉基线日、以及窗口终点之后的日子：界面只看请求的那个区间
+        let (from, to) = (window.from_iso(), window.to_iso());
+        total.retain(|point| point.date >= from && point.date <= to);
         for platform in &mut platforms {
-            platform.points.retain(|point| point.date >= display_from);
+            platform
+                .points
+                .retain(|point| point.date >= from && point.date <= to);
         }
         CreditFlowReport { total, platforms }
     }
@@ -853,18 +853,17 @@ impl Service {
         }
     }
 
-    /// 积分趋势：读每日余额快照，最多 60 天。`iid` 为空时汇总全部账号。
-    pub async fn credit_trend(&self, iid: Option<String>, days: i64) -> Vec<TrendPoint> {
-        let days = days.clamp(1, 60);
-        let since = (self.clock.today() - chrono::Duration::days(days - 1))
-            .format("%Y-%m-%d")
-            .to_string();
+    /// 积分趋势：读每日余额快照，窗口由界面给定。`iid` 为空时汇总全部账号。
+    pub async fn credit_trend(&self, iid: Option<String>, window: DayWindow) -> Vec<TrendPoint> {
+        let since = window.from_iso();
+        let to = window.to_iso();
         let db = self.db.clone();
         match blocking(move || SqliteCheckin::new(&db).snapshot_series(iid.as_deref(), &since))
             .await
         {
             Ok(Ok(rows)) => rows
                 .into_iter()
+                .filter(|(date, _)| date.as_str() <= to.as_str())
                 .map(|(date, balance)| TrendPoint { date, balance })
                 .collect(),
             Ok(Err(e)) | Err(e) => {
@@ -945,7 +944,7 @@ impl Service {
             return (subject, Ok(result));
         }
         // 本机验证优先：所有平台一律先看 daily_marks，命中就当天不再碰任何接口。
-        // 旧逻辑只对 cooldown_hours()==0 的平台生效，Qoder 这类 24 小时窗口的平台
+        // 若只看 cooldown_hours()==0，Qoder 这类 24 小时窗口的平台
         // 会绕过本地表重复提交——那正是账号被风控的入口之一。
         if self.marked_today(iid).await {
             let result = ActionResult {
@@ -1363,7 +1362,7 @@ impl Service {
     }
 
     // ---------------------------------------------------------------- ZCode 活动领取
-    // v1 的「领取」按钮：不是签到轮询的一部分（ZCode requires_checkin=false），
+    // ZCode 活动领取：不是签到轮询的一部分（ZCode requires_checkin=false），
     // 是界面上单独的动作；领取会开浏览器过验证码。
 
     /// 平台奖励积分明细（WorkBuddy 个人中心「套餐与积分」那一页的口径）。
@@ -1428,7 +1427,7 @@ impl Service {
         Ok(outcome)
     }
 
-    /// 自动领取一轮（v1 每 15 分钟，开关 `zcode_auto_claim` 默认关）：
+    /// 自动领取一轮（开关 `zcode_auto_claim` 默认关）：
     /// 探测全部 ZCode 账号，找到可领的就领第一个，返回给人看的汇报行。
     pub async fn zcode_auto_claim_round(&self) -> Option<String> {
         let accounts = self.accounts().await.ok()?;
@@ -1757,7 +1756,7 @@ impl RoundResult {
 
 /// 触发方归一化：命令层收到的客户端传参只认已知值，未知/缺省一律按「手动」处理，
 /// 不让任意字符串透传进动作日志。`auto` 是总览页积分过期时的自动补刷——
-/// 不是用户点的，记成「手动」会误导排障（v1.9.1 九类测试发现）。
+/// 不是用户点的，记成「手动」会误导排障。
 pub fn normalize_trigger(raw: Option<&str>) -> &'static str {
     match raw {
         Some("auto") => "auto",

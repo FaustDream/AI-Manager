@@ -122,7 +122,7 @@ export default function AccountCenterPage() {
     );
   }, [rows, qc]);
 
-  // ---- 列宽：持久化在 kv ui.columns（v1 同键） ----
+  // ---- 列宽：持久化在 kv ui.columns ----
   useEffect(() => {
     queryCmd('settings_get', { key: 'ui.columns' })
       .then((saved) => saved && setWidths(saved as Record<string, number>))

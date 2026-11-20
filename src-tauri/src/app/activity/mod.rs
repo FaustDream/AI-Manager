@@ -1,6 +1,6 @@
 //! WorkBuddy「猫猫旅行」活动编排。
 //!
-//! 协议来自 `wb_tool` 的静态端点 + 本机真实账号只读验证（2026-11-05）：
+//! 协议来自 `wb_tool` 的静态端点 + 本机真实账号只读验证：
 //!   - `GET  /activity/growth/buddy/travel/status`   当前状态
 //!   - `GET  /activity/growth/buddy/travel/config`   地点与奖励区间
 //!   - `GET  /activity/growth/buddy/travel/records`  历史记录

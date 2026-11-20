@@ -254,7 +254,7 @@ fn spawn_login_wait(
         let outcome = match result {
             Ok(Ok(outcome)) => outcome,
             Ok(Err(e)) | Err(e) => {
-                // 失败原因必须带 kind 与 detail：以前只留一句「登录超时」，
+                // 失败原因必须带 kind 与 detail：只有一句「登录超时」时，
                 // 分不清是网络、平台拒绝还是用户没操作
                 log::fail(
                     "accounts",
@@ -477,7 +477,7 @@ pub async fn account_restore_sessions(
 
 /// 账号 UID。列表载荷里不带它（契约 17：界面不渲染 uid），
 /// 只有用户点「UID」时才按需取一次，复制到剪贴板。
-/// 口径与 v1 一致：WorkBuddy 国际版带 `@intl` 后缀。
+/// 口径：WorkBuddy 国际版带 `@intl` 后缀。
 pub async fn account_uid(state: &AppState, iid: String) -> std::result::Result<String, String> {
     let db = state.db.clone();
     crate::app::runtime::blocking(move || {

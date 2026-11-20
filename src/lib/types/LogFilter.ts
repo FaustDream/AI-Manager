@@ -53,6 +53,6 @@ from: string | null,
  */
 to: string | null, 
 /**
- * 隐藏旧版记成动作的只读命令（`ui_ready` / `account_list` …）
+ * 隐藏记成动作的只读命令（`ui_ready` / `account_list` …）
  */
 hide_legacy: boolean | null, limit: number | null, };

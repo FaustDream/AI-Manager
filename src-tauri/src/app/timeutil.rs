@@ -13,7 +13,7 @@ pub fn now_ms() -> i64 {
 }
 
 /// 各家接口的时间字段 → unix 毫秒。兼容四种形态：
-/// 毫秒数（v1 部分文件）、秒数（早于 2286 年都小于 1e10）、RFC3339、本地朴素时间。
+/// 毫秒数、秒数（早于 2286 年都小于 1e10）、RFC3339、本地朴素时间。
 pub fn parse_ts(value: &Value) -> Option<i64> {
     if let Some(n) = value.as_i64() {
         return Some(if n < 10_000_000_000 { n * 1000 } else { n });

@@ -1,5 +1,5 @@
 /* 设计令牌：颜色 / 间距 / 圆角与主题无关的放 @theme，深浅两套同键不同值。
-   与 v1 的 index.html 同一套色板，P7 打磨只动这里。 */
+   打磨只动这里。 */
 @import "tailwindcss";
 
 @theme {
@@ -30,8 +30,7 @@
   --font-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: Consolas, monospace;
 
-  /* 卡片阴影两档：静置一档、悬浮一档。浏览器化样板（总览页）先用，
-     其余页第二期推广。深色主题下阴影加深，见各 data-theme 覆盖。 */
+  /* 卡片阴影两档：静置一档、悬浮一档。深色主题下阴影加深，见各 data-theme 覆盖。 */
   --shadow-card: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.07);
   --shadow-card-hover: 0 4px 14px rgb(16 24 40 / 0.10);
 

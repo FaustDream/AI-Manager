@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { AnimatePresence, motion } from 'motion/react';
 
-// 全局 toast：跨页通知（替代 v1 的 bus）。文本可能多行，按 pre-wrap 渲染。
+// 全局 toast：跨页通知。文本可能多行，按 pre-wrap 渲染。
 // Motion 遵守系统「减少动画」设置（MotionConfig 在 Shell 挂全局）。
 //
 // 分层（总纲 P0-2）：`text` 只放人话 + 下一步，`detail` 放 kind / 参数 / 原文这类

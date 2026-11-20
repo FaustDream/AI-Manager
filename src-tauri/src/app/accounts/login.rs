@@ -1,6 +1,6 @@
 //! 浏览器登录：申请登录地址 → 打开浏览器 → 轮询换 token → 直接入库。
 //!
-//! 移植自 v1 的 `logins.py` / `zlogin.py`。三家都不是 OAuth 回调模式，所以
+//! 三家都不是 OAuth 回调模式，所以
 //! **不需要本地 HTTP 服务器**：
 //!   - WorkBuddy：`auth/state` 拿 state，`auth/token?state=` 长轮询；
 //!   - Qoder：PKCE challenge + `deviceToken/poll` 长轮询；
@@ -173,7 +173,7 @@ async fn start_workbuddy(platform: &str) -> Result<Pending> {
     ));
     req.headers = vec![
         ("User-Agent".into(), WB_UA.into()),
-        // 三个 X-No-* 是 v1 实测必须的：带上它们才不会被要求先有登录态
+        // 三个 X-No-* 是实测必须的：带上它们才不会被要求先有登录态
         ("X-No-Authorization".into(), "true".into()),
         ("X-No-User-Id".into(), "true".into()),
         ("X-No-Enterprise-Id".into(), "true".into()),
@@ -731,7 +731,7 @@ async fn wait_zcode(db: &Db, ticket: &str) -> Result<LoginOutcome> {
 
     let jwt = str_of(&data, "token");
     // 回包节点按发起时的族优先，再按 bigmodel/zai 兜底；**取到哪个族就用哪个族落键位**
-    // ——以前这里把节点读出来却写死 bigmodel，z.ai 登录的 token 会被放错地方
+    // ——节点读出来却写死 bigmodel 时，z.ai 登录的 token 会被放错地方
     let has_node = |fam: &str| data.get(fam).map(|v| !v.is_null()).unwrap_or(false);
     let family = if has_node(&variant) {
         variant.clone()

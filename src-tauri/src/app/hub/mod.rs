@@ -104,7 +104,7 @@ pub struct Hub {
     /// `%LOCALAPPDATA%`：豆包的技能目录在这一支下（Roaming 里没有）
     localdata: PathBuf,
     data: PathBuf,
-    /// v1 管过的 MCP 名字。v1 写配置时不带 `_aimanager` 标记，
+    /// MCP 名字清单：不带 `_aimanager` 标记的既有条目也算本工具管的，
     /// 光看标记会把用户已有的条目全判成「别人写的」，那就一条都管不了。
     legacy_mcp: std::collections::HashSet<String>,
 }
@@ -130,7 +130,7 @@ impl Hub {
         }
     }
 
-    /// 这条 MCP 算不算「本工具的」：要么带标记，要么在 v1 的 hub.json 里。
+    /// 这条 MCP 算不算「本工具的」：要么带标记，要么在既有 MCP 名字清单里。
     pub fn owns_mcp(&self, name: &str, body: &serde_json::Value) -> bool {
         mcp::written_by_us(body) || self.legacy_mcp.contains(name)
     }
@@ -169,7 +169,7 @@ impl Hub {
     }
 }
 
-/// v1 的 `data/hub.json` 里 `mcp` 的键：那批条目是 v1 写进去的，归我们管。
+/// 既有 `data/hub.json` 里 `mcp` 的键：那批条目归我们管。
 fn read_legacy_mcp(data: &Path) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
     let Ok(text) = std::fs::read_to_string(data.join("hub.json")) else {

@@ -7,7 +7,7 @@
 //!   - `CodeBuddy 插件`（JetBrains 宿主）：`%APPDATA%\JetBrains\*\options\secret-storage.xml`
 //!     的 `<Entry key="Tencent-Cloud.coding-copilot.new.accessToken">`，值是 XML 转义的明文 JSON。
 //!
-//! 取证结论（2026-11 实机，见 data/backups/switch-exp-* 的对照实验）：
+//! 取证结论（实机，见 data/backups/switch-exp-* 的对照实验）：
 //! 两端存的都是同一份**转换版会话 JSON**（票据解密后的 `auth`/`account`/`accounts`
 //! 加上插件 `attachOldSessionProperties` 的拍平字段），差异只在落点。
 //!

@@ -1,7 +1,7 @@
 //! 双落盘日志：`app.log` 给人读（带级别标记），`app.jsonl` 给机器分析。
 //!
 //! 单文件超 5MB 轮转，保留 3 份。级别过滤只影响 `app.log`，
-//! 任务事件与性能打点（event / perf）不受门槛限制——v1 就是这么定的。
+//! 任务事件与性能打点（event / perf）不受门槛限制。
 
 use crate::app::error::{ErrorKind, Result};
 use crate::app::paths;
@@ -122,7 +122,7 @@ impl Line {
         self.module == "action"
     }
 
-    /// 旧版命令面把只读查询也回传成动作行，这些历史行不该继续占执行视图。
+    /// 只读查询回传成的动作行，不该继续占执行视图。
     pub fn is_legacy_read(&self) -> bool {
         self.action
             .as_deref()
@@ -687,7 +687,7 @@ fn structured_suffix(line: &Line) -> String {
 
 /// 失败日志：**出错必须能被筛出来**，所以固定 Error 级别，并且强制带证据。
 ///
-/// 以前失败常常走 `log(Level::Info, …)`，日志页按级别筛「只看错误」时什么都看不到，
+/// 失败走 `log(Level::Info, …)` 时，日志页按级别筛「只看错误」什么都看不到，
 /// 用户只能一行行翻——这正是「日志不详细，找不出问题」的根因。
 pub fn fail(module: &str, action: &str, message: impl Into<String>, evidence: impl Into<String>) {
     write(Line {
@@ -799,13 +799,13 @@ pub struct LogFilter {
     pub from: Option<String>,
     /// 结束时间（RFC3339，含）
     pub to: Option<String>,
-    /// 隐藏旧版记成动作的只读命令（`ui_ready` / `account_list` …）
+    /// 隐藏记成动作的只读命令（`ui_ready` / `account_list` …）
     pub hide_legacy: Option<bool>,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub limit: Option<usize>,
 }
 
-/// 旧版命令面把只读查询也回传成动作行，这些历史行不该继续占执行视图。
+/// 只读查询回传成的动作行，不该继续占执行视图。
 /// 不改写日志文件——历史资产只做展示层过滤。
 const LEGACY_READ_ACTIONS: &[&str] = &[
     "ui_ready",
@@ -1634,7 +1634,7 @@ mod tests {
 
         log(Level::Info, "sessions", mark("普通日志"));
         log(Level::Warn, "sessions", mark("警告日志"));
-        // 旧版只读命令留下的动作行，默认仍在全量视图，执行视图要隐藏
+        // 只读查询回传的动作行，默认仍在全量视图，执行视图要隐藏
         action("ui_ready", "user", true, 1, mark("界面就绪"));
         action("account_switch", "user", false, 120, mark("切换登录失败"));
         item(

@@ -1215,7 +1215,7 @@ async fn load_targets(db: &Arc<Db>) -> Result<Vec<Target>> {
                     .or_else(|| cred.meta_str("uid"))
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
-                    // 没有 seed/uid 时按账号 iid 兜底：以前统一退回常量 "doubao"，
+                    // 没有 seed/uid 时按账号 iid 兜底：统一退回常量 "doubao" 时，
                     // 多账号会算出同一组设备标识（web_id），等于让豆包把几个号认成一台设备。
                     .unwrap_or(row.iid.as_str())
                     .to_string();

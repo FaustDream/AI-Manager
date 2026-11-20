@@ -19,7 +19,7 @@ pub(crate) fn wb_key_bytes() -> [u8; 32] {
 }
 
 /// 标准 GCM 固定 12 字节 nonce，但 Python 的 `AESGCM` 允许任意长度。
-/// 实测客户端自己写的票据是 **12 字节**，而 v1 的 `seal_field` 写的是 **16 字节**——
+/// 实测客户端自己写的票据是 **12 字节**，也有 16 字节的存量——
 /// 两种都得能解，否则换个版本就整份登录态读不出来。
 pub(crate) type WbCipher16 = aes_gcm::AesGcm<aes_gcm::aes::Aes256, U16>;
 

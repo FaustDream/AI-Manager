@@ -17,7 +17,7 @@ pub fn data_dir() -> PathBuf {
     if let Some(dir) = OVERRIDE.read().unwrap_or_else(|e| e.into_inner()).clone() {
         return dir;
     }
-    // 开发期把数据目录指到项目里的 data/：与 v1 的数据、档案包共用一份，
+    // 开发期把数据目录指到项目里的 data/：与既有数据、档案包共用一份，
     // 免得 target/debug/data 与 target/release/data 各有一份互不相认的账号库
     if let Ok(dir) = std::env::var("AIMANAGER_DATA_DIR") {
         if !dir.trim().is_empty() {
@@ -25,7 +25,7 @@ pub fn data_dir() -> PathBuf {
         }
     }
     // 开发期固定用项目里的 data/：cargo run 的 exe 在 target/debug，
-    // 按「exe 同级」会另建一份空库，与 v1 的账号、档案互不相认
+    // 按「exe 同级」会另建一份空库，与既有的账号、档案互不相认
     #[cfg(debug_assertions)]
     {
         let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -34,7 +34,7 @@ pub fn data_dir() -> PathBuf {
             .map(|root| root.join("data"))
             .unwrap_or_else(|| project.join("data"))
     }
-    // 生产环境：与可执行文件同级的 data/（沿用 v1 的「整个目录拷走即可」约定）
+    // 生产环境：与可执行文件同级的 data/（整个目录拷走即可）
     #[cfg(not(debug_assertions))]
     {
         std::env::current_exe()
@@ -48,7 +48,7 @@ pub fn app_db() -> PathBuf {
     data_dir().join("app.db")
 }
 
-/// 前端静态产物目录（浏览器化后由 HTTP 壳托管，vite build 的输出）。
+/// 前端静态产物目录（由 HTTP 壳托管，vite build 的输出）。
 /// 与 data/ 同一套「开发期指仓库根、生产与 exe 同级」的约定；
 /// 环境变量可覆盖，便于测试与自定义部署。
 pub fn web_dist() -> PathBuf {

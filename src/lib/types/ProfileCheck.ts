@@ -10,6 +10,6 @@ label: string,
  */
 complete: boolean, 
 /**
- * 只有 `<uid>.tmp`：旧版换名残留，下次切换自动认领，不是坏档
+ * 只有 `<uid>.tmp`：切换中断留下的临时档案，下次切换自动认领，不是坏档
  */
 tmp_only: boolean, };

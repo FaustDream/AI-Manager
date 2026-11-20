@@ -16,7 +16,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers';
 
 echarts.use([
-  // 图：双向柱（收支）、折线（趋势/用量）、堆叠柱（每日明细）
+  // 图：双向柱（收支）、折线（趋势/用量）
   BarChart,
   LineChart,
   // 组件：直角坐标系、提示框、图例（点选隐藏系列）、缩放拖拽、最高/最低标记

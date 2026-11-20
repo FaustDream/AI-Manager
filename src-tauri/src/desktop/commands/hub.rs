@@ -39,8 +39,8 @@ pub async fn hub_skill_import_many(
         crate::app::runtime::blocking(move || crate::app::hub::import_many(&hub, key, &names))
             .await
             .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?;
-    // 一条都没导进来就是失败：以前只要 errors 非空就一律 Warn，
-    // 「10 个全失败」和「9 成功 1 失败」在级别上分不开
+    // 一条都没导进来就是失败：只看 errors 非空会把
+    // 「10 个全失败」和「9 成功 1 失败」在级别上混为一谈
     let level = if report.errors.is_empty() {
         Level::Info
     } else if report.imported.is_empty() {

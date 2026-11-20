@@ -1,9 +1,8 @@
 //! 凭据包：账号库里**唯一**以密文形式存在的东西。
 //!
-//! 字段名与 v1 的账号记录（`to_item()`）刻意保持一致——P1 导入的历史账号
-//! 直接把整条记录加密存进来了，切换登录要读的 `token` / `refresh_token` /
-//! `meta` 就在里面。P2 新扫到的账号也写同一套结构，于是「导入的」和「扫到的」
-//! 账号走同一条读写路径，不需要按来源分支。
+//! 字段名与既有账号记录保持一致——导入的账号把整条记录加密存进来了，切换登录
+//! 要读的 `token` / `refresh_token` / `meta` 就在里面。新扫到的账号也写同一套结构，
+//! 于是「导入的」和「扫到的」走同一条读写路径，不需要按来源分支。
 //!
 //! **边界**：`Credential` 只在 `repo::secret_of()` 之后短暂存在，
 //! 用于一次切换或一次接口调用；不得挂到 `AccountView` 上、不得进日志。
@@ -18,10 +17,10 @@ pub struct Credential {
     pub token: String,
     #[serde(default)]
     pub refresh_token: String,
-    /// ISO8601；v1 用空串表示「不知道」，这里保持同一口径
+    /// ISO8601；空串表示「不知道」，与存量导入记录同一口径
     #[serde(default)]
     pub expires_at: String,
-    /// 平台相关字段，键名沿用 v1：uid / edition / domain / email / phone /
+    /// 平台相关字段，键名：uid / edition / domain / email / phone /
     /// region / device_id / credentials / config / ticket …
     #[serde(default)]
     pub meta: Map<String, Value>,
@@ -53,7 +52,7 @@ impl Credential {
         Ok(serde_json::to_vec(self)?)
     }
 
-    /// v1 把 refresh_token 写在顶层，个别路径又复制进 meta；两处都认。
+    /// refresh_token 顶层与 meta 两处都认。
     pub fn refresh(&self) -> &str {
         if !self.refresh_token.is_empty() {
             return &self.refresh_token;
@@ -92,7 +91,7 @@ impl Credential {
     }
 }
 
-/// unix 毫秒 → ISO8601（UTC）。v1 的字段就是 ISO，写回时不能变成数字。
+/// unix 毫秒 → ISO8601（UTC）。字段是 ISO，写回时不能变成数字。
 pub fn iso_from_ms(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
@@ -104,7 +103,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// P1 实际导入进来的形状（v1 `to_item()`），一个字都不能改
+    /// 实际导入进来的记录形状，一个字都不能改
     const V1_ITEM: &str = r#"{
         "platform": "workbuddy",
         "account_id": "cceec57c-ac71-48e0-996c-6df5cc602cf3",
@@ -138,7 +137,7 @@ mod tests {
 
     #[test]
     fn refresh_falls_back_to_meta() {
-        // 有些平台把 refresh 只写在 meta 里（v1 as_accounts 会两边都塞）
+        // 有些平台把 refresh 只写在 meta 里，也有两边都写的
         let cred = Credential::parse(br#"{"token":"t","meta":{"refresh_token":"rt"}}"#).unwrap();
         assert_eq!(cred.refresh(), "rt");
     }

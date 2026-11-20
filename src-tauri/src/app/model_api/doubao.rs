@@ -1,6 +1,6 @@
 //! 豆包模型接口的协议层：模型目录、聊天请求体、请求 URL 的组装。
 //!
-//! 协议口径移植自参考实现（doubao-work-gateway / dsh-model 的 `lib/providers/doubao.js`），
+//! 协议口径来自参考实现（doubao-work-gateway / dsh-model 的 `lib/providers/doubao.js`），
 //! 与「签到」那套（`providers::doubao`，aid=497858）是**两套 aid**：模型接口走
 //! aid=1044603 的「豆包工作」上下文。这里只做纯函数组装，网络在 `model_api` 上层发。
 //!

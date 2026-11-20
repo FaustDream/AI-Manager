@@ -64,7 +64,7 @@ export function AccountToolbar({
   onCheckin: () => void;
 }) {
   // 批量动作的实时读数：后端 progress 事件 → 「3 / 12」。总数只有后端知道，
-  // 前端只累加完成数；拿不到（事件丢了）就退回原来的省略号文案，不编数字。
+  // 前端只累加完成数；拿不到（事件丢了）就退回默认省略号文案，不编数字。
   const checkinProgress = useProgress('checkin_batch');
   const creditsProgress = useProgress('checkin_credits');
   return (

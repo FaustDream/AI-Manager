@@ -1,7 +1,7 @@
 //! Trae CN / 国际版的会话。
 //!
-//! 旧版把会话写在 `User/**/state.vscdb` 的 `ItemTable` 里，key 含
-//! `icube-ai-agent`；新版 `ModularData/ai-agent/database.db` 是 SQLCipher
+//! 会话在 `ModularData/ai-agent/database.db`，key 含 `icube-ai-agent`；
+//! 该库是 SQLCipher 加密的，
 //! 加密库，读不到时只能明确报错，不能返回空列表冒充「没有会话」。
 
 use crate::app::clients::Roots;

@@ -142,8 +142,8 @@ export function DataTable<R>({
                 onRowClick && 'cursor-pointer hover:bg-hover/60',
                 rowClassName?.(row),
               )}
-              // 行可点就必须键盘可达（P1-9）：以前只有 onClick，Tab 停不上去，
-              // 键盘用户根本打不开详情。role/aria-selected 让读屏也能报「第几行、选没选」。
+              // 行可点就必须键盘可达（P1-9）：Tab 要能停上来，role/aria-selected
+              // 让读屏也能报「第几行、选没选」。
               tabIndex={onRowClick ? 0 : undefined}
               role={onRowClick ? 'row' : undefined}
               aria-selected={

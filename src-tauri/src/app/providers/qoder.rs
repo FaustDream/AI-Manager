@@ -314,7 +314,7 @@ impl Provider for QoderProvider {
             .and_then(|v| v.as_str())
             .unwrap_or("Qoder 用户")
             .to_string();
-        // 没有 user.id 时用 token 末 16 位兜底（与 v1 一致，避免把整串 token 当 id）
+        // 没有 user.id 时用 token 末 16 位兜底，避免把整串 token 当 id
         let account_id = user
             .get("id")
             .map(|v| match v {
@@ -815,7 +815,7 @@ fn value_text(value: &Value) -> String {
     }
 }
 
-/// 设备风控头。签到活动接口从 2026-09-26 起要求携带 `Cosy-Machine*`，
+/// 设备风控头。签到活动接口要求携带 `Cosy-Machine*`，
 /// 否则服务端不下发每日活动。设备标识不伪造，直接跑客户端自带的
 /// `resources/umid/runtime-info.exe` 取；拿不到就退回最小可用头。
 /// async：runtime-info.exe 是同步轮询等退出（最长 12s），必须进阻塞池，

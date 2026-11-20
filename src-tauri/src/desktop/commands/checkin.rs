@@ -70,7 +70,7 @@ pub async fn daily_run_now(
     Ok(round)
 }
 
-/// ZCode 可领取的活动套餐（v1 的「领取」按钮第一步）。
+/// ZCode 可领取的活动套餐。
 pub async fn zcode_claim_plans(
     state: &AppState,
     iid: String,
@@ -90,12 +90,15 @@ pub async fn zcode_claim_run(
 }
 
 /// 积分趋势：读每日余额快照，不查接口。`iid` 为空表示全部账号汇总。
+/// 区间由界面给 `from` / `to`（闭区间，本地日期），不设天数上限。
 pub async fn credit_trend(
     state: &AppState,
     iid: Option<String>,
-    days: Option<i64>,
+    from: Option<String>,
+    to: Option<String>,
 ) -> std::result::Result<Vec<crate::app::checkin::TrendPoint>, String> {
-    Ok(state.checkin.credit_trend(iid, days.unwrap_or(30)).await)
+    let window = crate::app::window::DayWindow::parse(from.as_deref(), to.as_deref());
+    Ok(state.checkin.credit_trend(iid, window).await)
 }
 
 /// 跨账号最近领取：仪表盘「最近领取」用。
@@ -109,7 +112,9 @@ pub async fn credit_claims_recent(
 /// 积分收支：全部账号合计 + 按软件拆分（两层口径一次取齐）。
 pub async fn credit_flow(
     state: &AppState,
-    days: Option<i64>,
+    from: Option<String>,
+    to: Option<String>,
 ) -> std::result::Result<crate::app::checkin::CreditFlowReport, String> {
-    Ok(state.checkin.credit_flow(days.unwrap_or(30)).await)
+    let window = crate::app::window::DayWindow::parse(from.as_deref(), to.as_deref());
+    Ok(state.checkin.credit_flow(window).await)
 }

@@ -1,6 +1,6 @@
 //! ZCode：登录态就是一份 JSON（`credentials.json` + `config.json`），整份存、整份写回。
 //!
-//! 字段值带 `enc:v1:` 或 `enc:v2:` 前缀（客户端 3.18 起 v1 整体迁移成 v2）：
+//! 字段值带 `enc:v1:` 或 `enc:v2:` 前缀（两种都需解析）：
 //!   - v1：密钥由「平台 + 家目录 + 用户名」推导（不落盘、不随账号变）；
 //!   - v2：`enc:v2:<os|env>:<指纹24hex>:<payload>`，os 源密钥放在 Windows 凭据管理器
 //!     （keyring v3 后端，目标名 `<sha256(credentials.json 路径)hex>.<服务名>`），
@@ -38,7 +38,7 @@ pub struct ZCodeProvider {
     data_root: PathBuf,
     /// `%APPDATA%`，设备指纹在它下面的 ZCode 目录里
     appdata: Option<PathBuf>,
-    /// 客户端全局设置。固定在家目录，**不跟随 dataBaseDir**（v1 的实测结论）
+    /// 客户端全局设置。固定在家目录，**不跟随 dataBaseDir**（实测结论）
     setting: PathBuf,
     /// 进程探测的注入点：`None` = 真去查全局进程表（生产路径）。
     /// 不注入的话单元测试会跟着本机是否开着客户端一起红绿，CI 上必炸。
@@ -143,7 +143,7 @@ impl ZCodeProvider {
                 .map(|e| e.path())
                 .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
                 .collect();
-            // 默认文件优先，与 v1 的排序规则一致
+            // 默认文件优先
             inner.sort_by_key(|p| {
                 p.file_name()
                     .map(|n| n != "ZGVmYXVsdA.json")
@@ -204,7 +204,7 @@ fn b64(text: &str) -> Result<Vec<u8>> {
         .map_err(|e| AppError::new(ErrorKind::Invalid, format!("不是合法 base64url：{e}")))
 }
 
-/// v1 是客户端 3.18 之前的旧格式，只解不写——新写盘一律是 v2，客户端自己会迁移。
+/// 只解不写——新写盘一律是 v2，客户端自己会迁移。
 fn v1_key() -> [u8; 32] {
     Sha256::digest(secret().as_bytes()).into()
 }
@@ -226,7 +226,7 @@ fn v2_env_secret(creds_dir: &Path) -> Option<Vec<u8>> {
 
 /// v2:os 的密钥：Windows 凭据管理器（客户端用 keyring v3 的 Windows 后端）。
 /// 目标名 = `<sha256(credentials.json 绝对路径) hex>.<服务名>`——**user 在前、
-/// 服务在后**（2026-11-14 本机实测）；Blob 是 43 位 base64url 文本，以 UTF-16LE
+/// 服务在后**；Blob 是 43 位 base64url 文本，以 UTF-16LE
 /// 存放，解出 32 字节原始密钥（不是 sha256，密钥就是这 32 字节本身）。
 #[cfg(windows)]
 fn v2_os_key(creds_path: &Path) -> Option<Vec<u8>> {
@@ -1243,7 +1243,7 @@ fn default_data_root() -> PathBuf {
             return path;
         }
     }
-    // 新版把 dataBaseDir 写进 ~/.zcode/v2/setting.json，旧版就是家目录
+    // dataBaseDir 在 ~/.zcode/v2/setting.json；家目录那份是存量位置。
     if let Some(base) = ZCodeProvider::read_json(&paths::home().join(".zcode/v2/setting.json"))
         .and_then(|v| {
             v.get("dataBaseDir")
@@ -1420,7 +1420,7 @@ mod tests {
         assert_eq!(name, "ZCode 账号");
     }
 
-    /// z.ai 族凭据直接走余额通道：BigModel 监控接口一次都不该被请求（此前每轮
+    /// z.ai 族凭据直接走余额通道：BigModel 监控接口一次都不该被请求（每轮
     /// 都先撞 401/无资格，把「没有套餐」误导成「查询失败」）
     #[tokio::test]
     async fn zai_family_quota_goes_straight_to_balance() {

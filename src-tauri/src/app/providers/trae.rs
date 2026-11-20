@@ -1,6 +1,6 @@
 //! Trae CN / TRAE SOLO CN：iCube 登录态（`storage.json` 里的 base64 密文）。
 //!
-//! 格式（v1 已逆向并稳定使用）：`base64(6 字节头 + 32 字节密钥 + AES-128-CBC 密文)`，
+//! 格式：`base64(6 字节头 + 32 字节密钥 + AES-128-CBC 密文)`，
 //! 解密密钥由那 32 字节密钥经两层 SHA-512 与两张固定置换表推导，
 //! 明文前 64 字节是 HMAC（不校验），之后才是 JSON。
 //!
@@ -427,12 +427,12 @@ impl Provider for TraeProvider {
 
 const API_BASE: &str = "https://api.trae.cn/trae/api/v2/ug/checkin_credits";
 const USAGE_URL: &str = "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage";
-// 带空格是刻意的：与 v1（requests 的 json.dumps 产物）逐字节一致，见 post() 注释
+// 带空格是刻意的：与客户端协议逐字节一致，见 post() 注释
 const REQ_SOURCE: &str = r#"{"req_source": 1}"#;
 
 impl TraeProvider {
-    /// 请求形态与 v1 逐字节对齐（2026-11-01 实测）：
-    /// 同一 token、同一分钟，v2 的 `AI-Manager` UA + 紧凑 body 被 claim 拒
+    /// 请求形态逐字节对齐（实测）：
+    /// 同一 token、同一分钟，`AI-Manager` UA + 紧凑 body 被 claim 拒
     /// （"The submitted order parameters are incorrect"），python-requests 的
     /// `python-requests/2.34.2` + `{"req_source": 1}` 成功。重登后签发的新 token
     /// 走更严的下单校验，UA/请求形态不在这个白名单里就拒单。别改这三处。
@@ -615,7 +615,7 @@ mod tests {
     use super::*;
     use cbc::cipher::BlockEncryptMut;
 
-    /// 按客户端格式造一份密文（等价于 v1 里从 storage.json 拿到的东西）
+    /// 按客户端格式造一份密文
     fn seal(payload: &Value) -> String {
         let key = [7u8; KEY_LEN];
         let mut seed_input = Vec::new();

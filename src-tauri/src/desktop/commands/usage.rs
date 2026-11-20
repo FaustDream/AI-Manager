@@ -33,13 +33,15 @@ pub async fn usage_scan(
     Ok(report)
 }
 
-/// 用量总览：按天 / 按平台 / 按模型。
+/// 用量总览：按天 / 按平台 / 按模型。区间由界面给 `from` / `to`，不设天数上限。
 pub async fn usage_overview(
     state: &AppState,
-    days: Option<i64>,
+    from: Option<String>,
+    to: Option<String>,
 ) -> std::result::Result<crate::app::usage::UsageOverview, String> {
+    let window = crate::app::window::DayWindow::parse(from.as_deref(), to.as_deref());
     let db = state.db.clone();
-    crate::app::runtime::blocking(move || crate::app::usage::overview(&db, days.unwrap_or(14)))
+    crate::app::runtime::blocking(move || crate::app::usage::overview(&db, window))
         .await
         .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
         .map_err(err_text)

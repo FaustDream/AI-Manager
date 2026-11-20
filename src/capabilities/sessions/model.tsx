@@ -31,9 +31,9 @@ export function TitleMarks({
       {onTogglePin && (
         <button
           type="button"
-          // 悬停才显形，但**键盘也要能拿到**（P1-9）。原来用 `hidden`：display:none
-          // 的元素根本停不上焦点，Tab 永远跳过它，等于这功能对键盘用户不存在。
-          // sr-only 保留 1px 可聚焦盒（不占位、也不会误点），聚焦或悬停时还原成正常图标。
+          // 悬停才显形，但**键盘也要能拿到**（P1-9）：`hidden` 会 display:none，
+          // Tab 永远跳过它，等于这功能对键盘用户不存在。sr-only 保留 1px 可聚焦盒
+          // （不占位、也不会误点），聚焦或悬停时还原成正常图标。
           className={
             row.pinned
               ? 'sr-only cursor-pointer text-accent group-hover:not-sr-only group-focus-within:not-sr-only focus-visible:not-sr-only'

@@ -4,7 +4,7 @@ import type { ScheduleAction } from "./ScheduleAction";
 
 export type Schedule = { id: string, name: string, action: ScheduleAction, 
 /**
- * None 保留原来的全账号任务；Some 只执行这个账号的旅行。
+ * None 保留全账号任务；Some 只执行这个账号的旅行。
  */
 account_iid: string | null, kind: RuleKind, 
 /**

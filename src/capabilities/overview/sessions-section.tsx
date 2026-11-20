@@ -1,6 +1,6 @@
 // 仪表盘的「会话」区块：会话维度的 KPI 瓦片 + 排名列表。
-// 口径（与后端 session_stats 一致）：today / week / unnamed 按活跃口径
-// （不含已归档与已隐藏），total / by_source / by_project 含已归档。
+// 口径（与后端 session_stats 一致）：`active` 与两个排名是区间口径（区间内有活动、
+// 不含已归档）；`total` / `archived` / `unnamed` 是存量口径，换区间不变。
 // 遵循仪表盘既定口味：瓦片只留数字、解释进 tooltip；排名列表 + 行底 3px 份额条。
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -10,11 +10,14 @@ import { errText } from '@/lib/ipc';
 import { navigate } from '@/lib/nav';
 import type { SessionStats } from '@/lib/types';
 import { Metric, SectionTitle, ShareBar, shareText } from './metric';
+import { RangeControl, useRange } from './range';
 
 export function SessionsSection() {
+  // 区间独立一份：会话索引、Token 采集、积分快照互不相干
+  const range = useRange(7);
   const stats = useQuery<SessionStats>({
-    queryKey: ['session-stats'],
-    queryFn: () => queryCmd('session_stats'),
+    queryKey: ['session-stats', range.from, range.to],
+    queryFn: () => queryCmd('session_stats', { from: range.from, to: range.to }),
     // 统计只读本地索引表，代价低；跟仪表盘其他区块同节奏自动刷新
     refetchInterval: 5 * 60_000,
   });
@@ -24,10 +27,14 @@ export function SessionsSection() {
   return (
     <section className="rounded-lg border border-line bg-card shadow-card p-3">
       <SectionTitle
+        className="mb-0"
         right={
-          <Button size="sm" variant="ghost" onClick={() => navigate('sessions')}>
-            去会话页 →
-          </Button>
+          <span className="flex flex-wrap items-center justify-end gap-2">
+            <RangeControl range={range} />
+            <Button size="sm" variant="ghost" onClick={() => navigate('sessions')}>
+              去会话页 →
+            </Button>
+          </span>
         }
       >
         会话（全部 AI 客户端）
@@ -54,14 +61,9 @@ export function SessionsSection() {
         <div className="flex flex-col gap-3">
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Metric
-              label="今日活跃"
-              value={String(data.today)}
-              hint="今天有活动的会话数（不含已归档）"
-            />
-            <Metric
-              label="7 日活跃"
-              value={String(data.week)}
-              hint="最近 7 天有活动的会话数（不含已归档）"
+              label={`活跃 · ${range.label}`}
+              value={String(data.active)}
+              hint="区间内有活动的会话数（不含已归档）"
             />
             <Metric
               label="会话总数"
@@ -69,48 +71,40 @@ export function SessionsSection() {
               hint={`其中已归档 ${data.archived} 条（归档也是资产，计入总数）`}
             />
             <Metric
+              label="已归档"
+              value={String(data.archived)}
+              hint="已归档但仍在索引里的会话，会话页可撤销归档"
+            />
+            <Metric
               label="未命名"
               value={String(data.unnamed)}
-              hint="标题还是占位文案的会话；点「去处理」批量起名"
-              // 未命名挂着难找，数量大时用警示色提醒
+              hint="标题还是占位文案的会话（不含已归档），会话页有「未命名」快筛"
             />
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
             <div className="rounded-lg border border-line/70 p-3">
-              <div className="mb-1 flex items-baseline justify-between gap-2 px-1 text-xs text-muted">
+              {/* 表头与排名行同一内边距（px-3）：差 8px 整列数字就会看着歪 */}
+              <div className="mb-1 flex items-baseline justify-between gap-2 px-3 text-xs text-muted">
                 <span>来源</span>
                 <span>会话数 · 占比</span>
               </div>
-              <RankedSources bySource={data.by_source} total={data.total} />
+              <RankedSources bySource={data.by_source} total={data.active} />
             </div>
 
             <div className="rounded-lg border border-line/70 p-3">
-              <div className="mb-1 flex items-baseline justify-between gap-2 px-1 text-xs text-muted">
+              <div className="mb-1 flex items-baseline justify-between gap-2 px-3 text-xs text-muted">
                 <span>项目 Top 8</span>
                 <span>会话数 · 占比</span>
               </div>
               {data.by_project.length === 0 ? (
                 <p className="px-1 py-3 text-xs text-muted">还没有项目信息（会话都来自临时工作区或无项目路径）。</p>
               ) : (
-                <RankedProjects byProject={data.by_project} total={data.total} />
+                <RankedProjects byProject={data.by_project} total={data.active} />
               )}
             </div>
           </div>
 
-          {data.unnamed > 0 && (
-            <div className="flex items-center gap-2 text-xs text-muted">
-              <span>
-                有 <span className="font-medium text-warn">{data.unnamed}</span> 条未命名会话
-              </span>
-              <button
-                className="cursor-pointer text-accent hover:underline"
-                onClick={() => navigate('sessions', { unnamed: true })}
-              >
-                去处理 →
-              </button>
-            </div>
-          )}
         </div>
       )}
     </section>

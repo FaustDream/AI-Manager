@@ -134,7 +134,7 @@ export function PreviewBody({
 
 /**
  * 复制预览内容：折叠与渐进都不影响复制——复制的是**已解析**的消息。
- * 「全文」这个名字曾经撒谎（后端只解析头尾 100 条），文案与口径对齐。
+ * 「全文」只覆盖后端解析的头尾 100 条，文案与口径对齐。
  */
 export function CopyAllButton({ messages }: { messages: Message[] }) {
   const [done, setDone] = useState(false);

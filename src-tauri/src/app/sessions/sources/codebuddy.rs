@@ -105,8 +105,8 @@ fn fingerprint(dirs: &[(String, PathBuf)]) -> String {
         }
     }
     parts.sort();
-    // v2：把 CodeBuddy JetBrains 的来源标签从「IDEA 插件」改成「CodeBuddy 插件」，
-    // 让已有索引强制重扫一次，避免旧标签继续混用。
+    // 来源标签用「CodeBuddy 插件」，标签变更让已有索引强制重扫一次，
+    // 避免不一致的标签继续混用。
     format!("v2|{}", parts.join("|"))
 }
 

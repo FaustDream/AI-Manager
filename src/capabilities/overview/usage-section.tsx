@@ -1,95 +1,77 @@
-// 用量：本地只读采集出来的 Token 与平台扣费。
+// Token 统计：本地只读采集出来的 Token 与平台扣费。
 //
-// 按 dashboard-design 技能重构：KPI 瓦片只留数字与 delta 徽章（口径与解释进 tooltip）；
-// 各软件用量与模型占比是排名列表 + 行底 3px 份额条（环形图只配「一家独大」的份额，
-// 七个切片的占比用排名列表更诚实）；每日明细是按平台堆叠柱（零日自然缺失，不装没数据）。
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
-import { Button } from '@/components/ui/button';
+// 版式与左栏的积分统计卡**同构**：标题行（区间控件）+ 2×2 数字瓦片 + 两个子块
+// （消耗趋势 / 软件·模型排名）。同构是硬要求——两栏卡片要能对齐，结构就得一样。
+// 采集全是后台行为：启动后自动扫一遍，之后按设置的间隔增量扫描，界面上不给手动入口。
+// 逐日明细不在这张卡里：趋势线已经按月-日给出每天的合计，再堆一张整页宽的柱状图
+// 是把同一份数据画两遍。
+//
+// 两块共用 useUsageQuery 的一次请求：queryKey 只由区间决定，react-query 自己去重。
+// 按 dashboard-design 技能：瓦片只留数字与 delta 徽章（口径进 tooltip）；
+// 占比用排名列表 + 行底 3px 份额条，不用环形图（七个切片读不出差异）。
+import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { StateBlock } from '@/components/ui/form';
-import { toast } from '@/components/ui/toast';
-import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
+import { queryCmd } from '@/lib/cmd';
 import { errText } from '@/lib/ipc';
 import { fmtAmount, fmtTime, fmtTokens, fmtTokensExact } from '@/lib/format';
-import { appLabel, DailyTokensBars, TrendLines } from '@/components/usage-charts';
+import { appLabel, TrendLines } from '@/components/usage-charts';
 import type { UsageModel, UsageOverview, UsageSlice } from '@/lib/types';
-import { Delta, Metric, SectionTitle, ShareBar, shareText } from './metric';
+import { Metric, SectionTitle, ShareBar, shareText } from './metric';
+import { RangeControl, type Range } from './range';
 
-export function UsageSection() {
-  const qc = useQueryClient();
-  const { busy, run } = useBusy();
-  // 默认今天：与上面的积分收支同一个默认口径
-  const [days, setDays] = useState(1);
-
-  const overview = useQuery<UsageOverview>({
-    queryKey: ['usage', days],
-    queryFn: () => queryCmd('usage_overview', { days }),
+/** 用量查询：页面持有区间，卡内的瓦片与趋势图共用这一次请求。 */
+export function useUsageQuery(range: Range): UseQueryResult<UsageOverview> {
+  return useQuery<UsageOverview>({
+    queryKey: ['usage', range.from, range.to],
+    queryFn: () => queryCmd('usage_overview', { from: range.from, to: range.to }),
     retry: false,
     refetchInterval: (query) => (query.state.error ? false : 5 * 60_000),
   });
+}
 
-  const scan = () =>
-    run('scan', async () => {
-      const report = await runCmd('usage_scan');
-      if (report === undefined) return;
-      const failed = report.errors.length;
-      toast(
-        `扫描完成：新增 ${report.inserted} 条 · 扫描 ${report.scanned} 条` +
-          (failed ? `\n${failed} 个源失败：${report.errors[0]}` : ''),
-      );
-      await qc.invalidateQueries({ queryKey: ['usage'] });
-    });
-
-  const data = overview.data;
-  const empty = data && data.total.calls === 0;
-  // days 已把区间补满且按日期升序，所以「今天的前一天」就是倒数第二个
-  const yesterday = data && data.days.length >= 2 ? data.days[data.days.length - 2] : null;
+export function UsageSection({
+  query,
+  range,
+}: {
+  query: UseQueryResult<UsageOverview>;
+  range: Range;
+}) {
+  const data = query.data;
+  const empty = data !== undefined && data.total.calls === 0;
+  // 后端把区间内每一天都补满且按日期升序，天数就是区间跨度
+  const days = data?.days.length ?? 0;
   const perCall = data && data.total.calls > 0 ? Math.round(data.total.tokens / data.total.calls) : 0;
 
   return (
-    <section className="rounded-lg border border-line bg-card shadow-card p-3">
-      <SectionTitle
-        right={
-          <span className="flex flex-wrap items-center gap-1">
-            {data?.scanned_at && <span className="mr-1">上次采集 {fmtTime(data.scanned_at)}</span>}
-            <span className="flex items-center gap-0.5 rounded border border-line p-0.5">
-              {[1, 7, 14, 30].map((value) => (
-                <button
-                  key={value}
-                  className={
-                    days === value
-                      ? 'rounded bg-hover px-1.5 py-0.5 text-xs text-fg'
-                      : 'cursor-pointer rounded px-1.5 py-0.5 text-xs text-muted hover:text-fg'
-                  }
-                  onClick={() => setDays(value)}
-                >
-                  {value === 1 ? '今天' : `${value} 天`}
-                </button>
-              ))}
-            </span>
-            <Button size="sm" onClick={scan} loading={busy === 'scan'}>
-              {busy === 'scan' ? '扫描中…' : '扫描本地文件'}
-            </Button>
-          </span>
-        }
-      >
-        用量（本地文件采集）
-      </SectionTitle>
+    // 四行 subgrid（标题 / 数字 / 子块一 / 子块二）：与左栏共用父栅格的行高，
+    // 所以两栏的子块边界必然对齐。多一个直接子节点就会顶错行，条件块必须收在容器里。
+    <section className="grid min-w-0 gap-3 rounded-lg border border-line bg-card p-3 shadow-card xl:row-span-4 xl:grid-rows-subgrid">
+      <div>
+        <SectionTitle
+          className="mb-0 min-h-7 items-center"
+          right={<RangeControl range={range} />}
+        >
+          Token 统计
+        </SectionTitle>
+      </div>
 
-      {overview.isLoading && (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="h-[92px] skeleton-block rounded-lg bg-hover" />
-          ))}
+      {query.isLoading && (
+        <div className="grid gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <div key={index} className="h-[92px] skeleton-block rounded-lg bg-hover" />
+            ))}
+          </div>
+          <div className="h-[300px] skeleton-block rounded-lg bg-hover" />
         </div>
       )}
 
-      {overview.isError && (
+      {query.isError && (
         <StateBlock
           kind="error"
           title="读用量失败"
-          detail={errText(overview.error)}
-          onRetry={() => overview.refetch()}
+          detail={errText(query.error)}
+          onRetry={() => query.refetch()}
         />
       )}
 
@@ -97,96 +79,71 @@ export function UsageSection() {
         <div className="rounded-lg border border-dashed border-line">
           <StateBlock
             kind="empty"
-            title={days === 1 ? '今天还没有用量数据' : '还没有用量数据'}
-            detail={
-              days === 1
-                ? '默认只看今天；切到 7 / 14 / 30 天可看历史区间。采集器只读客户端本地文件，不改任何配置，之后每 30 分钟自动增量扫描。'
-                : '采集器只读客户端本地文件，不改任何配置。点「扫描本地文件」立刻跑一次；之后每 30 分钟自动增量扫描。'
-            }
+            title={range.key === '1' ? '今天还没有用量数据' : '这个区间没有用量数据'}
+            detail="采集全自动：启动后立刻扫一遍，之后按设置的间隔（默认 30 分钟）增量扫描。只读客户端本地文件，不改任何配置。"
           />
-          <div className="pb-6 text-center">
-            <Button size="sm" variant="primary" onClick={scan} loading={busy === 'scan'}>
-              扫描本地文件
-            </Button>
-          </div>
         </div>
       )}
 
       {data && !empty && (
-        <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <>
+          {/* 四个瓦片全部跟区间走：换区间时四个数一起变，不会出现「两个数变了、两个没变」 */}
+          <div className="grid grid-cols-2 gap-3">
             <Metric
-              label="今日 Token"
-              value={fmtTokens(data.today.tokens)}
-              exact={fmtTokensExact(data.today.tokens)}
-              hint={`${data.today.calls} 次调用`}
-              delta={
-                <Delta
-                  cur={data.today.tokens}
-                  prev={yesterday && yesterday.tokens > 0 ? yesterday.tokens : 0}
-                />
-              }
-            />
-            <Metric
-              label="今日积分"
-              value={fmtAmount(data.today.credit)}
-              hint={
-                data.today.calls > 0
-                  ? `平台实际扣费口径 · ${data.today.calls} 次调用`
-                  : '平台实际扣费口径'
-              }
-            />
-            <Metric
-              label="区间 Token"
+              label={`Token · ${range.label}`}
               value={fmtTokens(data.total.tokens)}
               exact={fmtTokensExact(data.total.tokens)}
-              hint={`日均 ${fmtTokens(Math.round(data.total.tokens / days))}`}
+              hint={`区间内 ${data.total.calls} 次调用`}
             />
             <Metric
-              label="区间积分"
+              label={`积分 · ${range.label}`}
               value={fmtAmount(data.total.credit)}
               hint={
                 data.total.calls > 0
-                  ? `平台实际扣费口径 · ${data.total.calls} 次调用 · 单次 ${fmtTokens(perCall)} Token`
+                  ? `平台实际扣费口径 · ${data.total.calls} 次调用`
                   : '平台实际扣费口径'
               }
             />
+            <Metric
+              label="日均 Token"
+              value={fmtTokens(days > 0 ? Math.round(data.total.tokens / days) : 0)}
+              exact={fmtTokensExact(days > 0 ? Math.round(data.total.tokens / days) : 0)}
+              hint={`区间 ${days} 天的日均（含没有用量的日子）`}
+            />
+            <Metric
+              label="单次平均 Token"
+              value={fmtTokens(perCall)}
+              exact={fmtTokensExact(perCall)}
+              hint={`区间内 ${data.total.calls} 次调用的平均值`}
+            />
           </div>
 
+          {/* 子块一：走势（与左栏的收支图占同一个位置、同一个高度） */}
           <div className="rounded-lg border border-line/70 p-3">
-            <div className="mb-1.5 flex items-baseline gap-2">
+            <div className="mb-1.5 flex flex-wrap items-center gap-2">
               <h4 className="text-xs font-semibold tracking-wide text-fg2">Token 消耗趋势</h4>
               <span className="flex-1" />
+              <span className="text-xs text-muted">
+                {data.scanned_at ? `采集 ${fmtTime(data.scanned_at)}` : '尚未采集'}
+              </span>
             </div>
             <TrendLines days={data.days} />
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-2">
-            <div className="rounded-lg border border-line/70 p-3">
-              <div className="mb-1 flex items-baseline justify-between gap-2 px-1 text-xs text-muted">
-                <span>软件</span>
-                <span>Token · 占比</span>
-              </div>
-              <RankedAppUsage byApp={data.by_app} totalTokens={data.total.tokens} />
-            </div>
-
-            <div className="rounded-lg border border-line/70 p-3">
-              <div className="mb-1 flex items-baseline justify-between gap-2 px-1 text-xs text-muted">
-                <span>模型</span>
-                <span>Token · 占比</span>
-              </div>
-              <RankedModelUsage byModel={data.by_model} totalTokens={data.total.tokens} />
-            </div>
-          </div>
-
+          {/* 子块二：按软件与模型拆分（与左栏「各软件消耗」占同一个位置、同一个高度） */}
           <div className="rounded-lg border border-line/70 p-3">
-            <div className="mb-1.5 flex items-baseline gap-2">
-              <h4 className="text-xs font-semibold tracking-wide text-fg2">每日明细</h4>
-              <span className="flex-1" />
+            <div className="mb-1 flex items-baseline justify-between gap-2 px-3 text-xs text-muted">
+              <span>软件</span>
+              <span>Token · 占比</span>
             </div>
-            <DailyTokensBars days={data.days} />
+            <RankedAppUsage byApp={data.by_app} totalTokens={data.total.tokens} />
+            <div className="mb-1 mt-2 flex items-baseline justify-between gap-2 border-t border-line/70 px-3 pt-2 text-xs text-muted">
+              <span>模型</span>
+              <span>Token · 占比</span>
+            </div>
+            <RankedModelUsage byModel={data.by_model} totalTokens={data.total.tokens} />
           </div>
-        </div>
+        </>
       )}
     </section>
   );
