@@ -2,9 +2,11 @@
 // 页面只回答「每列渲染什么」——加一列 = 加一行定义。
 // 账号中心（capabilities/account-center/columns.ts）是这套范式的蓝本，
 // 这里把它下沉成可复用的表体；账号中心自己的表带拖拽/列宽调整，仍保留原实现。
+import { useMemo, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import { cn } from './button';
 import { SkeletonRows, StateBlock } from './form';
+import { nextSort, sortRows, type SortState, type SortValue } from '@/lib/sort';
 
 /** 行被激活的事件：鼠标点击或键盘 Enter/Space。两者都带 ctrl/meta，多选判断通用。 */
 export type RowActivateEvent = MouseEvent<HTMLTableRowElement> | KeyboardEvent<HTMLTableRowElement>;
@@ -28,6 +30,11 @@ export interface Column<R> {
   title?: (row: R) => string | undefined;
   /** 复杂单元格的额外样式 */
   className?: string;
+  /**
+   * 这一列可排序：给出取值函数即可，表头会变成三态排序按钮（升 → 降 → 取消）。
+   * 取值返回 `null/空串` 表示「没有值」，排序时一律沉底，不占第一屏。
+   */
+  sortValue?: (row: R) => SortValue;
   cell: (row: R) => ReactNode;
 }
 
@@ -64,6 +71,11 @@ export interface DataTableProps<R> {
   dense?: boolean;
   className?: string;
   style?: CSSProperties;
+  /** 进入页面时的默认排序；不传就是数据原顺序 */
+  defaultSort?: SortState | null;
+  /** 受控排序：给了它就由外部决定顺序，表头点击只回调 `onSortChange` */
+  sort?: SortState | null;
+  onSortChange?: (next: SortState | null) => void;
 }
 
 const headCls = (dense?: boolean) =>
@@ -95,8 +107,25 @@ export function DataTable<R>({
   dense,
   className,
   style,
+  defaultSort,
+  sort,
+  onSortChange,
 }: DataTableProps<R>) {
   const total = columns.length + (lead ? 1 : 0) + (trail ? 1 : 0);
+  const [innerSort, setInnerSort] = useState<SortState | null>(defaultSort ?? null);
+  // 受控时完全听外部的：页面可能还要把「排序」写进 URL/偏好，这里不抢方向盘
+  const activeSort = sort === undefined ? innerSort : sort;
+  const view = useMemo(
+    () =>
+      sortRows(rows, activeSort, (row, key) => columns.find((col) => col.key === key)?.sortValue?.(row)),
+    [rows, activeSort, columns],
+  );
+  const toggleSort = (key: string) => {
+    const next = nextSort(activeSort, key);
+    if (sort === undefined) setInnerSort(next);
+    onSortChange?.(next);
+  };
+
   return (
     <table className={cn('w-full border-collapse', className)} style={style}>
       <thead className={stickyHead ? 'sticky top-0 bg-bg' : undefined}>
@@ -106,15 +135,38 @@ export function DataTable<R>({
               {lead.head}
             </th>
           )}
-          {columns.map((col) => (
-            <th
-              key={col.key}
-              className={cn(headCls(dense), col.align === 'right' && 'text-right')}
-              style={widthStyle(col.width)}
-            >
-              {col.header}
-            </th>
-          ))}
+          {columns.map((col) => {
+            const dir = activeSort?.key === col.key ? activeSort.dir : null;
+            return (
+              <th
+                key={col.key}
+                className={cn(headCls(dense), col.align === 'right' && 'text-right')}
+                style={widthStyle(col.width)}
+                aria-sort={
+                  dir ? (dir === 'asc' ? 'ascending' : 'descending') : col.sortValue ? 'none' : undefined
+                }
+              >
+                {col.sortValue ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleSort(col.key)}
+                    className="inline-flex cursor-pointer items-center gap-0.5 hover:text-fg"
+                    title="点击排序：升序 → 降序 → 取消"
+                  >
+                    {col.header}
+                    <span
+                      aria-hidden
+                      className={cn('text-[9px] leading-none', dir ? 'opacity-100' : 'opacity-25')}
+                    >
+                      {dir === 'desc' ? '▼' : '▲'}
+                    </span>
+                  </button>
+                ) : (
+                  col.header
+                )}
+              </th>
+            );
+          })}
           {trail && (
             <th className={cn(headCls(dense), 'text-right')} style={widthStyle(trail.width)}>
               {trail.head}
@@ -124,14 +176,14 @@ export function DataTable<R>({
       </thead>
       <tbody>
         {loading && <SkeletonRows rows={skeletonRows} cols={total} />}
-        {!loading && rows.length === 0 && empty !== null && (
+        {!loading && view.length === 0 && empty !== null && (
           <tr>
             <td colSpan={total}>
               {empty ?? <StateBlock kind="empty" title="没有记录" />}
             </td>
           </tr>
         )}
-        {rows.map((row) => {
+        {view.map((row) => {
           const key = rowKey(row);
           return (
             <tr

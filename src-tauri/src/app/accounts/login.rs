@@ -136,7 +136,7 @@ pub fn wait_for_login(db: &Db, platform: &str, ticket: &str) -> Result<LoginOutc
         .enable_all()
         .build()
         .map_err(|e| AppError::new(ErrorKind::Io, format!("建轮询运行时失败：{e}")))?;
-    runtime.block_on(async {
+    let mut outcome = runtime.block_on(async {
         match platform {
             "workbuddy" | "workbuddy_intl" => wait_workbuddy(db, platform, ticket).await,
             "qoder" | "qoder_intl" => wait_qoder(db, platform, ticket).await,
@@ -146,7 +146,10 @@ pub fn wait_for_login(db: &Db, platform: &str, ticket: &str) -> Result<LoginOutc
                 format!("{other} 不支持浏览器登录"),
             )),
         }
-    })
+    })?;
+    // 授权即生效：凭据落库后立刻尝试写回客户端，别让客户端停在授权前的登录态
+    outcome.message.push_str(&sync_client(db, &outcome.iid));
+    Ok(outcome)
 }
 
 // -------------------------------------------------------------- WorkBuddy
@@ -1046,6 +1049,58 @@ pub(crate) fn save(
         },
         iid,
     })
+}
+
+/// 授权即写回本机：入库后立刻把新凭据推到客户端。
+///
+/// 不做这一步的后果是「授权白做」：客户端仍停在授权前的登录态，下一次扫描
+/// （启动扫描 / 刷新账号状态 / 刷新凭据都会重扫）就把刚授权的凭据盖回旧值。
+///
+/// 只对**凭据能直接重建客户端登录态**的平台做（ZCode 写 config.json 与凭据条目）。
+/// WorkBuddy 的客户端登录态是整份档案（Chromium 会话 + 服务端签发的票据），网页授权
+/// 造不出来；拿旧档案写回去等于把客户端退回授权前，所以这里只能如实说明。
+fn sync_client(db: &Db, iid: &str) -> String {
+    let platform = crate::app::features::platform_of_iid(iid);
+    if platform.starts_with("workbuddy") {
+        return "；客户端登录态仍是旧的，要客户端也用这个账号，请在客户端里登录一次".into();
+    }
+    if !crate::app::features::available(platform, crate::app::features::SWITCH) {
+        return String::new();
+    }
+    let Ok(Some(identity)) = repo::identity(db, iid) else {
+        return String::new();
+    };
+    let Some(provider) = crate::app::providers::for_iid(iid) else {
+        return String::new();
+    };
+    // 客户端登的已经是这个账号：switch_to 会以「不需要切换」拒绝，不当成失败
+    if provider.current_id().as_deref() == Some(identity.account_id.as_str()) {
+        return String::new();
+    }
+    let Ok(Some(bytes)) = repo::secret_of(db, iid) else {
+        return String::new();
+    };
+    let Ok(cred) = Credential::parse(&bytes) else {
+        return String::new();
+    };
+    match crate::app::providers::switch(iid, &identity.account_id, &identity.name, &cred) {
+        Ok(outcome) => {
+            crate::app::log::log(
+                crate::app::log::Level::Info,
+                "accounts",
+                format!("授权后已写回客户端登录态：{}", identity.name),
+            );
+            format!("；{}", outcome.message)
+        }
+        Err(e) => {
+            crate::app::log::log(
+                crate::app::log::Level::Warn,
+                "accounts",
+                format!("授权后写回客户端失败：{}（{}）", identity.name, e.message),
+            );
+            format!("；客户端登录态未更新（{}）", e.message)
+        }
+    }
 }
 
 fn str_of(value: &Value, key: &str) -> String {

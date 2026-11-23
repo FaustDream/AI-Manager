@@ -7,7 +7,13 @@ const credit = COLUMNS.find((c) => c.key === 'credit')!;
 const checkin = COLUMNS.find((c) => c.key === 'checkin')!;
 
 const account = (over: Partial<AccountView> = {}) =>
-  ({ iid: 'workbuddy:u1@intl', balance: 60, quota: {}, ...over }) as unknown as AccountView;
+  ({
+    iid: 'workbuddy:u1@intl',
+    platform: 'workbuddy',
+    balance: 60,
+    quota: {},
+    ...over,
+  }) as unknown as AccountView;
 
 describe('积分 / 配额列', () => {
   it('本次查询失败时仍显示库里已有的余额，并把原因留在 title', () => {
@@ -77,11 +83,28 @@ describe('签到列', () => {
     expect(missing.title).toContain('没签到');
   });
 
-  it('免签到的平台同样只留图标', () => {
-    const cell = checkin.cell(account({ requires_checkin: false, checked_in: null }), {});
+  it('没有签到玩法的平台不画图标：没有的功能不该占一个叉号', () => {
+    const cell = checkin.cell(account({ platform: 'zcode', requires_checkin: false, checked_in: null }), {});
+    expect(cell.icon).toBeUndefined();
     expect(cell.text).toBe('');
-    expect(cell.icon).toBe('forbid');
-    expect(cell.title).toContain('不需要签到');
+    expect(cell.title).toContain('没有签到玩法');
+  });
+
+  it('在设置里关掉签到入口后，列表不再显示签到状态', () => {
+    const off = () => false;
+    const cell = checkin.cell(account({ requires_checkin: true, checked_in: true }), {}, off);
+    expect(cell.icon).toBeUndefined();
+    expect(cell.text).toBe('');
+  });
+
+  it('开关默认全开：国际版按 workbuddy_intl 取开关', () => {
+    const seen: string[] = [];
+    const spy = (platform: string) => {
+      seen.push(platform);
+      return true;
+    };
+    checkin.cell(account({ requires_checkin: true, checked_in: true }), {}, spy);
+    expect(seen).toEqual(['workbuddy_intl']);
   });
 
   it('「约 HH:MM」不是签到状态，时间要继续显示', () => {

@@ -30,6 +30,8 @@ import type {
   AppConfig,
   CapabilityMatrix,
   CapabilityRow,
+  FeatureMatrix,
+  FeatureRow,
   HealthReport,
   RuleKind,
   Schedule,
@@ -54,6 +56,7 @@ export default function SettingsPage() {
         <>
           <GeneralPane />
           <ConfigPane />
+          <FeaturesPane />
         </>
       )}
       {tab === 'schedule' && <ScheduleCard />}
@@ -84,7 +87,7 @@ function TabBar({ tab, onChange }: { tab: TabKey; onChange: (t: TabKey) => void 
     { key: 'diagnostics', label: '诊断与记录' },
   ];
   return (
-    <div className="flex flex-wrap gap-1 rounded-lg border border-line bg-card shadow-card p-1">
+    <div className="flex flex-wrap gap-1 p-1">
       {tabs.map((t) => (
         <button
           key={t.key}
@@ -131,7 +134,7 @@ function GeneralPane() {
   }, []);
 
   return (
-    <div className="rounded-lg border border-line bg-card shadow-card p-4">
+    <div className="p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">通用</h2>
         <span className="flex-1" />
@@ -308,7 +311,7 @@ function ConfigPane() {
   const patch = (change: Partial<AppConfig>) => setDraft({ ...draft, ...change });
 
   return (
-    <div className="rounded-lg border border-line bg-card shadow-card p-4">
+    <div className="p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">配置</h2>
         <span className="flex-1" />
@@ -439,9 +442,17 @@ function ConfigPane() {
           disabled={busy === 'config'}
           onClick={() =>
             runBusy('config', async () => {
-              if ((await runCmd('config_set', { config: draft })) === undefined) return;
+              // config_set 是整份覆盖：功能开关在下一张卡片里即时保存，
+              // 这里必须取后端最新值带上，否则这个草稿会把刚勾的开关写回去。
+              // 取不到就退回草稿里的旧值——不能因为一次读取失败把保存整块打断。
+              const latest = await queryCmd('config_get').catch(() => null);
+              const merged = { ...draft, features: latest?.features ?? draft.features };
+              if ((await runCmd('config_set', { config: merged })) === undefined) return;
               toast('配置已保存并生效（同时写入 data/config.toml）');
-              await qc.invalidateQueries({ queryKey: ['config'] });
+              await Promise.all([
+                qc.invalidateQueries({ queryKey: ['config'] }),
+                qc.invalidateQueries({ queryKey: ['platform-features'] }),
+              ]);
             })
           }
         >
@@ -457,6 +468,116 @@ function ConfigPane() {
   );
 }
 
+
+/**
+ * 「各软件功能」：哪个软件在界面上露出哪个入口，在这里勾，页面里不再写死。
+ *
+ * 两层判据都在后端：可用性来自 `app/capability.rs` 的能力表（平台本身做不到的格子
+ * 只显示原因、不给勾——勾上也只是一次必然失败的操作），勾选状态即时写进
+ * `data/config.toml` 的 `[features.*]`。这里改的是**界面入口**，不改变平台能力，
+ * 也不会停掉已经排好的定时任务。
+ */
+function FeaturesPane() {
+  const qc = useQueryClient();
+  const { busy, run: runBusy } = useBusy();
+  const matrix = useQuery<FeatureMatrix>({
+    queryKey: ['platform-features'],
+    queryFn: () => queryCmd('platform_features'),
+  });
+  const data = matrix.data;
+
+  const toggle = (platform: string, feature: string, next: boolean) =>
+    runBusy(`feature:${platform}:${feature}`, async () => {
+      // config_set 是整份覆盖，先把当前配置读回来再改这一格。
+      // 读不到就不写：拿半份配置覆盖会把别的设置一起冲掉。
+      const cfg = await queryCmd('config_get').catch(() => null);
+      if (!cfg) {
+        toast('读不到当前配置，稍后再试一次');
+        return;
+      }
+      const current = cfg.features ?? {};
+      const saved = await runCmd('config_set', {
+        config: {
+          ...cfg,
+          features: {
+            ...current,
+            [platform]: { ...(current[platform] ?? {}), [feature]: next },
+          },
+        },
+      });
+      if (saved === undefined) return;
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['platform-features'] }),
+        qc.invalidateQueries({ queryKey: ['config'] }),
+      ]);
+    });
+
+  const columns: Column<FeatureRow>[] = data
+    ? [
+        {
+          key: 'platform',
+          header: '软件',
+          width: 180,
+          cell: (row) => <span className="whitespace-nowrap font-medium">{row.label}</span>,
+        },
+        ...data.features.map((feature, index) => ({
+          key: feature.key,
+          header: <span title={feature.hint}>{feature.label}</span>,
+          width: 116,
+          cell: (row: FeatureRow) => {
+            const cell = row.cells[index];
+            // 平台本身没有的能力：给原因，不给勾
+            if (!cell.available) {
+              return (
+                <span className="cursor-help text-xs text-muted" title={cell.note}>
+                  平台不支持
+                </span>
+              );
+            }
+            return (
+              <Checkbox
+                checked={cell.enabled}
+                disabled={!!busy}
+                title={feature.hint}
+                aria-label={`${row.label}：${feature.label}`}
+                onChange={(e) => toggle(row.key, feature.key, e.target.checked)}
+              />
+            );
+          },
+        })),
+      ]
+    : [];
+
+  return (
+    <div className="p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="text-sm font-semibold">各软件功能</h2>
+        <span className="flex-1" />
+        <span className="text-xs text-muted">勾选即时生效，写入 data\config.toml 的 [features.*]</span>
+      </div>
+      <p className="mb-2 text-xs leading-relaxed text-muted">
+        决定账号中心显示哪些入口：签到、切换账号、
+        <span className="text-fg2">切换 IDE / 切换插件</span>
+        、恢复对话、猫猫旅行。取消勾选只是把入口收起来，不会删掉凭据，也不会停掉已经排好的定时任务。
+        <span className="text-fg2">「平台不支持」是平台本身的限制</span>
+        （登录态设备绑定、没有本机会话库、CodeBuddy 系没有国际版授权域等），
+        不是本应用没做——原因悬停可见。
+      </p>
+      {!data && (
+        <table className="w-full border-collapse">
+          <tbody>
+            <SkeletonRows rows={4} cols={5} />
+          </tbody>
+        </table>
+      )}
+      {data && (
+        <div className="overflow-x-auto">
+          <DataTable dense columns={columns} rows={data.platforms} rowKey={(row) => row.key} empty={null} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * 「已知限制」：平台侧的硬约束，本应用改不了的，集中说清楚。
@@ -479,6 +600,13 @@ const KNOWN_LIMITS: { scope: string; title: string; detail: string; workaround?:
     workaround: '需要完整会话时，在 Trae 里导出，或保留旧版数据。',
   },
   {
+    scope: 'Qoder',
+    title: '只做扫描、签到与积分查询',
+    detail:
+      '「切换登录」目前只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放；Qoder 账号可以在本应用里看完余额与签到，但不改写它的客户端登录态。',
+    workaround: '需要换号时在 Qoder 客户端里登录一次，再回来点「刷新账号状态」，扫描会自动入库。',
+  },
+  {
     scope: 'WorkBuddy 国际版',
     title: '没有签到玩法，也不显示批次到期',
     detail: '国际版只有积分查询；批次到期接口不提供可靠字段，所以国际版不显示到期日。',
@@ -491,18 +619,22 @@ const KNOWN_LIMITS: { scope: string; title: string; detail: string; workaround?:
   {
     scope: 'CodeBuddy',
     title: '账号体系跟随 WorkBuddy',
-    detail: '不单独登录；用 WorkBuddy 国内版档案切换 CodeBuddy IDE 与插件，不支持国际版账号。',
+    detail:
+      '不单独登录：用 WorkBuddy 国内版档案切换 CodeBuddy IDE 与 IDEA 插件的登录态，不支持国际版账号；「恢复对话」跟着 WorkBuddy 账号走。',
   },
   {
     scope: '通用',
-    title: '客户端里也过期的凭据',
-    detail: '「刷新凭据」只重扫客户端本地登录态；客户端自己也过期了，只能去重新授权一次。',
+    title: '「刷新凭据」不会把到期时间往后延',
+    detail:
+      '各平台的 refresh_token 续期没有公开协议，本应用不自己续期。刷新凭据 = 重扫客户端里已经存在的那一份：客户端续过了，到期时间才会变；客户端没登这个账号、或还没续期，刷多少次都是同一个值。客户端票据里没写到期时间时，本应用会改读 token 自带的过期时间（不验签，只用于显示）。',
+    workaround:
+      '到期时间一直不动又快过期：在客户端里重新登录一次该账号，回来点「刷新账号状态」；或直接点「重新授权」。',
   },
 ];
 
 function LimitsPane() {
   return (
-    <div className="rounded-lg border border-line bg-card shadow-card p-4">
+    <div className="p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">已知限制</h2>
         <span className="flex-1" />
@@ -514,7 +646,7 @@ function LimitsPane() {
       </p>
       <div className="flex flex-col gap-2">
         {KNOWN_LIMITS.map((item) => (
-          <div key={`${item.scope}-${item.title}`} className="rounded-md border border-line px-3 py-2">
+          <div key={`${item.scope}-${item.title}`} className="px-3 py-2">
             <div className="flex flex-wrap items-baseline gap-2">
               <span className="rounded bg-hover px-1.5 text-xs text-fg2">{item.scope}</span>
               <span className="text-sm font-medium">{item.title}</span>
@@ -583,7 +715,7 @@ function CapabilityPane() {
     : [];
 
   return (
-    <div className="rounded-lg border border-line bg-card shadow-card p-4">
+    <div className="p-4">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">平台能力</h2>
         <span className="flex-1" />
@@ -629,7 +761,7 @@ function SelfcheckPane() {
   const [report, setReport] = useState<SelfcheckReport | null>(null);
 
   return (
-    <div className="rounded-lg border border-line bg-card shadow-card p-4">
+    <div className="p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">网络自检</h2>
         <span className="flex-1" />
@@ -715,7 +847,7 @@ function RuntimePane() {
   const report = health.data;
 
   return (
-    <div className="rounded-lg border border-line bg-card shadow-card p-4">
+    <div className="p-4">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">运行与存储</h2>
         <span className="flex-1" />
@@ -783,7 +915,7 @@ function ArchiveEntryPane() {
   });
   const total = archived.data?.total ?? 0;
   return (
-    <div className="rounded-lg border border-line bg-card shadow-card p-4">
+    <div className="p-4">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">已归档会话</h2>
         <span className="text-xs text-muted">
@@ -819,7 +951,7 @@ function MaintenancePane() {
   return (
     <div className="flex min-w-0 flex-col gap-3">
       {/* 摘要行：批次明细与逐批删除收进对话框，设置页不再被回收站列表撑高 */}
-      <div className="rounded-lg border border-line bg-card shadow-card p-4">
+      <div className="p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold">平台技能回收站</h2>
           <span className="text-xs text-muted">
@@ -993,7 +1125,16 @@ function ScheduleCard() {
     runBusy('schedule-add', async () => {
       const saved = await runCmd('schedule_save', {
         input: {
-          ...(editing ?? { id: '', name: '', enabled: true, last_run: null, account_iid: null, created_at: null }),
+          // next_at 只由后端按平台状态写入：这里传 null，编辑规则时也会被后端清掉
+          ...(editing ?? {
+            id: '',
+            name: '',
+            enabled: true,
+            last_run: null,
+            next_at: null,
+            account_iid: null,
+            created_at: null,
+          }),
           // 名称留空交给后端按动作补全；时间值来自原生控件，格式天然合法
           name,
           action,
@@ -1046,7 +1187,7 @@ function ScheduleCard() {
     });
 
   return (
-    <div className="rounded-lg border border-line bg-card shadow-card p-4">
+    <div className="p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">定时任务</h2>
       </div>
@@ -1058,6 +1199,26 @@ function ScheduleCard() {
         不同任务同时到点会<span className="text-fg2">并行</span>执行——两条都打同一个平台更容易被限流，建议把时刻错开。
         规则改完即时生效；后端刚启动的头 20 秒不判点。
       </p>
+
+      {/* 猫猫旅行的功能说明：这条链路和「按间隔跑一轮」不一样，不写清楚用户会以为
+          要一个账号配一条任务、也不知道积分是什么时候领的 */}
+      <div className="mb-2 px-1">
+        <p className="text-xs font-semibold">猫猫旅行怎么跑</p>
+        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-relaxed text-muted">
+          <li>
+            一条「猫猫旅行」任务就能覆盖<span className="text-fg2">多个账号</span>
+            ：全局任务会逐个处理所有在账号详情里打开「自动旅行」的账号，也可以给单个账号单独建一条。
+          </li>
+          <li>
+            平台会返回本趟旅行的时长与预计回来时刻。本应用在
+            <span className="text-fg2">到站后 5 分钟内领取</span>
+            积分（早于这个窗口去查只会看到「旅行中」），领完按规则再派下一趟。
+          </li>
+          <li>
+            今日上限、某个账号失败都不影响其它账号；失败的那一个会在「日志 → 执行动作」里单独记一条。
+          </li>
+        </ul>
+      </div>
 
       {list.isLoading && <SkeletonBlock rows={3} />}
       {(list.data ?? []).length === 0 && <p className="text-sm text-muted">还没有定时任务。</p>}
@@ -1072,6 +1233,11 @@ function ScheduleCard() {
           </span>
           <span className="w-28 text-xs text-muted">{ruleText(item)}</span>
           <span className="w-24 text-xs text-muted">上次 {shortTs(item.last_run)}</span>
+          {item.next_at && (
+            <span className="text-xs text-accent" title="平台给出的预计到站时刻 + 5 分钟领取冗余">
+              下次领取 ~ {shortTs(item.next_at)}
+            </span>
+          )}
           <span className="flex-1" />
           <label className="flex cursor-pointer items-center gap-1 text-xs text-fg2">
             <input
@@ -1187,7 +1353,7 @@ function RefreshPolicyNote() {
   const followers = policies.length - slow.length;
 
   return (
-    <div className="mt-3 rounded-md border border-line bg-hover px-3 py-2">
+    <div className="mt-3 px-3 py-2">
       <p className="text-xs font-semibold">各平台的自动刷新节奏</p>
       <p className="mt-1 text-xs leading-relaxed text-muted">
         上面的间隔是<span className="font-medium text-fg2">上限</span>

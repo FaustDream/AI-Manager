@@ -92,6 +92,13 @@ pub struct Schedule {
     pub enabled: bool,
     /// 上次真正跑起来的时刻（RFC3339）。`every` 用它推下一次，也用来判「今天跑过没」
     pub last_run: Option<String>,
+    /// 猫猫旅行专用：下一次唤醒时刻（RFC3339）。
+    ///
+    /// 由上一轮状态里的「预计到站 + 5 分钟领取冗余」算出：到点直接去领，不再等固定间隔。
+    /// 有它就按它唤醒，没有（待派出 / 今日上限 / 已领完）才回落到 `every` 规则。
+    /// 其他动作永远为 `None`，读旧配置时也默认 `None`。
+    #[serde(default)]
+    pub next_at: Option<String>,
     /// 首次间隔的固定锚点；与真实执行记录分开，升级旧规则时补齐。
     #[serde(default)]
     pub created_at: Option<String>,
@@ -144,8 +151,25 @@ impl Schedule {
                         .single()
                 }
             }
-            RuleKind::Every => Some(self.anchor(now) + Duration::minutes(self.interval_minutes()?)),
+            RuleKind::Every => {
+                // 旅行任务有「到站时刻」时以它为准：这一跳由平台状态决定，不是固定间隔。
+                // 没有就回落到间隔（待派出/今日上限时靠它再派一趟）。
+                if self.action == ScheduleAction::TravelRound {
+                    if let Some(at) = self.wake_at() {
+                        return Some(at);
+                    }
+                }
+                Some(self.anchor(now) + Duration::minutes(self.interval_minutes()?))
+            }
         }
+    }
+
+    /// 平台状态给出的唤醒时刻（只有旅行任务会有）。
+    fn wake_at(&self) -> Option<DateTime<Local>> {
+        self.next_at
+            .as_deref()
+            .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+            .map(|at| at.with_timezone(&Local))
     }
 
     /// 现在该跑吗。
@@ -244,6 +268,9 @@ impl Schedule {
         if self.created_at.is_none() {
             self.created_at = Some(now.to_rfc3339());
         }
+        // 用户改了规则就以规则为准：上一轮从平台状态推出来的唤醒时刻不再适用，
+        // 留着会把任务钉在一个旧时间点上。
+        self.next_at = None;
         if self.account_iid.is_some() && self.action != ScheduleAction::TravelRound {
             return Err(AppError::new(
                 ErrorKind::Invalid,
@@ -361,6 +388,7 @@ fn travel_task(iid: &str, name: &str, now: DateTime<Local>) -> Schedule {
         minutes: None,
         enabled: true,
         last_run: None,
+        next_at: None,
         created_at: Some(now.to_rfc3339()),
     }
 }
@@ -411,6 +439,7 @@ fn seed() -> Vec<Schedule> {
             minutes: None,
             enabled: true,
             last_run: None,
+            next_at: None,
         },
         Schedule {
             id: format!("credits-{SEED_CREDITS_MINUTES}min"),
@@ -424,6 +453,7 @@ fn seed() -> Vec<Schedule> {
             minutes: Some(SEED_CREDITS_MINUTES),
             enabled: true,
             last_run: None,
+            next_at: None,
         },
     ]
 }
@@ -525,6 +555,33 @@ pub fn mark_ran(db: &Db, id: &str) -> Result<Option<Schedule>> {
     Ok(result)
 }
 
+/// 记下「这一跳什么时候再来」——只对猫猫旅行生效。
+///
+/// 平台会说这趟旅行预计几点回；到站后再等 5 分钟（`activity::CLAIM_SLACK_MS`）去领，
+/// 比按小时空转准得多。传 `None` 表示「没有在路上的账号」，回到用户配的间隔
+/// （靠那一跳再派一趟）。
+pub fn set_travel_wake(db: &Db, id: &str, at_ms: Option<i64>) -> Result<()> {
+    let _guard = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Local::now();
+    let mut list = load(db, now)?;
+    let Some(item) = list.iter_mut().find(|item| item.id == id) else {
+        return Ok(());
+    };
+    if item.action != ScheduleAction::TravelRound {
+        return Ok(());
+    }
+    let next = at_ms.and_then(|ms| {
+        DateTime::from_timestamp_millis(ms).map(|at| at.with_timezone(&Local).to_rfc3339())
+    });
+    if item.next_at == next {
+        return Ok(());
+    }
+    item.next_at = next;
+    save_all(db, &list)?;
+    CHANGED.notify_one();
+    Ok(())
+}
+
 /// 不能执行睡眠前的快照：在同一读改写锁内重新检查开关、时间并记执行时刻。
 pub fn take_due(db: &Db, id: &str, now: DateTime<Local>) -> Result<Option<Schedule>> {
     let _guard = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -563,6 +620,7 @@ mod tests {
             minutes: None,
             enabled: true,
             last_run: None,
+            next_at: None,
         }
     }
 
@@ -597,6 +655,7 @@ mod tests {
             minutes: None,
             enabled: true,
             last_run: None,
+            next_at: None,
         };
         let now = at(2026, 11, 4, 10, 0);
         assert_eq!(schedule.next_run(now).unwrap(), at(2026, 11, 4, 12, 0));
@@ -622,6 +681,7 @@ mod tests {
             minutes: Some(10),
             enabled: true,
             last_run: None,
+            next_at: None,
         };
         let now = at(2026, 11, 4, 10, 0);
         assert_eq!(schedule.next_run(now).unwrap(), at(2026, 11, 4, 10, 10));
@@ -734,6 +794,70 @@ mod tests {
             .into_iter()
             .filter(|s| s.action == ScheduleAction::TravelRound)
             .collect()
+    }
+
+    /// 旅行任务：有「到站时刻」就按它唤醒（含 5 分钟冗余），没有才回落到间隔。
+    #[test]
+    fn travel_task_wakes_at_the_arrival_plus_slack() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        // 新任务要过「这个账号存在且支持猫猫旅行」的校验
+        add_account(&db, "workbuddy:u1", "账号一");
+        let mut task = travel_task("workbuddy:u1", "账号一", at(2026, 11, 4, 10, 0));
+        task.kind = RuleKind::Every;
+        task.hours = Some(3);
+        task.minutes = Some(180);
+        let saved = save(&db, task).unwrap();
+        // 锚点是保存那一刻的真实时间：断言只能用相对量，不能写死某个钟点
+        let anchor = DateTime::parse_from_rfc3339(saved.created_at.as_deref().unwrap())
+            .unwrap()
+            .with_timezone(&Local);
+        // 没有到站时刻：按用户配的 3 小时
+        assert_eq!(saved.next_run(anchor).unwrap(), anchor + Duration::hours(3));
+
+        let wake = at(2026, 11, 21, 9, 0);
+        set_travel_wake(&db, &saved.id, Some(wake.timestamp_millis())).unwrap();
+        let stored = list(&db)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == saved.id)
+            .unwrap();
+        assert_eq!(stored.next_run(anchor), Some(wake), "有到站时刻就按它醒");
+        assert!(!stored.due(wake - Duration::minutes(1)));
+        assert!(stored.due(wake));
+
+        // 领完之后没有在路上的账号：清掉唤醒，回到间隔
+        set_travel_wake(&db, &saved.id, None).unwrap();
+        let cleared = list(&db)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == saved.id)
+            .unwrap();
+        assert_eq!(cleared.next_at, None);
+        assert_eq!(
+            cleared.next_run(anchor).unwrap(),
+            anchor + Duration::hours(3)
+        );
+    }
+
+    /// 唤醒时刻只写在旅行任务上：别的动作即使被误传也不能被钉住。
+    #[test]
+    fn travel_wake_is_ignored_for_other_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let checkin = list(&db)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.action == ScheduleAction::CheckinRound)
+            .unwrap();
+        let wake = at(2026, 11, 4, 11, 30);
+        set_travel_wake(&db, &checkin.id, Some(wake.timestamp_millis())).unwrap();
+        let stored = list(&db)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == checkin.id)
+            .unwrap();
+        assert_eq!(stored.next_at, None);
     }
 
     #[tokio::test]
@@ -1128,6 +1252,7 @@ mod tests {
             minutes: None,
             enabled: true,
             last_run: None,
+            next_at: None,
         })
         .unwrap();
         // 用户自己改过的同类任务：3 小时、自定 id，必须原样保留

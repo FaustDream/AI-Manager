@@ -613,6 +613,7 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
         "system_health" => to_json(cmd::system::system_health(state).await),
         "diagnose_bundle" => to_json(cmd::system::diagnose_bundle(state).await),
         "platform_capabilities" => to_json(Ok(cmd::system::platform_capabilities())),
+        "platform_features" => to_json(Ok(cmd::system::platform_features())),
         "update_check" => to_json(cmd::system::update_check().await),
         "config_snapshot_list" => to_json(cmd::system::config_snapshot_list(state).await),
         "config_snapshot_restore" => {

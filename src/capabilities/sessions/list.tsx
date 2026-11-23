@@ -992,7 +992,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
         {/* ---------------------------------------------------------- 详情分栏 */}
         {/* 宽屏挂在列表右侧（42%），窄屏回落到列表下方——同一块 DOM，断点切换 */}
         {selected && (
-          <aside className="max-h-[40%] w-full flex-none overflow-auto rounded-lg border border-line bg-card shadow-card p-3 lg:max-h-none lg:w-[42%] lg:max-w-[560px]">
+          <aside className="max-h-[40%] w-full flex-none overflow-auto p-3 lg:max-h-none lg:w-[42%] lg:max-w-[560px]">
             {preview.isLoading && (
               <div className="space-y-2 py-3">
                 {[0, 1, 2].map((i) => (

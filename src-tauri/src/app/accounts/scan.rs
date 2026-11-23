@@ -125,34 +125,59 @@ fn persist(db: &Db, mut scanned: ScannedAccount, user_platform: &str) -> Result<
     let now = now_ms();
 
     // 客户端文件不一定是最新的一份：应用内「重新授权」只写本地库，客户端可能还停在
-    // 更早的旧登录态。若重扫拿到的到期时间明显早于库里仍有效的凭据，保留后者，
-    // 否则「刷新凭据」会把刚续上的有效期打回旧值。
-    const EXPIRY_ROLLBACK_SLACK_MS: i64 = 3600 * 1000;
-    let existing_expiry = repo::secret_of(db, iid)
+    // 更早的旧登录态（甚至就是授权前那份已过期的）。重扫若无条件覆盖，用户刚授权的
+    // 凭据会被打回旧值——表现就是「授权白做了、到期一直显示已过期」。
+    let local_expiry = repo::secret_of(db, iid)
         .ok()
         .flatten()
         .and_then(|bytes| Credential::parse(&bytes).ok())
         .and_then(|cred| cred.expires_ms());
-    if let (Some(old), Some(new)) = (existing_expiry, scanned.identity.expires_at) {
-        if old > now && new < old - EXPIRY_ROLLBACK_SLACK_MS {
-            scanned.identity.expires_at = Some(old);
-            repo::upsert_identity(db, &scanned.identity, now)?;
-            crate::app::log::log(
-                crate::app::log::Level::Warn,
-                "accounts",
-                format!(
-                    "{}：客户端登录态比本地有效凭据更旧，保留本地凭据",
-                    scanned.identity.name
-                ),
-            );
-            return Ok(());
-        }
+    if keeps_local(local_expiry, scanned.identity.expires_at, now) {
+        // 只更新身份字段（昵称 / 来源），凭据与到期时间保持本地那份
+        scanned.identity.expires_at = local_expiry;
+        repo::upsert_identity(db, &scanned.identity, now)?;
+        crate::app::log::log(
+            crate::app::log::Level::Warn,
+            "accounts",
+            format!(
+                "{}：客户端登录态不比本地更新，保留本地凭据（本地到期 {}）",
+                scanned.identity.name,
+                local_expiry.map_or_else(
+                    || "未知".to_string(),
+                    crate::app::accounts::credential::iso_from_ms
+                )
+            ),
+        );
+        return Ok(());
     }
 
     repo::upsert_identity(db, &scanned.identity, now)?;
     repo::set_secret(db, iid, &scanned.secret, scanned.identity.expires_at)?;
     // scanned 在这里释放：凭据明文不跨账号留存
     Ok(())
+}
+
+/// 重扫时是否保留本地那份凭据（`true` = 客户端这份不作为准）。
+///
+/// 唯一原则：**客户端这份必须能证明自己更新**，否则不覆盖已授权进来的本地凭据。
+/// 判据只用到期时间——它是唯一跨平台可比的「新旧」信号：
+///   - 本地明确过期 → 没理由保留，用客户端的；
+///   - 客户端明确过期、本地没过期（或有效期未知）→ 留着，别把授权打回旧状态；
+///   - 两份都有效 → 明显更晚才换（1 小时内视为同一份，避免来回抖）；
+///   - 客户端没给有效期 → 本地有效就留着，别把已知的有效期换成「未知」；
+///   - 两边都没有效期 → 以客户端为准（ZCode 就是这种，token 只有客户端会续）。
+fn keeps_local(local: Option<i64>, scanned: Option<i64>, now: i64) -> bool {
+    const EXPIRY_ROLLBACK_SLACK_MS: i64 = 3600 * 1000;
+    if local.is_some_and(|ms| ms <= now) {
+        return false;
+    }
+    match (local, scanned) {
+        (_, Some(s)) if s <= now => true,
+        (None, Some(_)) => false,
+        (Some(l), Some(s)) => l + EXPIRY_ROLLBACK_SLACK_MS >= s,
+        (Some(_), None) => true,
+        (None, None) => false,
+    }
 }
 
 #[cfg(test)]
@@ -253,6 +278,95 @@ mod tests {
         assert_eq!(cred.token, "new", "更早的客户端凭据不能覆盖更新的凭据");
         assert_eq!(cred.expires_ms(), Some(newer));
         assert_eq!(repo::list(&db).unwrap()[0].expires_at, Some(newer));
+    }
+
+    /// 授权后客户端仍停在授权前的旧（已过期）登录态：重扫不能把刚授权的凭据打回去。
+    /// 这就是「授权完接着扫一次本机，等于白授权」的现场。
+    #[test]
+    fn expired_client_credential_does_not_overwrite_a_fresh_authorization() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let now = now_ms();
+        let future = (now + 30 * 24 * 3600 * 1000) / 1000 * 1000;
+        let past = (now - 2 * 24 * 3600 * 1000) / 1000 * 1000;
+
+        persist(
+            &db,
+            fake_with_expiry("workbuddy:u1", "authorized", future),
+            "workbuddy",
+        )
+        .unwrap();
+        persist(
+            &db,
+            fake_with_expiry("workbuddy:u1", "stale", past),
+            "workbuddy",
+        )
+        .unwrap();
+
+        let cred =
+            Credential::parse(&repo::secret_of(&db, "workbuddy:u1").unwrap().unwrap()).unwrap();
+        assert_eq!(
+            cred.token, "authorized",
+            "客户端那份过期凭据不能顶掉刚授权的"
+        );
+        assert_eq!(cred.expires_ms(), Some(future));
+        assert_eq!(repo::list(&db).unwrap()[0].expires_at, Some(future));
+    }
+
+    /// 本地有效期未知（平台不返回 exp）同样不能被客户端的过期凭据顶掉——
+    /// 这种凭据多半是网页授权刚拿到的，顶掉之后连「到期」都显示不出来。
+    #[test]
+    fn unknown_local_expiry_survives_an_expired_scan() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let now = now_ms();
+        let past = (now - 24 * 3600 * 1000) / 1000 * 1000;
+
+        persist(&db, fake("zcode:u1", "authorized"), "zcode").unwrap();
+        persist(&db, fake_with_expiry("zcode:u1", "stale", past), "zcode").unwrap();
+
+        let cred = Credential::parse(&repo::secret_of(&db, "zcode:u1").unwrap().unwrap()).unwrap();
+        assert_eq!(cred.token, "authorized");
+        assert_eq!(cred.expires_ms(), None, "不能凭空写入客户端的过期时间");
+    }
+
+    /// 本地确实过期的账号：客户端的有效凭据才是新的，必须换过来，否则永远卡在过期。
+    #[test]
+    fn valid_client_credential_replaces_an_expired_local_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let now = now_ms();
+        let past = (now - 5 * 24 * 3600 * 1000) / 1000 * 1000;
+        let future = (now + 20 * 24 * 3600 * 1000) / 1000 * 1000;
+
+        persist(
+            &db,
+            fake_with_expiry("workbuddy:u1", "expired", past),
+            "workbuddy",
+        )
+        .unwrap();
+        persist(
+            &db,
+            fake_with_expiry("workbuddy:u1", "renewed", future),
+            "workbuddy",
+        )
+        .unwrap();
+
+        let cred =
+            Credential::parse(&repo::secret_of(&db, "workbuddy:u1").unwrap().unwrap()).unwrap();
+        assert_eq!(cred.token, "renewed");
+        assert_eq!(cred.expires_ms(), Some(future));
+    }
+
+    /// ZCode 这类两端都没有 exp 的平台：token 只有客户端会续，必须以客户端为准。
+    #[test]
+    fn no_expiry_on_either_side_takes_the_client_copy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        persist(&db, fake("zcode:u1", "old"), "zcode").unwrap();
+        persist(&db, fake("zcode:u1", "renewed"), "zcode").unwrap();
+        let cred = Credential::parse(&repo::secret_of(&db, "zcode:u1").unwrap().unwrap()).unwrap();
+        assert_eq!(cred.token, "renewed");
     }
 
     /// 真实机验证：`cargo test --lib scan_all_real -- --ignored --nocapture`

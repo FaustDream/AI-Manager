@@ -5,10 +5,19 @@ import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { errKind, errText } from '@/lib/ipc';
-import { SkeletonRows, StateBlock } from '@/components/ui/form';
+import { Input, Select, SkeletonRows, StateBlock } from '@/components/ui/form';
+import { Button, cn } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import { ICONS } from '@/components/ui/icons';
 import { fmtMs } from '@/lib/format';
+import { matchesQuery, nextSort, sortRows, type SortState, type SortValue } from '@/lib/sort';
+import {
+  FEATURE_CHECKIN,
+  FEATURE_RESTORE,
+  FEATURE_SWITCH,
+  featurePlatform,
+  usePlatformFeatures,
+} from '@/lib/features';
 import type { AccountView } from '@/lib/types';
 import { COLUMNS, type Cell } from './columns';
 import { DetailPanel } from './detail';
@@ -42,6 +51,21 @@ function CellView({ cell }: { cell: Cell }) {
   );
 }
 
+/**
+ * 各列的可排序取值：返回 `null` 表示「没有这个值」，排序时沉底（不占第一屏）。
+ *
+ * 只用真正能比较的字段：`login` 用到期时刻（不是「剩几天」那个派生文案），
+ * `checkin` 用三档枚举（不需要签到 < 未签 < 已签），这样点一次表头就能把
+ * 「今天该签还没签的」排到最上面。
+ */
+const SORT_VALUE: Record<string, (row: AccountView) => SortValue> = {
+  platform: (row) => row.platform_label,
+  name: (row) => row.name,
+  login: (row) => row.expires_at,
+  credit: (row) => row.balance,
+  checkin: (row) => (row.requires_checkin ? (row.checked_in === true ? 2 : 1) : 0),
+};
+
 export default function AccountCenterPage() {
   const qc = useQueryClient();
   const accounts = useQuery<AccountView[]>({
@@ -63,16 +87,55 @@ export default function AccountCenterPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [switchTarget, setSwitchTarget] = useState<AccountView | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<AccountView | null>(null);
+  // 切换成功的行留一小段高光：动画结束就清掉，行回到普通的「当前账号」底色
+  const [switchedIid, setSwitchedIid] = useState<string | null>(null);
   // 查询失败是运行时状态：接口这轮报错就标红，成功后自动消失，不落库
   const [queryErrors, setQueryErrors] = useState<Record<string, string>>({});
   const rows = accounts.data ?? [];
 
-  // 列表顺序就是后端保存的 sort_order：用户手动拖到哪，下次打开还在哪
-  const visible = rows;
+  // ---- 筛选与排序（只看这一次，不落库：列表顺序的持久化仍归拖拽管）----
+  const [query, setQuery] = useState('');
+  const [platformFilter, setPlatformFilter] = useState('all');
+  const [stateFilter, setStateFilter] = useState<'all' | 'expired' | 'expiring' | 'unchecked'>('all');
+  const [sort, setSort] = useState<SortState | null>(null);
+
+  const filtered = useMemo(() => {
+    const now = Date.now();
+    return rows.filter((row) => {
+      if (platformFilter !== 'all' && featurePlatform(row.platform, row.iid) !== platformFilter) {
+        return false;
+      }
+      if (stateFilter === 'expired' && !(row.expires_at !== null && row.expires_at <= now)) return false;
+      if (
+        stateFilter === 'expiring' &&
+        !(row.expires_at !== null && row.expires_at > now && row.expires_at - now <= 7 * 86400_000)
+      ) {
+        return false;
+      }
+      if (stateFilter === 'unchecked' && !(row.requires_checkin && row.checked_in !== true)) return false;
+      return matchesQuery([row.name, row.platform_label, row.iid, row.note], query);
+    });
+  }, [rows, platformFilter, stateFilter, query]);
+
+  // 没排序时就是后端保存的 sort_order：用户手动拖到哪，下次打开还在哪
+  const visible = useMemo(
+    () => sortRows(filtered, sort, (row, key) => SORT_VALUE[key]?.(row)),
+    [filtered, sort],
+  );
+  const filtering = query.trim() !== '' || platformFilter !== 'all' || stateFilter !== 'all';
+
+  // 平台下拉只列当前真正存在的平台：空着一半的下拉框只是噪音
+  const platforms = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of rows) map.set(featurePlatform(row.platform, row.iid), row.platform_label);
+    return [...map.entries()];
+  }, [rows]);
 
   const selectedRow = rows.find((r) => r.iid === selected) ?? null;
   const currentSet = useMemo(() => new Set(current.data ?? []), [current.data]);
   const switchableSet = useMemo(() => new Set(switchable.data ?? []), [switchable.data]);
+  // 哪个软件显示哪个入口（切换 / 恢复对话 / 签到）由设置页决定，页面不再写平台名单
+  const features = usePlatformFeatures();
 
   // 「添加账号」里每个平台已有几个号：WorkBuddy 国内/国际共用 platform 键，
   // 按 iid 的 @intl 后缀拆开，否则两版会被算成同一个平台。
@@ -164,9 +227,17 @@ export default function AccountCenterPage() {
 
   // 慢操作的按钮加载态：刷积分/切换/恢复要等几秒，不给 busy 态看起来就像没点上
   const { busy, run: runBusy } = useBusy();
+  // 正在切换的那一行（busy 的 key 形如 switch:<iid>）：光环呼吸，成功后再留一段收尾高光
+  const switchingIid = busy?.startsWith('switch:') ? busy.slice('switch:'.length) : null;
+  useEffect(() => {
+    if (!switchedIid) return;
+    const timer = window.setTimeout(() => setSwitchedIid(null), 900);
+    return () => window.clearTimeout(timer);
+  }, [switchedIid]);
 
   // ---- 拖动排序：指针逻辑在 use-row-drag，这里只负责持久化 ----
-  const { dragging, dropAt, startDrag } = useRowDrag(visible, busy, async (iids) => {
+  // 排序生效时不允许拖拽：拖出来的是「排序后的视图顺序」，写回后端会把人工顺序搅乱
+  const { dragging, dropAt, startDrag } = useRowDrag(visible, sort ? 'sorted' : busy, async (iids) => {
     
       if ((await runCmd('account_reorder', { iids })) === undefined) return;
       qc.invalidateQueries({ queryKey: ['accounts'] });
@@ -315,9 +386,19 @@ export default function AccountCenterPage() {
       ]);
     });
 
-  const batchCheckin = () =>    runBusy('checkin', async () => {
-      const iids = rows
-        .filter((r) => r.requires_checkin && r.has_secret && r.enabled && r.checked_in !== true)
+  const batchCheckin = () =>
+    runBusy('checkin', async () => {
+      // 与「刷新凭据」同一口径：只处理当前筛选出来的账号（按钮说的是「列表里」）
+      const iids = visible
+        .filter(
+          (r) =>
+            r.requires_checkin &&
+            r.has_secret &&
+            r.enabled &&
+            r.checked_in !== true &&
+            // 设置里关掉某个软件的签到入口后，批量签到也不再带上它
+            features.on(featurePlatform(r.platform, r.iid), FEATURE_CHECKIN),
+        )
         .map((r) => r.iid);
       if (iids.length === 0) {
         toast('没有需要签到的账号');
@@ -369,6 +450,7 @@ export default function AccountCenterPage() {
     void runBusy(`switch:${target.iid}`, async () => {
       try {
         const r = await queryCmd('account_switch', { iid: target.iid });
+        setSwitchedIid(target.iid);
         toast(r.message);
         // 切换会改写客户端登录态，也会把旧账号的会话关联过来：列表、当前账号、会话页都要刷
         qc.invalidateQueries({ queryKey: ['current'] });
@@ -447,6 +529,59 @@ export default function AccountCenterPage() {
         onCheckin={batchCheckin}
       />
 
+      {/* 筛选行：搜索 + 平台 + 状态 + 计数。列表是全量拉回来的，过滤与排序都在前端做，
+          敲一下就变，不额外打接口。 */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Input
+          className="w-56"
+          value={query}
+          aria-label="搜索账号"
+          placeholder="搜索昵称 / UID / 平台 / 备注"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <Select
+          className="w-36"
+          value={platformFilter}
+          aria-label="按平台筛选"
+          onChange={(e) => setPlatformFilter(e.target.value)}
+        >
+          <option value="all">全部平台</option>
+          {platforms.map(([key, label]) => (
+            <option key={key} value={key}>
+              {label}
+            </option>
+          ))}
+        </Select>
+        <Select
+          className="w-32"
+          value={stateFilter}
+          aria-label="按状态筛选"
+          onChange={(e) => setStateFilter(e.target.value as typeof stateFilter)}
+        >
+          <option value="all">全部状态</option>
+          <option value="expired">已过期</option>
+          <option value="expiring">7 天内到期</option>
+          <option value="unchecked">今日未签</option>
+        </Select>
+        {filtering && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setQuery('');
+              setPlatformFilter('all');
+              setStateFilter('all');
+            }}
+          >
+            清除筛选
+          </Button>
+        )}
+        <span className="flex-1" />
+        <span className="text-xs text-muted" title="当前显示 / 全部账号">
+          {visible.length} / {rows.length}
+        </span>
+      </div>
+
       {/* 窄窗口只在表格自己身上横向滚动，操作列 sticky 在右侧始终可点；
           详情面板不跟着横向滚，避免整页左右晃 */}
       <div className="overflow-x-auto">
@@ -454,14 +589,32 @@ export default function AccountCenterPage() {
         <thead>
           <tr>
             <th className="w-6 border-b border-line-strong px-1 py-1.5" />
-            {table.map((col) => (
+            {table.map((col) => {
+              const dir = sort?.key === col.key ? sort.dir : null;
+              const sortable = SORT_VALUE[col.key] !== undefined;
+              return (
               <th
                 key={col.key}
                 className="relative select-none overflow-hidden whitespace-nowrap border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted"
                 style={{ width: widthOf(col.key, col.width) }}
                 title={col.headerTitle}
+                aria-sort={dir ? (dir === 'asc' ? 'ascending' : 'descending') : sortable ? 'none' : undefined}
               >
-                {col.header}
+                {sortable ? (
+                  <button
+                    type="button"
+                    className="inline-flex cursor-pointer items-center gap-0.5 hover:text-fg"
+                    title="点击排序：升序 → 降序 → 取消"
+                    onClick={() => setSort((current) => nextSort(current, col.key))}
+                  >
+                    {col.header}
+                    <span aria-hidden className={cn('text-[9px] leading-none', dir ? 'opacity-100' : 'opacity-25')}>
+                      {dir === 'desc' ? '▼' : '▲'}
+                    </span>
+                  </button>
+                ) : (
+                  col.header
+                )}
                 <span
                   className="absolute bottom-0 right-0 top-0 w-[7px] cursor-col-resize hover:bg-accent/35"
                   title="拖动调宽，双击复位"
@@ -476,7 +629,8 @@ export default function AccountCenterPage() {
                   onDoubleClick={() => saveWidths({ ...widths, [col.key]: col.width })}
                 />
               </th>
-            ))}
+              );
+            })}
             <th
               className={`border-b border-line-strong px-2.5 py-1.5 text-right text-xs font-semibold text-muted ${
                 narrow
@@ -506,7 +660,19 @@ export default function AccountCenterPage() {
           {!accounts.isLoading && visible.length === 0 && (
             <tr>
               <td colSpan={COLUMNS.length + 2}>
-                <StateBlock kind="empty" title="还没有账号" detail="启动时会自动扫描客户端；也可以点「添加账号」登录后入库。" />
+                {filtering ? (
+                  <StateBlock
+                    kind="empty"
+                    title="没有符合条件的账号"
+                    detail={`共 ${rows.length} 个账号，当前筛选一个都没匹配上。`}
+                  />
+                ) : (
+                  <StateBlock
+                    kind="empty"
+                    title="还没有账号"
+                    detail="启动时会自动扫描客户端；也可以点「添加账号」登录后入库。"
+                  />
+                )}
               </td>
             </tr>
           )}
@@ -531,9 +697,16 @@ export default function AccountCenterPage() {
                     setSelected(row.iid);
                   }
                 }}
-                className={`cursor-pointer ${selected === row.iid ? 'bg-hover' : ''} ${
-                  isDragging ? 'opacity-40' : ''
-                }`}
+                className={cn(
+                  'cursor-pointer transition-colors duration-[var(--dur-1)]',
+                  // 底色只表示「正在看哪一行」：详情面板在表格下方，这是唯一能对上号的线索。
+                  // 「客户端当前登录」改用账号名旁边的小圆点（见下面的 name 单元格），
+                  // 两个状态各占一种表达，不会互相抢。
+                  selected === row.iid ? 'bg-accent/15 hover:bg-accent/20' : 'hover:bg-hover',
+                  switchingIid === row.iid && 'switch-pending',
+                  switchedIid === row.iid && 'switch-flash',
+                  isDragging && 'opacity-40',
+                )}
                 style={
                   dropBefore
                     ? { boxShadow: 'inset 0 2px 0 var(--color-accent)' }
@@ -543,7 +716,11 @@ export default function AccountCenterPage() {
                 }
               >
                 <td
-                  className="px-1 py-1.5 text-center text-muted select-none"
+                  className={cn(
+                    'px-1 py-1.5 text-center text-muted select-none',
+                    // 选中行再来一条左侧竖条：只靠半透明底色在浅色主题下不够醒目
+                    selected === row.iid && 'shadow-[inset_2px_0_0_0_var(--color-accent)]',
+                  )}
                   style={{ touchAction: 'none' }}
                 >
                   {/* 拖拽柄同时是键盘入口（P2-11）：Alt+↑/↓ 走同一个 account_reorder。
@@ -568,7 +745,16 @@ export default function AccountCenterPage() {
                     key={col.key}
                     className="overflow-hidden text-ellipsis whitespace-nowrap border-b border-line px-2.5 py-1.5 align-middle"
                   >
-                    <CellView cell={col.cell(row, queryErrors)} />
+                    {/* 当前登录只用一个圆点表示：文字标签会被挤成一列「当前」，
+                        底色又要留给「选中的是哪一行」，两者不能抢同一个通道 */}
+                    {col.key === 'name' && isCurrent && (
+                      <span
+                        className="mr-1 inline-block size-1.5 shrink-0 rounded-full bg-ok align-middle"
+                        title="客户端当前登录的账号"
+                        aria-label="客户端当前登录的账号"
+                      />
+                    )}
+                    <CellView cell={col.cell(row, queryErrors, features.on)} />
                   </td>
                 ))}
                 <td
@@ -585,6 +771,8 @@ export default function AccountCenterPage() {
                     row={row}
                     isCurrent={isCurrent}
                     switchable={switchableSet.has(row.iid)}
+                    canSwitch={features.on(featurePlatform(row.platform, row.iid), FEATURE_SWITCH)}
+                    canRestore={features.on(featurePlatform(row.platform, row.iid), FEATURE_RESTORE)}
                     busy={!!busy}
                     onSwitch={() => setSwitchTarget(row)}
                     onRestore={() => setRestoreTarget(row)}
@@ -598,14 +786,6 @@ export default function AccountCenterPage() {
         </tbody>
       </table>
       </div>
-
-      {/* 排序的两条入口都写在这里：拖拽以前只有柄上的 title，不悬停就发现不了（P2-11） */}
-      {visible.length > 1 && (
-        <p className="text-xs text-muted">
-          排序：拖动最左侧的 ⠿ 手柄，或选中手柄后按 <span className="text-fg2">Alt+↑ / Alt+↓</span> 上下移一位；
-          表头右边缘可拖动调列宽、双击复位。
-        </p>
-      )}
 
       <DetailPanel
         account={selectedRow}

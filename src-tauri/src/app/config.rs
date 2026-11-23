@@ -11,7 +11,14 @@
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::{fsx, paths};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::RwLock;
+
+/// 平台功能开关的用户覆盖：`[features.<平台键>] <功能键> = false`。
+///
+/// 只存用户改过的那几格——没写的一律跟随 `app::capability` 的能力表（能做就显示）。
+/// 用嵌套 map 而不是给每个功能加字段：加一个开关不必动配置结构与旧文件。
+pub type FeatureOverrides = BTreeMap<String, BTreeMap<String, bool>>;
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
@@ -112,6 +119,9 @@ pub struct AppConfig {
     pub dashboard: DashboardConfig,
     #[serde(default)]
     pub window: WindowConfig,
+    /// 平台功能开关（设置 → 常规 → 各软件功能）：界面显示什么由用户定，不写死在页面里
+    #[serde(default)]
+    pub features: FeatureOverrides,
 }
 
 impl Default for WindowConfig {
@@ -207,6 +217,13 @@ stale_refresh_min = 10
 close_action = "tray"
 # 开机自启启动时自动最小化到托盘（不弹主窗口）
 start_minimized = false
+
+[features]
+# 各软件的功能开关（设置 → 常规 → 各软件功能）：显示签到 / 切换账号 / 恢复对话 / 猫猫旅行。
+# 这里只记用户改过的格子；没写的跟随平台能力默认值（能做就显示）。
+# 例：关掉 WorkBuddy 的「切换账号」入口：
+# [features.workbuddy]
+# switch = false
 "#;
 
 static CONFIG: RwLock<Option<AppConfig>> = RwLock::new(None);
@@ -345,6 +362,22 @@ mod tests {
         let parsed: AppConfig = toml::from_str(&text).unwrap();
         assert_eq!(parsed.network.timeout_secs, 33);
         assert_eq!(parsed.activity.travel_events_limit, 50);
+    }
+
+    #[test]
+    fn feature_overrides_survive_a_roundtrip() {
+        let config = AppConfig {
+            features: BTreeMap::from([(
+                "workbuddy".to_string(),
+                BTreeMap::from([("switch".to_string(), false)]),
+            )]),
+            ..AppConfig::default()
+        };
+        let text = toml::to_string_pretty(&config).unwrap();
+        let parsed: AppConfig = toml::from_str(&text).unwrap();
+        assert!(!parsed.features["workbuddy"]["switch"]);
+        // 只写了一格：同一平台的其他功能不能因此变成关
+        assert_eq!(parsed.features["workbuddy"].len(), 1);
     }
 
     #[test]

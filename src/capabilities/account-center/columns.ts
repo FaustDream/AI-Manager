@@ -14,6 +14,11 @@
 import type { AccountView } from '@/lib/types';
 import type { IconName } from '@/components/ui/icons';
 import { daysUntil, fmtAmount, fmtFullDay, fmtTime } from '@/lib/format';
+import {
+  FEATURE_CHECKIN,
+  featurePlatform,
+  type FeatureOn,
+} from '@/lib/features';
 
 export type Cell = {
   /** 主行文字。空串 = 只画图标：状态已由图标表达，文字只在 title 里留一份 */
@@ -33,8 +38,10 @@ export interface ColumnDefEx {
   headerTitle?: string;
   width: number;
   min: number;
-  /** errors：本次刷新拿到的查询失败原因（运行时状态，不落库） */
-  cell: (a: AccountView, errors: Record<string, string>) => Cell;
+  /** errors：本次刷新拿到的查询失败原因（运行时状态，不落库）；
+   *  onFeature：平台功能开关（设置 → 各软件功能）。缺省 = 全开，
+   *  给纯函数单测与「矩阵还没取回来」两种情况用。 */
+  cell: (a: AccountView, errors: Record<string, string>, onFeature?: FeatureOn) => Cell;
 }
 
 /** 凭据剩余天数：今天到期算 0，已过期是负数。只用来上色，不显示。 */
@@ -186,19 +193,27 @@ const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
   };
 };
 
-const checkinCell = (a: AccountView): Cell => {
-  // 图标已经把「签没签到」说完了，主行不再重复写字：文字进 title，鼠标悬停仍读得到。
-  // 唯一保留文字的是「约 HH:MM」——那是下次自动签到的时间，不是签到状态本身。
-  if (!a.requires_checkin)
+const checkinCell = (
+  a: AccountView,
+  _errors: Record<string, string>,
+  onFeature?: FeatureOn,
+): Cell => {
+  // 平台没有签到玩法（或用户在设置里关掉了「显示签到」）就整格留空。
+  // 不再画那个叉号：没有的功能不该在页面上占一个图标，叉号只会被读成「签到失败了」。
+  if (!a.requires_checkin) {
     return {
       text: '',
-      tone: 'muted',
-      icon: 'forbid',
       title:
         a.platform === 'doubao'
           ? '豆包不在本工具签到：领取接口会被风控，签到请去豆包客户端'
-          : '这个平台不需要签到',
+          : '这个平台没有签到玩法',
     };
+  }
+  if (onFeature && !onFeature(featurePlatform(a.platform, a.iid), FEATURE_CHECKIN)) {
+    return { text: '', title: '已在「设置 → 各软件功能」里关掉这个软件的签到入口' };
+  }
+  // 图标已经把「签没签到」说完了，主行不再重复写字：文字进 title，鼠标悬停仍读得到。
+  // 唯一保留文字的是「约 HH:MM」——那是下次自动签到的时间，不是签到状态本身。
   if (a.checked_in === true) return { text: '', tone: 'ok', icon: 'check', title: '今天已签到' };
   if (a.checked_in === false)
     return { text: '', tone: 'warn', icon: 'clock', title: '今天还没签到' };

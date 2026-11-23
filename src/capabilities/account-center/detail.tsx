@@ -13,6 +13,14 @@ import type { ReactNode } from 'react';
 
 import { daysUntil, fmtAmount, fmtDay, fmtTime } from '@/lib/format';
 import { Button, cn } from '@/components/ui/button';
+import {
+  IconCalendar,
+  IconEdit,
+  IconGift,
+  IconLink,
+  IconNotebook,
+  IconRefresh,
+} from '@/components/ui/icons';
 import { confirmAction } from '@/components/ui/confirm';
 import { Dialog } from '@/components/ui/dialog';
 import { Notice, Tag } from '@/components/ui';
@@ -24,29 +32,53 @@ import type {
   CodebuddyTargetStatus,
   RewardCredits,
 } from '@/lib/types';
+import {
+  FEATURE_CHECKIN,
+  FEATURE_RESTORE,
+  FEATURE_SWITCH_IDE,
+  FEATURE_SWITCH_IDEA,
+  FEATURE_TRAVEL,
+  featurePlatform,
+  usePlatformFeatures,
+} from '@/lib/features';
 import { TravelCard } from './travel';
-import { AccountSessionsCard } from './sessions-card';
 import { ReauthDialog } from './toolbar';
 import { DataTable, type Column } from '@/components/ui/table';
 import type { CreditClaim } from '@/lib/types';
 
 const claimSources: Record<string, string> = { checkin: '签到', activity: '活动', travel: '猫猫旅行' };
 const claimColumns: Column<CreditClaim>[] = [
-  { key: 'date', header: '日期', width: 160, truncate: true, cell: (row) => fmtTime(row.claimed_at) },
+  {
+    key: 'date',
+    header: '日期',
+    width: 160,
+    truncate: true,
+    sortValue: (row) => row.claimed_at,
+    cell: (row) => fmtTime(row.claimed_at),
+  },
   {
     key: 'source',
     header: '来源',
     width: 100,
     truncate: true,
     title: (row) => claimSources[row.source] ?? row.source,
+    sortValue: (row) => claimSources[row.source] ?? row.source,
     cell: (row) => claimSources[row.source] ?? row.source,
   },
-  { key: 'amount', header: '积分', width: 100, align: 'right', cell: (row) => row.amount == null ? '未提供' : fmtAmount(row.amount) },
+  {
+    key: 'amount',
+    header: '积分',
+    width: 100,
+    align: 'right',
+    sortValue: (row) => row.amount,
+    cell: (row) => row.amount == null ? '未提供' : fmtAmount(row.amount),
+  },
   {
     key: 'description',
     header: '描述',
     truncate: true,
     title: (row) => row.description,
+    sortValue: (row) => row.description,
     cell: (row) => row.description,
   },
 ];
@@ -101,7 +133,7 @@ function Stat({
 }) {
   // 瓦片上只有 label + 数值；hint 是解释或建议，进 tooltip（dashboard-design：wordless）
   return (
-    <div className="min-w-0 bg-card px-3 py-2.5" title={hint}>
+    <div className="min-w-0 px-3 py-2.5" title={hint}>
       <div className="text-xs text-muted">{label}</div>
       <div
         className={cn(
@@ -149,6 +181,17 @@ export function DetailPanel({
   const [rewardOpen, setRewardOpen] = useState(false);
   // 慢操作（签到/拉活动列表都是几秒级的网络+写盘）的按钮加载态
   const { busy, run: runBusy } = useBusy();
+  // 哪个软件显示哪个入口由「设置 → 各软件功能」决定，这里不再写死平台名
+  const features = usePlatformFeatures();
+
+  // CodeBuddy 两个客户端各有一个开关：「切换 IDE」与「切换插件」在设置里分开配，
+  // 能力表里也只有 WorkBuddy 国内版与 CodeBuddy 系写着支持（国际版没有授权域）。
+  // 两个都关掉就连状态都不查——状态行整行不渲染。
+  const ideSwitchOn =
+    !!account && features.on(featurePlatform(account.platform, account.iid), FEATURE_SWITCH_IDE);
+  const ideaSwitchOn =
+    !!account && features.on(featurePlatform(account.platform, account.iid), FEATURE_SWITCH_IDEA);
+  const canSwitchCodebuddy = ideSwitchOn || ideaSwitchOn;
 
   const detail = useQuery<AccountDetail>({
     queryKey: ['detail', account?.iid],
@@ -160,11 +203,11 @@ export function DetailPanel({
   });
 
   // CodeBuddy IDE / CodeBuddy 插件现在登的是谁——切换前后都给个明确状态。
-  // 这两个客户端只服务国内版：国际版账号连状态都不查（查了也没有可切的东西）。
+  // 两个入口都关掉就不查了：状态行整行不渲染。
   const codebuddyTargets = useQuery<CodebuddyTargetStatus[]>({
     queryKey: ['codebuddy-targets'],
     queryFn: () => queryCmd('account_codebuddy_targets'),
-    enabled: !!account && account.platform === 'workbuddy' && !account.iid.endsWith('@intl'),
+    enabled: canSwitchCodebuddy,
   });
 
   // 平台奖励积分明细：只在弹窗打开时拉一次，避免每点开一个账号就打一次接口
@@ -187,7 +230,7 @@ export function DetailPanel({
 
   if (!account) {
     return (
-      <div className="rounded-lg border border-dashed border-line px-4 py-5 text-sm text-muted">
+      <div className="px-4 py-5 text-sm text-muted">
         选中一行看详情：余额、额度窗口、积分批次与凭据状态。
       </div>
     );
@@ -276,9 +319,6 @@ export function DetailPanel({
 
   // 三端同号、分开切换：这两个按钮只动 CodeBuddy IDE / CodeBuddy 插件的登录，
   // 用这个账号的 WorkBuddy 档案写入（列表上的「切换登录」只切 WorkBuddy 本体）。
-  // 只对国内版开放：CodeBuddy 系客户端没有国际版授权域，切过去也登不上。
-  const canSwitchCodebuddy =
-    account.platform === 'workbuddy' && !account.iid.endsWith('@intl');
   const switchCodebuddy = (target: 'software' | 'idea') =>
     runBusy(`switch-${target}`, async () => {
       const label = target === 'software' ? 'CodeBuddy IDE' : 'CodeBuddy 插件';
@@ -318,47 +358,103 @@ export function DetailPanel({
   const tightest = quota.length > 0 ? Math.max(...quota.map(([, used]) => used)) : null;
   const quotaLeft = tightest === null ? null : Math.max(0, 100 - tightest);
 
+  // 这个账号实际所属的平台（WorkBuddy 国际版走 workbuddy_intl），开关按它取
+  const platformKey = featurePlatform(account.platform, account.iid);
+  const checkinOn = features.on(platformKey, FEATURE_CHECKIN);
+  const restoreOn = features.on(platformKey, FEATURE_RESTORE);
+  const travelOn = features.on(platformKey, FEATURE_TRAVEL);
+
   return (
-    <div className="overflow-hidden rounded-lg border border-line bg-card shadow-card">
-      {/* 头部：只留身份与主操作。改名/备注/凭据动作归属「账号信息」卡，
-          CodeBuddy 切换归属它的状态行——动作放在它操作的东西旁边（dashboard-design：
-          the action one click away），标题行不再堆八个按钮 */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
+    // 详情不再套卡片：内容直接铺在页面上，靠分段标题与留白组织；
+    // 「是不是客户端当前登录」也不再挂文字标签（列表里那一行本身已经高亮）
+    <div>
+      {/* 头部：身份 + 动作。动作按**使用频率**从左到右排：签到（每天）→ 领取活动 →
+          刷新凭据 → 重新授权 → 改名 / 备注（几乎不改，放最右）。
+          每个按钮是「图标 + 一个词」：纯图标分不清五个动作，写全称又会把这一行撑成两排。 */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
         <h2 className="min-w-0 truncate text-md font-semibold" title={account.name}>
           {account.name}
         </h2>
         <Tag>{account.platform_label}</Tag>
-        {isCurrent && <Tag tone="ok">当前登录</Tag>}
-        {account.requires_checkin && (
+        {account.requires_checkin && checkinOn && (
           <Tag tone={checked ? 'ok' : 'warn'}>{checked ? '今日已签' : '今日未签'}</Tag>
         )}
         {!account.has_secret && <Tag tone="warn">无凭据</Tag>}
         <span className="flex-1" />
-        {account.platform === 'zcode' && (
-          <Button
-            size="sm"
-            onClick={openClaim}
-            loading={busy === 'plans'}
-            disabled={!!busy}
-            title="拉取当前可领的活动套餐；领取时会打开浏览器过验证码。也可以在设置里开自动领取"
-          >
-            领取活动
-          </Button>
-        )}
-        {account.requires_checkin && (
+        {account.requires_checkin && checkinOn && (
           <Button
             size="sm"
             variant="primary"
             onClick={runOne}
             loading={busy === 'checkin'}
             disabled={!!busy || !account.has_secret}
+            title="签到：立刻为这个账号执行今日签到"
           >
+            <IconCalendar size={13} />
             签到
           </Button>
         )}
+        {account.platform === 'zcode' && (
+          <Button
+            size="sm"
+            onClick={openClaim}
+            loading={busy === 'plans'}
+            disabled={!!busy}
+            title="领取活动：拉取当前可领的活动套餐；领取时会打开浏览器过验证码，也可以在设置里开自动领取"
+          >
+            <IconGift size={13} />
+            领取
+          </Button>
+        )}
+        <Button
+          size="sm"
+          onClick={refreshCredential}
+          loading={busy === 'refresh-credential'}
+          disabled={!!busy || !account.has_secret}
+          title="刷新凭据：重扫客户端并写回最新凭据与有效期；刷新后仍过期才需要重新授权"
+        >
+          <IconRefresh size={13} />
+          刷新
+        </Button>
+        {account.platform !== 'trae' && (
+          <Button
+            size="sm"
+            onClick={() => setReauthOpen(true)}
+            disabled={!!busy}
+            title={
+              account.has_secret
+                ? '重新授权：重新走一次平台登录，成功后覆盖已保存的凭据与到期时间'
+                : '重新授权：这个账号没有可用凭据，切不过去；成功后自动保存'
+            }
+          >
+            <IconLink size={13} />
+            授权
+          </Button>
+        )}
+        <span className="mx-0.5 h-4 w-px bg-line" aria-hidden />
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={openAlias}
+          disabled={!!busy}
+          title="改名：设置本机显示名，重扫客户端不会覆盖"
+        >
+          <IconEdit size={13} />
+          改名
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={openNote}
+          disabled={!!busy}
+          title="备注：只存本机，用来记「为什么停用」「绑定在哪台机器」"
+        >
+          <IconNotebook size={13} />
+          备注
+        </Button>
       </div>
 
-      {/* 切换状态行：两个客户端现在登的是谁，切换按钮就在状态旁边 */}
+      {/* 切换状态行：两个客户端现在登的是谁，切换按钮就在状态旁边（换号时才用，属于中频） */}
       {canSwitchCodebuddy && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-3 py-1.5 text-xs text-muted">
           <span className="font-medium">CodeBuddy 系登录</span>
@@ -379,28 +475,101 @@ export function DetailPanel({
             </span>
           ))}
           <span className="flex-1" />
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => switchCodebuddy('software')}
-            loading={busy === 'switch-software'}
-            disabled={!!busy}
-            title="把 CodeBuddy IDE 的登录切成这个账号"
-          >
-            切换 IDE
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => switchCodebuddy('idea')}
-            loading={busy === 'switch-idea'}
-            disabled={!!busy}
-            title="把 IntelliJ IDEA 里 CodeBuddy 插件的登录切成这个账号"
-          >
-            切换插件
-          </Button>
+          {ideSwitchOn && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => switchCodebuddy('software')}
+              loading={busy === 'switch-software'}
+              disabled={!!busy}
+              title="把 CodeBuddy IDE 的登录切成这个账号"
+            >
+              切换 IDE
+            </Button>
+          )}
+          {ideaSwitchOn && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => switchCodebuddy('idea')}
+              loading={busy === 'switch-idea'}
+              disabled={!!busy}
+              title="把 IntelliJ IDEA 里 CodeBuddy 插件的登录切成这个账号"
+            >
+              切换插件
+            </Button>
+          )}
         </div>
       )}
+
+      {/* 账号信息：这个页面最该先回答的问题——这是谁、凭据能不能用、会话能不能恢复。
+          所以它排在所有指标之前，并且用正文尺寸（text-sm）而不是注释尺寸 */}
+      <section className="border-b border-line px-3 py-2.5">
+        <SectionTitle>账号信息</SectionTitle>
+        <dl className="grid grid-cols-[max-content_minmax(0,1fr)_max-content_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-sm">
+          <dt className="text-muted">平台</dt>
+          <dd className="truncate">{account.platform_label}</dd>
+          {/* UID 只在这里出现：列表不渲染它，点开账号才按需取一次（契约 17） */}
+          <dt className="text-muted">UID</dt>
+          <dd className="truncate">
+            <button
+              type="button"
+              className="max-w-full truncate font-mono text-fg2 hover:text-accent hover:underline"
+              title={uid.data ? '点击复制 UID' : undefined}
+              onClick={async () => {
+                if (!uid.data) return;
+                await navigator.clipboard.writeText(uid.data);
+                toast('UID 已复制');
+              }}
+            >
+              {uid.data ?? (uid.isLoading ? '读取中…' : '—')}
+            </button>
+          </dd>
+          <dt className="text-muted">凭据</dt>
+          <dd className="truncate" title={account.source || undefined}>
+            {account.has_secret ? `已保存${account.source ? `（${account.source}）` : ''}` : '未保存'}
+          </dd>
+          <dt className="text-muted">凭据到期</dt>
+          <dd
+            title="这个时间来自客户端票据（票据里没有时读 token 自带的 exp）。本应用不自己续期：客户端续过才会变，否则刷新多少次都是同一个值"
+            className={cn(
+              'truncate',
+              credDays !== null && credDays < 0 && 'text-bad',
+              credDays !== null && credDays >= 0 && credDays <= 3 && 'text-warn',
+            )}
+          >
+            {account.expires_at
+              ? `${fmtDay(account.expires_at)}${
+                  credDays === null
+                    ? ''
+                    : credDays < 0
+                      ? ` · 已过期 ${Math.abs(credDays)} 天`
+                      : ` · 剩 ${credDays} 天`
+                }`
+              : '平台未提供'}
+          </dd>
+          {restoreOn && (
+            <>
+              <dt className="text-muted">恢复对话</dt>
+              <dd className="truncate">{isCurrent ? '可用' : '切换后可用'}</dd>
+            </>
+          )}
+          {quotaAt && (
+            <>
+              <dt className="text-muted">配额更新</dt>
+              <dd>{fmtTime(quotaAt)}</dd>
+            </>
+          )}
+          <dt className="text-muted">最近查询</dt>
+          <dd className={cn('truncate', lastError && 'text-bad')}>{lastError ? '失败' : '正常'}</dd>
+        </dl>
+        {account.note && (
+          <p className="mt-2 border-t border-line/60 pt-1.5 text-xs whitespace-pre-wrap text-muted">
+            <span className="text-fg2">备注：</span>
+            {account.note}
+          </p>
+        )}
+      </section>
 
       {/* 结论层：最快的到期放第一格（≤7 天变警示色），余额第二；建议与口径进 tooltip */}
       <div className="grid grid-cols-2 gap-px bg-line">
@@ -477,9 +646,10 @@ export function DetailPanel({
         </section>
       )}
 
-      {/* 批次层：到期升序、最快在顶上；限高滚动，数据再多也不把面板撑长 */}
+      {/* 明细层：批次与领取记录并排——两者都是「点开这个账号才关心」的账目，
+          只读，不抢上面「账号信息」的位置。批次到期升序、最快在顶上，限高滚动 */}
       <div className="grid border-t border-line lg:grid-cols-[minmax(0,1fr)_360px]">
-        <section className="border-t border-line px-3 py-2.5 lg:border-t-0">
+        <section className="px-3 py-2.5">
           <div className="mb-1.5 flex items-baseline gap-2">
             <h3 className="text-xs font-semibold tracking-wide text-fg2">积分批次</h3>
             <span className="flex-1" />
@@ -535,137 +705,7 @@ export function DetailPanel({
           )}
         </section>
 
-        {/* 元信息：解释每一列的数据从哪来；空的行不渲染，不拿「—」占位 */}
-        <section className="border-t border-line px-3 py-2.5 lg:border-l">
-          <SectionTitle>账号信息</SectionTitle>
-          <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs sm:grid-cols-[max-content_minmax(0,1fr)_max-content_minmax(0,1fr)]">
-            <dt className="text-muted">平台</dt>
-            <dd>{account.platform_label}</dd>
-            {/* UID 只在这里出现：列表不渲染它，点开账号才按需取一次（契约 17） */}
-            <dt className="text-muted">UID</dt>
-            <dd className="truncate">
-              <button
-                type="button"
-                className="max-w-full truncate font-mono text-fg2 hover:text-accent hover:underline"
-                title={uid.data ? '点击复制 UID' : undefined}
-                onClick={async () => {
-                  if (!uid.data) return;
-                  await navigator.clipboard.writeText(uid.data);
-                  toast('UID 已复制');
-                }}
-              >
-                {uid.data ?? (uid.isLoading ? '读取中…' : '—')}
-              </button>
-            </dd>
-            <dt className="text-muted">凭据</dt>
-            <dd className="truncate" title={account.source || undefined}>
-              {account.has_secret ? `已保存${account.source ? `（${account.source}）` : ''}` : '未保存'}
-            </dd>
-            <dt className="text-muted">凭据到期</dt>
-            <dd
-              className={cn(
-                'truncate',
-                credDays !== null && credDays < 0 && 'text-bad',
-                credDays !== null && credDays >= 0 && credDays <= 3 && 'text-warn',
-              )}
-            >
-              {account.expires_at
-                ? `${fmtDay(account.expires_at)}${
-                    credDays === null
-                      ? ''
-                      : credDays < 0
-                        ? ` · 已过期 ${Math.abs(credDays)} 天`
-                        : ` · 剩 ${credDays} 天`
-                  }`
-                : '平台未提供'}
-            </dd>
-            {quotaAt && (
-              <>
-                <dt className="text-muted">配额更新</dt>
-                <dd>{fmtTime(quotaAt)}</dd>
-              </>
-            )}
-            <dt className="text-muted">恢复对话</dt>
-            <dd className="truncate">
-              {account.platform === 'workbuddy'
-                ? isCurrent
-                  ? '可用（当前账号）'
-                  : '切换到该账号后可用'
-                : '不适用'}
-            </dd>
-            {account.note && (
-              <>
-                <dt className="text-muted">备注</dt>
-                <dd className="break-words whitespace-pre-wrap">{account.note}</dd>
-              </>
-            )}
-            <dt className="text-muted">最近查询</dt>
-            <dd className={cn('truncate', lastError && 'text-bad')}>{lastError ? '失败' : '正常'}</dd>
-          </dl>
-          <div className="mt-2 flex flex-wrap gap-1.5 border-t border-line/60 pt-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={openAlias}
-              disabled={!!busy}
-              title="设置本机显示名；别名单独保存，重扫客户端不会覆盖"
-            >
-              改名
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={openNote}
-              disabled={!!busy}
-              title="备注只存本机，用来记「为什么停用」「绑定在哪台机器」"
-            >
-              备注
-            </Button>
-            <span className="mx-1 w-px bg-line" aria-hidden />
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={refreshCredential}
-              loading={busy === 'refresh-credential'}
-              disabled={!!busy || !account.has_secret}
-              title="重扫客户端并写回最新凭据与有效期；刷新后仍过期才需要重新授权"
-            >
-              刷新凭据
-            </Button>
-            {account.platform !== 'trae' && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setReauthOpen(true)}
-                disabled={!!busy}
-                title={
-                  account.has_secret
-                    ? '重新走一次平台登录，成功后覆盖已保存的凭据与到期时间'
-                    : '这个账号没有可用凭据，切不过去；点这里重新授权，成功后自动保存'
-                }
-              >
-                重新授权
-              </Button>
-            )}
-          </div>
-        </section>
-      </div>
-
-      {/* 该账号的会话：WorkBuddy / CodeBuddy 的会话行带账号 uid，可以下钻到会话页 */}
-      <AccountSessionsCard account={account} />
-
-      {/* 旅行 + 领取记录并排：两个列表都限高，数据增长不会把面板拉长 */}
-      <div className="grid border-t border-line lg:grid-cols-2">
-        {/* 猫猫旅行只属于 WorkBuddy 国内版；国际版没有这项 */}
-        {account.platform === 'workbuddy' && !account.iid.endsWith('@intl') && account.has_secret ? (
-          <TravelCard account={account} />
-        ) : (
-          <section className="border-t border-line px-3 py-2.5 text-xs text-muted">
-            猫猫旅行只对 WorkBuddy 国内版开放。
-          </section>
-        )}
-
-        <section className="border-t border-line px-3 py-2.5 lg:border-l">
+        <section className="border-t border-line px-3 py-2.5 lg:border-t-0 lg:border-l">
           <SectionTitle right="最近 100 条 · 签到 / 活动 / 猫猫旅行">积分领取记录</SectionTitle>
           <div className="max-h-60 overflow-auto">
             <DataTable
@@ -675,11 +715,17 @@ export function DetailPanel({
               loading={detail.isLoading}
               dense
               stickyHead
+              // 默认最新在上：点表头可切「最早在上」，或按积分/来源排
+              defaultSort={{ key: 'date', dir: 'desc' }}
               empty={<p className="py-3 text-xs text-muted">暂无领取记录；余额快照、旧批次和已领取状态不会补记。</p>}
             />
           </div>
         </section>
       </div>
+
+      {/* 猫猫旅行：只有 WorkBuddy 国内版有，关掉这个开关的账号也不渲染。
+          会话不在这里——账号详情只回答账号本身，会话去「会话」页看 */}
+      {travelOn && account.has_secret && <TravelCard account={account} />}
 
       {lastError && (
         <div className="px-3 pb-3">

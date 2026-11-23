@@ -63,9 +63,12 @@ impl Provider for WorkBuddyProvider {
                 .unwrap_or_else(|| {
                     format!("WorkBuddy {}", uid.chars().take(8).collect::<String>())
                 });
+            // 客户端不一定写 expiresAt：token 自带的 exp 是同一件事的另一个来源。
+            // 缺字段时必须用它兜底，否则「刷新凭据」拿到了新 token 也看不出到期时间变化。
             let expires_at = auth
                 .get("expiresAt")
-                .and_then(crate::app::timeutil::parse_ts);
+                .and_then(crate::app::timeutil::parse_ts)
+                .or_else(|| crate::app::timeutil::jwt_exp_ms(&token));
             let account_id = if self.intl {
                 format!("{uid}@intl")
             } else {

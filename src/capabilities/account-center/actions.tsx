@@ -4,17 +4,19 @@
 // 这里只负责「按什么条件可点、点了之后长什么样」。
 //
 // 操作列一律用**图标**（IconPark）：六个中文按钮挤在一起会把列撑到 290px，
-// 换成图标后只要 190px，文字说明交给 title 悬浮提示。每个动作永远占住自己的槽位，
-// 不可用时置灰而不是消失——少一个按钮后面的整体左移，十行看下来是锯齿。
+// 换成图标后只要 190px，文字说明交给 title 悬浮提示。每个动作永远占住自己的槽位：
+// 暂时不可用（没凭据、不是当前账号）**置灰**，平台根本没有这个功能（或用户在设置里
+// 关掉了）则**槽位留空不画图标**——功能不存在的图标只是噪音，但宽度必须保持，
+// 否则少一个按钮后面的整体左移，十行看下来是锯齿。
 import type { ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
-import { Tag } from '@/components/ui';
 import { IconDelete, IconHistory, IconPower, IconSwitch } from '@/components/ui/icons';
 import type { AccountView } from '@/lib/types';
 
-/** 五个槽位的固定宽度（px）：当前标签 / 切换 / 恢复对话 / 启停 / 删除。 */
-export const ACTION_SLOTS = [46, 28, 28, 28, 28] as const;
+/** 四个槽位的固定宽度（px）：切换 / 恢复对话 / 启停 / 删除。
+ *  「当前登录」不再占槽位——它由行背景表达，文字标签是重复信息。 */
+export const ACTION_SLOTS = [28, 28, 28, 28] as const;
 /** 槽位间距（gap-1）与单元格左右内边距，算操作列总宽时要用。 */
 export const ACTION_GAPS = 4;
 export const ACTION_PAD = 16;
@@ -64,6 +66,8 @@ export function RowActions({
   row,
   isCurrent,
   switchable,
+  canSwitch,
+  canRestore,
   busy,
   onSwitch,
   onRestore,
@@ -74,57 +78,60 @@ export function RowActions({
   isCurrent: boolean;
   /** 现在能否切到客户端：网页登录的账号没有登录态档案，禁用并说明 */
   switchable: boolean;
+  /** 这个软件有没有「切换账号」入口（设置 → 各软件功能 × 平台能力） */
+  canSwitch: boolean;
+  /** 这个软件有没有「恢复对话」入口（只有 WorkBuddy 有本机会话库） */
+  canRestore: boolean;
   busy: boolean;
   onSwitch: () => void;
   onRestore: () => void;
   onDelete: () => void;
   onToggleEnabled: () => void;
 }) {
-  const canRestore = row.platform === 'workbuddy';
   return (
     <div className="flex justify-end">
       <div
         className="grid items-center gap-1"
         style={{ gridTemplateColumns: ACTION_SLOTS.map((w) => `${w}px`).join(' ') }}
       >
-        {/* 当前账号才挂标签；其余行留等宽空位，保证后面的按钮不左右漂 */}
-        <span className="flex justify-center">
-          {isCurrent && (
-            <Tag tone="ok" className="px-1.5">
-              当前
-            </Tag>
-          )}
-        </span>
-        <RowAction
-          label="切换登录"
-          onClick={onSwitch}
-          disabled={!row.has_secret || isCurrent || busy || !switchable}
-          title={
-            isCurrent
-              ? '已经是客户端当前登录的账号'
-              : !row.has_secret
-                ? '这个账号没有保存登录凭据，先在客户端登录一次再扫描'
-                : !switchable
-                  ? '网页登录的账号不能切换客户端：请在客户端里登录一次该账号（添加账号 → 改用客户端登录），之后即可切换'
-                  : '把客户端登录态切换到这个账号'
-          }
-        >
-          <IconSwitch size={15} />
-        </RowAction>
-        <RowAction
-          label="恢复对话"
-          onClick={onRestore}
-          disabled={!canRestore || !isCurrent || busy}
-          title={
-            !canRestore
-              ? '只有 WorkBuddy 支持会话恢复'
-              : !isCurrent
+        {/* 平台没有这个功能、或用户在设置里关掉了：槽位留空、不画图标。
+            宽度不变——同一张表里有的行有按钮、有的行没有，按钮一左一右就是锯齿。 */}
+        {canSwitch ? (
+          <RowAction
+            label="切换登录"
+            onClick={onSwitch}
+            disabled={!row.has_secret || isCurrent || busy || !switchable}
+            title={
+              isCurrent
+                ? '已经是客户端当前登录的账号'
+                : !row.has_secret
+                  ? '这个账号没有保存登录凭据，先在客户端登录一次再扫描'
+                  : !switchable
+                    ? '网页登录的账号不能切换客户端：请在客户端里登录一次该账号（添加账号 → 改用客户端登录），之后即可切换'
+                    : '把客户端登录态切换到这个账号'
+            }
+          >
+            <IconSwitch size={15} />
+          </RowAction>
+        ) : (
+          <span />
+        )}
+        {canRestore ? (
+          <RowAction
+            label="恢复对话"
+            onClick={onRestore}
+            disabled={!isCurrent || busy}
+            title={
+              !isCurrent
                 ? '只能恢复当前登录账号的会话：先切换过去'
                 : '把本机已有的历史会话关联到这个账号（只改归属，不动正文）'
-          }
-        >
-          <IconHistory size={15} />
-        </RowAction>
+            }
+          >
+            <IconHistory size={15} />
+          </RowAction>
+        ) : (
+          <span />
+        )}
         <RowAction
           label={row.enabled ? '停用账号' : '启用账号'}
           onClick={onToggleEnabled}

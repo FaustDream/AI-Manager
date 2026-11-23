@@ -366,9 +366,9 @@ export function Shell() {
       <CommandPalette items={paletteItems} placeholder="搜索页面 / 动作 / 会话…（Esc 关闭）" />
 
       <main className="flex-1 overflow-auto px-5 pb-6 pt-4">
-        {/* 宽屏内容宽度（V-04）：表格/日志页吃满，叙事页限到 1600px 居中。
-            否则在 2K 以上屏，总览的卡片会被拉成一长条，眼睛要横着扫。 */}
-        <div className={cn('w-full', current?.manifest.fluid ? null : 'mx-auto max-w-[1600px]')}>
+        {/* 内容一律铺满可视宽度：页面自己负责栅格，壳层不再按能力页限宽居中——
+            限宽会让宽屏上出现两条大留白，反而把内容挤成「卡片里的卡片」。 */}
+        <div className="w-full">
         {/* 兜底边界：只有「首屏第一页」会真的用到它——之后的切页都在 go() 里等到
             chunk 到位才换，不会走到 fallback。 */}
         <Suspense fallback={<PageSkeleton />}>

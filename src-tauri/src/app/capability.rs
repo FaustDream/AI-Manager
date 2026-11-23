@@ -129,9 +129,24 @@ const FEATURES: &[FeatureDef] = &[
         hint: "浏览、归档、彻底删除客户端本地会话",
     },
     FeatureDef {
+        key: "restore",
+        label: "恢复对话",
+        hint: "把本机历史会话的归属改到当前登录账号：只改引用，正文一个字节都不动",
+    },
+    FeatureDef {
         key: "hub",
         label: "技能与 MCP",
         hint: "把技能与 MCP 配置分发到客户端",
+    },
+    FeatureDef {
+        key: "switch_ide",
+        label: "切换 IDE",
+        hint: "把账号的登录态写进 CodeBuddy IDE；只对 WorkBuddy 国内版账号有效",
+    },
+    FeatureDef {
+        key: "switch_idea",
+        label: "切换插件",
+        hint: "把账号的登录态写进 IntelliJ IDEA 里的 CodeBuddy 插件；同上",
     },
 ];
 
@@ -155,6 +170,21 @@ const fn no(note: &'static str) -> (Support, &'static str) {
 /// 刷新格子：四家都是同一条路，只有「客户端里也过期」这个共同限制
 const REFRESH_NOTE: &str = "每次重扫客户端写回最新凭据与有效期；客户端里也过期就只能重新授权";
 
+/// 切换登录的对外口径：只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放。
+/// 页面上的「切换账号」图标、后端预检与设置页开关都读这一条，不再各写一套名单。
+const SWITCH_SCOPE_NOTE: &str =
+    "切换登录只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放；本平台只做扫描、签到与积分查询";
+
+/// 会话恢复只对 WorkBuddy 有意义：只有它有本地会话库。
+const RESTORE_SCOPE_NOTE: &str = "只有 WorkBuddy 有本机会话库，其他平台的会话在云端";
+
+/// CodeBuddy 系两个客户端（IDE / IDEA 插件）共用同一个写入来源：
+/// 只有 WorkBuddy 国内版账号的档案能写进去。其他平台在这一列必须写清「不支持」。
+const CB_SCOPE_NOTE: &str = "只有 WorkBuddy 国内版账号能写入 CodeBuddy 系客户端";
+
+/// 国际版连写入口都没有：CodeBuddy 系没有国际版授权域。
+const CB_INTL_NOTE: &str = "CodeBuddy 系没有国际版授权域，切过去也登不上";
+
 const PLATFORMS: &[PlatformDef] = &[
     PlatformDef {
         key: "workbuddy",
@@ -169,7 +199,10 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             part(REFRESH_NOTE),
             full(""),
+            full("把本机历史会话的归属改到当前登录账号，只改引用不动正文"),
             full(""),
+            full("用国内版账号档案写入 CodeBuddy IDE 的登录态"),
+            full("用国内版账号档案写入 IDEA 插件的登录态"),
         ],
     },
     PlatformDef {
@@ -185,7 +218,10 @@ const PLATFORMS: &[PlatformDef] = &[
             no("猫猫旅行仅国内版有"),
             part(REFRESH_NOTE),
             full(""),
+            full("同国内版，按国际版自己的会话库处理"),
             full(""),
+            no(CB_INTL_NOTE),
+            no(CB_INTL_NOTE),
         ],
     },
     PlatformDef {
@@ -194,14 +230,17 @@ const PLATFORMS: &[PlatformDef] = &[
         cells: &[
             full(""),
             full(""),
-            full("重封 auth.v1.dat，不用换整份登录态"),
+            no(SWITCH_SCOPE_NOTE),
             full(""),
             full(""),
             no("按积分计，没有额度窗口"),
             no("非 WorkBuddy 平台"),
             part(REFRESH_NOTE),
             full(""),
+            no(RESTORE_SCOPE_NOTE),
             full(""),
+            no(CB_SCOPE_NOTE),
+            no(CB_SCOPE_NOTE),
         ],
     },
     PlatformDef {
@@ -210,14 +249,17 @@ const PLATFORMS: &[PlatformDef] = &[
         cells: &[
             full(""),
             full(""),
-            full("重封 auth.v1.dat，不用换整份登录态"),
+            no(SWITCH_SCOPE_NOTE),
             full(""),
             full(""),
             no("按积分计，没有额度窗口"),
             no("非 WorkBuddy 平台"),
             part(REFRESH_NOTE),
             full(""),
+            no(RESTORE_SCOPE_NOTE),
             full(""),
+            no(CB_SCOPE_NOTE),
+            no(CB_SCOPE_NOTE),
         ],
     },
     PlatformDef {
@@ -233,7 +275,10 @@ const PLATFORMS: &[PlatformDef] = &[
             no("非 WorkBuddy 平台"),
             part(REFRESH_NOTE),
             full(""),
+            no(RESTORE_SCOPE_NOTE),
             full(""),
+            no(CB_SCOPE_NOTE),
+            no(CB_SCOPE_NOTE),
         ],
     },
     PlatformDef {
@@ -243,15 +288,18 @@ const PLATFORMS: &[PlatformDef] = &[
             no("豆包登录走字节 SSO，没有可回调的授权码；改用「粘贴 Cookie」添加"),
             no("电脑版登录态在 Chromium 加密库里，格式随客户端版本变，不解析"),
             no("本工具不写豆包客户端的 Cookie 库，没有可回写的登录态"),
-            full("个人账号的「天天领额度」，多账号各签各的"),
+            no("豆包领取接口会被风控，本工具只做只读积分查询"),
             part("显示累计体验额度；剩余次数以客户端为准"),
             no("按额度发放，不是窗口型"),
             no("非 WorkBuddy 平台"),
             part("Cookie 过期只能重新粘贴；有效期由字节控制，接口不返回"),
             no("会话在云端，本地没有可读的会话库"),
+            no(RESTORE_SCOPE_NOTE),
             part(
                 "技能可分发到 %LOCALAPPDATA%\\...\\.user_skills；MCP 只在应用内管理，没有可写配置",
             ),
+            no(CB_SCOPE_NOTE),
+            no(CB_SCOPE_NOTE),
         ],
     },
     PlatformDef {
@@ -267,7 +315,10 @@ const PLATFORMS: &[PlatformDef] = &[
             no("非 WorkBuddy 平台"),
             part("只能去 Trae 客户端登录一次，再点「扫描客户端」取新凭据"),
             part("会话在云端，本地只做墓碑与占位预览"),
+            no(RESTORE_SCOPE_NOTE),
             full(""),
+            no(CB_SCOPE_NOTE),
+            no(CB_SCOPE_NOTE),
         ],
     },
     PlatformDef {
@@ -276,17 +327,30 @@ const PLATFORMS: &[PlatformDef] = &[
         cells: &[
             no("账号体系跟随 WorkBuddy，不单独登录"),
             no("登录态来自 WorkBuddy 档案"),
-            full("用 WorkBuddy 国内版档案切换 CodeBuddy IDE 与插件"),
+            full("用 WorkBuddy 国内版档案切换 CodeBuddy IDE 与 IDEA 插件"),
             no("没有签到玩法"),
             no("本应用不采集它的积分"),
             no("不是额度型平台"),
             no("非 WorkBuddy 平台"),
             no("凭据由 WorkBuddy 侧维护"),
             full(""),
+            no("会话恢复跟着 WorkBuddy 账号走，不按客户端单独提供"),
             full(""),
+            full("接收方：用 WorkBuddy 国内版账号档案写入 CodeBuddy IDE"),
+            full("接收方：用 WorkBuddy 国内版账号档案写入 IDEA 插件"),
         ],
     },
 ];
+
+/// 查一格：某平台某功能到底有多大支持度（附带原因）。
+///
+/// 平台功能开关（`app::features`）靠它判断「这个功能在这家能不能开」——
+/// 表里写「不支持」的，设置页里连勾选项都不给。
+pub fn support_of(platform: &str, feature: &str) -> Option<(Support, &'static str)> {
+    let row = PLATFORMS.iter().find(|p| p.key == platform)?;
+    let index = FEATURES.iter().position(|f| f.key == feature)?;
+    row.cells.get(index).copied()
+}
 
 /// 组装给界面用的矩阵。纯内存拼装，不碰磁盘。
 pub fn matrix() -> CapabilityMatrix {
@@ -359,6 +423,42 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn switch_only_opens_for_workbuddy_codebuddy_and_zcode() {
+        // 产品口径：切换登录只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放。
+        // 界面图标、后端预检、设置页开关都读这一格，写错一处就会出现点不动的按钮。
+        for key in ["workbuddy", "workbuddy_intl", "zcode", "codebuddy"] {
+            let (state, _) = support_of(key, "switch").expect("缺 switch 格");
+            assert_eq!(state, Support::Full, "{key} 应支持切换");
+        }
+        for key in ["qoder", "qoder_intl", "trae", "doubao"] {
+            let (state, note) = support_of(key, "switch").expect("缺 switch 格");
+            assert_eq!(state, Support::None, "{key} 不该再宣称能切换");
+            assert!(!note.is_empty(), "{key} 的切换限制要写清原因");
+        }
+    }
+
+    #[test]
+    fn restore_belongs_to_workbuddy_only() {
+        // 会话库只存在于 WorkBuddy；其他平台写「支持」等于让用户点一个必然失败的按钮
+        for key in ["workbuddy", "workbuddy_intl"] {
+            let (state, _) = support_of(key, "restore").expect("缺 restore 格");
+            assert_eq!(state, Support::Full, "{key} 应支持恢复对话");
+        }
+        for key in [
+            "qoder",
+            "qoder_intl",
+            "zcode",
+            "trae",
+            "doubao",
+            "codebuddy",
+        ] {
+            let (state, note) = support_of(key, "restore").expect("缺 restore 格");
+            assert_eq!(state, Support::None, "{key} 不该支持恢复对话");
+            assert!(!note.is_empty(), "{key} 缺恢复对话的原因");
         }
     }
 

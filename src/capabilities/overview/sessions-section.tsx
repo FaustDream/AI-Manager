@@ -25,7 +25,7 @@ export function SessionsSection() {
   const data = stats.data;
 
   return (
-    <section className="rounded-lg border border-line bg-card shadow-card p-3">
+    <section className="p-3">
       <SectionTitle
         className="mb-0"
         right={
@@ -83,7 +83,7 @@ export function SessionsSection() {
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <div className="rounded-lg border border-line/70 p-3">
+            <div className="p-3">
               {/* 表头与排名行同一内边距（px-3）：差 8px 整列数字就会看着歪 */}
               <div className="mb-1 flex items-baseline justify-between gap-2 px-3 text-xs text-muted">
                 <span>来源</span>
@@ -92,7 +92,7 @@ export function SessionsSection() {
               <RankedSources bySource={data.by_source} total={data.active} />
             </div>
 
-            <div className="rounded-lg border border-line/70 p-3">
+            <div className="p-3">
               <div className="mb-1 flex items-baseline justify-between gap-2 px-3 text-xs text-muted">
                 <span>项目 Top 8</span>
                 <span>会话数 · 占比</span>

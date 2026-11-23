@@ -298,6 +298,10 @@ pub fn client_key_of(iid: &str) -> &str {
 
 /// **切换登录的统一入口**：按平台分发到各自的实现。
 /// 一家一个函数，不做巨型 match——每家的写入面差异太大（信封 / 档案包 / 整份 JSON）。
+///
+/// 对外承诺的范围（只对 WorkBuddy 含 CodeBuddy 系、ZCode 开放）由 `app::features`
+/// 从能力表裁出，调用方 `accounts::switch` 在关客户端之前就会拒绝范围外的平台；
+/// 这里的分支保留是为了适配器仍能通过编译期检查与单测覆盖。
 pub fn switch(
     iid: &str,
     account_id: &str,

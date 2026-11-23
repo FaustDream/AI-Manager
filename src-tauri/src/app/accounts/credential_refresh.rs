@@ -188,7 +188,7 @@ fn judge(
 
     Ok(RefreshCredentialOutcome::new(
         RefreshCredentialState::UpToDate,
-        "没有从客户端取到更新的凭据，有效期保持原值".into(),
+        "没有从客户端取到更新的凭据，有效期保持原值（本应用不自己续期，客户端续过才会变）".into(),
         after_exp,
     ))
 }

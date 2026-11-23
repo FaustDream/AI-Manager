@@ -26,6 +26,14 @@ minutes: number | null, enabled: boolean,
  */
 last_run: string | null, 
 /**
+ * 猫猫旅行专用：下一次唤醒时刻（RFC3339）。
+ *
+ * 由上一轮状态里的「预计到站 + 5 分钟领取冗余」算出：到点直接去领，不再等固定间隔。
+ * 有它就按它唤醒，没有（待派出 / 今日上限 / 已领完）才回落到 `every` 规则。
+ * 其他动作永远为 `None`，读旧配置时也默认 `None`。
+ */
+next_at: string | null, 
+/**
  * 首次间隔的固定锚点；与真实执行记录分开，升级旧规则时补齐。
  */
 created_at: string | null, };

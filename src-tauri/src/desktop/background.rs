@@ -75,11 +75,12 @@ pub fn spawn_scheduler(
                 crate::app::runtime::runtime().spawn(async move {
                     let fresh = crate::app::runtime::blocking({
                         let id = id.clone();
+                        let db = db.clone();
                         move || crate::app::schedule::take_due(&db, &id, chrono::Local::now())
                     })
                     .await;
                     match fresh {
-                        Ok(Ok(Some(item))) => run_schedule(&service, &activity, &item).await,
+                        Ok(Ok(Some(item))) => run_schedule(&db, &service, &activity, &item).await,
                         Ok(Ok(None)) => {}
                         Ok(Err(e)) | Err(e) => log::fail(
                             "schedule",
@@ -122,6 +123,9 @@ pub(crate) struct ScheduleOutcome {
     pub ok: bool,
     pub detail: String,
     pub changed: bool,
+    /// 猫猫旅行专用：把下一跳收紧到「预计到站 + 5 分钟」的时刻（毫秒）。
+    /// 其余动作恒为 `None`，调度器据此决定要不要改写任务的下次唤醒。
+    pub next_wake_ms: Option<i64>,
 }
 
 pub(crate) async fn execute_schedule(
@@ -141,6 +145,7 @@ pub(crate) async fn execute_schedule(
                 ok: round.failed == 0,
                 detail: round.detail(),
                 changed: round.success > 0 || round.failed > 0,
+                next_wake_ms: None,
             }
         }
         CreditsRound => {
@@ -153,6 +158,7 @@ pub(crate) async fn execute_schedule(
                 detail: format!("{total} 个账号，失败 {failed}"),
                 // 全绿没有可看的信息：余额数字在账号列表上，日志里不必每 5 分钟重复一遍
                 changed: failed > 0,
+                next_wake_ms: None,
             }
         }
         TravelRound => {
@@ -165,6 +171,9 @@ pub(crate) async fn execute_schedule(
                 ok: round.failed == 0,
                 detail: round.message,
                 changed: round.claimed > 0 || round.departed > 0 || round.failed > 0,
+                // 还有账号在路上：到站 + 5 分钟再来领；全都在待派出/上限就给 None，
+                // 调度器回落到用户配的间隔
+                next_wake_ms: round.next_wake_ms,
             }
         }
     }
@@ -172,12 +181,24 @@ pub(crate) async fn execute_schedule(
 
 /// 定时触发：执行 + 只在「有变化」时写一条执行记录。
 async fn run_schedule(
+    db: &Arc<Db>,
     service: &Arc<crate::app::checkin::Service>,
     activity: &Arc<crate::app::activity::Service>,
     item: &crate::app::schedule::Schedule,
 ) {
     let started = std::time::Instant::now();
     let outcome = execute_schedule(service, activity, item).await;
+    // 猫猫旅行：把下一跳定在「到站 + 5 分钟」。写失败不影响这轮结论，
+    // 只是退回用户配的间隔（下下跳仍会再查一次状态）。
+    if item.action == crate::app::schedule::ScheduleAction::TravelRound {
+        let db = db.clone();
+        let id = item.id.clone();
+        let wake = outcome.next_wake_ms;
+        let _ = crate::app::runtime::blocking(move || {
+            crate::app::schedule::set_travel_wake(&db, &id, wake)
+        })
+        .await;
+    }
     // 无事可做的心跳轮询不留痕：这类「正常流程」每天能刷出上百行，
     // 真正需要排查时反而把失败记录淹了。服务内部的动作记录也已按同一口径收敛。
     if outcome.changed {

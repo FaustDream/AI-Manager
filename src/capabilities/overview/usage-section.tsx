@@ -45,7 +45,7 @@ export function UsageSection({
   return (
     // 四行 subgrid（标题 / 数字 / 子块一 / 子块二）：与左栏共用父栅格的行高，
     // 所以两栏的子块边界必然对齐。多一个直接子节点就会顶错行，条件块必须收在容器里。
-    <section className="grid min-w-0 gap-3 rounded-lg border border-line bg-card p-3 shadow-card xl:row-span-4 xl:grid-rows-subgrid">
+    <section className="grid min-w-0 gap-3 p-3 xl:row-span-4 xl:grid-rows-subgrid">
       <div>
         <SectionTitle
           className="mb-0 min-h-7 items-center"
@@ -76,7 +76,7 @@ export function UsageSection({
       )}
 
       {empty && (
-        <div className="rounded-lg border border-dashed border-line">
+        <div>
           <StateBlock
             kind="empty"
             title={range.key === '1' ? '今天还没有用量数据' : '这个区间没有用量数据'}
@@ -119,7 +119,7 @@ export function UsageSection({
           </div>
 
           {/* 子块一：走势（与左栏的收支图占同一个位置、同一个高度） */}
-          <div className="rounded-lg border border-line/70 p-3">
+          <div className="p-3">
             <div className="mb-1.5 flex flex-wrap items-center gap-2">
               <h4 className="text-xs font-semibold tracking-wide text-fg2">Token 消耗趋势</h4>
               <span className="flex-1" />
@@ -131,7 +131,7 @@ export function UsageSection({
           </div>
 
           {/* 子块二：按软件与模型拆分（与左栏「各软件消耗」占同一个位置、同一个高度） */}
-          <div className="rounded-lg border border-line/70 p-3">
+          <div className="p-3">
             <div className="mb-1 flex items-baseline justify-between gap-2 px-3 text-xs text-muted">
               <span>软件</span>
               <span>Token · 占比</span>

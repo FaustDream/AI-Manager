@@ -6,4 +6,8 @@ import type { NetworkConfig } from "./NetworkConfig";
 import type { UsageConfig } from "./UsageConfig";
 import type { WindowConfig } from "./WindowConfig";
 
-export type AppConfig = { checkin: CheckinConfig, network: NetworkConfig, usage: UsageConfig, activity: ActivityConfig, dashboard: DashboardConfig, window: WindowConfig, };
+export type AppConfig = { checkin: CheckinConfig, network: NetworkConfig, usage: UsageConfig, activity: ActivityConfig, dashboard: DashboardConfig, window: WindowConfig, 
+/**
+ * 平台功能开关（设置 → 常规 → 各软件功能）：界面显示什么由用户定，不写死在页面里
+ */
+features: { [key: string]: { [key: string]: boolean } }, };

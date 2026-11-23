@@ -146,6 +146,123 @@ export const IconLoading = (p: IconProps) => (
   </Icon>
 );
 
+// ---- 工具栏 / 详情页的动作用图标（按钮文字过长，一律图标 + title 气泡）----
+
+/** 添加账号 */
+export const IconAdd = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="6" y="6" width="36" height="36" rx="3" fill="none" stroke="currentColor" strokeWidth={4} strokeLinejoin="round" />
+    <path d="M24 16V32" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M16 24L32 24" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+  </Icon>
+);
+
+/** 刷新积分：钞票 */
+export const IconMoney = (p: IconProps) => (
+  <Icon {...p}>
+    <path
+      d="M39 7H9C6.23858 7 4 9.23858 4 12V36C4 38.7614 6.23858 41 9 41H39C41.7614 41 44 38.7614 44 36V12C44 9.23858 41.7614 7 39 7Z"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={4}
+      strokeLinejoin="round"
+    />
+    <path d="M18 15L24 21L30 15" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M17 23H31" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M17 29H31" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M24 23V34" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+  </Icon>
+);
+
+/** 刷新账号状态：本机（客户端） */
+export const IconLaptop = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="8" y="8" width="32" height="20" fill="none" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M8 28L4 41H44L40 28" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M19.9 35H28.1L30 41H18L19.9 35Z" fill="none" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+  </Icon>
+);
+
+/** 刷新凭据 / 登录授权：钥匙 */
+export const IconKey = (p: IconProps) => (
+  <Icon {...p}>
+    <path
+      d="M22.8682 24.2982C25.4105 26.7935 26.4138 30.4526 25.4971 33.8863C24.5805 37.32 21.8844 40.0019 18.4325 40.9137C14.9806 41.8256 11.3022 40.8276 8.79375 38.2986C5.02208 34.4141 5.07602 28.2394 8.91499 24.4206C12.754 20.6019 18.9613 20.5482 22.8664 24.3L22.8682 24.2982Z"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={4}
+      strokeLinejoin="round"
+    />
+    <path d="M23 24L40 7" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M30.3052 16.9001L35.7337 22.3001L42.0671 16.0001L36.6385 10.6001L30.3052 16.9001Z" fill="none" stroke="currentColor" strokeWidth={4} strokeLinejoin="round" />
+  </Icon>
+);
+
+/** 签到：日历 */
+export const IconCalendar = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M5 19H43V40C43 41.1046 42.1046 42 41 42H7C5.89543 42 5 41.1046 5 40V19Z" fill="none" stroke="currentColor" strokeWidth={4} strokeLinejoin="round" />
+    <path d="M5 9C5 7.89543 5.89543 7 7 7H41C42.1046 7 43 7.89543 43 9V19H5V9Z" stroke="currentColor" strokeWidth={4} strokeLinejoin="round" />
+    <path d="M16 4V12" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M32 4V12" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M28 34H34" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M14 34H20" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M28 26H34" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M14 26H20" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+  </Icon>
+);
+
+/** 改名：铅笔 */
+export const IconEdit = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M7 42H43" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M11 26.7199V34H18.3172L39 13.3081L31.6951 6L11 26.7199Z" fill="none" stroke="currentColor" strokeWidth={4} strokeLinejoin="round" />
+  </Icon>
+);
+
+/** 备注：笔记本 */
+export const IconNotebook = (p: IconProps) => (
+  <Icon {...p}>
+    <path
+      d="M10 6C10 4.89543 10.8954 4 12 4H40C41.1046 4 42 4.89543 42 6V42C42 43.1046 41.1046 44 40 44H12C10.8954 44 10 43.1046 10 42V6Z"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={4}
+      strokeLinejoin="round"
+    />
+    <path d="M34 6V42" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M6 14H14" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M6 24H14" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M6 34H14" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M27 4H39" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M27 44H39" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+  </Icon>
+);
+
+/** 重新授权：链接 */
+export const IconLink = (p: IconProps) => (
+  <Icon {...p}>
+    <path
+      d="M24.7073 9.56521L9.85801 24.4145C6.34329 27.9292 6.34329 33.6277 9.85801 37.1424V37.1424C13.3727 40.6571 19.0712 40.6571 22.5859 37.1424L40.2636 19.4647C42.6067 17.1216 42.6067 13.3226 40.2636 10.9794V10.9794C37.9205 8.63628 34.1215 8.63628 31.7783 10.9794L14.1007 28.6571C12.9291 29.8287 12.9291 31.7282 14.1007 32.8997V32.8997C15.2722 34.0713 17.1717 34.0713 18.3433 32.8997L33.1925 18.0505"
+      stroke="currentColor"
+      strokeWidth={4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Icon>
+);
+
+/** 领取活动：礼盒 */
+export const IconGift = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M41 44V20H7V44H41Z" fill="none" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M24 44V20" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M41 44H7" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+    <rect x="4" y="12" width="40" height="8" fill="none" stroke="currentColor" strokeWidth={4} strokeLinejoin="round" />
+    <path d="M16 4L24 12L32 4" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+  </Icon>
+);
+
 /** 图标名 → 组件。列定义里只存名字，渲染时才取组件（纯数据不碰 JSX）。 */
 export const ICONS = {
   switch: IconSwitch,
@@ -157,6 +274,15 @@ export const ICONS = {
   clock: IconClock,
   forbid: IconForbid,
   loading: IconLoading,
+  add: IconAdd,
+  money: IconMoney,
+  laptop: IconLaptop,
+  key: IconKey,
+  calendar: IconCalendar,
+  edit: IconEdit,
+  notebook: IconNotebook,
+  link: IconLink,
+  gift: IconGift,
 } as const;
 
 export type IconName = keyof typeof ICONS;

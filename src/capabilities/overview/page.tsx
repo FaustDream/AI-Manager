@@ -176,7 +176,7 @@ export default function OverviewPage() {
   // 左栏的两种「替代卡」：健康报告失败 / 还没账号。任一成立就整栏只放这一张卡
   // （不占满行高），右栏的用量照常显示——它与账号无关。
   const creditPlaceholder = health.isError ? (
-    <div className="rounded-lg border border-line bg-card shadow-card">
+    <div>
       <StateBlock
         kind="error"
         title="读健康报告失败"
@@ -185,7 +185,7 @@ export default function OverviewPage() {
       />
     </div>
   ) : report && report.accounts.total === 0 ? (
-    <div className="rounded-lg border border-dashed border-line">
+    <div>
       <StateBlock
         kind="empty"
         title="还没有账号"
@@ -226,7 +226,7 @@ export default function OverviewPage() {
         {creditPlaceholder ? (
           <div className="min-w-0 self-start">{creditPlaceholder}</div>
         ) : (
-          <section className="grid min-w-0 gap-3 rounded-lg border border-line bg-card p-3 shadow-card xl:row-span-4 xl:grid-rows-subgrid">
+          <section className="grid min-w-0 gap-3 p-3 xl:row-span-4 xl:grid-rows-subgrid">
             <div>
               <SectionTitle
                 className="mb-0 min-h-7 items-center"
@@ -283,7 +283,7 @@ export default function OverviewPage() {
             {/* 子块一：按天看进账/消耗（或余额走势）。
                 flex-1 是关键：两栏的卡片总高相同，两个子块各分一半剩余高度，
                 于是左右两张卡的子块边界也落在同一条水平线上。 */}
-            <div className="rounded-lg border border-line/70 p-3">
+            <div className="p-3">
               <div className="mb-1.5 flex flex-wrap items-center gap-2">
                 <h4 className="text-xs font-semibold tracking-wide text-fg2">
                   积分{chartMode === 'flow' ? '收支' : '趋势'}
@@ -331,7 +331,7 @@ export default function OverviewPage() {
             </div>
 
             {/* 子块二：同一份账目按软件拆开，看「钱花在哪」 */}
-            <div className="rounded-lg border border-line/70 p-3">
+            <div className="p-3">
               {flow.isLoading ? (
                 <div className="h-[180px] skeleton-block rounded-md bg-hover" />
               ) : (

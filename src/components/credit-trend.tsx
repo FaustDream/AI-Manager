@@ -157,7 +157,7 @@ export function CreditTrend({ points }: { points: TrendPoint[] }) {
 
   if (!option) {
     return (
-      <div className="flex h-[200px] items-center justify-center rounded-md border border-dashed border-line text-xs text-muted">
+      <div className="flex h-[200px] items-center justify-center text-xs text-muted">
         还没有余额快照：每次刷新积分会记一条，第二天开始就能看到趋势
       </div>
     );

@@ -16,6 +16,7 @@ pub mod config_history;
 pub mod db;
 pub mod error;
 pub mod events;
+pub mod features;
 pub mod fsx;
 pub mod health;
 pub mod hub;

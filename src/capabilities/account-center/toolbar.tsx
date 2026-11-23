@@ -12,10 +12,12 @@ import { queryCmd, runCmd } from '@/lib/cmd';
 import { listen } from '@/lib/events';
 import { Check, Copy, ExternalLink, Link } from 'lucide-react';
 import { Button, cn } from '@/components/ui/button';
+import { IconAdd, IconCalendar, IconKey, IconLaptop, IconMoney } from '@/components/ui/icons';
 import { Dialog } from '@/components/ui/dialog';
 import { Input, Select, Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { errText } from '@/lib/ipc';
+import { anyFeatureOn, FEATURE_CHECKIN, usePlatformFeatures } from '@/lib/features';
 import { useProgress } from '@/lib/progress';
 import type { BatchProgress } from '@/lib/progress';
 import type { AccountView, AddOutcome, BrowserLoginStatus, LoginOutcome } from '@/lib/types';
@@ -67,76 +69,88 @@ export function AccountToolbar({
   // 前端只累加完成数；拿不到（事件丢了）就退回默认省略号文案，不编数字。
   const checkinProgress = useProgress('checkin_batch');
   const creditsProgress = useProgress('checkin_credits');
+  // 所有软件的签到入口都被关掉时，这个按钮点了也只会说「没有需要签到的账号」——不摆它
+  const features = usePlatformFeatures();
+  const checkinAnywhere = anyFeatureOn(features.data, FEATURE_CHECKIN);
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {/* 主按钮给「添加账号」：这是这个页面唯一的正经工作流。
+    /* 图标 + 一个词：纯图标在五个「刷新类」动作之间分不出来，纯文字又太长。
+       每个按钮留两字短名（积分 / 状态 / 凭据 / 签到），完整口径进 title 气泡。 */
+    <div className="flex flex-wrap items-center gap-1.5">
+      {/* 主按钮给「添加账号」：这是页面唯一的正经工作流。
           账号同步已改为启动时后台自动扫描，这里不再放手动「扫描客户端」按钮。 */}
-      <Button variant="primary" onClick={onAdd} disabled={!!busy}>
+      <Button variant="primary" onClick={onAdd} disabled={!!busy} title="浏览器登录或粘贴 Cookie，登录后自动入库">
+        <IconAdd size={14} />
         添加账号
       </Button>
-      {/* 四个动作各挂一枚语义角标（P0-5）：光看「刷新积分 / 刷新账号状态 / 刷新凭据」
-          三个「刷新」分不出刷的是什么，语义以前只藏在 title 里，不悬停就看不到。
-          角标常驻且**不随加载态变化**，按钮宽度因此稳定。 */}
+      {/* 与「刷新账号状态」的区别：这个打的是平台接口，拿余额与配额 */}
       <Button
         onClick={onRefresh}
         loading={busy === 'credits'}
         disabled={!!busy}
-        title="调平台接口重查余额与配额（会联网）"
+        title={
+          busy === 'credits'
+            ? batchText('刷新平台余额中', creditsProgress)
+            : '刷新积分：调平台接口重查余额与配额（会联网）；只用本机数据时不必点它'
+        }
       >
-        {busy === 'credits' ? tailText('刷新中', creditsProgress) : '刷新积分'}
-        <ActionTag>平台余额</ActionTag>
+        <IconMoney size={14} />
+        积分
       </Button>
-      {/* 与「刷新积分」的区别：积分刷的是平台余额，这里刷的是**本地库与客户端登录态** */}
+      {/* 与「刷新积分」的区别：不联网，只让本地库追上客户端的实际登录态 */}
       <Button
         onClick={onRefreshState}
         loading={busy === 'refresh-state'}
         disabled={!!busy}
-        title="重扫客户端登录态，并用凭据包校正各账号的到期时间与「当前登录」标记（不查平台余额）"
+        title={
+          busy === 'refresh-state'
+            ? '正在重扫客户端…'
+            : '刷新账号状态：重扫客户端登录态，并用凭据包校正各账号的到期时间与当前登录标记（不查平台余额）'
+        }
       >
-        {busy === 'refresh-state' ? '刷新中…' : '刷新账号状态'}
-        <ActionTag>本机状态</ActionTag>
+        <IconLaptop size={14} />
+        状态
       </Button>
-      {/* 与「刷新账号状态」的区别：那个是全量重扫；这个针对当前筛选的一批账号，
-          逐个给出「更新了 / 已是最新 / 需重新授权」的结论，且**不会因为未过期就跳过** */}
+      {/* 与「刷新账号状态」的区别：那个是全量重扫；这个针对当前列表里的账号逐个给结论，
+          且**不会因为未过期就跳过** */}
       <Button
         onClick={onRefreshCredentials}
         loading={busy === 'refresh-credentials'}
         disabled={!!busy}
-        title="对当前筛选的账号逐个重扫客户端，把最新凭据与有效期写回本地库（不管是否过期都会刷）"
+        title={
+          busy === 'refresh-credentials'
+            ? '正在逐个刷新凭据…'
+            : '刷新凭据：对列表里的账号逐个重扫客户端，把最新凭据与有效期写回本地库（不管是否过期都会刷）'
+        }
       >
-        {busy === 'refresh-credentials' ? '刷新中…' : '刷新凭据'}
-        <ActionTag>登录授权</ActionTag>
+        <IconKey size={14} />
+        凭据
       </Button>
-      <Button
-        onClick={onCheckin}
-        loading={busy === 'checkin'}
-        disabled={!!busy}
-        title="对当前筛选的账号逐个执行今日签到（会调平台签到接口）"
-      >
-        {busy === 'checkin' ? tailText('签到中', checkinProgress) : '批量签到'}
-        <ActionTag>今日签到</ActionTag>
-      </Button>
+      {checkinAnywhere && (
+        <Button
+          onClick={onCheckin}
+          loading={busy === 'checkin'}
+          disabled={!!busy}
+          title={
+            busy === 'checkin'
+              ? batchText('签到中', checkinProgress)
+              : '批量签到：对列表里今天还没签的账号执行今日签到（会调平台签到接口）'
+          }
+        >
+          <IconCalendar size={14} />
+          签到
+        </Button>
+      )}
     </div>
   );
 }
 
 /**
- * 动作语义角标：一句话说清「这个动作作用于什么」。
+ * 批量动作的读数文案：`刷新中 3/12`。
  *
- * 不做成 Tag 组件：它不是状态、不可点、也不该抢主文案的视觉重量，
- * 就是一段更小的弱化文字。加载中也不变，按钮宽度才锁得住。
+ * 图标按钮没有文字位，进度只能进气泡——但它是「还在走」的实证，不能丢。
+ * 没有读数（后端没发 start、或事件在途中丢了）就退回 `刷新中…`，不编数字。
  */
-function ActionTag({ children }: { children: string }) {
-  return <span className="text-xs font-normal text-muted">{children}</span>;
-}
-
-/**
- * 按钮正在跑时的文案：`刷新中 3/12`。
- *
- * 没有读数（后端没发 start、或事件在途中丢了）就退回 `刷新中…`——
- * 宁可少显示，也不能让界面编一个「大概到哪了」的数字。
- */
-function tailText(verb: string, p: BatchProgress | null): string {
+function batchText(verb: string, p: BatchProgress | null): string {
   return p && p.running && p.total > 0 ? `${verb} ${p.done}/${p.total}` : `${verb}…`;
 }
 

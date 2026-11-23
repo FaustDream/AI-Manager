@@ -70,7 +70,7 @@ function PaneCard({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-line bg-card shadow-card p-3">
+    <div className="p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">
           {title}
@@ -236,7 +236,7 @@ export default function HubPage() {
           ))}
         </div>
         <p className="skeleton-in text-xs text-muted">正在读取各软件的技能目录…</p>
-        <div className="rounded-lg border border-line bg-card shadow-card p-3">
+        <div className="p-3">
           <div className="mb-2 h-4 w-28 skeleton-block rounded bg-hover" />
           <table className="w-full border-collapse">
             <tbody>
@@ -549,7 +549,7 @@ export default function HubPage() {
 
       {activeTarget && (
         <>
-          <div className="rounded-lg border border-line bg-card shadow-card p-3 text-sm">
+          <div className="p-3 text-sm">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <span className="font-semibold">{activeTarget.label}</span>
               <span className="text-xs text-muted">

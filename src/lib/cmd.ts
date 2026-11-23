@@ -9,6 +9,7 @@ import { call, errKind, errText } from './ipc';
 import type {
   AppConfig,
   CapabilityMatrix,
+  FeatureMatrix,
   SelfcheckReport,
   AccountDetail,
   AccountView,
@@ -158,6 +159,7 @@ export interface CmdArgs {
   credit_flow: { from?: string | null; to?: string | null };
   system_health: void;
   platform_capabilities: void;
+  platform_features: void;
   usage_scan: void;
   usage_overview: { from?: string | null; to?: string | null };
   diagnose_bundle: void;
@@ -286,6 +288,7 @@ export interface CmdReturn {
   credit_flow: CreditFlowReport;
   system_health: HealthReport;
   platform_capabilities: CapabilityMatrix;
+  platform_features: FeatureMatrix;
   usage_scan: UsageScanReport;
   usage_overview: UsageOverview;
   diagnose_bundle: string;
@@ -461,6 +464,7 @@ const CMD_LABELS: Record<string, string> = {
   log_context: '查看日志上下文',
   system_health: '读取健康报告',
   platform_capabilities: '读取平台能力',
+  platform_features: '读取平台功能开关',
   usage_scan: '扫描本地用量',
   usage_overview: '读取用量总览',
   diagnose_bundle: '导出诊断包',

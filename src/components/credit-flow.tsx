@@ -228,7 +228,7 @@ export function CreditFlowChart({
 
   if (!option) {
     return (
-      <div className="flex h-[240px] items-center justify-center rounded-md border border-dashed border-line text-xs text-muted">
+      <div className="flex h-[240px] items-center justify-center text-xs text-muted">
         还没有收支数据：每天刷新积分后会记一条余额，第二天的差值就能算出收支
       </div>
     );

@@ -166,7 +166,14 @@ pub struct RoundOutcome {
     pub waiting: usize,
     pub failed: usize,
     pub message: String,
+    /// 本轮之后最早该再跑一次的时刻（毫秒）。只有「还在路上」的账号会给值：
+    /// 到站时刻 + 领取冗余，调度器据此把下一跳从「按间隔」收紧到「到站就领」。
+    pub next_wake_ms: Option<i64>,
 }
+
+/// 领取冗余：平台给的到站时刻与实际可领取之间有几秒到几分钟的抖动，
+/// 早于这个窗口去查只会看到「旅行中」白跑一趟，所以统一等 5 分钟再领。
+pub const CLAIM_SLACK_MS: i64 = 5 * 60 * 1000;
 
 mod daily;
 
@@ -441,6 +448,10 @@ impl Service {
             let started_one = std::time::Instant::now();
             let account_prefs = prefs.get(&account.iid).cloned().unwrap_or_default();
             let step = self.run_one(account, &account_prefs).await;
+            // 多个账号各走各的旅行：取最早的那个到站时刻，一次唤醒把所有该领的都领掉
+            if let Some(at) = step.next_wake_ms {
+                round.next_wake_ms = Some(round.next_wake_ms.map_or(at, |cur| cur.min(at)));
+            }
             match step.outcome {
                 Outcome::Ok => {
                     if step.claimed {
@@ -542,14 +553,26 @@ impl Service {
             return Step::skip("今日上限", "今日旅行上限已到", "");
         }
         match state {
-            TravelState::Traveling => Step::skip(
-                "旅行中",
-                format!(
-                    "预计 {} 回来",
-                    status.arrive_at.map(fmt_ms).unwrap_or_else(|| "—".into())
-                ),
-                "",
-            ),
+            TravelState::Traveling => {
+                // 平台给了预计到站时刻：把下一跳定在「到站 + 5 分钟」，
+                // 到点直接领，不用等规则里的小时级间隔空转一圈。
+                let wake = status
+                    .arrive_at
+                    .filter(|at| *at > 0)
+                    .map(|at| at + CLAIM_SLACK_MS);
+                let step = Step::skip(
+                    "旅行中",
+                    format!(
+                        "预计 {} 回来（到站后 5 分钟内领取）",
+                        status.arrive_at.map(fmt_ms).unwrap_or_else(|| "—".into())
+                    ),
+                    "",
+                );
+                match wake {
+                    Some(at) => step.wake_at(at),
+                    None => step,
+                }
+            }
             TravelState::Limit => Step::skip("今日上限", "今日旅行上限已到", ""),
             TravelState::Unknown => {
                 let evidence = status
@@ -569,6 +592,7 @@ impl Service {
                         step: "派出".into(),
                         reason: message,
                         evidence: format!("地点={name} · 平台={}", view.platform_label),
+                        next_wake_ms: None,
                     }
                 }
                 Err(e) => Step::fail("派出", &e.message, &e.evidence()),
@@ -597,6 +621,7 @@ impl Service {
                         step: "领取".into(),
                         reason: claimed.message,
                         evidence: format!("今日不可再派出 · 平台={}", view.platform_label),
+                        next_wake_ms: None,
                     };
                 }
                 match self.depart_step(&*provider, &cred, prefs).await {
@@ -609,6 +634,7 @@ impl Service {
                             step: "领取并派出".into(),
                             reason: format!("{} · {message}", claimed.message),
                             evidence: format!("地点={name} · 平台={}", view.platform_label),
+                            next_wake_ms: None,
                         }
                     }
                     Err(e) => Step {
@@ -618,6 +644,7 @@ impl Service {
                         step: "领取后派出".into(),
                         reason: format!("{}；派出失败：{}", claimed.message, e.message),
                         evidence: e.evidence(),
+                        next_wake_ms: None,
                     },
                 }
             }
@@ -777,6 +804,8 @@ struct Step {
     step: String,
     reason: String,
     evidence: String,
+    /// 这个账号下次值得再看一眼的时刻（只在「旅行中」有值）
+    next_wake_ms: Option<i64>,
 }
 
 impl Step {
@@ -788,6 +817,7 @@ impl Step {
             step: step.into(),
             reason: reason.into(),
             evidence: evidence.into(),
+            next_wake_ms: None,
         }
     }
 
@@ -799,7 +829,14 @@ impl Step {
             step: step.into(),
             reason: reason.into(),
             evidence: evidence.into(),
+            next_wake_ms: None,
         }
+    }
+
+    /// 标记「这个账号还在路上，到点再来」。
+    fn wake_at(mut self, at: i64) -> Self {
+        self.next_wake_ms = Some(at);
+        self
     }
 }
 

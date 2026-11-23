@@ -31,11 +31,10 @@ export function Tag({
 }
 
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  // 区块卡片的唯一外观：圆角 + hairline + card 底 + 一档阴影。
-  // 阴影两档（静置 / 悬浮）由 index.css 令牌给值，深浅主题各自覆盖。
-  return (
-    <div className={cn('rounded-lg border border-line bg-card p-4 shadow-card', className)} {...props} />
-  );
+  // 区块**不再有卡片外观**：只有内边距，没有边框 / 底色 / 阴影 / 圆角。
+  // 页面靠留白与标题分级组织内容，不再把每块内容套进一个盒子里（视觉束缚感）。
+  // 列表（表格）自己保留边框——那是数据边界，不是容器装饰。
+  return <div className={cn('p-4', className)} {...props} />;
 }
 
 export function Notice({

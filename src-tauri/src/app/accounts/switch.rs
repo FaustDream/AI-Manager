@@ -298,6 +298,23 @@ pub fn current_iids() -> Vec<String> {
 /// 自己的卫语句一致，但提前到**关客户端之前**执行——WorkBuddy 的档案只能来自
 /// 客户端登录（Chromium 会话 + 服务端签发的 sessionState），网页登录造不出来。
 fn precheck_switch(iid: &str, cred: &Credential) -> Result<()> {
+    // 支持范围由能力表统一裁决（设置页「切换账号」一列的可用性就是它）：
+    // 只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放。放在最前面是为了在**关客户端之前**
+    // 就拒绝——先关掉软件再报「不支持」，用户只会白丢一次登录态。
+    let platform = crate::app::features::platform_of_iid(iid);
+    if !crate::app::features::available(platform, crate::app::features::SWITCH) {
+        let label = providers::for_iid(iid)
+            .map(|provider| provider.label().to_string())
+            .unwrap_or_else(|| platform.to_string());
+        return Err(AppError::new(
+            ErrorKind::Unsupported,
+            format!(
+                "{label} 不提供切换登录：目前只支持 WorkBuddy（含 CodeBuddy 系）与 ZCode。\
+                 请在那个客户端里手动换号。"
+            ),
+        ));
+    }
+
     let key = providers::client_key_of(iid);
     match key {
         "workbuddy" | "workbuddy_intl" => {
@@ -312,17 +329,6 @@ fn precheck_switch(iid: &str, cred: &Credential) -> Result<()> {
                      要切换，请在客户端里登录一次该账号（账号中心 → 添加账号 → 选 WorkBuddy → \
                      登录失败时的「改用客户端登录」），档案会在那次流程里保存。",
                 ))
-            }
-        }
-        // Qoder 写回只要重封 auth.v1.dat，但缺 refresh token 的凭据会被客户端立刻登出
-        "qoder" | "qoder_intl" => {
-            if cred.refresh().trim().is_empty() {
-                Err(AppError::new(
-                    ErrorKind::Invalid,
-                    "这个账号没有 refresh token，写回客户端会被立刻登出，无法切换",
-                ))
-            } else {
-                Ok(())
             }
         }
         // ZCode 写回的是整份客户端凭据包，没带包就无从写起
@@ -427,8 +433,8 @@ mod tests {
         assert!(!is_current(&db, "trae:u1").unwrap());
     }
 
-    /// 预检要在**关客户端之前**拦下切不了的账号：workbuddy 无档案、qoder 缺
-    /// refresh token、zcode 缺凭据包，三家的网页登录凭据都过不了预检
+    /// 预检要在**关客户端之前**拦下切不了的账号：workbuddy 无档案、zcode 缺凭据包，
+    /// 网页登录凭据都过不了预检
     #[test]
     fn precheck_refuses_web_login_credential_shapes() {
         let plain = Credential {
@@ -437,7 +443,25 @@ mod tests {
         };
         // CI / 干净机器上不存在 workbuddy 档案目录，必然 Err
         assert!(precheck_switch("workbuddy:someone", &plain).is_err());
-        assert!(precheck_switch("qoder:a", &plain).is_err());
         assert!(precheck_switch("zcode:a", &plain).is_err());
+    }
+
+    /// 切换只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放：范围外的平台在预检就拒绝，
+    /// 且必须是 `unsupported`——界面据此说「平台限制」，而不是「参数不对」。
+    #[test]
+    fn platforms_outside_the_switch_scope_are_unsupported() {
+        let complete = Credential {
+            token: "t".into(),
+            refresh_token: "r".into(),
+            ..Default::default()
+        };
+        for iid in ["qoder:a", "qoder_intl:a", "trae:a", "doubao:a"] {
+            let err = precheck_switch(iid, &complete).unwrap_err();
+            assert!(
+                matches!(err.kind, crate::app::error::ErrorKind::Unsupported),
+                "{iid} 应被当作平台限制拒绝：{}",
+                err.message
+            );
+        }
     }
 }

@@ -22,6 +22,12 @@ pub fn platform_capabilities() -> crate::app::capability::CapabilityMatrix {
     crate::app::capability::matrix()
 }
 
+/// 平台功能开关矩阵：可用性来自能力表，勾选来自 `data/config.toml` 的 `[features.*]`。
+/// 设置页用它渲染勾选项，账号中心用它决定哪个入口该出现。
+pub fn platform_features() -> crate::app::features::FeatureMatrix {
+    crate::app::features::matrix()
+}
+
 /// 导出诊断包，返回文件路径。前端只负责提示「在哪」。
 pub async fn diagnose_bundle(state: &AppState) -> std::result::Result<String, String> {
     let db = state.db.clone();

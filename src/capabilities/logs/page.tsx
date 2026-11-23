@@ -337,7 +337,7 @@ function LogsPane() {
   return (
     <div className="stagger flex h-[calc(100vh-7.5rem)] flex-col gap-2">
       {/* 工具栏：视图 / 时间窗 / 筛选 / 计数。放在滚动容器外面——筛选条件不该跟着日志滚走 */}
-      <div className="rounded-lg border border-line bg-card shadow-card">
+      <div>
         <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
           <div className="flex items-center gap-1 rounded-md border border-line p-0.5">
             <Button

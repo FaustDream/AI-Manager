@@ -119,8 +119,8 @@ export function Metric({
       </div>
     </>
   );
-  const cls =
-    'rounded-lg border border-line bg-card p-4 shadow-card transition-[box-shadow,transform] duration-[var(--dur-2)] hover:shadow-card-hover';
+  // 数字瓦片只保留留白与姿态（倾斜/按压），不再有边框、底色与阴影
+  const cls = 'p-4 transition-transform duration-[var(--dur-2)]';
   const motion = {
     onPointerMove: onMove,
     onPointerLeave: () => {

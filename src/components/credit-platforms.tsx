@@ -47,7 +47,7 @@ export function CreditPlatformSplit({
   flush?: boolean;
 }) {
   // 自带卡壳 or 只出内容：两种形态共用同一份内部结构，避免出现两套表
-  const shell = flush ? 'min-w-0' : 'rounded-lg border border-line bg-card p-3';
+  const shell = flush ? 'min-w-0' : 'min-w-0 p-3';
   const [selected, setSelected] = useState<string | null>(null);
   const rows = useMemo<Row[]>(
     () =>
@@ -74,7 +74,7 @@ export function CreditPlatformSplit({
           <span className="flex-1" />
           <span className="text-xs text-muted">{note}</span>
         </div>
-        <div className="rounded-md border border-dashed border-line px-3 py-6 text-center text-xs text-muted">
+        <div className="px-3 py-6 text-center text-xs text-muted">
           还没有按软件的收支数据：每个软件至少要有两天的余额快照，才能从差值看出进账与消耗
         </div>
       </section>
@@ -156,7 +156,7 @@ export function CreditPlatformSplit({
       </div>
 
       {active && (
-        <div className="mt-2 rounded-md border border-line/70 p-2">
+        <div className="mt-2 p-2">
           <div className="mb-1 flex flex-wrap items-baseline gap-2 text-xs">
             <span className="font-semibold text-fg2">{active.label} · 按天收支</span>
             <span className="text-muted">{active.accounts} 个账号</span>

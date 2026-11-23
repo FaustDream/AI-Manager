@@ -322,9 +322,12 @@ impl Provider for QoderProvider {
                 other => other.to_string(),
             })
             .unwrap_or_else(|| tail(token, 16));
+        // 同 WorkBuddy：客户端没写 expiresAt 时用 token 自带的 exp 兜底，
+        // 否则客户端续过 token，列表上的到期时间也不会跟着变。
         let expires_at = auth
             .get("expiresAt")
-            .and_then(crate::app::timeutil::parse_ts);
+            .and_then(crate::app::timeutil::parse_ts)
+            .or_else(|| crate::app::timeutil::jwt_exp_ms(token));
 
         let mut cred = Credential {
             token: token.to_string(),

@@ -81,7 +81,7 @@ export function HistoryPane() {
   return (
     <div className="flex min-w-0 flex-col gap-3">
       {/* 摘要行：详情（查看/回滚逐条）收进对话框，设置页不再被长列表撑高 */}
-      <div className="rounded-lg border border-line bg-card shadow-card p-4">
+      <div className="p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold">配置历史</h2>
           <span className="text-xs text-muted">
@@ -162,7 +162,7 @@ export function HistoryPane() {
 
       {/* 与「配置历史」「回收站」同构：p-4 + 单行摘要，不额外加 mb，
           这样三张卡在设置页里的高度完全一致；更新结果也收进同一行。 */}
-      <div className="rounded-lg border border-line bg-card shadow-card p-4">
+      <div className="p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold">关于与更新</h2>
           {update &&

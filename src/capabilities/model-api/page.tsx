@@ -566,7 +566,7 @@ function Metric({
   tone?: 'bad';
 }) {
   return (
-    <div className="rounded-md border border-line bg-bg px-3 py-2">
+    <div className="px-3 py-2">
       <div className="text-[11px] text-muted">{label}</div>
       <div className={cn('mt-0.5 text-sm font-semibold tabular-nums', tone === 'bad' && 'text-bad')}>
         {value}
