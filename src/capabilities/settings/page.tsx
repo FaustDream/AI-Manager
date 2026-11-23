@@ -431,6 +431,25 @@ function ConfigPane() {
             <span className="text-xs text-muted">每 15 分钟探测一轮，领取要过浏览器验证码</span>
           </label>
         </div>
+        <div className="flex items-center">
+          <label className="flex items-center gap-4 text-sm">
+            <span
+              className="w-28 shrink-0 text-muted"
+              title="开：启动时顺手扫一遍本地客户端，把新账号捞进账号库。关：账号只从浏览器登录添加，不再读本地客户端的登录态；已入库的账号、切换、云端校验都不受影响。"
+            >
+              启动扫描客户端
+            </span>
+            <Checkbox
+              checked={draft.accounts.scan_on_startup}
+              onChange={(e) => patch({ accounts: { ...draft.accounts, scan_on_startup: e.target.checked } })}
+            />
+            <span className="text-xs text-muted">
+              {draft.accounts.scan_on_startup
+                ? '启动时把本地客户端里的新账号捞进账号库'
+                : '只从浏览器登录添加账号，不读本地登录态'}
+            </span>
+          </label>
+        </div>
         {/* 桌面时代的「关闭按钮 / 自启最小化」已随托盘退役：字段仍在配置里
             （兼容旧 config.toml），但不再提供界面入口——浏览器形态没有窗口可关。 */}
       </div>
@@ -1186,10 +1205,33 @@ function ScheduleCard() {
       qc.invalidateQueries({ queryKey: ['activity'] });
     });
 
+  // 与账号中心的「刷新状态」同一个命令：能续的有效期由云端/客户端给出并写回，
+  // 续不了的留失败标记。这里给一个不用跳页面的入口。
+  const refreshStatusNow = () =>
+    runBusy('status-now', async () => {
+      const report = await runCmd('account_refresh_all');
+      if (report === undefined) return;
+      toast(
+        `状态已刷新：${report.total} 个账号 · 云端确认 ${report.cloud_ok} · 回退本机 ${report.cloud_fallback} · 已过期 ${report.expired}`,
+      );
+      qc.invalidateQueries({ queryKey: ['accounts'] });
+      refresh();
+    });
+
   return (
     <div className="p-4">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">定时任务</h2>
+        <span className="flex-1" />
+        <Button
+          size="sm"
+          loading={busy === 'status-now'}
+          disabled={!!busy}
+          onClick={refreshStatusNow}
+          title="与账号中心的「刷新状态」同一条链路：云端校验凭据 + 校正到期时间"
+        >
+          立即刷新账号状态
+        </Button>
       </div>
 
       {/* 冲突语义（P2-5）：口径取自 desktop/background.rs::spawn_scheduler 的真实行为，
@@ -1198,6 +1240,12 @@ function ScheduleCard() {
         同一条任务不会叠着跑：上一轮还没结束，这次到点就<span className="text-fg2">跳过</span>（不排队、也不补跑）。
         不同任务同时到点会<span className="text-fg2">并行</span>执行——两条都打同一个平台更容易被限流，建议把时刻错开。
         规则改完即时生效；后端刚启动的头 20 秒不判点。
+      </p>
+
+      <p className="mb-2 text-xs leading-relaxed text-muted">
+        「账号状态刷新」每天跑一次就够：先用已保存的凭据问一次平台（能通即为有效），
+        把还能续的有效期写回；平台明确拒绝的标成「需重新授权」，到期再登录一次。
+        它<span className="text-fg2">不重扫本地客户端</span>，账号库不会被后台改写。
       </p>
 
       {/* 猫猫旅行的功能说明：这条链路和「按间隔跑一轮」不一样，不写清楚用户会以为
@@ -1287,6 +1335,7 @@ function ScheduleCard() {
         <Select aria-label="任务动作" value={action} disabled={!!editing} onChange={(e) => setAction(e.target.value as ScheduleAction)}>
           <option value="checkin_round">签到轮询</option>
           <option value="credits_round">积分刷新</option>
+          <option value="status_round">账号状态刷新</option>
           <option value="travel_round">猫猫旅行</option>
         </Select>
         <Select aria-label="执行频率" value={kind} disabled={!!busy} onChange={(e) => setKind(e.target.value as RuleKind)}>

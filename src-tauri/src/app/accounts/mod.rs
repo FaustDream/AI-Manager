@@ -5,7 +5,9 @@
 //! 切换登录在 `app/providers/*::switch_to`，编排在 `switch`。
 
 pub mod add;
+pub mod adopt;
 pub mod browser_login;
+pub mod cloud;
 pub mod cookie;
 pub mod credential;
 pub mod credential_refresh;
@@ -50,7 +52,7 @@ pub use credential_refresh::{
     refresh_credential, refresh_credentials, RefreshCredentialOutcome, RefreshCredentialState,
     RefreshCredentialsReport,
 };
-pub use refresh::{refresh_all, RefreshReport};
+pub use refresh::{refresh_all, refresh_status, RefreshReport};
 pub use scan::{scan_all, ScanReport};
 pub use switch::{current_iids, is_current, switch, switch_codebuddy, SwitchResult};
 pub use view::{AccountIdentity, AccountTable, AccountView};

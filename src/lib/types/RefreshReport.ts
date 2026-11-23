@@ -38,6 +38,18 @@ updated: number,
  */
 current: number, 
 /**
+ * 云端确认凭据有效（本地给不出可用期的账号才会去问）
+ */
+cloud_ok: number, 
+/**
+ * 云端明确判定凭据失效（401/403）：只能重新授权
+ */
+cloud_expired: number, 
+/**
+ * 云端问不出来（没网 / 平台没有可查接口），已回退读本机
+ */
+cloud_fallback: number, 
+/**
  * 读取失败：整家平台没扫到，或单个账号凭据解不开
  */
 errors: Array<string>, 

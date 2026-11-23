@@ -280,6 +280,25 @@ pub fn switch_to(
     })
 }
 
+/// 账号级的「凭据还能用多久」= refresh token 的到期时间。
+///
+/// 访问令牌（`expiresAt` / JWT 的 `exp`）只有一天上下，客户端每次续期都会把它
+/// 顺延到「现在 + 1 天」。用它当账号有效期，列表上就永远停在「还剩 1 天」——
+/// 每刷新一次状态就把到期时间往后推一天，看起来像凭据只有 1 天寿命。
+fn account_expiry(auth: &Value, token: &str) -> Option<i64> {
+    let now = crate::app::timeutil::now_ms();
+    let access = auth
+        .get("expiresAt")
+        .and_then(crate::app::timeutil::parse_ts)
+        .or_else(|| crate::app::timeutil::jwt_exp_ms(token));
+    let refresh = auth
+        .get("refreshTokenExpiresAt")
+        .and_then(crate::app::timeutil::parse_ts)
+        // refresh 已过期但访问令牌仍有效：以访问令牌为准，别把还能调接口的账号标成过期
+        .filter(|ms| *ms > now);
+    refresh.or(access)
+}
+
 #[async_trait]
 impl Provider for QoderProvider {
     fn platform(&self) -> &'static str {
@@ -322,12 +341,7 @@ impl Provider for QoderProvider {
                 other => other.to_string(),
             })
             .unwrap_or_else(|| tail(token, 16));
-        // 同 WorkBuddy：客户端没写 expiresAt 时用 token 自带的 exp 兜底，
-        // 否则客户端续过 token，列表上的到期时间也不会跟着变。
-        let expires_at = auth
-            .get("expiresAt")
-            .and_then(crate::app::timeutil::parse_ts)
-            .or_else(|| crate::app::timeutil::jwt_exp_ms(token));
+        let expires_at = account_expiry(&auth, token);
 
         let mut cred = Credential {
             token: token.to_string(),
@@ -936,6 +950,32 @@ fn default_profile(intl: bool) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use base64::Engine;
+
+    /// 到期时间取 refresh token：访问令牌每天顺延，用它显示会永远停在「剩 1 天」。
+    #[test]
+    fn account_expiry_prefers_refresh_token() {
+        let auth = json!({
+            "expiresAt": "2099-01-02T00:00:00Z",
+            "refreshTokenExpiresAt": "2099-02-03T00:00:00Z"
+        });
+        assert_eq!(
+            account_expiry(&auth, ""),
+            crate::app::timeutil::parse_ts(&json!("2099-02-03T00:00:00Z"))
+        );
+    }
+
+    /// refresh 已过期但访问令牌还有效时退回访问令牌，避免把能用账号标成过期。
+    #[test]
+    fn account_expiry_falls_back_when_refresh_expired() {
+        let auth = json!({
+            "expiresAt": "2099-01-02T00:00:00Z",
+            "refreshTokenExpiresAt": "2020-01-01T00:00:00Z"
+        });
+        assert_eq!(
+            account_expiry(&auth, ""),
+            crate::app::timeutil::parse_ts(&json!("2099-01-02T00:00:00Z"))
+        );
+    }
 
     fn checkin_fixture(intl: bool) -> (QoderProvider, crate::app::net::MockHttp, i64) {
         let now = crate::app::clock::local(2026, 10, 30, 9, 0);

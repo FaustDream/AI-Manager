@@ -33,6 +33,8 @@
   /* 卡片阴影两档：静置一档、悬浮一档。深色主题下阴影加深，见各 data-theme 覆盖。 */
   --shadow-card: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.07);
   --shadow-card-hover: 0 4px 14px rgb(16 24 40 / 0.10);
+  /* 表头/操作列 sticky 在右侧时压出来的那道分界：深色主题下要加深，否则等于没有 */
+  --shadow-sticky-edge: -10px 0 10px -8px rgb(16 24 40 / 0.28);
 
   /* 动效令牌：只给四档语义时长，组件里不再手写 150ms / 160ms 这类魔数。
      dur-1 状态色（悬停/选中），dur-2 入场，dur-3 内容节奏，dur-4 进度填充。 */
@@ -56,6 +58,7 @@
     --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171; --color-bad-strong: #fca5a5;
     --shadow-card: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
     --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.45);
+    --shadow-sticky-edge: -10px 0 10px -8px rgb(0 0 0 / 0.55);
     color-scheme: dark;
   }
 }
@@ -73,6 +76,7 @@
   --color-ok: #4ade80; --color-warn: #fbbf24; --color-bad: #f87171; --color-bad-strong: #fca5a5;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
   --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.45);
+  --shadow-sticky-edge: -10px 0 10px -8px rgb(0 0 0 / 0.55);
   color-scheme: dark;
 }
 
@@ -93,6 +97,7 @@
   --color-ok: #7fb069; --color-warn: #d9a441; --color-bad: #e07a6a; --color-bad-strong: #eb9384;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
   --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.45);
+  --shadow-sticky-edge: -10px 0 10px -8px rgb(0 0 0 / 0.55);
   color-scheme: dark;
 }
 

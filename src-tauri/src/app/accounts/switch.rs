@@ -320,7 +320,12 @@ fn precheck_switch(iid: &str, cred: &Credential) -> Result<()> {
         "workbuddy" | "workbuddy_intl" => {
             let provider =
                 crate::app::providers::workbuddy::WorkBuddyProvider::new(key == "workbuddy_intl");
-            if provider.pack_ready(uid_of(iid)) {
+            // iid = `workbuddy:<uid>[@intl]`：先剥平台前缀再剥版本后缀。档案目录名是
+            // 纯 uid——曾把完整 iid 当 uid 传下去，路径里带着冒号，`is_pack_complete`
+            // 永远 false，所有 WorkBuddy 账号的切换按钮全灰（写入路径用的是
+            // account_id，一直是好的，所以这个坑只在预检里存在）。
+            let uid = iid.split_once(':').map(|(_, rest)| rest).unwrap_or(iid);
+            if provider.pack_ready(uid_of(uid)) {
                 Ok(())
             } else {
                 Err(AppError::new(

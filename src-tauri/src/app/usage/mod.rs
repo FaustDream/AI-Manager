@@ -249,6 +249,13 @@ pub fn overview(db: &Db, window: DayWindow) -> Result<UsageOverview> {
         })?;
         for row in rows.flatten() {
             let (date, platform, tokens, credit, calls) = row;
+            // CodeBuddy IDE / 插件与 WorkBuddy 共用同一份积分池：它们花掉的积分就是
+            // WorkBuddy 账号的积分。归到 workbuddy，否则同一笔消耗会被数成两家。
+            let platform = if platform == "codebuddy" {
+                "workbuddy".to_string()
+            } else {
+                platform
+            };
             let slice = UsageSlice {
                 platform: platform.clone(),
                 tokens,
@@ -265,7 +272,15 @@ pub fn overview(db: &Db, window: DayWindow) -> Result<UsageOverview> {
             day.tokens += slice.tokens;
             day.credit += slice.credit;
             day.calls += slice.calls;
-            day.by_app.push(slice.clone());
+            // 归并后同一天同一个应用可能来自两条 SQL 行，必须并到一格
+            match day.by_app.iter_mut().find(|s| s.platform == slice.platform) {
+                Some(existing) => {
+                    existing.tokens += slice.tokens;
+                    existing.credit += slice.credit;
+                    existing.calls += slice.calls;
+                }
+                None => day.by_app.push(slice.clone()),
+            }
 
             let app = app_map.entry(platform).or_insert_with(|| UsageSlice {
                 platform: slice.platform.clone(),
@@ -471,5 +486,43 @@ mod tests {
             report.days[..6].iter().all(|day| day.calls == 0),
             "历史空天补 0"
         );
+    }
+
+    /// CodeBuddy IDE / 插件花的是同一份 WorkBuddy 积分：按应用统计时必须并成一家，
+    /// 否则同一笔消耗会被数两遍。
+    #[test]
+    fn codebuddy_usage_is_counted_under_workbuddy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = db(dir.path());
+        let now = crate::app::timeutil::now_ms();
+        let record = |id: &str, platform: &str, credit: f64| Record {
+            record_id: id.into(),
+            platform: platform.into(),
+            model: "m".into(),
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            credit: Some(credit),
+            created_at: now,
+            source: "test".into(),
+        };
+        let mut report = UsageScanReport::default();
+        insert_many(
+            &db,
+            &[
+                record("a", "workbuddy", 0.5),
+                record("b", "codebuddy", 0.25),
+            ],
+            &mut report,
+        );
+
+        let out = overview(&db, DayWindow::last_days(1)).unwrap();
+        assert_eq!(out.by_app.len(), 1, "CodeBuddy 的消耗要并入 WorkBuddy");
+        assert_eq!(out.by_app[0].platform, "workbuddy");
+        assert_eq!(out.by_app[0].calls, 2);
+        assert!((out.by_app[0].credit - 0.75).abs() < 1e-9);
+        // 同一天的应用分项也要只有一格，不能因为归并出现两条 workbuddy
+        assert_eq!(out.days[0].by_app.len(), 1);
+        assert_eq!(out.days[0].by_app[0].calls, 2);
     }
 }

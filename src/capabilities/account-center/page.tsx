@@ -15,13 +15,23 @@ import {
   FEATURE_CHECKIN,
   FEATURE_RESTORE,
   FEATURE_SWITCH,
+  FEATURE_SWITCH_IDE,
+  FEATURE_SWITCH_IDEA,
   featurePlatform,
   usePlatformFeatures,
 } from '@/lib/features';
-import type { AccountView } from '@/lib/types';
+import type { AccountView, CodebuddyTargetStatus } from '@/lib/types';
 import { COLUMNS, type Cell } from './columns';
+import { endRows, endStateLabel, endSwitchCandidates, type EndRow } from './ends';
 import { DetailPanel } from './detail';
-import { OPS_WIDTH, RestoreDialog, RowActions, SwitchDialog } from './actions';
+import {
+  EndRowActions,
+  EndSwitchDialog,
+  OPS_WIDTH,
+  RestoreDialog,
+  RowActions,
+  SwitchDialog,
+} from './actions';
 import { AddAccountDialog, AccountToolbar } from './toolbar';
 import { moveBy, useRowDrag } from './use-row-drag';
 
@@ -32,7 +42,91 @@ const LOOK_REFRESH_MS = 90 * 1000;
 /// 模块级节流：组件重挂载（切页回来）不该重新触发一轮
 let lastLookRefresh = 0;
 
-function CellView({ cell }: { cell: Cell }) {
+/**
+ * 端状态行：固定在列表最上方，永远两行（IDE / 插件），没装、没登录也照实写。
+ *
+ * 它回答的是「客户端现在登的是谁」——这是切号前唯一必须先知道的事。
+ * 早先把没登录的端直接不画，界面上于是只剩「点不动的灰按钮」；
+ * 现在三档状态（已登录 / 未登录 / 未安装）都摆在明面上。
+ *
+ * 它不是账号库里的账号——没有凭据 / 积分 / 签到，不参与计数、批量与拖拽；
+ * 但端可以操作：「切换」换的是这一端的登录，「恢复对话 / 停用」透过当前登录的号生效。
+ */
+function EndTableRow({
+  end,
+  narrow,
+  owner,
+  ownerIsCurrent,
+  canSwitch,
+  canRestore,
+  busy,
+  onSwitch,
+  onRestore,
+  onToggleEnabled,
+}: {
+  end: EndRow;
+  narrow: boolean;
+  /** 端登的号在库里的那一行；没登录 / 库里没有这个号时为 null */
+  owner: AccountView | null;
+  ownerIsCurrent: boolean;
+  canSwitch: boolean;
+  canRestore: boolean;
+  busy: boolean;
+  onSwitch: () => void;
+  onRestore: () => void;
+  onToggleEnabled: () => void;
+}) {
+  const signed = end.state === 'signed_in';
+  return (
+    <tr
+      className="bg-card/50"
+      title={
+        end.intl
+          ? `${end.label} 现在登的是国际版账号（两端只认国内版授权域，这一端不提供切换）`
+          : `${end.label} 客户端的登录状态；不带账号库里的凭据与积分，也不参与签到`
+      }
+    >
+      {/* 状态行不是独立账号，没有可拖的东西，槽位留空保持列宽 */}
+      <td className="select-none px-1 py-1.5" aria-hidden />
+      {COLUMNS.map((col) => (
+        <td
+          key={col.key}
+          className="overflow-hidden text-ellipsis whitespace-nowrap border-b border-line px-2.5 py-1.5 align-middle"
+        >
+          {col.key === 'platform' && <span className="text-muted">{end.label}</span>}
+          {col.key === 'name' && (
+            <span className={signed ? 'text-fg2' : 'text-muted'}>{endStateLabel(end)}</span>
+          )}
+          {col.key === 'login' && signed && !end.ownerIid && (
+            <span className="text-xs text-muted" title="这个号还没进账号库：点工具栏「状态」重扫一次就会收编">
+              未入库
+            </span>
+          )}
+        </td>
+      ))}
+      {/* 窄窗口下与账号行一样把这一格钉在右侧，否则横向滚动时其它列会从它底下穿过去 */}
+      <td
+        className={`border-b border-line px-2 py-1.5 ${
+          narrow ? 'sticky right-0 z-10 border-l border-line bg-card shadow-sticky-edge' : ''
+        }`}
+      >
+        <EndRowActions
+          canSwitch={canSwitch}
+          canRestore={canRestore}
+          canToggle={!!owner}
+          restoreDisabled={!ownerIsCurrent}
+          ownerEnabled={owner?.enabled ?? true}
+          busy={busy}
+          onSwitch={onSwitch}
+          onRestore={onRestore}
+          onToggleEnabled={onToggleEnabled}
+        />
+      </td>
+    </tr>
+  );
+}
+
+function CellView({ cell, badge }: { cell: Cell; badge?: string }) {
   // 图标由列定义给名字，这里才取组件——列定义是纯数据，不碰 JSX
   const Icon = cell.icon ? ICONS[cell.icon] : null;
   return (
@@ -45,6 +139,14 @@ function CellView({ cell }: { cell: Cell }) {
       <span className="flex min-w-0 items-center gap-1 leading-tight">
         {Icon && <Icon size={13} className="shrink-0" />}
         {cell.text && <span className="truncate">{cell.text}</span>}
+        {badge && (
+          <span
+            className="shrink-0 rounded-full border border-ok/40 bg-ok/10 px-1.5 py-0.5 text-[10px] leading-none text-ok"
+            title="客户端此刻登录的就是这个账号"
+          >
+            {badge}
+          </span>
+        )}
       </span>
       {cell.sub && <span className="block truncate text-xs leading-tight text-muted">{cell.sub}</span>}
     </span>
@@ -87,6 +189,8 @@ export default function AccountCenterPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [switchTarget, setSwitchTarget] = useState<AccountView | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<AccountView | null>(null);
+  // 端状态行切账号：换的是「这一端」的登录，目标要现场选，不能像账号行那样点哪行切哪行
+  const [endSwitch, setEndSwitch] = useState<EndRow | null>(null);
   // 切换成功的行留一小段高光：动画结束就清掉，行回到普通的「当前账号」底色
   const [switchedIid, setSwitchedIid] = useState<string | null>(null);
   // 查询失败是运行时状态：接口这轮报错就标红，成功后自动消失，不落库
@@ -136,6 +240,23 @@ export default function AccountCenterPage() {
   const switchableSet = useMemo(() => new Set(switchable.data ?? []), [switchable.data]);
   // 哪个软件显示哪个入口（切换 / 恢复对话 / 签到）由设置页决定，页面不再写平台名单
   const features = usePlatformFeatures();
+
+  // CodeBuddy IDE / 插件各自登的是谁：三端同号，登录态却是三份独立的本地会话。
+  // 与详情页共用同一个 query key——那边切换完 invalidate，列表这里会跟着更新。
+  const codebuddyTargets = useQuery<CodebuddyTargetStatus[]>({
+    queryKey: ['codebuddy-targets'],
+    queryFn: () => queryCmd('account_codebuddy_targets'),
+  });
+
+  // 客户端的登录状态：两个端各一行，固定在列表最上方，没装 / 没登录也照实写。
+  // 它们不是账号库里的账号：不参与排序、拖拽、计数与批量操作。
+  //
+  // 端登着、库里还没有的号由扫描时的 `adopt` 收进账号库；收不进来（国际版 / 票据缺字段）
+  // 时这一行仍显示客户端昵称，只是挂不上账号行——切号前必须先看得见「现在登的是谁」。
+  const ends = useMemo(
+    () => endRows(rows, codebuddyTargets.data ?? []),
+    [rows, codebuddyTargets.data],
+  );
 
   // 「添加账号」里每个平台已有几个号：WorkBuddy 国内/国际共用 platform 键，
   // 按 iid 的 @intl 后缀拆开，否则两版会被算成同一个平台。
@@ -238,10 +359,8 @@ export default function AccountCenterPage() {
   // ---- 拖动排序：指针逻辑在 use-row-drag，这里只负责持久化 ----
   // 排序生效时不允许拖拽：拖出来的是「排序后的视图顺序」，写回后端会把人工顺序搅乱
   const { dragging, dropAt, startDrag } = useRowDrag(visible, sort ? 'sorted' : busy, async (iids) => {
-    
-      if ((await runCmd('account_reorder', { iids })) === undefined) return;
-      qc.invalidateQueries({ queryKey: ['accounts'] });
-    
+    if ((await runCmd('account_reorder', { iids })) === undefined) return;
+    qc.invalidateQueries({ queryKey: ['accounts'] });
   });
 
   const widthOf = (key: string, fallback: number) => widths[key] ?? fallback;
@@ -320,8 +439,9 @@ export default function AccountCenterPage() {
       );
     });
 
-  // 刷的是「本地库 ↔ 客户端登录态」的一致性：重扫凭据 + 校正到期时间 + 重读当前登录。
-  // 与「刷新积分」分开：那个打平台接口拿余额，这个只碰本机数据。
+  // 刷的是「凭据还能不能用」：**云端优先**——本地拿不到可用期（未知 / 已过期 / 临期）
+  // 的账号先拿凭据问平台，能通即有效、401 即失效；云端问不出来才回退读本机客户端。
+  // 与「刷新积分」分开：那个打平台接口拿余额，这个只判有效性与到期时间。
   const refreshState = () =>
     runBusy('refresh-state', async () => {
       const report = await runCmd('account_refresh_all');
@@ -333,6 +453,9 @@ export default function AccountCenterPage() {
         report.expired > 0 ? `已过期 ${report.expired}` : '',
         report.expiring > 0 ? `临期 ${report.expiring}` : '',
         report.updated > 0 ? `校正到期 ${report.updated}` : '',
+        report.cloud_ok > 0 ? `云端确认 ${report.cloud_ok}` : '',
+        report.cloud_expired > 0 ? `云端判定失效 ${report.cloud_expired}` : '',
+        report.cloud_fallback > 0 ? `回退本机 ${report.cloud_fallback}` : '',
       ].filter(Boolean);
       const head = `账号状态已刷新：${parts.join(' · ')} · ${fmtMs(report.ms)}`;
       toast(
@@ -472,6 +595,37 @@ export default function AccountCenterPage() {
     });
   };
 
+  /**
+   * 端行切账号：只写这一端的登录态（`account_switch_codebuddy`），
+   * 与账号行的 `account_switch`（切 WorkBuddy 本体）分开——三端同号但一端一按钮。
+   */
+  const doEndSwitch = (iid: string) => {
+    const pending = endSwitch;
+    if (!pending) return;
+    setEndSwitch(null);
+    void runBusy(`end-switch:${pending.key}`, async () => {
+      // 端只有 IDE / 插件两家，命令的 target 也只认这两个值
+      const target = pending.key === 'idea' ? 'idea' : 'software';
+      try {
+        const r = await queryCmd('account_switch_codebuddy', { iid, target });
+        toast(r.message);
+        // 这一端的登录变了：端行、当前账号与可切集合都要重取（本体没动，会话不用重扫）
+        qc.invalidateQueries({ queryKey: ['codebuddy-targets'] });
+        qc.invalidateQueries({ queryKey: ['current'] });
+        qc.invalidateQueries({ queryKey: ['switchable'] });
+        qc.invalidateQueries({ queryKey: ['accounts'] });
+        qc.invalidateQueries({ queryKey: ['detail'] });
+      } catch (e) {
+        const kind = errKind(e);
+        toast(
+          kind === 'client_running'
+            ? `这一端的客户端没能自动关闭，请先退出它再试。\n${errText(e)}`
+            : errText(e),
+        );
+      }
+    });
+  };
+
   const doRestore = () => {
     const target = restoreTarget;
     if (!target) return;
@@ -508,15 +662,44 @@ export default function AccountCenterPage() {
   const removeAccount = async (row: AccountView) => {
     // 不可逆动作（同页的会话归档 / 彻底删除都有确认）
     if (!(await confirmAction({ title: '确认操作', message: `从账号库移除「${row.name}」？\n只删本机记录，客户端登录态不动。`, danger: true }))) return;
-    
-      if ((await runCmd('account_delete', { iid: row.iid })) === undefined) return;
-      toast('已从账号库移除（客户端登录态未动）');
-      if (selected === row.iid) setSelected(null);
-      qc.invalidateQueries({ queryKey: ['accounts'] });
-    
+    if ((await runCmd('account_delete', { iid: row.iid })) === undefined) return;
+    toast('已从账号库移除（客户端登录态未动）');
+    if (selected === row.iid) setSelected(null);
+    qc.invalidateQueries({ queryKey: ['accounts'] });
   };
 
-  const table = useMemo(() => COLUMNS, []);
+  /**
+   * 端状态行（列表最上方）。切换能力按「端」取开关（IDE / 插件各一个）；
+   * 恢复对话与启停是账号级动作，落回到这一端当前登录的那个号上。
+   */
+  const renderEnd = (end: EndRow) => {
+    const owner = end.ownerIid ? (rows.find((r) => r.iid === end.ownerIid) ?? null) : null;
+    return (
+      <EndTableRow
+        key={`end:${end.key}`}
+        end={end}
+        narrow={narrow}
+        owner={owner}
+        ownerIsCurrent={!!owner && currentSet.has(owner.iid)}
+        // 国际版端写不进去：入口直接不给，免得点了才在报错里学一次
+        canSwitch={
+          !end.intl &&
+          features.on('workbuddy', end.key === 'idea' ? FEATURE_SWITCH_IDEA : FEATURE_SWITCH_IDE)
+        }
+        canRestore={
+          !!owner && features.on(featurePlatform(owner.platform, owner.iid), FEATURE_RESTORE)
+        }
+        busy={!!busy}
+        onSwitch={() => setEndSwitch(end)}
+        onRestore={() => {
+          if (owner) setRestoreTarget(owner);
+        }}
+        onToggleEnabled={() => {
+          if (owner) void toggleEnabled(owner);
+        }}
+      />
+    );
+  };
 
   return (
     <div className="stagger flex flex-col gap-2.5">
@@ -589,7 +772,7 @@ export default function AccountCenterPage() {
         <thead>
           <tr>
             <th className="w-6 border-b border-line-strong px-1 py-1.5" />
-            {table.map((col) => {
+            {COLUMNS.map((col) => {
               const dir = sort?.key === col.key ? sort.dir : null;
               const sortable = SORT_VALUE[col.key] !== undefined;
               return (
@@ -634,7 +817,7 @@ export default function AccountCenterPage() {
             <th
               className={`border-b border-line-strong px-2.5 py-1.5 text-right text-xs font-semibold text-muted ${
                 narrow
-                  ? 'sticky right-0 z-10 border-l border-line-strong bg-bg shadow-[-10px_0_10px_-8px_rgba(16,24,40,0.28)]'
+                  ? 'sticky right-0 z-10 border-l border-line-strong bg-bg shadow-sticky-edge'
                   : ''
               }`}
               style={{ width: OPS_WIDTH }}
@@ -644,6 +827,9 @@ export default function AccountCenterPage() {
           </tr>
         </thead>
         <tbody>
+          {/* 端状态固定在最上面：切号前先看清「客户端现在登的是谁」，
+              与下面按账号库排的行互不干扰（它不参与排序与筛选） */}
+          {ends.map((end) => renderEnd(end))}
           {accounts.isLoading && <SkeletonRows rows={4} cols={COLUMNS.length + 2} />}
           {accounts.isError && (
             <tr>
@@ -700,8 +886,7 @@ export default function AccountCenterPage() {
                 className={cn(
                   'cursor-pointer transition-colors duration-[var(--dur-1)]',
                   // 底色只表示「正在看哪一行」：详情面板在表格下方，这是唯一能对上号的线索。
-                  // 「客户端当前登录」改用账号名旁边的小圆点（见下面的 name 单元格），
-                  // 两个状态各占一种表达，不会互相抢。
+                  // 「客户端当前登录」已拆成独立的端行，不再和选中态抢同一块颜色。
                   selected === row.iid ? 'bg-accent/15 hover:bg-accent/20' : 'hover:bg-hover',
                   switchingIid === row.iid && 'switch-pending',
                   switchedIid === row.iid && 'switch-flash',
@@ -740,27 +925,22 @@ export default function AccountCenterPage() {
                     ⠿
                   </button>
                 </td>
-                {table.map((col) => (
+                {COLUMNS.map((col) => (
                   <td
                     key={col.key}
                     className="overflow-hidden text-ellipsis whitespace-nowrap border-b border-line px-2.5 py-1.5 align-middle"
                   >
-                    {/* 当前登录只用一个圆点表示：文字标签会被挤成一列「当前」，
-                        底色又要留给「选中的是哪一行」，两者不能抢同一个通道 */}
-                    {col.key === 'name' && isCurrent && (
-                      <span
-                        className="mr-1 inline-block size-1.5 shrink-0 rounded-full bg-ok align-middle"
-                        title="客户端当前登录的账号"
-                        aria-label="客户端当前登录的账号"
-                      />
-                    )}
-                    <CellView cell={col.cell(row, queryErrors, features.on)} />
+                    <CellView
+                      cell={col.cell(row, queryErrors, features.on)}
+                      // 昵称旁的「当前登录」：这一行就是客户端此刻登着的号
+                      badge={col.key === 'name' && isCurrent ? '当前登录' : undefined}
+                    />
                   </td>
                 ))}
                 <td
                   className={`border-b border-line px-2 py-1.5 ${
                     narrow
-                      ? `sticky right-0 z-10 border-l border-line shadow-[-10px_0_10px_-8px_rgba(16,24,40,0.28)] ${
+                      ? `sticky right-0 z-10 border-l border-line shadow-sticky-edge ${
                           selected === row.iid ? 'bg-hover' : 'bg-bg'
                         }`
                       : ''
@@ -802,9 +982,22 @@ export default function AccountCenterPage() {
 
       <SwitchDialog
         target={switchTarget}
+        // 没有登录态档案的账号（网页登录）也让他点开：弹窗里写明为什么切不了、怎么补
+        switchable={switchTarget ? switchableSet.has(switchTarget.iid) : true}
         busy={busy?.startsWith('switch:') ?? false}
         onClose={() => setSwitchTarget(null)}
         onConfirm={doSwitch}
+      />
+
+      {/* key 跟着端走：换一个端就重挂一次，选中项不会从上一个端带过来 */}
+      <EndSwitchDialog
+        key={endSwitch?.key ?? 'none'}
+        end={endSwitch}
+        candidates={endSwitch ? endSwitchCandidates(rows, endSwitch) : []}
+        switchable={switchableSet}
+        busy={busy?.startsWith('end-switch:') ?? false}
+        onClose={() => setEndSwitch(null)}
+        onConfirm={doEndSwitch}
       />
 
       <RestoreDialog

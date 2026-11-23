@@ -10,11 +10,9 @@ import { errText } from '@/lib/ipc';
 import { navigate } from '@/lib/nav';
 import type { SessionStats } from '@/lib/types';
 import { Metric, SectionTitle, ShareBar, shareText } from './metric';
-import { RangeControl, useRange } from './range';
+import type { Range } from './range';
 
-export function SessionsSection() {
-  // 区间独立一份：会话索引、Token 采集、积分快照互不相干
-  const range = useRange(7);
+export function SessionsSection({ range }: { range: Range }) {
   const stats = useQuery<SessionStats>({
     queryKey: ['session-stats', range.from, range.to],
     queryFn: () => queryCmd('session_stats', { from: range.from, to: range.to }),
@@ -29,12 +27,9 @@ export function SessionsSection() {
       <SectionTitle
         className="mb-0"
         right={
-          <span className="flex flex-wrap items-center justify-end gap-2">
-            <RangeControl range={range} />
-            <Button size="sm" variant="ghost" onClick={() => navigate('sessions')}>
-              去会话页 →
-            </Button>
-          </span>
+          <Button size="sm" variant="ghost" onClick={() => navigate('sessions')}>
+            去会话页 →
+          </Button>
         }
       >
         会话（全部 AI 客户端）

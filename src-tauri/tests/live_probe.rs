@@ -741,3 +741,97 @@ async fn probe_hub() {
         );
     }
 }
+
+/// 切换预检的真机逐层核对：每个账号按 `switchable_iids` 同一套判据打印中间结果，
+/// 定位「切换按钮为什么是灰的」到底是哪一层挡的（凭据 / 能力表 / 档案）。
+///
+/// ```text
+/// cargo test --test live_probe probe_switch_precheck -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "读真实账号库与真实档案目录，手动执行"]
+async fn probe_switch_precheck() {
+    use ai_manager::app::accounts::credential::Credential;
+    use ai_manager::app::accounts::switch::switchable_iids;
+    use ai_manager::app::accounts::{repo as acc_repo, uid_of};
+    use ai_manager::app::features;
+    use ai_manager::app::providers;
+    use ai_manager::app::providers::workbuddy::WorkBuddyProvider;
+
+    let db = Db::open().expect("打开真实账号库");
+    let switchable = switchable_iids(&db).expect("跑一遍可切集合");
+    println!("\nswitchable_iids = {switchable:?}\n");
+
+    for a in repo::list(&db).expect("读账号表") {
+        if !a.has_secret {
+            println!("- {:<22} 无凭据", a.display_name());
+            continue;
+        }
+        let bytes = match acc_repo::secret_of(&db, &a.iid).expect("解密凭据") {
+            Some(bytes) => bytes,
+            None => {
+                println!("- {:<22} 凭据为空", a.display_name());
+                continue;
+            }
+        };
+        let cred = match Credential::parse(&bytes) {
+            Ok(cred) => cred,
+            Err(e) => {
+                println!("- {:<22} 凭据解析失败：{}", a.display_name(), e.message);
+                continue;
+            }
+        };
+        let platform = features::platform_of_iid(&a.iid);
+        let available = features::available(platform, features::SWITCH);
+        let key = providers::client_key_of(&a.iid);
+        let pack = match key {
+            "workbuddy" | "workbuddy_intl" => Some(
+                WorkBuddyProvider::new(key == "workbuddy_intl")
+                    .pack_ready(uid_of(&a.iid)),
+            ),
+            "zcode" => Some(cred.meta_json("credentials").is_some()),
+            _ => None,
+        };
+        let in_set = switchable.contains(&a.iid);
+        println!(
+            "- {:<22} 平台键={platform} available={available} client_key={key} pack={pack:?} 可切={in_set}",
+            a.display_name()
+        );
+    }
+}
+
+/// 档案目录的逐字节核对：把 `pack_dir` 的构造路径与文件系统判定一起打出来，
+/// 用来分辨「路径拼错」与「文件系统说没有」。
+///
+/// ```text
+/// cargo test --test live_probe -- --ignored --nocapture probe_pack_dirs
+/// ```
+#[tokio::test]
+#[ignore = "读真实档案目录，手动执行"]
+async fn probe_pack_dirs() {
+    use ai_manager::app::paths;
+    use ai_manager::app::providers::workbuddy::WorkBuddyProvider;
+
+    let provider = WorkBuddyProvider::new(false);
+    println!("\ndata_dir = {}", paths::data_dir().display());
+    for uid in [
+        "cceec57c-ac71-48e0-996c-6df5cc602cf3",
+        "e084dcfa-5865-4afb-acdb-774806ff28fb",
+    ] {
+        let manual = paths::data_dir().join("profiles").join("cn").join(uid);
+        println!("uid {uid}");
+        println!("  手拼目录     = {}", manual.display());
+        println!("  session 目录 = {}", manual.join("app/session").is_dir());
+        println!("  auth.info    = {}", manual.join("auth.info").is_file());
+        println!("  pack_ready   = {}", provider.pack_ready(uid));
+    }
+    let intl = WorkBuddyProvider::new(true);
+    let uid = "5af46132-29b2-49a0-8a10-51eb6eff5e0c";
+    let manual = paths::data_dir().join("profiles").join("intl").join(uid);
+    println!("uid(intl) {uid}");
+    println!("  手拼目录     = {}", manual.display());
+    println!("  session 目录 = {}", manual.join("app/session").is_dir());
+    println!("  auth.info    = {}", manual.join("auth.info").is_file());
+    println!("  pack_ready   = {}", intl.pack_ready(uid));
+}
+

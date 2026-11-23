@@ -121,7 +121,7 @@ const FEATURES: &[FeatureDef] = &[
     FeatureDef {
         key: "renew",
         label: "凭据刷新",
-        hint: "每次重扫客户端，把最新凭据与有效期写回本地库；刷新后仍过期才需要重新授权",
+        hint: "先问云端（用保存的凭据打只读接口），再重扫客户端取最新凭据与有效期；两边都拿不到才需要重新授权",
     },
     FeatureDef {
         key: "sessions",
@@ -147,6 +147,11 @@ const FEATURES: &[FeatureDef] = &[
         key: "switch_idea",
         label: "切换插件",
         hint: "把账号的登录态写进 IntelliJ IDEA 里的 CodeBuddy 插件；同上",
+    },
+    FeatureDef {
+        key: "cloud",
+        label: "云端校验",
+        hint: "刷新状态/凭据时，先用保存的凭据问一次平台（只读余额接口）；云端给不出答案才回退读本机客户端",
     },
 ];
 
@@ -203,6 +208,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             full("用国内版账号档案写入 CodeBuddy IDE 的登录态"),
             full("用国内版账号档案写入 IDEA 插件的登录态"),
+            part("先问资源包接口校验凭据；令牌续期协议未公开，过期仍需客户端或网页重新授权"),
         ],
     },
     PlatformDef {
@@ -222,6 +228,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             no(CB_INTL_NOTE),
             no(CB_INTL_NOTE),
+            part("先问资源包接口校验凭据；国际版令牌续期同样未公开，过期需重新授权"),
         ],
     },
     PlatformDef {
@@ -241,6 +248,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             no(CB_SCOPE_NOTE),
             no(CB_SCOPE_NOTE),
+            full("先问配额接口校验凭据；账号有效期取 refresh token，不受访问令牌每天续期影响"),
         ],
     },
     PlatformDef {
@@ -260,6 +268,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             no(CB_SCOPE_NOTE),
             no(CB_SCOPE_NOTE),
+            full("先问配额接口校验凭据；账号有效期取 refresh token，不受访问令牌每天续期影响"),
         ],
     },
     PlatformDef {
@@ -279,6 +288,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             no(CB_SCOPE_NOTE),
             no(CB_SCOPE_NOTE),
+            full("先问额度接口校验凭据；额度窗口本身就来自云端，不读本地缓存"),
         ],
     },
     PlatformDef {
@@ -300,6 +310,7 @@ const PLATFORMS: &[PlatformDef] = &[
             ),
             no(CB_SCOPE_NOTE),
             no(CB_SCOPE_NOTE),
+            part("先问额度接口校验 Cookie；有效期接口不返回，过期时间仍按本地记录提醒"),
         ],
     },
     PlatformDef {
@@ -319,17 +330,18 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             no(CB_SCOPE_NOTE),
             no(CB_SCOPE_NOTE),
+            part("先问积分接口校验凭据；令牌续期只能在客户端里完成，过期需重新登录"),
         ],
     },
     PlatformDef {
         key: "codebuddy",
-        label: "CodeBuddy",
+        label: "CodeBuddy 系（IDE / 插件）",
         cells: &[
-            no("账号体系跟随 WorkBuddy，不单独登录"),
+            no("与 WorkBuddy 同一账号体系，不单独登录"),
             no("登录态来自 WorkBuddy 档案"),
             full("用 WorkBuddy 国内版档案切换 CodeBuddy IDE 与 IDEA 插件"),
             no("没有签到玩法"),
-            no("本应用不采集它的积分"),
+            no("不单独采集：三端共用 WorkBuddy 的积分池，重复记一次就多算"),
             no("不是额度型平台"),
             no("非 WorkBuddy 平台"),
             no("凭据由 WorkBuddy 侧维护"),
@@ -338,6 +350,7 @@ const PLATFORMS: &[PlatformDef] = &[
             full(""),
             full("接收方：用 WorkBuddy 国内版账号档案写入 CodeBuddy IDE"),
             full("接收方：用 WorkBuddy 国内版账号档案写入 IDEA 插件"),
+            no("账号体系跟随 WorkBuddy，不单独查云端；校验与刷新都在 WorkBuddy 那一行走"),
         ],
     },
 ];

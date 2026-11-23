@@ -5,8 +5,12 @@
 //! 就跳过**，因为平台侧的有效期可能已经被客户端续过，而本地库还停在扫描那一刻。
 //!
 //! 各家平台的 `refresh_token` 续期接口都没有公开协议，自己实现一套等于给自己埋雷
-//! （见 `refresh.rs` 顶部的结论）。所以这里走**唯一能验证的那条路**：客户端自己会
-//! 把 token 续掉，重扫该平台就能拿到新凭据。
+//! （见 `refresh.rs` 顶部的结论）。所以能走的路只有两条：
+//!
+//!   - **有本地登录态的平台**：客户端自己会把 token 续掉，重扫就能拿到新凭据；
+//!   - **没有可重扫入口的平台**（豆包这种 Cookie 型）：改问云端——拿保存的凭据
+//!     打一次只读接口，能通就是「已是最新」，401 就直接判定「要重新授权」，
+//!     不再是「这个平台刷新不了」的死胡同（见 `cloud.rs`）。
 //!
 //! 判定不靠猜：**凭据真的变了才算刷新到新东西**（token / refresh_token / 到期时间
 //! 任一变化）。没变就是「已是最新」——此时有效期保持原值，不伪造更晚的时间。
@@ -14,6 +18,7 @@
 //! **边界**：本模块只碰 `data/` 与客户端只读文件，不写任何客户端登录态；
 //! 写客户端是 `providers::switch` 的事。
 
+use super::cloud::{self, CloudVerdict};
 use super::credential::Credential;
 use super::{repo, scan};
 use crate::app::db::Db;
@@ -220,6 +225,65 @@ fn orphan_login_hint(db: &Db, iid: &str) -> Option<String> {
     None
 }
 
+/// 平台没有可重扫的本地登录态时，改问云端。
+///
+/// 这是 Cookie 型平台（豆包）唯一能拿到的「凭据还行不行」的答案：
+/// 云端能通就是已是最新，401 就是要重新授权。云端也问不出来（断网、
+/// 平台没有可查接口）才回落到原来的「这个平台刷新不了」。
+fn cloud_only_outcome(
+    db: &Db,
+    iid: &str,
+    provider: &dyn providers::Provider,
+    expires: Option<i64>,
+) -> RefreshCredentialOutcome {
+    let parsed = repo::secret_of(db, iid)
+        .ok()
+        .flatten()
+        .and_then(|bytes| Credential::parse(&bytes).ok());
+    let Some(cred) = parsed else {
+        return RefreshCredentialOutcome::new(
+            RefreshCredentialState::Unsupported,
+            provider.refresh_unsupported(),
+            expires,
+        );
+    };
+    match cloud::probe(iid, &cred) {
+        CloudVerdict::Valid => {
+            if let Err(e) = repo::clear_health_fail(db, iid) {
+                crate::app::log::log(
+                    crate::app::log::Level::Warn,
+                    "accounts",
+                    format!("云端确认凭据有效后清理失败标记失败：{}", e.message),
+                );
+            }
+            RefreshCredentialOutcome::new(
+                RefreshCredentialState::UpToDate,
+                format!(
+                    "云端确认凭据仍有效（已用 {} 的只读接口验证），有效期保持原值",
+                    provider.label()
+                ),
+                expires,
+            )
+        }
+        CloudVerdict::Expired { reason } => {
+            let _ = repo::note_health_fail(db, iid, "auth_expired", now_ms());
+            RefreshCredentialOutcome::new(
+                RefreshCredentialState::NeedReauth,
+                format!("云端已拒绝这份凭据（{reason}），需要重新授权一次"),
+                expires,
+            )
+        }
+        CloudVerdict::Unavailable { reason } => RefreshCredentialOutcome::new(
+            RefreshCredentialState::Unsupported,
+            format!(
+                "{}；云端也问不出来：{reason}",
+                provider.refresh_unsupported()
+            ),
+            expires,
+        ),
+    }
+}
+
 /// 刷新一个账号的凭据。会读客户端文件并解密凭据，调用方负责放到阻塞线程里。
 pub fn refresh_credential(db: &Db, iid: &str) -> Result<RefreshCredentialOutcome> {
     let before = snapshot(db, iid)?;
@@ -234,9 +298,10 @@ pub fn refresh_credential(db: &Db, iid: &str) -> Result<RefreshCredentialOutcome
     // 「平台压根没有可重扫的入口」和「客户端里就是最新的一份」必须分开说：
     // 前者再点多少次都不会变，后者说明客户端已经续过了。
     if !provider.scannable() {
-        return Ok(RefreshCredentialOutcome::new(
-            RefreshCredentialState::Unsupported,
-            provider.refresh_unsupported(),
+        return Ok(cloud_only_outcome(
+            db,
+            iid,
+            provider.as_ref(),
             before.expires,
         ));
     }

@@ -22,21 +22,23 @@ import { useProgress } from '@/lib/progress';
 import type { BatchProgress } from '@/lib/progress';
 import type { AccountView, AddOutcome, BrowserLoginStatus, LoginOutcome } from '@/lib/types';
 
-/** 可添加的平台。顺序 = 下拉框顺序。zcode_zai / zcode_zai_cn 只走浏览器登录
- *  （z.ai 两族没有客户端外的ApiKey兑换路径，借客户端登录用 ZCode 入口即可）。 */
+/**
+ * 可添加的平台：**固定一份名单**，一家产品一个入口，顺序 = 下拉框顺序。
+ *
+ * ZCode 只有「智谱」一个入口。z.ai / z.ai CN 两族是早期按授权域拆出来的历史平台键，
+ * 只在「已存在的账号」上保留（重新授权走详情页），不再出现在添加列表里——
+ * 登录页都指向同一个 zcode 入口，摆出三个选项只会让人以为要多登一次。
+ */
 const PLATFORMS: { key: string; label: string }[] = [
   { key: 'workbuddy', label: 'WorkBuddy 国内版' },
   { key: 'workbuddy_intl', label: 'WorkBuddy 国际版' },
   { key: 'qoder', label: 'Qoder CN' },
   { key: 'qoder_intl', label: 'Qoder 国际版' },
   { key: 'zcode', label: 'ZCode 智谱' },
-  { key: 'zcode_zai', label: 'ZCode z.ai' },
-  { key: 'zcode_zai_cn', label: 'ZCode z.ai CN' },
   { key: 'doubao', label: '豆包' },
 ];
 
-/** 只支持浏览器登录的入口：没有「改用客户端登录」的兜底（客户端流程认不了这个键）。 */
-const BROWSER_ONLY = new Set(['zcode_zai', 'zcode_zai_cn']);
+
 
 /**
  * 用 Cookie 添加的平台：没有可借用的登录流程，只能粘贴一次登录态。
@@ -424,11 +426,9 @@ export function AddAccountDialog({
           </Button>
         ) : stage === 'failed' ? (
           <>
-            {!BROWSER_ONLY.has(platform) && (
-              <Button variant="ghost" onClick={startViaClient}>
-                改用客户端登录
-              </Button>
-            )}
+            <Button variant="ghost" onClick={startViaClient}>
+              改用客户端登录
+            </Button>
             <Button variant="ghost" onClick={onClose}>
               关闭
             </Button>

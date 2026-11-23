@@ -83,12 +83,20 @@ const claimColumns: Column<CreditClaim>[] = [
   },
 ];
 
+/** 剩余额度的告警档：≤10% 红、≤30% 黄、其余不告警。指标卡与额度条共用这一组阈值。 */
+type QuotaTone = 'bad' | 'warn' | null;
+
+function leftTone(left: number | null): QuotaTone {
+  if (left === null) return null;
+  return left <= 10 ? 'bad' : left <= 30 ? 'warn' : null;
+}
+
 /**
  * 额度利用率条：首次从 0 长到目标（延迟 80ms 让文字先落位），之后 used 变化直接过渡。
  * 刷新额度是低频动作，硬切的话用户看不出「这一条到底动没动」。
  * role=progressbar 让读屏能报出已用百分比，而不是只看到一行小字。
  */
-function QuotaBar({ used, color }: { used: number; color: string }) {
+function QuotaBar({ used, tone }: { used: number; tone: QuotaTone }) {
   const target = Math.min(100, used);
   const [pct, setPct] = useState(0);
   const mounted = useRef(false);
@@ -111,8 +119,12 @@ function QuotaBar({ used, color }: { used: number; color: string }) {
       className="h-1.5 overflow-hidden rounded-full bg-hover"
     >
       <div
-        className="h-full rounded-full transition-[width,background-color] duration-[var(--dur-4)] ease-[var(--ease-std)]"
-        style={{ width: `${pct}%`, background: color }}
+        className={cn(
+          'h-full rounded-full transition-[width,background-color] duration-[var(--dur-4)] ease-[var(--ease-std)]',
+          // 有余量时用强调色：这条度量的是用量，不是告警
+          tone === 'bad' ? 'bg-bad' : tone === 'warn' ? 'bg-warn' : 'bg-accent',
+        )}
+        style={{ width: `${pct}%` }}
       />
     </div>
   );
@@ -610,7 +622,7 @@ export function DetailPanel({
                 ? '豆包平台口径的累计已发放额度（含已消耗），不是剩余可用'
                 : '平台实时返回'
           }
-          tone={quotaLeft !== null && quotaLeft <= 10 ? 'bad' : quotaLeft !== null && quotaLeft <= 30 ? 'warn' : undefined}
+          tone={leftTone(quotaLeft) ?? undefined}
         />
       </div>
 
@@ -621,18 +633,17 @@ export function DetailPanel({
           <div className="grid gap-x-6 gap-y-2 md:grid-cols-2">
             {quota.map(([name, used]) => {
               const left = Math.max(0, 100 - used);
-              const color =
-                left <= 10 ? 'var(--color-bad)' : left <= 30 ? 'var(--color-warn)' : 'var(--color-accent)';
+              const tone = leftTone(left);
               return (
                 <div key={name} className="min-w-0">
                   <div className="mb-1 flex items-baseline gap-2 text-xs">
                     <span className="truncate text-fg2" title={name}>{name}</span>
                     <span className="flex-1" />
-                    <span className={cn('tabular-nums', left <= 10 ? 'text-bad' : left <= 30 ? 'text-warn' : 'text-muted')}>
+                    <span className={cn('tabular-nums', tone === 'bad' ? 'text-bad' : tone === 'warn' ? 'text-warn' : 'text-muted')}>
                       已用 {used.toFixed(0)}% · 剩 {left.toFixed(0)}%
                     </span>
                   </div>
-                  <QuotaBar used={used} color={color} />
+                  <QuotaBar used={used} tone={tone} />
                 </div>
               );
             })}

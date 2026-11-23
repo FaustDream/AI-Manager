@@ -179,6 +179,61 @@ pub fn statuses(roots: &Roots) -> Vec<CodebuddyTargetStatus> {
         .collect()
 }
 
+/// 端上当前登录的账号，连同它存的 WorkBuddy 票据。
+///
+/// 端的会话里存的就是 WorkBuddy 的 `auth.accessToken` / `refreshToken` / `domain`。
+/// 这是「端不需要单独登录」的依据：既能不登录直接把库里的号写进去（`switch_target`），
+/// 也能反过来把端上已经登着的号收进账号库（`accounts::adopt`）。
+#[derive(Debug, Clone)]
+pub struct EndLogin {
+    pub uid: String,
+    pub name: String,
+    pub token: String,
+    pub refresh: String,
+    /// 毫秒时间戳；会话里没写就是 None
+    pub expires_at: Option<i64>,
+    pub domain: String,
+    /// `cn` / `intl`
+    pub edition: String,
+}
+
+/// 读端上当前登录的账号与票据。没装、没登录、票据缺字段一律 None。
+pub fn current_login(roots: &Roots, target: Target) -> Option<EndLogin> {
+    let session = target.read_session(roots)?;
+    // 票据里的 `$wbEncrypted` 字段要解开才拿得到 auth/account
+    let doc = decrypt_tree(&session).ok()?;
+    let acc = doc.get("account")?;
+    let au = doc.get("auth")?;
+    let uid = acc.get("uid")?.as_str()?.trim().to_string();
+    let domain = au.get("domain")?.as_str()?.trim().to_string();
+    let token = au.get("accessToken")?.as_str()?.trim().to_string();
+    if uid.is_empty() || domain.is_empty() || token.is_empty() {
+        return None;
+    }
+    let edition = edition_of_domain(&domain)?;
+    let name = acc
+        .get("nickname")
+        .or_else(|| acc.get("label"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uid.clone());
+    Some(EndLogin {
+        uid,
+        name,
+        token,
+        refresh: au
+            .get("refreshToken")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        expires_at: au.get("expiresAt").and_then(Value::as_i64),
+        domain,
+        edition,
+    })
+}
+
 /// 授权域 → 版本：`www.workbuddy.cn` 是国内版、`www.workbuddy.ai` 是国际版。
 fn edition_of_domain(domain: &str) -> Option<String> {
     if domain.ends_with("workbuddy.cn") {

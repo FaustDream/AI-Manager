@@ -1,7 +1,8 @@
 // Token 统计：本地只读采集出来的 Token 与平台扣费。
 //
-// 版式与左栏的积分统计卡**同构**：标题行（区间控件）+ 2×2 数字瓦片 + 两个子块
+// 版式与左栏的积分统计卡**同构**：标题行 + 2×2 数字瓦片 + 两个子块
 // （消耗趋势 / 软件·模型排名）。同构是硬要求——两栏卡片要能对齐，结构就得一样。
+// 区间由页头的全局过滤统一给出，卡内不再挂控件。
 // 采集全是后台行为：启动后自动扫一遍，之后按设置的间隔增量扫描，界面上不给手动入口。
 // 逐日明细不在这张卡里：趋势线已经按月-日给出每天的合计，再堆一张整页宽的柱状图
 // 是把同一份数据画两遍。
@@ -17,7 +18,7 @@ import { fmtAmount, fmtTime, fmtTokens, fmtTokensExact } from '@/lib/format';
 import { appLabel, TrendLines } from '@/components/usage-charts';
 import type { UsageModel, UsageOverview, UsageSlice } from '@/lib/types';
 import { Metric, SectionTitle, ShareBar, shareText } from './metric';
-import { RangeControl, type Range } from './range';
+import type { Range } from './range';
 
 /** 用量查询：页面持有区间，卡内的瓦片与趋势图共用这一次请求。 */
 export function useUsageQuery(range: Range): UseQueryResult<UsageOverview> {
@@ -47,12 +48,8 @@ export function UsageSection({
     // 所以两栏的子块边界必然对齐。多一个直接子节点就会顶错行，条件块必须收在容器里。
     <section className="grid min-w-0 gap-3 p-3 xl:row-span-4 xl:grid-rows-subgrid">
       <div>
-        <SectionTitle
-          className="mb-0 min-h-7 items-center"
-          right={<RangeControl range={range} />}
-        >
-          Token 统计
-        </SectionTitle>
+        {/* 与左栏同理：区间控件归页头「全局过滤」，这里保留行高让两卡数字行对齐 */}
+        <SectionTitle className="mb-0 min-h-7 items-center">Token 统计</SectionTitle>
       </div>
 
       {query.isLoading && (

@@ -3,6 +3,7 @@
 //! 顺序原则的原因：先把凭据加密写进去，再处理下一个，这样内存里同时存在的
 //! 明文 token 始终只有一个（整包解密会让所有 token 同时在内存）。
 
+use super::adopt;
 use crate::app::accounts::credential::Credential;
 use crate::app::accounts::{repo, AccountIdentity};
 use crate::app::db::Db;
@@ -26,7 +27,11 @@ pub struct ScanReport {
 }
 
 pub fn scan_all(db: &Db) -> Result<ScanReport> {
-    scan_providers(db, providers::all())
+    let mut report = scan_providers(db, providers::all())?;
+    // CodeBuddy 两端不是独立平台（它们登的就是 WorkBuddy 账号），所以不在 `providers::all()`
+    // 里。端上登着、库里还没有的号在这里补收：列表里那一行端才有账号可挂。
+    adopt::adopt_codebuddy(db, &crate::app::clients::Roots::system(), &mut report);
+    Ok(report)
 }
 
 /// 只扫**一家**平台。刷新凭据用：为了一个账号把六家客户端全读一遍没有意义，

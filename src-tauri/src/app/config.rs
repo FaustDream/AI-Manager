@@ -102,6 +102,17 @@ pub struct DashboardConfig {
     pub stale_refresh_min: u64,
 }
 
+/// 账号库的来源策略。状态与凭据的真源已经是云端（见 `accounts::cloud`），
+/// 这里只管「启动时要不要顺手扫一遍本地客户端把新账号捞进来」。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccountsConfig {
+    /// 启动时扫描本地客户端登录态并入库（关掉 = 只用浏览器登录添加账号）
+    pub scan_on_startup: bool,
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -117,6 +128,8 @@ pub struct AppConfig {
     pub activity: ActivityConfig,
     #[serde(default)]
     pub dashboard: DashboardConfig,
+    #[serde(default)]
+    pub accounts: AccountsConfig,
     #[serde(default)]
     pub window: WindowConfig,
     /// 平台功能开关（设置 → 常规 → 各软件功能）：界面显示什么由用户定，不写死在页面里
@@ -172,6 +185,15 @@ impl Default for DashboardConfig {
         }
     }
 }
+impl Default for AccountsConfig {
+    fn default() -> Self {
+        // 缺省保持现状：老用户升级后账号列表不会突然空掉。
+        // 想彻底只走浏览器登录的人在设置里关掉即可。
+        Self {
+            scan_on_startup: true,
+        }
+    }
+}
 
 /// 文件头说明：字段级注释写在首次生成的模板里，设置界面保存后会重写正文，
 /// 这段头一直保留，说明两条调整通道的规则。
@@ -211,6 +233,11 @@ zcode_auto_claim = false
 [dashboard]
 # 积分数据多少分钟没刷新就自动补刷一轮
 stale_refresh_min = 10
+
+[accounts]
+# 启动时扫描本地客户端登录态并入库。
+# 关掉 = 账号只从浏览器登录添加；已入库的账号、切换、云端校验都不受影响。
+scan_on_startup = true
 
 [window]
 # 点关闭按钮：tray = 收进托盘继续常驻；exit = 直接退出
@@ -378,6 +405,16 @@ mod tests {
         assert!(!parsed.features["workbuddy"]["switch"]);
         // 只写了一格：同一平台的其他功能不能因此变成关
         assert_eq!(parsed.features["workbuddy"].len(), 1);
+    }
+
+    #[test]
+    fn accounts_scan_switch_defaults_on_and_can_be_turned_off() {
+        // 缺省开：老用户的账号列表不会因为升级变空
+        let missing: AppConfig = toml::from_str("[network]\ntimeout_secs = 42").unwrap();
+        assert!(missing.accounts.scan_on_startup);
+
+        let off: AppConfig = toml::from_str("[accounts]\nscan_on_startup = false").unwrap();
+        assert!(!off.accounts.scan_on_startup);
     }
 
     #[test]

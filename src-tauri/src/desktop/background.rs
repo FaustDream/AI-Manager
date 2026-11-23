@@ -129,6 +129,7 @@ pub(crate) struct ScheduleOutcome {
 }
 
 pub(crate) async fn execute_schedule(
+    db: &Arc<Db>,
     service: &Arc<crate::app::checkin::Service>,
     activity: &Arc<crate::app::activity::Service>,
     item: &crate::app::schedule::Schedule,
@@ -176,6 +177,42 @@ pub(crate) async fn execute_schedule(
                 next_wake_ms: round.next_wake_ms,
             }
         }
+        StatusRound => {
+            // 只校验不重扫：后台不该替用户改写账号库（与「启动扫描客户端」开关同一口径）。
+            // 能续的新有效期由云端/本地凭据给出并写回，续不了的留下失败标记等重新授权。
+            let db = db.clone();
+            let result =
+                crate::app::runtime::blocking(move || crate::app::accounts::refresh_status(&db))
+                    .await;
+            match result {
+                Ok(Ok(report)) => {
+                    events::emit("accounts:scanned", ());
+                    let need_reauth = report.expired + report.missing_secret;
+                    ScheduleOutcome {
+                        ok: report.errors.is_empty(),
+                        detail: format!(
+                            "{} 个账号：云端确认 {} · 回退本机 {} · 需重新授权 {}",
+                            report.total, report.cloud_ok, report.cloud_fallback, need_reauth
+                        ),
+                        // 全绿且到期时间没变化 = 例行心跳，不必每天留一行
+                        changed: report.updated > 0 || need_reauth > 0 || !report.errors.is_empty(),
+                        next_wake_ms: None,
+                    }
+                }
+                Ok(Err(e)) => ScheduleOutcome {
+                    ok: false,
+                    detail: e.message.clone(),
+                    changed: true,
+                    next_wake_ms: None,
+                },
+                Err(e) => ScheduleOutcome {
+                    ok: false,
+                    detail: e.to_string(),
+                    changed: true,
+                    next_wake_ms: None,
+                },
+            }
+        }
     }
 }
 
@@ -187,7 +224,7 @@ async fn run_schedule(
     item: &crate::app::schedule::Schedule,
 ) {
     let started = std::time::Instant::now();
-    let outcome = execute_schedule(service, activity, item).await;
+    let outcome = execute_schedule(db, service, activity, item).await;
     // 猫猫旅行：把下一跳定在「到站 + 5 分钟」。写失败不影响这轮结论，
     // 只是退回用户配的间隔（下下跳仍会再查一次状态）。
     if item.action == crate::app::schedule::ScheduleAction::TravelRound {
@@ -358,6 +395,17 @@ pub fn spawn_source_bridges() {
 pub fn spawn_startup_scan(db: Arc<Db>) {
     crate::app::runtime::runtime().spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // 账号状态与凭据的真源已经是云端（`accounts::cloud`），这里只负责
+        // 「顺手把本地客户端里的新账号捞进库」。关掉开关的用户走纯浏览器登录，
+        // 再扫一遍只会让列表里冒出他没主动添加的账号。
+        if !crate::app::config::get().accounts.scan_on_startup {
+            log::log(
+                Level::Info,
+                "accounts",
+                "已按设置跳过启动扫描（账号只从浏览器登录添加）".to_string(),
+            );
+            return;
+        }
         let started = std::time::Instant::now();
         match crate::app::runtime::blocking(move || crate::app::accounts::scan_all(&db)).await {
             Ok(Ok(report)) => {

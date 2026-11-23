@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 const KV_KEY: &str = "schedules";
+/// 「每天状态刷新」只补一次的标记：补过之后用户删了就是删了。
+const STATUS_SEEDED_KV: &str = "schedule.status_daily_seeded";
 // kv 的单次写入原子，但读改写不是；偏好联动与调度标记必须串行，避免互相覆盖。
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 static CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
@@ -43,6 +45,8 @@ pub enum ScheduleAction {
     CreditsRound,
     /// 猫猫旅行：回来 → 领取 → 再派出（只处理打开了「自动旅行」的账号）
     TravelRound,
+    /// 账号状态刷新：云端校验凭据有效性 + 校正到期时间（不重扫入库）
+    StatusRound,
 }
 
 impl ScheduleAction {
@@ -51,6 +55,7 @@ impl ScheduleAction {
             Self::CheckinRound => "签到轮询",
             Self::CreditsRound => "积分刷新",
             Self::TravelRound => "猫猫旅行",
+            Self::StatusRound => "账号状态刷新",
         }
     }
 }
@@ -287,6 +292,7 @@ impl ScheduleAction {
             Self::CheckinRound => "checkin",
             Self::CreditsRound => "credits",
             Self::TravelRound => "travel",
+            Self::StatusRound => "status",
         }
     }
 }
@@ -332,6 +338,15 @@ fn load(db: &Db, now: DateTime<Local>) -> Result<Vec<Schedule>> {
             dirty = true;
         }
     }
+    // 老用户升级后也要有「每天刷新账号状态」，但只补一次：用户删掉之后不该每次启动又冒出来。
+    // 新装用户走 seed()，已有则跳过——两种情况都不会重复。
+    if db.kv_get(STATUS_SEEDED_KV)?.is_none() {
+        let _ = db.kv_set(STATUS_SEEDED_KV, "1");
+        if !list.iter().any(|s| s.action == ScheduleAction::StatusRound) {
+            list.push(status_task());
+            dirty = true;
+        }
+    }
     let prefs = travel_store::all(db);
     if prefs.values().any(|p| p.enabled) {
         for account in crate::app::accounts::repo::list(db)? {
@@ -374,6 +389,26 @@ fn tighten_legacy_credits(task: &mut Schedule) -> bool {
     task.hours = None;
     task.id = format!("credits-{SEED_CREDITS_MINUTES}min");
     true
+}
+
+/// 每天刷新一次账号状态：云端校验凭据 + 校正到期时间。
+///
+/// 与签到错开（08:30 vs 09:00）：两者都要读账号库，挤在同一分钟只是白排一次队列。
+fn status_task() -> Schedule {
+    Schedule {
+        id: "status-daily".into(),
+        name: "每日状态刷新".into(),
+        action: ScheduleAction::StatusRound,
+        account_iid: None,
+        kind: RuleKind::Daily,
+        at: Some("09:00".into()),
+        hours: None,
+        minutes: None,
+        enabled: true,
+        last_run: None,
+        next_at: None,
+        created_at: None,
+    }
 }
 
 fn travel_task(iid: &str, name: &str, now: DateTime<Local>) -> Schedule {
@@ -455,6 +490,7 @@ fn seed() -> Vec<Schedule> {
             last_run: None,
             next_at: None,
         },
+        status_task(),
     ]
 }
 
@@ -1286,23 +1322,50 @@ mod tests {
     fn store_roundtrip_and_seed() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
-        // 第一次读：写入默认种子
+        // 第一次读：写入默认种子（签到 + 积分 + 每日状态刷新）
         let seeded = list(&db).unwrap();
-        assert_eq!(seeded.len(), 2);
+        assert_eq!(seeded.len(), 3);
         assert!(seeded
             .iter()
             .any(|s| s.action == ScheduleAction::CheckinRound));
+        assert!(seeded
+            .iter()
+            .any(|s| s.action == ScheduleAction::StatusRound));
 
         let mut added = daily("21:15");
         added.id = String::new();
         let saved = save(&db, added).unwrap();
-        assert_eq!(list(&db).unwrap().len(), 3);
+        assert_eq!(list(&db).unwrap().len(), 4);
 
         let marked = mark_ran(&db, &saved.id).unwrap().unwrap();
         assert!(marked.last_run.is_some(), "跑过要留痕");
 
         delete(&db, &saved.id).unwrap();
-        assert_eq!(list(&db).unwrap().len(), 2);
+        assert_eq!(list(&db).unwrap().len(), 3);
         assert!(delete(&db, "nope").is_err());
+    }
+
+    /// 老用户升级：只补一次「每日状态刷新」，删掉后不该每次启动又回来。
+    #[test]
+    fn status_task_is_backfilled_once_for_existing_configs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        // 造一份「升级前」的配置：只有签到
+        save_all(&db, &[daily("08:30")]).unwrap();
+
+        let upgraded = list(&db).unwrap();
+        let status: Vec<_> = upgraded
+            .iter()
+            .filter(|s| s.action == ScheduleAction::StatusRound)
+            .collect();
+        assert_eq!(status.len(), 1, "老配置要补上每日状态刷新");
+        assert_eq!(status[0].at.as_deref(), Some("09:00"));
+
+        // 用户删掉它：不该再被补回来
+        delete(&db, &status[0].id).unwrap();
+        assert!(!list(&db)
+            .unwrap()
+            .iter()
+            .any(|s| s.action == ScheduleAction::StatusRound));
     }
 }

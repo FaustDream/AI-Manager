@@ -1,12 +1,18 @@
-//! 「刷新所有账号状态」：重扫客户端登录态 → 用凭据包校正到期时间 → 汇总。
+//! 「刷新所有账号状态」：重扫客户端 → **云端优先**校验凭据 → 校正到期时间 → 汇总。
 //!
-//! 解决的是「库里的状态和客户端实际情况对不上」：登录态已经被客户端刷新过、
-//! 凭据被换掉、到期时间变了，而本地账号库还停在扫描那一刻。重扫拿到最新凭据，
-//! 再用凭据包回填到期时间，界面上的「剩 N 天」「已过期」才可信。
+//! 三步的分工：
+//!   1. 重扫客户端只为**发现/更新**凭据（新账号、客户端续过的新 token），
+//!      它不是状态真源；
+//!   2. 本地拿不到可用期（未知 / 已过期 / 临期）的账号，先拿凭据问平台
+//!      （见 `cloud.rs`）：能通就是有效，401 就是失效；
+//!   3. 云端问不出来（没网、平台没有可查接口）才回退读本机文件——**兜底有计数**，
+//!      界面能说清这一轮有几个账号是靠本机数据判的（`cloud_fallback`）。
 //!
-//! **不做 token 续期**：各家 refresh 协议随时会变，自己实现一套等于给自己埋雷；
-//! 凭据真过期了就重新授权（详情页的「重新授权」），那条路走的是平台自己的登录页。
+//! **不做 token 续期**：各家 refresh 协议都没有公开，自己拼请求等于把账号交给
+//! 猜出来的端点；凭据真过期了就重新授权（详情页的「重新授权」），那条路走的是
+//! 平台自己的登录页。
 
+use super::cloud::{self, CloudVerdict};
 use super::{credential::Credential, repo, scan};
 use crate::app::db::Db;
 use crate::app::error::Result;
@@ -47,6 +53,15 @@ pub struct RefreshReport {
     /// 客户端当前登录的账号数
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub current: usize,
+    /// 云端确认凭据有效（本地给不出可用期的账号才会去问）
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub cloud_ok: usize,
+    /// 云端明确判定凭据失效（401/403）：只能重新授权
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub cloud_expired: usize,
+    /// 云端问不出来（没网 / 平台没有可查接口），已回退读本机
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub cloud_fallback: usize,
     /// 读取失败：整家平台没扫到，或单个账号凭据解不开
     pub errors: Vec<String>,
     /// 汇总时刻
@@ -59,20 +74,38 @@ pub struct RefreshReport {
 
 /// 重扫 + 校正 + 汇总。会读客户端文件与解密凭据，调用方负责放到阻塞线程里。
 pub fn refresh_all(db: &Db) -> Result<RefreshReport> {
+    refresh_with(db, true)
+}
+
+/// 只校验、不重扫入库的那一半。
+///
+/// 定时任务用它：关掉「启动扫描客户端」的用户不希望账号库被后台改写，
+/// 但凭据的有效性与到期时间仍要每天更新。手动「刷新状态」照旧走 `refresh_all`。
+pub fn refresh_status(db: &Db) -> Result<RefreshReport> {
+    refresh_with(db, false)
+}
+
+fn refresh_with(db: &Db, scan_first: bool) -> Result<RefreshReport> {
     let started = std::time::Instant::now();
 
     // 1) 重扫客户端：凭据信息唯一可靠的更新来源。只有客户端当前登录的账号
     //    会被刷新到最新凭据，其余账号保持原样（契约 21：重扫不得清空已有数据）。
-    let scan_report = scan::scan_all(db)?;
+    let scan_report = if scan_first {
+        Some(scan::scan_all(db)?)
+    } else {
+        None
+    };
 
-    // 2) 用凭据包校正到期时间等展示状态
-    let mut report = sync_from_credentials(db)?;
-    report.scanned = scan_report.scanned;
-    report.added = scan_report.added;
-    // 整家平台没扫到的错误排前面：它比单个账号凭据损坏更该先看
-    let mut errors = scan_report.errors;
-    errors.append(&mut report.errors);
-    report.errors = errors;
+    // 2) 云端优先校验 + 用凭据包校正到期时间等展示状态
+    let mut report = sync_with(db, &cloud::probe)?;
+    if let Some(scan_report) = scan_report {
+        report.scanned = scan_report.scanned;
+        report.added = scan_report.added;
+        // 整家平台没扫到的错误排前面：它比单个账号凭据损坏更该先看
+        let mut errors = scan_report.errors;
+        errors.append(&mut report.errors);
+        report.errors = errors;
+    }
 
     // 3) 当前登录：界面靠它标「当前」，切换或重授权之后必须重读
     report.current = super::current_iids().len();
@@ -82,9 +115,12 @@ pub fn refresh_all(db: &Db) -> Result<RefreshReport> {
 
 /// 逐个账号解密凭据包，把包里的到期时间回填到账号行，并统计缺凭据 / 过期 / 临期。
 ///
+/// `probe` 是云端校验入口：**只有本地给不出可用期的账号**才会调它，正常在有效期内的
+/// 账号不会被这一轮刷新打一次接口（几十个账号就是几十次请求，没有必要）。
+///
 /// 逐个解密、逐个释放：内存里同时存在的明文凭据永远只有一个。单账号失败只记进
 /// `errors`，不中断整批——「有一个账号的包坏了」不该让其余账号也刷不出来。
-fn sync_from_credentials(db: &Db) -> Result<RefreshReport> {
+fn sync_with(db: &Db, probe: &dyn Fn(&str, &Credential) -> CloudVerdict) -> Result<RefreshReport> {
     let mut report = RefreshReport::default();
     let rows = repo::list(db)?;
     report.total = rows.len();
@@ -116,8 +152,35 @@ fn sync_from_credentials(db: &Db) -> Result<RefreshReport> {
                 continue;
             }
         };
+        let now = now_ms();
+        let expires_at = cred.expires_ms();
+
+        // 云端优先：本地给不出可用期（未知 / 已过期 / 临期）的账号先问平台。
+        // 本地时间还在有效期内就不问——那是每次刷新几十次无谓请求的来源。
+        let needs_cloud = expires_at.is_none_or(|ms| ms - now <= EXPIRING_DAYS * DAY_MS);
+        let cloud_valid = if needs_cloud {
+            match probe(&row.iid, &cred) {
+                CloudVerdict::Valid => {
+                    report.cloud_ok += 1;
+                    true
+                }
+                CloudVerdict::Expired { .. } => {
+                    report.cloud_expired += 1;
+                    // 界面靠失败标记给出「需要重新授权」的下一步
+                    let _ = repo::note_health_fail(db, &row.iid, "auth_expired", now);
+                    false
+                }
+                CloudVerdict::Unavailable { .. } => {
+                    report.cloud_fallback += 1;
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
         // 凭据包里没有到期时间 = 「不知道」，不能拿来抹掉已知值
-        let Some(expires_at) = cred.expires_ms() else {
+        let Some(expires_at) = expires_at else {
             continue;
         };
 
@@ -136,9 +199,14 @@ fn sync_from_credentials(db: &Db) -> Result<RefreshReport> {
             }
         }
 
-        let now = now_ms();
         if expires_at <= now {
-            report.expired += 1;
+            // 云端刚确认过这份凭据有效：本地这个时间只是访问令牌的（Qoder 每天顺延），
+            // 不该把账号判成过期，按临期提醒即可
+            if cloud_valid {
+                report.expiring += 1;
+            } else {
+                report.expired += 1;
+            }
         } else if expires_at - now <= EXPIRING_DAYS * DAY_MS {
             report.expiring += 1;
         }
@@ -180,6 +248,13 @@ mod tests {
         }
     }
 
+    /// 测试里不联网：云端一律「问不出来」，走本机兜底这条主路径。
+    fn no_cloud(_iid: &str, _cred: &Credential) -> CloudVerdict {
+        CloudVerdict::Unavailable {
+            reason: "测试不联网".into(),
+        }
+    }
+
     fn secret_with_expiry(expires_at: &str) -> Vec<u8> {
         Credential {
             token: "tk".into(),
@@ -202,7 +277,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = sync_from_credentials(&db).unwrap();
+        let report = sync_with(&db, &no_cloud).unwrap();
 
         assert_eq!(report.updated, 1, "库里没有到期时间时必须回填");
         let row = repo::list(&db).unwrap().remove(0);
@@ -224,7 +299,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = sync_from_credentials(&db).unwrap();
+        let report = sync_with(&db, &no_cloud).unwrap();
 
         assert_eq!(report.updated, 1, "凭据包才是真相，旧值要纠正");
         assert_ne!(repo::list(&db).unwrap()[0].expires_at, Some(1_000));
@@ -242,9 +317,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(sync_from_credentials(&db).unwrap().updated, 1);
+        assert_eq!(sync_with(&db, &no_cloud).unwrap().updated, 1);
         assert_eq!(
-            sync_from_credentials(&db).unwrap().updated,
+            sync_with(&db, &no_cloud).unwrap().updated,
             0,
             "值没变就不该再写一次"
         );
@@ -263,7 +338,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = sync_from_credentials(&db).unwrap();
+        let report = sync_with(&db, &no_cloud).unwrap();
 
         assert_eq!(report.total, 2);
         assert_eq!(report.with_secret, 1);
@@ -285,7 +360,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = sync_from_credentials(&db).unwrap();
+        let report = sync_with(&db, &no_cloud).unwrap();
 
         assert_eq!(report.errors.len(), 1);
         assert_eq!(report.updated, 1, "坏的那一个不能拖住好的那一个");
@@ -314,7 +389,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = sync_from_credentials(&db).unwrap();
+        let report = sync_with(&db, &no_cloud).unwrap();
 
         assert_eq!(report.expired, 1);
         assert_eq!(report.expiring, 1);
@@ -328,13 +403,92 @@ mod tests {
         // 凭据包没有 expires_at（空串表示「不知道」）
         repo::set_secret(&db, "qoder:a", &secret_with_expiry(""), None).unwrap();
 
-        let report = sync_from_credentials(&db).unwrap();
+        let report = sync_with(&db, &no_cloud).unwrap();
 
         assert_eq!(report.updated, 0);
         assert_eq!(
             repo::list(&db).unwrap()[0].expires_at,
             Some(5_000),
             "不知道不等于没有，不能抹掉已知值"
+        );
+    }
+
+    /// 云端说有效时，本地那条已经过去的访问令牌时间不该把账号判成过期。
+    #[test]
+    fn cloud_valid_overrides_a_past_local_expiry() {
+        let (_dir, db) = setup();
+        seed(&db, "qoder:a", None);
+        repo::set_secret(
+            &db,
+            "qoder:a",
+            &secret_with_expiry("2000-01-01T00:00:00Z"),
+            None,
+        )
+        .unwrap();
+
+        let report = sync_with(&db, &|_, _| CloudVerdict::Valid).unwrap();
+
+        assert_eq!(report.cloud_ok, 1);
+        assert_eq!(report.expired, 0, "云端确认有效就不是过期");
+        assert_eq!(report.expiring, 1, "但要在界面提醒有效期已到");
+    }
+
+    /// 云端 401：明确记一次失败标记，界面据此给出「重新授权」。
+    #[test]
+    fn cloud_expired_records_a_failure_mark() {
+        let (_dir, db) = setup();
+        seed(&db, "qoder:a", None);
+        // 凭据包没有到期时间 = 本地给不出可用期，才会去问云端
+        repo::set_secret(&db, "qoder:a", &secret_with_expiry(""), None).unwrap();
+
+        let report = sync_with(&db, &|_, _| CloudVerdict::Expired {
+            reason: "401".into(),
+        })
+        .unwrap();
+
+        assert_eq!(report.cloud_expired, 1);
+        let row = repo::list(&db).unwrap().remove(0);
+        assert_eq!(row.last_fail_kind.as_deref(), Some("auth_expired"));
+    }
+
+    /// 云端问不出来要单独计数：这一轮里哪些账号是靠本机数据判的，界面要说清。
+    #[test]
+    fn cloud_unavailable_is_counted_as_fallback() {
+        let (_dir, db) = setup();
+        seed(&db, "qoder:a", None);
+        repo::set_secret(
+            &db,
+            "qoder:a",
+            &secret_with_expiry("2000-01-01T00:00:00Z"),
+            None,
+        )
+        .unwrap();
+
+        let report = sync_with(&db, &no_cloud).unwrap();
+
+        assert_eq!(report.cloud_fallback, 1);
+        assert_eq!(report.cloud_ok, 0);
+        assert_eq!(report.expired, 1, "回退本机后照旧按本地时间判过期");
+    }
+
+    /// 还在有效期内的账号不该为一次「刷新状态」多打一次平台接口。
+    #[test]
+    fn valid_accounts_do_not_hit_the_cloud() {
+        let (_dir, db) = setup();
+        seed(&db, "qoder:a", None);
+        repo::set_secret(
+            &db,
+            "qoder:a",
+            &secret_with_expiry("2099-01-01T00:00:00Z"),
+            None,
+        )
+        .unwrap();
+
+        let report = sync_with(&db, &|_, _| panic!("有效期内的账号不该问云端")).unwrap();
+
+        assert_eq!(
+            report.cloud_ok + report.cloud_expired + report.cloud_fallback,
+            0
         );
     }
 }

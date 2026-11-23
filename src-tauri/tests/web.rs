@@ -225,3 +225,51 @@ fn error_text_is_the_json_the_frontend_parses() {
     assert_eq!(parsed["kind"], "io");
     assert_eq!(parsed["message"], "连接超时");
 }
+
+/// 回归：**完整档案的 WorkBuddy 账号必须可切**。
+///
+/// 曾因预检把完整 iid 当 uid 传给 `pack_ready`，档案路径被拼成
+/// `profiles\cn\workbuddy:<uid>`（冒号不是合法目录名），永远判「无档案」——
+/// 于是所有 WorkBuddy 账号的切换按钮全灰，而真正的切换写入路径是对的，
+/// 也就永远不会有人发现。这里从 `account_switchable` 入口整条链路钉死。
+#[tokio::test]
+async fn workbuddy_account_with_complete_pack_is_switchable() {
+    let _guard = DATA_DIR_LOCK.lock().await;
+    let ctx = test_ctx();
+
+    // 完整档案 = `profiles/cn/<uid>/` 下有 `app/session` 目录 + `auth.info` 文件
+    let pack = ctx._dir.path().join("profiles").join("cn").join("u1");
+    std::fs::create_dir_all(pack.join("app/session")).unwrap();
+    std::fs::write(pack.join("auth.info"), b"{\"account\":{\"uid\":\"u1\"}}").unwrap();
+
+    // 入库账号 + 一份能解出的凭据（set_secret 走真实 DPAPI 加密）
+    let identity = ai_manager::app::accounts::AccountIdentity {
+        iid: "workbuddy:u1".into(),
+        platform: "workbuddy".into(),
+        platform_label: "WorkBuddy 国内版".into(),
+        account_id: "u1".into(),
+        name: "测试".into(),
+        requires_checkin: true,
+        has_secret: true,
+        ..Default::default()
+    };
+    let db = ai_manager::app::db::Db::open().expect("打开临时库");
+    ai_manager::app::accounts::repo::upsert_identity(&db, &identity, 1).unwrap();
+    let mut cred = ai_manager::app::accounts::credential::Credential {
+        token: "tok".into(),
+        ..Default::default()
+    };
+    cred.put("uid", serde_json::json!("u1"));
+    ai_manager::app::accounts::repo::set_secret(&db, "workbuddy:u1", &cred.to_bytes().unwrap(), None)
+        .unwrap();
+
+    // dispatch 返回命令的裸返回值（HTTP 层才包 {ok,data} 信封）
+    let v = call(&ctx.state, "account_switchable", json!({})).await.unwrap();
+    let list = v
+        .as_array()
+        .unwrap_or_else(|| panic!("switchable 响应异常：{v}"));
+    assert!(
+        list.iter().any(|s| s == "workbuddy:u1"),
+        "有完整档案的 WorkBuddy 账号必须可切，实际：{list:?}"
+    );
+}

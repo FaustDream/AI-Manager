@@ -154,7 +154,7 @@ pub fn wait_for_login(db: &Db, platform: &str, ticket: &str) -> Result<LoginOutc
 
 // -------------------------------------------------------------- WorkBuddy
 
-const WB_UA: &str = "WorkBuddy/5.5.6";
+pub(crate) const WB_UA: &str = "WorkBuddy/5.5.6";
 const WB_APP_VERSION: &str = "2.0.0";
 const CODE_PENDING: i64 = 11217;
 const CODE_ACCOUNT_PENDING: i64 = 12151;
@@ -469,6 +469,8 @@ async fn wait_qoder(db: &Db, platform: &str, ticket: &str) -> Result<LoginOutcom
     let mut access = String::new();
     let mut refresh = str_of(&device, "refresh_token");
     let mut expires_at = None;
+    // 账号级有效期：refresh token 的到期时间（访问令牌只有一天，见 qoder.rs 同段注释）
+    let mut refresh_expires_at = qoder_refresh_expiry(&device);
     let mut req = HttpRequest::post(format!("{}/api/v1/me/jobToken", qoder_api(intl)));
     req.headers = vec![
         ("Authorization".into(), format!("Bearer {device_token}")),
@@ -484,6 +486,9 @@ async fn wait_qoder(db: &Db, platform: &str, ticket: &str) -> Result<LoginOutcom
                     refresh = r;
                 }
                 expires_at = qoder_expiry(&body);
+                if let Some(ts) = qoder_refresh_expiry(&body) {
+                    refresh_expires_at = Some(ts);
+                }
             }
         }
         _ => {}
@@ -544,10 +549,15 @@ async fn wait_qoder(db: &Db, platform: &str, ticket: &str) -> Result<LoginOutcom
     );
     meta.insert("email".into(), json!(email));
     meta.insert("ua".into(), json!("Qoder"));
+    // 账号级到期时间取 refresh token：访问令牌一天一续，用它会显示成「永远剩 1 天」
+    let account_expires_at = refresh_expires_at.or(expires_at);
+    if let Some(ts) = refresh_expires_at {
+        meta.insert("refresh_expires_at".into(), json!(iso_of(Some(ts))));
+    }
     let credential = Credential {
         token: access,
         refresh_token: refresh,
-        expires_at: iso_of(expires_at),
+        expires_at: iso_of(account_expires_at),
         meta,
     };
 
@@ -1150,7 +1160,24 @@ fn device_expiry(data: &Value) -> Option<i64> {
     qoder_expiry(data)
 }
 
-fn iso_of(ms: Option<i64>) -> String {
+/// refresh token 的到期时间（账号级有效期的真源）。
+///
+/// 只认绝对时间字段：`*_expires_in` 这类相对时长各家单位不一（Qoder 的
+/// `expires_in` 是毫秒、别家是秒），按猜的单位换算会把有效期算错一位数量级。
+fn qoder_refresh_expiry(data: &Value) -> Option<i64> {
+    for key in [
+        "refresh_expires_at",
+        "refreshTokenExpiresAt",
+        "refresh_expire_time",
+    ] {
+        if let Some(ts) = data.get(key).and_then(parse_ts).filter(|ts| *ts > 0) {
+            return Some(ts);
+        }
+    }
+    None
+}
+
+pub(crate) fn iso_of(ms: Option<i64>) -> String {
     ms.and_then(|v| Local.timestamp_millis_opt(v).single())
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_default()
@@ -1263,6 +1290,19 @@ mod tests {
         assert_eq!(
             qoder_expiry_at(&body, 1_792_000_000_000),
             parse_ts(&json!("2027-01-07T00:00:00Z"))
+        );
+    }
+
+    /// 账号级有效期只认 refresh token 的绝对到期字段，不猜相对时长的单位。
+    #[test]
+    fn qoder_refresh_expiry_reads_absolute_field_only() {
+        assert_eq!(
+            qoder_refresh_expiry(&json!({ "refreshTokenExpiresAt": "2027-01-07T00:00:00Z" })),
+            parse_ts(&json!("2027-01-07T00:00:00Z"))
+        );
+        assert_eq!(
+            qoder_refresh_expiry(&json!({ "refresh_expires_in": 2_592_000_000i64 })),
+            None
         );
     }
 

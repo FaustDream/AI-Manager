@@ -8,8 +8,9 @@
 // 默认区间 7 天（不是今天）：当天还没刷新积分时收支常常整排是 0，
 // 一进页面看到四个 0 会以为功能坏了；7 天既有形状又能看出趋势。
 //
-// 区间由每个区块自己持有（'./range'）：积分、Token、会话是三份独立的账，
-// 各看各的时间窗。三块都不设回看上限，起止日期直接交给后端。
+// 区间只有一份，放在页头做「全局过滤」（'./range'）：积分、Token、会话三块共用同一个
+// 时间窗——同一次进页面就该是同一个口径，三份控件各调各的只会让两张卡上的数字互相对不上。
+// 不设回看上限，起止日期直接交给后端。
 //
 // 两块都读本地库，只有补刷积分这个动作会打平台接口（Token 采集由后台定时器负责）。
 // 账号健康摘要（启用/已签/到期/失败）与页头动作条已撤：这些动作账号中心、
@@ -21,7 +22,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { StateBlock } from '@/components/ui/form';
 import { queryCmd, runCmd } from '@/lib/cmd';
-import { fmtAmount, fmtTime } from '@/lib/format';
+import { fmtAmount } from '@/lib/format';
 import { errText } from '@/lib/ipc';
 import { CreditFlowChart } from '@/components/credit-flow';
 import { CreditPlatformSplit } from '@/components/credit-platforms';
@@ -44,10 +45,9 @@ function go(id: string, iid?: string) {
 export default function OverviewPage() {
   const qc = useQueryClient();
   // 默认看最近 7 天：当天还没刷新积分时收支常常是 0，一排 0 会被读成「坏了」
+  // 一份区间喂给三块：积分 / Token / 会话（页头的「全局过滤」）
   const range = useRange(7);
-  // 用量的区间单独一份：Token 采集与积分快照不是同一份账，各自的区间互不牵连
-  const usageRange = useRange(7);
-  const usage = useUsageQuery(usageRange);
+  const usage = useUsageQuery(range);
   // 两种视角共存：收支看「进出」，余额看「存量走势」，默认收支
   const [chartMode, setChartMode] = useState<'flow' | 'balance'>('flow');
 
@@ -204,18 +204,20 @@ export default function OverviewPage() {
       {/* 极光底纹（叙事页专属）：只在仪表盘顶部铺一层极淡的慢渐变，
           表格页不挂——读表时底色在动会分神。不拦截指针。 */}
       <div className="aurora-glow" aria-hidden />
-      <div className="flex items-center gap-2">
-        <h1 className="text-base font-semibold">仪表盘</h1>
-        <span className="flex-1" />
-        {report && (
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full border border-line bg-card px-2.5 py-1 text-xs text-muted"
-            title={`积分数据超过 ${config.data?.dashboard.stale_refresh_min ?? 10} 分钟没刷新就自动补刷一轮`}
-          >
-            <span className="size-1.5 rounded-full bg-ok" />
-            更新 {report.credits_at === null ? '从未' : fmtTime(report.credits_at)}
-          </span>
-        )}
+      {/* 页头只留全局过滤：标题已由侧栏导航给出，重复一遍是占位；
+          「更新 时间」也不再摆——补刷是后台行为，用户不需要为它分心。 */}
+      <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5">
+        {/* 全局过滤：三块（积分 / Token / 会话）共用这一个区间。
+            各卡自己再挂一份控件，等于同一个页面有三个时间口径。 */}
+        <span
+          className="flex flex-wrap items-center justify-end gap-1.5"
+          role="group"
+          aria-label="全局过滤"
+          title="统一控制积分统计、Token 统计与会话统计的时间区间"
+        >
+          <span className="text-xs text-muted">全局过滤</span>
+          <RangeControl range={range} />
+        </span>
       </div>
 
       {/* 两栏：左积分、右用量。两张卡**同构**——标题行（区间控件）+ 2×2 数字 + 两个子块。
@@ -228,12 +230,9 @@ export default function OverviewPage() {
         ) : (
           <section className="grid min-w-0 gap-3 p-3 xl:row-span-4 xl:grid-rows-subgrid">
             <div>
-              <SectionTitle
-                className="mb-0 min-h-7 items-center"
-                right={<RangeControl range={range} />}
-              >
-                积分统计
-              </SectionTitle>
+              {/* 区间控件已上移到页头「全局过滤」：这一行只留标题，但保留行高，
+                  否则右栏的标题行会被 subgrid 拉高、两卡数字行对不齐 */}
+              <SectionTitle className="mb-0 min-h-7 items-center">积分统计</SectionTitle>
             </div>
 
             {/* 四个数字回答「进了多少、花了多少、还剩多少、有没有要紧事」。
@@ -341,11 +340,11 @@ export default function OverviewPage() {
           </section>
         )}
 
-        <UsageSection query={usage} range={usageRange} />
+        <UsageSection query={usage} range={range} />
       </div>
 
-      {/* 会话维度横跨整页：KPI 瓦片 + 来源/项目排名 */}
-      <SessionsSection />
+      {/* 会话维度横跨整页：KPI 瓦片 + 来源/项目排名；区间同样来自页头的全局过滤 */}
+      <SessionsSection range={range} />
     </div>
   );
 }
