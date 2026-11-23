@@ -8,7 +8,7 @@ import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { echarts, type ChartOption, type EChartsType } from '@/lib/echarts';
 import { onThemeChange } from '@/lib/theme';
 
-/** 图表用的令牌子集：从 documentElement 现读，五种主题（含经典两套）都走同一张键表。 */
+/** 图表用的令牌子集：从 documentElement 现读，四种风格 + 跟随系统都走同一张键表。 */
 export interface ChartPalette {
   accent: string;
   accentStrong: string;
@@ -21,6 +21,12 @@ export interface ChartPalette {
   line: string;
   card: string;
   hover: string;
+  /**
+   * 多序列色板（--chart-1..8）。语义色只有 ok/warn/bad 三支，画到第 4 个平台就得
+   * 借色；写死十六进制会让浅色主题里出现刺眼的荧光块，所以统一走令牌。
+   * 八支之间除了色相还拉开了明度，灰度打印 / 色觉障碍下仍可分辨。
+   */
+  series: string[];
 }
 
 function readPalette(): ChartPalette {
@@ -38,6 +44,7 @@ function readPalette(): ChartPalette {
     line: token('--color-line'),
     card: token('--color-card'),
     hover: token('--color-hover'),
+    series: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => token(`--chart-${i}`)),
   };
 }
 

@@ -2,7 +2,7 @@
 //
 // 边界：业务配置不放这里（那是 `data/config.toml` 与后端 kv 的职责）；
 // 这里只存「用户把哪块收起来了」这种丢了也不影响数据正确性的偏好。
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useSyncExternalStore } from 'react';
 
 const PREFIX = 'aim.ui.';
 
@@ -63,25 +63,51 @@ export function parseChoice<T extends string>(
   return (values as readonly string[]).includes(raw) ? (raw as T) : fallback;
 }
 
-/** 持久化的单选值（分组/排序这类枚举）。 */
+/**
+ * 持久化的单选值（分组/排序/导航布局这类枚举）。
+ *
+ * 同一个 key 在多处使用时**共享一份值**：导航布局既在顶栏切换、也在设置页切换，
+ * 各自 useState 会让两处显示不同步。这里按 key 建模块级快照，所有调用方订阅同一份。
+ */
+const choiceSlots = new Map<string, { value: string; subs: Set<() => void> }>();
+
+function choiceSlot<T extends string>(key: string, fallback: T, values: readonly T[]) {
+  let slot = choiceSlots.get(key);
+  if (!slot) {
+    slot = {
+      value: parseChoice(store()?.getItem(PREFIX + key) ?? null, fallback, values),
+      subs: new Set(),
+    };
+    choiceSlots.set(key, slot);
+  }
+  return slot;
+}
+
 export function usePersistedChoice<T extends string>(
   key: string,
   fallback: T,
   values: readonly T[],
 ): [T, (next: T) => void] {
-  const [value, setValue] = useState<T>(() =>
-    parseChoice(store()?.getItem(PREFIX + key) ?? null, fallback, values),
-  );
+  const slot = choiceSlot(key, fallback, values);
+  const value = useSyncExternalStore(
+    (cb) => {
+      slot.subs.add(cb);
+      return () => slot.subs.delete(cb);
+    },
+    () => slot.value,
+  ) as T;
   const update = useCallback(
     (next: T) => {
-      setValue(next);
+      if (slot.value === next) return;
+      slot.value = next;
       try {
         store()?.setItem(PREFIX + key, next);
       } catch {
         /* 写不进去就只在本次会话生效 */
       }
+      for (const cb of slot.subs) cb();
     },
-    [key],
+    [key, slot],
   );
   return [value, update];
 }
@@ -122,5 +148,28 @@ export function saveFontChoice(choice: FontChoice): void {
     store()?.setItem(PREFIX + FONT_KEY, choice);
   } catch {
     /* 隐私模式：只在本次会话生效 */
+  }
+}
+
+/**
+ * 导航布局。三种都是正式形态，设置页与顶栏都能切：
+ *   sidebar 侧边栏 240px + 窄顶栏（后台管理经典结构）
+ *   topbar  顶部标签导航（一屏全给内容，窗口矮时最省纵向空间）
+ *   rail    56px 图标轨道，可展开成 240px（表格页要横向空间时用）
+ */
+export type NavLayout = 'sidebar' | 'topbar' | 'rail';
+export const NAV_LAYOUTS: readonly NavLayout[] = ['sidebar', 'topbar', 'rail'];
+export const NAV_KEY = 'nav';
+
+/**
+ * 启动画面的配色提示。风格真源是后端 kv，首屏那一刻还取不到，
+ * 所以另存一份纯绘制用的副本给 index.html 的内联脚本读——丢了只是首屏闪一下白，
+ * 不影响真正的风格选择。
+ */
+export function saveThemeHint(choice: string): void {
+  try {
+    store()?.setItem(PREFIX + 'theme', choice);
+  } catch {
+    /* 同上：写不进去就不提示 */
   }
 }

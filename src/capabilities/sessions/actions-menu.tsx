@@ -84,7 +84,7 @@ export function ContextMenu({
             }}
           >
             <span className="min-w-0 flex-1 truncate">{item.label}</span>
-            {item.hint && <span className="text-[11px] text-muted">{item.disabled ? item.hint : ''}</span>}
+            {item.hint && <span className="text-xs text-muted">{item.disabled ? item.hint : ''}</span>}
           </button>
         ))}
       </div>

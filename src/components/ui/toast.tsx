@@ -72,7 +72,7 @@ export function ToastHost() {
                 onClick={(event) => event.stopPropagation()}
               >
                 <summary className="cursor-pointer select-none hover:text-fg">详情</summary>
-                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-4">
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-xs leading-4">
                   {item.detail}
                 </pre>
               </details>

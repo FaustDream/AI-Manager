@@ -1,7 +1,7 @@
-// 窗口框架：顶部导航 + 内容区 + toast。
+// 应用外壳：侧边栏 / 顶部标签 / 图标轨道三种导航布局 + 内容区 + 全局浮层。
 //
 // 切标签「不许白屏」的四条约定（每一条都对应一次实测踩坑）：
-//   1. 页面 chunk 空闲预热 —— 点标签时模块多半已在内存里；
+//   1. 页面 chunk 空闲预热 —— 点导航时模块多半已在内存里；
 //   2. 切页前先 `await cap.load()`：**chunk 到位了才换页面**，没到位就继续显示
 //      旧页面（顶栏只多一条细进度线）。这样根本用不到「加载中骨架」这一幕；
 //   3. 真正的切换放进 `startTransition`：React 可以被打断，也不会因为一帧没准备好
@@ -12,37 +12,32 @@
 //      「切过去一片空白」。
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
-import {
-  Users, MessagesSquare, Blocks, Settings, RefreshCw, ScrollText, LayoutDashboard, Network,
-  Search, ArrowLeft,
-} from 'lucide-react';
 import { MotionConfig, motion } from 'motion/react';
 import { capabilities } from '@/app/router';
 import { ToastHost, toast } from '@/components/ui/toast';
 import { ConfirmHost } from '@/components/ui/confirm';
 import { BackToTop } from './BackToTop';
-import { Button, cn } from '@/components/ui/button';
+import { cn } from '@/components/ui/button';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { onIdle } from '@/lib/idle';
 import { CommandPalette, type PaletteItem } from './CommandPalette';
-import { QuitButton } from './QuitButton';
+import { Navbar } from './Navbar';
+import { Sidebar } from './Sidebar';
+import { navIcon } from './nav-icons';
 import { useDesktopNotifications } from '@/lib/notify';
 import { focusSession } from '@/lib/nav';
 import type { Filter, Page, SessionRow } from '@/lib/types';
 import { hideSplash } from '@/lib/splash';
 import { loadFont, loadTheme } from '@/lib/theme';
+import {
+  NAV_LAYOUTS,
+  NAV_KEY,
+  usePersistedChoice,
+  usePersistedFlag,
+  type NavLayout,
+} from '@/lib/ui-state';
 import { Suspense } from 'react';
 import { StateBlock } from '@/components/ui/form';
-
-const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
-  overview: LayoutDashboard,
-  'account-center': Users,
-  sessions: MessagesSquare,
-  hub: Blocks,
-  'model-api': Network,
-  logs: ScrollText,
-  settings: Settings,
-};
 
 /**
  * 入场动画。**不从 opacity 0 起步**：0 起步意味着那一帧什么都没有，
@@ -59,23 +54,38 @@ const PAGE_Y = 6;
 
 export function Shell() {
   const caps = useMemo(() => capabilities(), []);
-  // 顶部导航只展示非 hidden 的能力；hidden 的仍可被 aim:navigate 打开
+  // 导航只展示非 hidden 的能力；hidden 的仍可被 aim:navigate 打开
   const navCaps = useMemo(() => caps.filter((cap) => !cap.manifest.hidden), [caps]);
   const [active, setActive] = useState(navCaps[0]?.manifest.id ?? '');
   // 内容区跟随 `view`：它在 chunk 到位之后才更新，所以等待期间屏幕上一直是旧页面。
-  // `active` 留在同步更新里，点哪个标签哪个立刻高亮——点完没反应比白屏还慌。
+  // `active` 留在同步更新里，点哪个哪个立刻高亮——点完没反应比白屏还慌。
   const [view, setView] = useState(active);
   // chunk 还没到位：顶栏画一条进度线，其余什么都不变
   const [switching, setSwitching] = useState(false);
   const [pending, startTransition] = useTransition();
   // 连点保护：只认最后一次点击，先到的回包不许把页面切回去
   const latest = useRef(active);
-  // 导航栈（P2-12）：跨页跳转（总览点数字 → 账号中心）之后能原路返回。
+  // 导航栈：跨页跳转（仪表盘点数字 → 账号中心）之后能原路返回。
   // 用 ref 存栈 + 一个布尔驱动按钮显隐：栈本身不参与渲染，没必要每次进栈都重渲染整壳。
   const history = useRef<string[]>([]);
   const [backTo, setBackTo] = useState<string | null>(null);
   // 切页方向：1 = 前进（从下方进），-1 = 后退（从上方进）
   const dir = useRef(1);
+
+  // 导航布局与折叠位。两种侧栏形态各记一个折叠位：从轨道切回侧栏时
+  // 不该继承「收起」，否则用户点了「侧边栏」却还是一条图标。
+  const [layout] = usePersistedChoice<NavLayout>(NAV_KEY, 'sidebar', NAV_LAYOUTS);
+  const [sidebarCollapsed, setSidebarCollapsed] = usePersistedFlag('nav.sidebar.collapsed', false);
+  const [railExpanded, setRailExpanded] = usePersistedFlag('nav.rail.expanded', false);
+  const sideNav = layout !== 'topbar';
+  const collapsed = layout === 'rail' ? !railExpanded : sidebarCollapsed;
+  const toggleNav = useCallback(() => {
+    if (layout === 'rail') setRailExpanded(!railExpanded);
+    else setSidebarCollapsed(!sidebarCollapsed);
+  }, [layout, railExpanded, sidebarCollapsed, setRailExpanded, setSidebarCollapsed]);
+
+  // 手动轮询的忙碌态：按钮自己转圈，不用户猜「点了没反应」
+  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     void loadTheme();
@@ -84,7 +94,7 @@ export function Shell() {
     void runCmd('ui_ready');
   }, []);
 
-  // 桌面通知：接替托盘的被动提醒（签到完成 / 登录结果 / 凭据临期）
+  // 桌面通知：签到完成 / 登录结果 / 凭据临期的被动提醒
   useDesktopNotifications();
 
   // 首屏渲染完 → 空闲时间把其余页面 chunk 逐个拉下来。
@@ -108,9 +118,7 @@ export function Shell() {
 
   /**
    * 切页统一入口：**先等到 chunk，再换页面**。
-   *
-   * 之前是「直接换、让 Suspense 去兜加载」——兜底就是那块灰条骨架。现在把等待放在
-   * 换页之前：模块没到位时旧页面原地不动，用户只会看到顶栏多了一条细线。
+   * 模块没到位时旧页面原地不动，用户只会看到顶栏多了一条细线。
    */
   const go = useCallback(
     (id: string, opts?: { back?: boolean }) => {
@@ -137,7 +145,7 @@ export function Shell() {
       void cap
         .load()
         .then(() => {
-          if (latest.current !== id) return; // 期间又点了别的标签
+          if (latest.current !== id) return; // 期间又点了别的导航项
           setSwitching(false);
           startTransition(() => setView(id));
         })
@@ -157,7 +165,7 @@ export function Shell() {
     else setBackTo(null);
   }, [go]);
 
-  // 能力页之间的轻量跳转：总览等页面只发事件，不必知道导航是怎么实现的。
+  // 能力页之间的轻量跳转：仪表盘等页面只发事件，不必知道导航是怎么实现的。
   // 只在能力清单里存在的 id 生效，避免页面写错 id 时整页空白。
   useEffect(() => {
     const onNavigate = (event: Event) => {
@@ -173,7 +181,6 @@ export function Shell() {
   /*
    * 切页进度线的最短显示时长（200ms）：本地 chunk 常在 30~60ms 内到位，
    * 只按布尔显隐的话，线会闪一下就没——比不显示更像「坏了一下」。
-   * 这里把「开始时间」记下来，结束时补足到 200ms 再淡出。
    */
   const busy = switching || pending;
   const [lineVisible, setLineVisible] = useState(false);
@@ -210,6 +217,17 @@ export function Shell() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [navCaps, go]);
+
+  const runRound = useCallback(async () => {
+    if (running) return;
+    setRunning(true);
+    try {
+      // 结果由事件桥 checkin:round 统一失效 ['accounts']，这里不猜完成时刻
+      if ((await runCmd('daily_run_now')) !== undefined) toast('已开始跑一轮每日轮询');
+    } finally {
+      setRunning(false);
+    }
+  }, [running]);
 
   // 会话快搜（Ctrl+K）：最近的 30 条进面板，命中后跳会话页并打开预览。
   // 正文级搜索在会话页（FTS）；面板只做标题级的快速定位。
@@ -282,99 +300,57 @@ export function Shell() {
     return [...pages, ...actions, ...sessions];
   }, [navCaps, go, recentSessions.data]);
 
-  return (
-    <MotionConfig reducedMotion="user">
-      <div className="flex h-screen flex-col">
-      <header className="relative flex items-center gap-2 border-b border-line px-5 py-2.5">
-        {/* 窗口收到最小宽度时导航整体横向收拢滚动，按钮自身不压缩、文字不折行 */}
-        <nav className="flex min-w-0 gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {navCaps.map((cap, at) => {
-            const Icon = ICONS[cap.manifest.id] ?? Users;
-            return (
-              <button
-                key={cap.manifest.id}
-                className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-sm whitespace-nowrap transition-colors duration-[var(--dur-1)] ${
-                  active === cap.manifest.id ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
-                }`}
-                title={`${cap.manifest.title}（快捷键 ${at + 1}）`}
-                aria-current={active === cap.manifest.id ? 'page' : undefined}
-                onClick={() => go(cap.manifest.id)}
-              >
-                <Icon size={15} />
-                {cap.manifest.title}
-              </button>
-            );
-          })}
-        </nav>
-        <span className="flex-1" />
-        {/* 返回（P2-12）：只在真的走过跨页跳转后出现，标题里说清回到哪一页 */}
-        {backTo && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="group"
-            title={`返回${caps.find((c) => c.manifest.id === backTo)?.manifest.title ?? '上一页'}`}
-            aria-label="返回上一页"
-            onClick={back}
+  const openPalette = useCallback(() => window.dispatchEvent(new CustomEvent('aim:palette')), []);
+
+  // 顶部标签布局的标签条：窗口收窄时整体横向滚动，按钮自身不压缩、文字不折行
+  const tabs = (
+    <nav
+      className="flex min-w-0 gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      aria-label="主导航"
+    >
+      {navCaps.map((cap, at) => {
+        const Icon = navIcon(cap.manifest.id);
+        const on = active === cap.manifest.id;
+        return (
+          <button
+            key={cap.manifest.id}
+            type="button"
+            className={cn(
+              'flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm whitespace-nowrap',
+              'transition-colors duration-[var(--dur-1)]',
+              on ? 'bg-accent-soft font-medium text-fg' : 'text-fg2 hover:bg-hover hover:text-fg',
+            )}
+            title={`${cap.manifest.note ?? cap.manifest.title}（快捷键 ${at + 1}）`}
+            aria-current={on ? 'page' : undefined}
+            onClick={() => go(cap.manifest.id)}
           >
-            <ArrowLeft
-              size={14}
-              className="transition-transform duration-[var(--dur-1)] group-hover:-translate-x-0.5"
-            />
-            返回
-          </Button>
+            <Icon size={15} className={on ? 'text-accent' : 'text-muted'} />
+            {cap.manifest.title}
+          </button>
+        );
+      })}
+    </nav>
+  );
+
+  const fluid = current?.manifest.fluid ?? false;
+
+  const content = (
+    <main className="min-h-0 flex-1 overflow-auto">
+      {/* 叙事页限宽 1440px 居中并放宽留白；表格页吃满宽度、保持紧凑密度。
+          分流开关是 manifest.fluid —— 页面自己声明，壳层不猜。 */}
+      <div
+        className={cn(
+          'w-full',
+          fluid ? 'h-full px-4 py-3' : 'mx-auto max-w-[1440px] px-6 pt-5 pb-8',
         )}
-        {/* 命令面板的显性入口（P1-12）：⌘K 以前是隐藏能力，界面上没有任何提示 */}
-        <Button
-          size="sm"
-          variant="ghost"
-          title="搜索页面 / 动作 / 会话（Ctrl+K）"
-          aria-label="打开搜索面板"
-          onClick={() => window.dispatchEvent(new CustomEvent('aim:palette'))}
-        >
-          <Search size={14} />
-          搜索
-          <kbd className="rounded-sm border border-line px-1 text-[10px] text-muted">Ctrl K</kbd>
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          title="立即跑一轮每日轮询"
-          aria-label="立即跑一轮每日轮询"
-          onClick={async () => {
-            // 结果由事件桥 checkin:round 统一失效 ['accounts']，这里不猜完成时刻
-            if ((await runCmd('daily_run_now')) !== undefined) toast('已开始跑一轮每日轮询');
-          }}
-        >
-          <RefreshCw size={14} />
-        </Button>
-        {/* 浏览器化后的正式停止入口：确认后结束后端进程 */}
-        <QuitButton />
-        {/* 切页进度线：贴在 header 底边，只做「正在换页」的提示，不占布局、不挡内容。
-            轨道常驻极淡，指示块循环穿过——从「闪一下」变成「看得出在走」。 */}
-        <span
-          aria-hidden
-          className={cn(
-            'pointer-events-none absolute inset-x-0 bottom-0 h-0.5 overflow-hidden transition-opacity duration-[var(--dur-1)]',
-            lineVisible ? 'opacity-100' : 'opacity-0',
-          )}
-        >
-          <span className="indeterminate-bar block h-full w-[30%] bg-accent/60" />
-        </span>
-      </header>
-
-      <CommandPalette items={paletteItems} placeholder="搜索页面 / 动作 / 会话…（Esc 关闭）" />
-
-      <main className="flex-1 overflow-auto px-5 pb-6 pt-4">
-        {/* 内容一律铺满可视宽度：页面自己负责栅格，壳层不再按能力页限宽居中——
-            限宽会让宽屏上出现两条大留白，反而把内容挤成「卡片里的卡片」。 */}
-        <div className="w-full">
+      >
         {/* 兜底边界：只有「首屏第一页」会真的用到它——之后的切页都在 go() 里等到
             chunk 到位才换，不会走到 fallback。 */}
         <Suspense fallback={<PageSkeleton />}>
           {current ? (
             <motion.div
               key={current.manifest.id}
+              className={fluid ? 'h-full' : undefined}
               initial={{ opacity: 0.55, y: dir.current * PAGE_Y }}
               animate={PAGE_MOTION.animate}
               transition={PAGE_MOTION.transition}
@@ -386,19 +362,50 @@ export function Shell() {
             <StateBlock kind="error" title="没有找到任何能力目录" />
           )}
         </Suspense>
-        </div>
-      </main>
+      </div>
+    </main>
+  );
 
-      <BackToTop viewKey={current?.manifest.id ?? ''} />
-      <ToastHost />
-      <ConfirmHost />
+  return (
+    <MotionConfig reducedMotion="user">
+      <div className="flex h-screen overflow-hidden">
+        {sideNav && (
+          <Sidebar
+            caps={navCaps}
+            active={active}
+            collapsed={collapsed}
+            onGo={go}
+            onToggle={toggleNav}
+          />
+        )}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Navbar
+            layout={layout}
+            activeId={current?.manifest.id ?? ''}
+            activeTitle={current?.manifest.title ?? ''}
+            collapsed={collapsed}
+            onToggleNav={toggleNav}
+            tabs={layout === 'topbar' ? tabs : undefined}
+            backTitle={backTo ? caps.find((c) => c.manifest.id === backTo)?.manifest.title ?? '上一页' : null}
+            onBack={back}
+            onPalette={openPalette}
+            onRunRound={() => void runRound()}
+            running={running}
+            progress={lineVisible}
+          />
+          {content}
+        </div>
+
+        <CommandPalette items={paletteItems} placeholder="搜索页面 / 动作 / 会话…（Esc 关闭）" />
+        <BackToTop viewKey={current?.manifest.id ?? ''} />
+        <ToastHost />
+        <ConfirmHost />
       </div>
     </MotionConfig>
   );
 }
 
-/** 首屏页面渲染出来的信号：撤掉 index.html 里的启动画面。
- *  窗口在 main.tsx 里就已经显示出来了（那时启动画面已上屏），所以这里直接收。 */
+/** 首屏页面渲染出来的信号：撤掉 index.html 里的启动画面。 */
 function PageReady() {
   useEffect(() => {
     hideSplash();

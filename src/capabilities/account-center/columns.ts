@@ -193,6 +193,28 @@ const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
   };
 };
 
+/**
+ * 10 天内到期的积分合计。
+ *
+ * 列表只给总额：具体是哪几笔、哪天到期属于「点开这一行才关心」的细节，放详情。
+ * 三态要分清——从没拿到过批次（`null`，显示「—」）、拿到了但 10 天内没有快过期的（0，显示「无」）、
+ * 以及确有金额（按金额显示并染警示色）。
+ */
+const expiringCell = (a: AccountView): Cell => {
+  const amount = a.expiring_10d;
+  if (amount === null || amount === undefined) {
+    return { text: '—', tone: 'muted', title: '还没有批次数据：点「刷新积分」拉一次' };
+  }
+  if (amount <= 0) {
+    return { text: '无', tone: 'muted', title: '10 天内没有要过期的积分' };
+  }
+  return {
+    text: fmtAmount(amount),
+    tone: 'warn',
+    title: `未来 10 天内到期 ${fmtAmount(amount)} 积分（已过期的不计）；具体批次见下方详情`,
+  };
+};
+
 const checkinCell = (
   a: AccountView,
   _errors: Record<string, string>,
@@ -263,6 +285,14 @@ export const COLUMNS: ColumnDefEx[] = [
     width: 128,
     min: 90,
     cell: creditCell,
+  },
+  {
+    key: 'expiring',
+    header: '10 天内到期',
+    headerTitle: '未来 10 天内会过期的积分合计；已过期的不计，批次明细见下方详情',
+    width: 118,
+    min: 96,
+    cell: expiringCell,
   },
   {
     key: 'checkin',

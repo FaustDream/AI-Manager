@@ -22,8 +22,8 @@ export function cn(...inputs: ClassValue[]): string {
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'default' | 'primary' | 'ghost' | 'danger';
-  size?: 'sm' | 'md';
+  variant?: 'default' | 'primary' | 'soft' | 'ghost' | 'danger';
+  size?: 'sm' | 'md' | 'lg';
   /** 加载中：出现 spinner、禁点、宽度锁定，文字保持原样 */
   loading?: boolean;
   children?: ReactNode;
@@ -89,12 +89,17 @@ export function Button({
         variant === 'default' && 'text-fg',
         variant === 'primary' &&
           'border-accent bg-accent text-on-accent enabled:hover:border-accent-strong enabled:hover:bg-accent-strong',
+        // 次强调：淡主色底 + 主色字。比描边按钮重、比实底主按钮轻，
+        // 用在「这一区的主操作，但不是整页的主操作」
+        variant === 'soft' &&
+          'border-accent/25 bg-accent-soft text-accent-strong enabled:hover:border-accent enabled:hover:bg-accent enabled:hover:text-on-accent',
         variant === 'ghost' && 'border-transparent text-fg2 enabled:hover:text-fg',
-        // 不可逆动作用**实底**（总纲 P0-7）：红框红字在一排描边按钮里读不出份量，
+        // 不可逆动作用**实底**：红框红字在一排描边按钮里读不出份量，
         // 实底 + 白字才是「这一下删掉就没了」的视觉重量。
         variant === 'danger' &&
           'border-bad bg-bad text-on-accent enabled:hover:border-bad-strong enabled:hover:bg-bad-strong',
         size === 'sm' && 'rounded-sm px-2 py-0.5 text-xs',
+        size === 'lg' && 'px-4 py-2 text-md',
         // 光标与透明度按状态显式给，不靠 disabled: 变体互相覆盖
         loading ? 'cursor-progress' : disabled ? 'cursor-default opacity-55' : 'cursor-pointer',
         className,

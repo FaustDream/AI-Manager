@@ -5,8 +5,9 @@
 // 端口/Key/模型的读写仍走命令面（model_api_*），页面不直接 invoke。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
-import { Card, Notice, Tag } from '@/components/ui';
+import { Notice, Tag } from '@/components/ui';
 import { Button, cn } from '@/components/ui/button';
+import { PageHeader, Section } from '@/components/ui/card';
 import { confirmAction } from '@/components/ui/confirm';
 import { Input, SkeletonBlock, StateBlock } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
@@ -242,16 +243,25 @@ ANTHROPIC_MODEL=<模型 ID>`,
   ];
 
   return (
-    <div className="stagger flex flex-col gap-4">
-      <Card>
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold">豆包接口反代</h2>
-          {info && (
-            <Tag tone={info.running ? 'ok' : 'muted'}>{info.running ? '运行中' : '已停止'}</Tag>
-          )}
-          <span className="text-xs text-muted">只绑 127.0.0.1，不对局域网/公网暴露</span>
-          <span className="flex-1" />
-          {info && (
+    <div className="stagger flex flex-col gap-5">
+      <PageHeader
+        title="接口反代"
+        note="把豆包账号暴露成本机 OpenAI / Anthropic / Responses 兼容接口，客户端填地址、Key 与模型 ID 即可调用。"
+      />
+      <Section
+        title="豆包接口反代"
+        note={
+          <span className="flex flex-wrap items-center gap-2">
+            {info && (
+              <Tag tone={info.running ? 'ok' : 'muted'} dot>
+                {info.running ? '运行中' : '已停止'}
+              </Tag>
+            )}
+            <span>只绑 127.0.0.1，不对局域网/公网暴露</span>
+          </span>
+        }
+        actions={
+          info && (
             <>
               <Button
                 size="sm"
@@ -282,13 +292,14 @@ ANTHROPIC_MODEL=<模型 ID>`,
                 自检
               </Button>
             </>
-          )}
-        </div>
-        <p className="mt-1 text-xs leading-relaxed text-muted">
-          把豆包账号暴露成本机接口，客户端填地址、Key 和模型 ID 即可调用：
+          )
+        }
+      >
+        <p className="text-xs leading-relaxed text-muted">
+          支持
           <span className="font-mono text-fg2"> OpenAI Chat</span>、
           <span className="font-mono text-fg2"> Anthropic Messages</span>、
-          <span className="font-mono text-fg2"> OpenAI Responses</span> 三种形态都支持。
+          <span className="font-mono text-fg2"> OpenAI Responses</span> 三种形态。
         </p>
 
         {infoQ.isLoading && <SkeletonBlock rows={4} className="mt-3" />}
@@ -303,7 +314,7 @@ ANTHROPIC_MODEL=<模型 ID>`,
 
         {info && (
           <>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Metric label="运行时长" value={stats ? fmtUptime(stats.uptime_secs) : '—'} />
               <Metric label="累计请求" value={stats ? String(stats.requests) : '—'} />
               <Metric
@@ -314,10 +325,10 @@ ANTHROPIC_MODEL=<模型 ID>`,
               <Metric label="平均耗时" value={stats && stats.requests ? fmtMs(stats.avg_ms) : '—'} />
             </div>
 
-            <div className="mt-3 flex flex-col gap-2">
+            <div className="mt-4 flex flex-col gap-2.5 border-t border-line pt-4">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="w-16 text-xs text-muted">地址</span>
-                <code className="rounded bg-hover px-2 py-1 text-xs select-all">{base}/v1</code>
+                <code className="rounded-sm border border-line bg-sunken px-2 py-1 text-xs select-all">{base}/v1</code>
                 <Button size="sm" variant="ghost" onClick={() => void copy(`${base}/v1`, 'base')}>
                   {copied === 'base' ? '已复制' : '复制地址'}
                 </Button>
@@ -358,7 +369,7 @@ ANTHROPIC_MODEL=<模型 ID>`,
 
               <div className="flex flex-wrap items-center gap-2">
                 <span className="w-16 text-xs text-muted">API Key</span>
-                <code className="min-w-0 flex-1 truncate rounded bg-hover px-2 py-1 text-xs select-all">
+                <code className="min-w-0 flex-1 truncate rounded-sm border border-line bg-sunken px-2 py-1 text-xs select-all">
                   {info.key}
                 </code>
                 <Button size="sm" variant="ghost" onClick={() => void copy(info.key, 'key')}>
@@ -371,7 +382,7 @@ ANTHROPIC_MODEL=<模型 ID>`,
             </div>
 
             {probe && (
-              <div className="mt-3">
+              <div className="mt-4">
                 <Notice tone={probe.ok ? 'info' : 'bad'}>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={probe.ok ? 'text-ok' : 'text-bad'}>
@@ -387,40 +398,40 @@ ANTHROPIC_MODEL=<模型 ID>`,
             )}
 
             {stats && (
-              <p className="mt-2 text-xs text-muted">
+              <p className="mt-3 text-xs text-muted">
                 本次监听启动于 {fmtTime(stats.started_at)}，最近一次调用{' '}
                 {fmtTime(stats.last_request_at)}。停止后保留上一次监听的统计，重启归零。
               </p>
             )}
           </>
         )}
-      </Card>
+      </Section>
 
       {info && (
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,.85fr)]">
-          <Card>
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-sm font-semibold">接入方式</h3>
-              <span className="text-xs text-muted">地址 + Key + 模型 ID，三样就够</span>
-              <span className="flex-1" />
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,.85fr)]">
+          <Section
+            title="接入方式"
+            note="地址 + Key + 模型 ID，三样就够"
+            actions={
               <Button
                 size="sm"
-                variant="ghost"
+                variant="soft"
                 onClick={() => void copy(snippets[snippetKey], 'snippet')}
               >
                 {copied === 'snippet' ? '已复制' : '复制示例'}
               </Button>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-1 rounded-md border border-line p-0.5">
+            }
+          >
+            <div className="flex flex-wrap gap-1 rounded-md border border-line bg-sunken p-0.5">
               {snippetTabs.map((tab) => (
                 <button
                   key={tab.key}
                   type="button"
                   onClick={() => setSnippetKey(tab.key)}
                   className={cn(
-                    'cursor-pointer rounded px-2 py-0.5 text-xs transition-colors',
+                    'cursor-pointer rounded-sm px-2 py-0.5 text-xs transition-colors duration-[var(--dur-1)]',
                     snippetKey === tab.key
-                      ? 'bg-accent text-on-accent'
+                      ? 'bg-accent font-medium text-on-accent'
                       : 'text-muted hover:bg-hover hover:text-fg',
                   )}
                   title={tab.endpoint}
@@ -434,31 +445,29 @@ ANTHROPIC_MODEL=<模型 ID>`,
               <Tag tone="muted">Anthropic 的 baseURL 不带 /v1</Tag>
               <Tag tone="muted">x-api-key 也认</Tag>
             </div>
-            <pre className="mt-2 max-h-[22rem] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-bg p-2.5 font-mono text-[11px] leading-relaxed text-fg2 select-all">
+            <pre className="mt-2 max-h-[22rem] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-sunken p-2.5 font-mono text-xs leading-relaxed text-fg2 select-all">
               {snippets[snippetKey]}
             </pre>
-          </Card>
+          </Section>
 
-          <Card>
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-sm font-semibold">可用模型</h3>
-              <span className="text-xs text-muted">
-                {models ? `共 ${models.length} 个` : '所有启用豆包账号的并集'}
-              </span>
-              <span className="flex-1" />
+          <Section
+            title="可用模型"
+            note={models ? `共 ${models.length} 个` : '所有启用豆包账号的并集'}
+            actions={
               <Button
                 size="sm"
-                variant="ghost"
+                variant="soft"
                 onClick={() => void loadModels()}
                 loading={loadingModels}
               >
                 {models ? '刷新' : '获取模型'}
               </Button>
-            </div>
+            }
+          >
             {models ? (
               <>
                 <Input
-                  className="mt-2 w-full"
+                  className="w-full"
                   placeholder="搜索模型名称或 ID"
                   value={modelFilter}
                   onChange={(e) => setModelFilter(e.target.value)}
@@ -466,18 +475,18 @@ ANTHROPIC_MODEL=<模型 ID>`,
                 {visibleModels.length === 0 ? (
                   <p className="py-6 text-center text-xs text-muted">没有匹配的模型。</p>
                 ) : (
-                  <div className="mt-2 flex max-h-[19rem] flex-col gap-1 overflow-y-auto rounded-md border border-line bg-bg p-2">
+                  <div className="mt-2 flex max-h-[19rem] flex-col gap-1 overflow-y-auto rounded-md border border-line bg-sunken p-2">
                     {visibleModels.map((model) => (
                       <button
                         key={model.id}
                         type="button"
                         onClick={() => void copy(model.id, `model:${model.id}`)}
-                        className="flex cursor-pointer items-baseline gap-2 rounded px-2 py-1 text-left hover:bg-hover"
+                        className="flex cursor-pointer items-baseline gap-2 rounded-sm px-2 py-1 text-left transition-colors duration-[var(--dur-1)] hover:bg-hover"
                         title="点击复制模型 ID"
                       >
                         <span className="shrink-0 text-xs text-fg2">{model.name}</span>
                         <code className="min-w-0 flex-1 truncate text-xs text-muted">{model.id}</code>
-                        <span className="shrink-0 text-[10px] text-muted">
+                        <span className="shrink-0 text-xs text-muted">
                           {copied === `model:${model.id}` ? '已复制' : ''}
                         </span>
                       </button>
@@ -486,25 +495,23 @@ ANTHROPIC_MODEL=<模型 ID>`,
                 )}
               </>
             ) : (
-              <p className="mt-2 text-xs leading-relaxed text-muted">
+              <p className="text-xs leading-relaxed text-muted">
                 点「获取模型」会直接用账号凭据拉目录——接口停着也能查。客户端在 model 字段填这里列出的 ID。
               </p>
             )}
-          </Card>
+          </Section>
         </div>
       )}
 
-      <Card>
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="text-sm font-semibold">最近调用</h3>
-          <span className="text-xs text-muted">
-            {stats ? `最近 ${stats.recent.length} 次 · 5 秒自动刷新` : '读取统计中…'}
-          </span>
-          <span className="flex-1" />
+      <Section
+        title="最近调用"
+        note={stats ? `最近 ${stats.recent.length} 次 · 5 秒自动刷新` : '读取统计中…'}
+        actions={
           <Button size="sm" variant="ghost" onClick={() => navigate('logs', { module: 'model_api' })}>
             查看接口日志
           </Button>
-        </div>
+        }
+      >
         {statsQ.isError ? (
           <StateBlock
             kind="error"
@@ -513,14 +520,18 @@ ANTHROPIC_MODEL=<模型 ID>`,
             onRetry={() => statsQ.refetch()}
           />
         ) : !stats || stats.recent.length === 0 ? (
-          <p className="py-6 text-center text-sm text-muted">
-            {info?.running
-              ? '还没有客户端调用。把上面的地址和 Key 填进客户端，第一次请求就会出现在这里。'
-              : '接口未运行；启动后这里会记录每一次调用。'}
-          </p>
+          <StateBlock
+            kind="empty"
+            title={info?.running ? '还没有客户端调用' : '接口未运行'}
+            detail={
+              info?.running
+                ? '把上面的地址和 Key 填进客户端，第一次请求就会出现在这里。'
+                : '启动后这里会记录每一次调用。'
+            }
+          />
         ) : (
-          <table className="mt-2 w-full border-collapse text-xs">
-            <thead>
+          <table className="w-full border-collapse text-xs">
+            <thead className="bg-sunken">
               <tr className="text-left text-muted">
                 <th className="w-32 py-1 font-medium">时间</th>
                 <th className="py-1 font-medium">接口</th>
@@ -530,11 +541,11 @@ ANTHROPIC_MODEL=<模型 ID>`,
             </thead>
             <tbody>
               {stats.recent.map((call, index) => (
-                <tr key={`${call.ts}-${call.path}-${index}`} className="border-t border-line/60">
+                <tr key={`${call.ts}-${call.path}-${index}`} className="border-t border-line">
                   <td className="whitespace-nowrap py-1 tabular-nums text-muted">{fmtTime(call.ts)}</td>
                   <td className="py-1">
                     <span className="text-fg2">{ENDPOINT_LABEL[call.path] ?? call.path}</span>
-                    <span className="ml-1 font-mono text-[10px] text-muted">{call.path}</span>
+                    <span className="ml-1 font-mono text-xs text-muted">{call.path}</span>
                   </td>
                   <td className={cn('py-1 tabular-nums', call.ok ? 'text-ok' : 'text-bad')}>
                     {call.status || '—'}
@@ -545,7 +556,7 @@ ANTHROPIC_MODEL=<模型 ID>`,
             </tbody>
           </table>
         )}
-      </Card>
+      </Section>
 
       <Notice tone="warn">
         接口只监听 127.0.0.1：本机任何程序都能访问，局域网与公网不能。Key 一旦泄露，立刻「重新生成」；
@@ -566,9 +577,9 @@ function Metric({
   tone?: 'bad';
 }) {
   return (
-    <div className="px-3 py-2">
-      <div className="text-[11px] text-muted">{label}</div>
-      <div className={cn('mt-0.5 text-sm font-semibold tabular-nums', tone === 'bad' && 'text-bad')}>
+    <div className="rounded-md bg-sunken px-3 py-2.5">
+      <div className="text-xs text-muted">{label}</div>
+      <div className={cn('mt-1 text-lg font-semibold tabular-nums', tone === 'bad' && 'text-bad')}>
         {value}
       </div>
     </div>

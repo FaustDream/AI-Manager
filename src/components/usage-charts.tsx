@@ -66,8 +66,8 @@ export function TrendLines({ days }: { days: UsageDay[] }) {
 
   const option = useMemo<ChartOption | null>(() => {
     if (!chart) return null;
-    // canvas 吃不到 CSS 变量：前三个取色板实值（随主题解析），后三个主题无关
-    const colors = [palette.accent, palette.ok, palette.warn, '#8b5cf6', '#06b6d4', '#f472b6'];
+    // canvas 吃不到 CSS 变量：八支序列色从令牌取实值，随主题一起换
+    const colors = palette.series;
     const totalByLabel = new Map(
       chart.platforms.map((platform) => [appLabel(platform), chart.totals.get(platform) ?? 0]),
     );

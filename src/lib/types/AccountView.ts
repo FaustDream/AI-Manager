@@ -37,7 +37,12 @@ quota_at: number | null,
 /**
  * 积分批次里最近的一个到期日与当天到期金额（不是登录凭据的到期）
  */
-lot_expires_at: number | null, lot_amount: number | null, next_at: number | null, 
+lot_expires_at: number | null, lot_amount: number | null, 
+/**
+ * 未来 10 天内到期的批次合计。`None` = 从来没拿到过批次
+ * （与「0」区分：0 是拿到了、但 10 天内没有要过期的）
+ */
+expiring_10d: number | null, next_at: number | null, 
 /**
  * 最近一次查询失败的原因。**有值不代表整行不可用**——余额查不到不该挡住别名。
  */

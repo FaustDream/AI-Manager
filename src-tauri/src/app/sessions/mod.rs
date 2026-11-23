@@ -65,17 +65,47 @@ impl SessionScanReport {
             self.rows,
             self.ms as f64 / 1000.0
         );
-        if self.missing > 0 {
-            text.push_str(&format!("，{} 个来源未安装", self.missing));
-        }
         if self.archived > 0 {
             text.push_str(&format!("，自动归档 {}", self.archived));
         }
+        // 「未安装」不进文案：客户端没装是既知事实，写进告警行只会让每一轮都看着像出事。
+        // 这里报的是**条目数**，不是来源数——同一个来源读失败会贡献多条。
         if !self.errors.is_empty() {
-            text.push_str(&format!("，{} 个来源报错", self.errors.len()));
+            text.push_str(&format!("，读取失败 {} 条", self.errors.len()));
         }
         text
     }
+
+    /// 失败明细：summary 只给条数，明细必须能查到「是哪几处、什么原因」。
+    ///
+    /// 日志行有长度上限（超长会截断成「共 N 字」），所以最多列前三条，其余给计数。
+    pub fn error_detail(&self) -> String {
+        if self.errors.is_empty() {
+            return String::new();
+        }
+        const KEEP: usize = 3;
+        let head: Vec<&str> = self.errors.iter().take(KEEP).map(String::as_str).collect();
+        let rest = self.errors.len().saturating_sub(KEEP);
+        format!(
+            " | 失败明细: {}{}",
+            head.join("；"),
+            if rest > 0 {
+                format!("（另 {rest} 条）")
+            } else {
+                String::new()
+            }
+        )
+    }
+}
+
+/// 这条来源属不属于 WorkBuddy 系：本体国内 / 国际版 + CodeBuddy IDE / IDEA 插件。
+///
+/// 只有这一系的读取失败算告警。其余平台（Trae / Qoder / 豆包 / ZCode）在本工具里
+/// 是按各自平台支持的能干多少干多少，目录没装或正被客户端写入都是常态，
+/// 不该每 5 分钟把整轮扫描标成失败。
+fn is_wb_family(key: &str) -> bool {
+    sources::wb::LABELS.iter().any(|(k, _)| *k == key)
+        || sources::codebuddy::PLATFORMS.iter().any(|(k, _)| *k == key)
 }
 
 #[derive(Clone)]
@@ -110,6 +140,8 @@ impl Service {
                 .flatten()
                 .and_then(|text| serde_json::from_str(&text).ok())
                 .unwrap_or_default();
+            // 非 WorkBuddy 系来源的读取失败：轮末合并成一条 debug，既不进告警也不逐条刷屏
+            let mut other_notes: Vec<String> = Vec::new();
 
             for info in &infos {
                 if !info.present {
@@ -122,18 +154,28 @@ impl Service {
                     report.skipped += 1;
                     continue;
                 }
-                let before_errors = report.errors.len();
-                let rows =
-                    match sources::scan_one(&roots, &info.key, &mut cache, &mut report.errors) {
-                        Ok(rows) => rows,
-                        Err(e) => {
-                            report.errors.push(format!("{}：{}", info.label, e.message));
-                            continue;
-                        }
-                    };
+                // 错误先收在本地：只有 WorkBuddy 系（本体 + CodeBuddy 两端）的读取失败
+                // 才升级成告警，其余平台只在轮末记一行 debug 明细。
+                let mut local_errors: Vec<String> = Vec::new();
+                let rows = match sources::scan_one(&roots, &info.key, &mut cache, &mut local_errors)
+                {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        local_errors.push(format!("{}：{}", info.label, e.message));
+                        Vec::new()
+                    }
+                };
+                let read_failed = !local_errors.is_empty();
+                if is_wb_family(&info.key) {
+                    report.errors.append(&mut local_errors);
+                } else {
+                    // Trae / Qoder / 豆包这些平台：目录没装、库正被客户端写入都是常态，
+                    // 算进「来源报错」会让每一轮扫描都红一次。明细仍留痕（debug，不打扰）。
+                    other_notes.append(&mut local_errors);
+                }
                 // 读取失败且没有解析出任何行：保留上次索引，也不落指纹，下一轮继续重试。
                 // 否则 Trae 加密库 / Qoder 库被锁时会把整源列表清空。
-                if rows.is_empty() && report.errors.len() > before_errors {
+                if rows.is_empty() && read_failed {
                     continue;
                 }
                 match store.replace_source(&info.key, &rows) {
@@ -149,6 +191,28 @@ impl Service {
                             .push(format!("{}：写入索引失败：{}", info.label, e.message));
                     }
                 }
+            }
+
+            // 其他平台的读取失败只留痕：debug 进 app.jsonl（日志页可查），不进 app.log，
+            // 也不算这一轮失败——它们按各自平台能干的活干，缺目录/库被占是常态。
+            if !other_notes.is_empty() {
+                const KEEP: usize = 3;
+                let head: Vec<&str> = other_notes.iter().take(KEEP).map(String::as_str).collect();
+                let rest = other_notes.len().saturating_sub(KEEP);
+                crate::app::log::log(
+                    crate::app::log::Level::Debug,
+                    "sessions",
+                    format!(
+                        "会话扫描：{} 条非 WorkBuddy 系来源读取失败（{}{}）",
+                        other_notes.len(),
+                        head.join("；"),
+                        if rest > 0 {
+                            format!("；另 {rest} 条")
+                        } else {
+                            String::new()
+                        }
+                    ),
+                );
             }
 
             // 客户端卸载了：索引里留着的行会让页面出现点不动的幽灵行
@@ -519,5 +583,55 @@ mod tests {
         assert_eq!(account_label("", &names), "本机");
         assert_eq!(account_label("nobody", &names), "未知账号");
         assert_eq!(account_label("default", &[]), "未登录");
+    }
+
+    /// 只有 WorkBuddy 系（本体两端 + CodeBuddy 两端）的读取失败算告警。
+    #[test]
+    fn wb_family_is_wb_body_and_codebuddy_ends() {
+        for key in ["cn", "intl", "CodeBuddyIDE", "JetBrains"] {
+            assert!(is_wb_family(key), "{key} 应属于 WorkBuddy 系");
+        }
+        for key in ["Trae CN", "Trae", "qoder_cn", "qoder_intl", "qoder_plugin_cn", "zcode"] {
+            assert!(!is_wb_family(key), "{key} 不该算 WorkBuddy 系");
+        }
+    }
+
+    /// 摘要只报条数、不报「来源数」，也不把未安装写进告警行。
+    #[test]
+    fn summary_reports_error_entries_not_sources() {
+        let report = SessionScanReport {
+            scanned: 1,
+            skipped: 7,
+            rows: 87,
+            missing: 2,
+            ms: 1837,
+            errors: vec![
+                "WorkBuddy 国内版：会话库打不开".into(),
+                "CodeBuddy 插件：工作区索引里没有读到会话".into(),
+            ],
+            ..Default::default()
+        };
+        let text = report.summary();
+        assert!(text.contains("读取失败 2 条"), "{text}");
+        assert!(!text.contains("个来源报错"), "{text}");
+        assert!(!text.contains("未安装"), "未安装不该进告警文案：{text}");
+        assert_eq!(
+            report.error_detail(),
+            " | 失败明细: WorkBuddy 国内版：会话库打不开；CodeBuddy 插件：工作区索引里没有读到会话"
+        );
+    }
+
+    /// 明细最多列三条：日志行有长度上限，超出的退回计数。
+    #[test]
+    fn error_detail_caps_at_three() {
+        let report = SessionScanReport {
+            errors: (1..=5).map(|i| format!("来源{i}：失败")).collect(),
+            ..Default::default()
+        };
+        let detail = report.error_detail();
+        assert!(detail.contains("来源1：失败；来源2：失败；来源3：失败"), "{detail}");
+        assert!(detail.contains("另 2 条"), "{detail}");
+        assert!(!detail.contains("来源4"), "{detail}");
+        assert_eq!(SessionScanReport::default().error_detail(), "");
     }
 }

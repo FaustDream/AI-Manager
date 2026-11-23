@@ -205,6 +205,11 @@ export function DetailPanel({
     !!account && features.on(featurePlatform(account.platform, account.iid), FEATURE_SWITCH_IDEA);
   const canSwitchCodebuddy = ideSwitchOn || ideaSwitchOn;
 
+  // 切换按钮的置灰：对应的软件/插件没装（或用户没配对自定义目录）时不给点，
+  // 点下去只会在报错里学一次。读不到状态按「装了」处理，避免列表还没拉到数据就闪灰。
+  const codebuddyInstalled = (key: string) =>
+    codebuddyTargets.data?.find((t) => t.key === key)?.installed ?? true;
+
   const detail = useQuery<AccountDetail>({
     queryKey: ['detail', account?.iid],
     queryFn: () => queryCmd('checkin_detail', { iid: account!.iid }),
@@ -360,6 +365,13 @@ export function DetailPanel({
   );
   const nearest = lots.find((lot) => lot.expires_at && new Date(lot.expires_at).getTime() > now);
   const nearestDays = daysUntil(nearest?.expires_at);
+  // 10 天内到期：与「最近到期」共用同一份批次，只算还没过期的
+  const soonLimit = now + 10 * 86400_000;
+  const soonLots = lots.filter((lot) => {
+    const at = lot.expires_at ? new Date(lot.expires_at).getTime() : null;
+    return at !== null && at > now && at <= soonLimit;
+  });
+  const soonTotal = soonLots.reduce((sum, lot) => sum + lot.amount, 0);
   const quota = Object.entries(d?.quota ?? account.quota).sort((a, b) => b[1] - a[1]);
   // 只有额度型平台（ZCode）的「更新时间」说的是配额；其余平台别拿批次缓存时刻冒充
   const quotaAt =
@@ -377,13 +389,13 @@ export function DetailPanel({
   const travelOn = features.on(platformKey, FEATURE_TRAVEL);
 
   return (
-    // 详情不再套卡片：内容直接铺在页面上，靠分段标题与留白组织；
-    // 「是不是客户端当前登录」也不再挂文字标签（列表里那一行本身已经高亮）
-    <div>
+    // 详情与列表同构：一张带边界的卡，分区头沉底、内部靠分隔线组织，
+    // 不再另起标题标签——「是不是客户端当前登录」由列表里那一行的高亮表达。
+    <div className="overflow-hidden rounded-md border border-line bg-card shadow-card">
       {/* 头部：身份 + 动作。动作按**使用频率**从左到右排：签到（每天）→ 领取活动 →
           刷新凭据 → 重新授权 → 改名 / 备注（几乎不改，放最右）。
           每个按钮是「图标 + 一个词」：纯图标分不清五个动作，写全称又会把这一行撑成两排。 */}
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-line bg-sunken px-3 py-2">
         <h2 className="min-w-0 truncate text-md font-semibold" title={account.name}>
           {account.name}
         </h2>
@@ -493,8 +505,12 @@ export function DetailPanel({
               variant="ghost"
               onClick={() => switchCodebuddy('software')}
               loading={busy === 'switch-software'}
-              disabled={!!busy}
-              title="把 CodeBuddy IDE 的登录切成这个账号"
+              disabled={!!busy || !codebuddyInstalled('software')}
+              title={
+                codebuddyInstalled('software')
+                  ? '把 CodeBuddy IDE 的登录切成这个账号'
+                  : '未安装 CodeBuddy IDE：先安装，或到设置里指定它的数据目录'
+              }
             >
               切换 IDE
             </Button>
@@ -505,8 +521,12 @@ export function DetailPanel({
               variant="ghost"
               onClick={() => switchCodebuddy('idea')}
               loading={busy === 'switch-idea'}
-              disabled={!!busy}
-              title="把 IntelliJ IDEA 里 CodeBuddy 插件的登录切成这个账号"
+              disabled={!!busy || !codebuddyInstalled('idea')}
+              title={
+                codebuddyInstalled('idea')
+                  ? '把 IntelliJ IDEA 里 CodeBuddy 插件的登录切成这个账号'
+                  : '未安装 CodeBuddy 插件：先安装，或到设置里指定 JetBrains 配置目录'
+              }
             >
               切换插件
             </Button>
@@ -576,15 +596,16 @@ export function DetailPanel({
           <dd className={cn('truncate', lastError && 'text-bad')}>{lastError ? '失败' : '正常'}</dd>
         </dl>
         {account.note && (
-          <p className="mt-2 border-t border-line/60 pt-1.5 text-xs whitespace-pre-wrap text-muted">
+          <p className="mt-2 border-t border-line pt-1.5 text-xs whitespace-pre-wrap text-muted">
             <span className="text-fg2">备注：</span>
             {account.note}
           </p>
         )}
       </section>
 
-      {/* 结论层：最快的到期放第一格（≤7 天变警示色），余额第二；建议与口径进 tooltip */}
-      <div className="grid grid-cols-2 gap-px bg-line">
+      {/* 结论层：最快的到期放第一格（≤7 天变警示色），余额第二，10 天内到期合计第三；
+          建议与口径进 tooltip */}
+      <div className="grid grid-cols-2 gap-px bg-line md:grid-cols-3">
         <Stat
           label="最近到期"
           value={
@@ -623,6 +644,18 @@ export function DetailPanel({
                 : '平台实时返回'
           }
           tone={leftTone(quotaLeft) ?? undefined}
+        />
+        <Stat
+          label="10 天内到期"
+          value={lots.length === 0 ? '—' : soonTotal > 0 ? fmtAmount(soonTotal) : '无'}
+          hint={
+            lots.length === 0
+              ? '还没有批次明细：签到成功或刷新积分后才有数据'
+              : soonTotal > 0
+                ? `未来 10 天有 ${soonLots.length} 笔到期，合计 ${fmtAmount(soonTotal)}；已过期的批次不计入`
+                : '10 天内没有要过期的积分'
+          }
+          tone={soonTotal > 0 ? 'warn' : undefined}
         />
       </div>
 
@@ -695,7 +728,7 @@ export function DetailPanel({
                     const text =
                       days === null ? '长期' : days < 0 ? '已过期' : days === 0 ? '今天到期' : `剩 ${days} 天`;
                     return (
-                      <tr key={`${lot.lot_key || lot.label}-${index}`} className="border-t border-line/60">
+                      <tr key={`${lot.lot_key || lot.label}-${index}`} className="border-t border-line">
                         <td className="whitespace-nowrap py-1 tabular-nums">{fmtDay(lot.expires_at)}</td>
                         <td className="whitespace-nowrap py-1 tabular-nums">{fmtAmount(lot.amount)}</td>
                         <td className="truncate py-1">
@@ -836,7 +869,7 @@ export function DetailPanel({
                 </thead>
                 <tbody>
                   {reward.data.packages.map((pkg) => (
-                    <tr key={pkg.name} className="border-t border-line/60">
+                    <tr key={pkg.name} className="border-t border-line">
                       <td className="max-w-[200px] truncate py-1" title={pkg.name}>{pkg.name}</td>
                       <td className="whitespace-nowrap py-1 text-right tabular-nums">
                         {fmtAmount(pkg.remain)} / {fmtAmount(pkg.size)}

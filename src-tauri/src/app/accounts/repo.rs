@@ -57,6 +57,7 @@ pub fn list(db: &Db) -> Result<Vec<AccountView>> {
                 quota_at: None,
                 lot_expires_at: None,
                 lot_amount: None,
+                expiring_10d: None,
                 next_at: None,
                 error: None,
             })

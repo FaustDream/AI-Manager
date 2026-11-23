@@ -15,7 +15,7 @@ pub async fn session_scan(
             log::log(
                 Level::Info,
                 "sessions",
-                format!("会话扫描：{}", report.summary()),
+                format!("会话扫描：{}{}", report.summary(), report.error_detail()),
             );
             crate::app::events::emit("session:scan", &report);
             report

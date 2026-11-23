@@ -4,17 +4,17 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useEffect, useState } from 'react';
+import { CalendarClock, Check, CircleDot, Minus, SlidersHorizontal, Stethoscope, Wrench, type LucideIcon } from 'lucide-react';
 
 import { fmtSize, fmtTime } from '@/lib/format';
 import { numOr } from '@/lib/num';
 import { Button, cn } from '@/components/ui/button';
+import { PageHeader, Section } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Checkbox, Input, Select, SkeletonBlock, SkeletonRows } from '@/components/ui/form';
 import { DataTable, type Column } from '@/components/ui/table';
 import { Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
-import { saveFont, saveTheme, type ThemeChoice } from '@/lib/theme';
-import { loadFontChoice, type FontChoice } from '@/lib/ui-state';
 import {
   disableNotify,
   enableNotify,
@@ -26,6 +26,7 @@ import {
   type NotifyPermission,
 } from '@/lib/notify';
 import { HistoryPane } from './history';
+import { AppearancePane } from './appearance';
 import type {
   AppConfig,
   CapabilityMatrix,
@@ -50,10 +51,15 @@ type TabKey = 'general' | 'schedule' | 'maintenance' | 'diagnostics';
 export default function SettingsPage() {
   const [tab, setTab] = useState<TabKey>('general');
   return (
-    <div className="stagger flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-5">
+      <PageHeader
+        title="设置"
+        note="外观、运行参数、定时任务与维护入口。凭据与账号数据始终留在本机。"
+      />
       <TabBar tab={tab} onChange={setTab} />
       {tab === 'general' && (
         <>
+          <AppearancePane />
           <GeneralPane />
           <ConfigPane />
           <FeaturesPane />
@@ -80,34 +86,45 @@ export default function SettingsPage() {
 }
 
 function TabBar({ tab, onChange }: { tab: TabKey; onChange: (t: TabKey) => void }) {
-  const tabs: { key: TabKey; label: string }[] = [
-    { key: 'general', label: '常规' },
-    { key: 'schedule', label: '定时任务' },
-    { key: 'maintenance', label: '维护' },
-    { key: 'diagnostics', label: '诊断与记录' },
+  const tabs: { key: TabKey; label: string; icon: LucideIcon }[] = [
+    { key: 'general', label: '常规', icon: SlidersHorizontal },
+    { key: 'schedule', label: '定时任务', icon: CalendarClock },
+    { key: 'maintenance', label: '维护', icon: Wrench },
+    { key: 'diagnostics', label: '诊断与记录', icon: Stethoscope },
   ];
   return (
-    <div className="flex flex-wrap gap-1 p-1">
-      {tabs.map((t) => (
-        <button
-          key={t.key}
-          type="button"
-          onClick={() => onChange(t.key)}
-          className={cn(
-            'rounded-md px-4 py-1.5 text-sm transition-colors',
-            tab === t.key ? 'bg-accent text-white' : 'text-fg2 hover:bg-hover',
-          )}
-        >
-          {t.label}
-        </button>
-      ))}
+    <div
+      role="tablist"
+      aria-label="设置分区"
+      className="flex flex-wrap gap-1 self-start rounded-lg border border-line bg-card p-1 shadow-card"
+    >
+      {tabs.map((t) => {
+        const Icon = t.icon;
+        const on = tab === t.key;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            onClick={() => onChange(t.key)}
+            className={cn(
+              'flex cursor-pointer items-center gap-1.5 rounded-md px-3.5 py-1.5 text-sm transition-colors duration-[var(--dur-1)]',
+              on
+                ? 'bg-accent font-medium text-on-accent'
+                : 'text-fg2 hover:bg-hover hover:text-fg',
+            )}
+          >
+            <Icon size={14} />
+            {t.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
 
 function GeneralPane() {
-  const [theme, setTheme] = useState<ThemeChoice>('');
-  const [font, setFont] = useState<FontChoice>('standard');
   const [notifyOn, setNotifyOn] = useState(false);
   const [perm, setPerm] = useState<NotifyPermission>('unsupported');
   const [version, setVersion] = useState('');
@@ -116,10 +133,6 @@ function GeneralPane() {
   // 所以每次窗口重新获得焦点都按真实权限校正一次开关显示。
   useEffect(() => {
     queryCmd('app_version').then(setVersion).catch(() => {});
-    setFont(loadFontChoice());
-    queryCmd('settings_get', { key: 'ui.theme' })
-      .then((v) => setTheme((v as ThemeChoice) || ''))
-      .catch(() => {});
     const sync = () => {
       setNotifyOn(notifyEnabled());
       setPerm(notifyPermission());
@@ -134,36 +147,14 @@ function GeneralPane() {
   }, []);
 
   return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">通用</h2>
-        <span className="flex-1" />
-        {version && <span className="text-xs text-muted">当前版本 v{version}</span>}
-      </div>
-      {/* 两个开关横排：拉通整行后单列会留下大片空白 */}
-      <div className="grid gap-4 md:grid-cols-2">
+    <Section
+      title="通用"
+      note="桌面通知与快捷键"
+      actions={version && <span className="text-xs text-muted">当前版本 v{version}</span>}
+    >
+      <div className="flex flex-col gap-4">
         <div>
-          <label className="flex items-center gap-4 text-sm">
-            <span className="w-24 text-muted">主题</span>
-            <Select
-              value={theme}
-              onChange={async (e) => {
-                const value = e.target.value as ThemeChoice;
-                setTheme(value);
-                await saveTheme(value);
-              }}
-            >
-              <option value="">跟随系统</option>
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-              <option value="classic-light">经典浅色（暖纸）</option>
-              <option value="classic-dark">经典深色（暖黑）</option>
-            </Select>
-          </label>
-        </div>
-        <div>
-          <label className="flex items-center gap-4 text-sm">
-            <span className="w-24 text-muted">桌面通知</span>
+          <label className="flex items-center gap-3 text-sm">
             <Checkbox
               // 开关状态以「浏览器权限 + 本地开关」双满足为准：
               // 权限没给时哪怕本地开着也发不出去，不能让开关骗人。
@@ -197,8 +188,9 @@ function GeneralPane() {
                 }
               }}
             />
+            <span className="font-medium">桌面通知</span>
           </label>
-          <p className="mt-1 pl-28 text-xs text-muted">
+          <p className="mt-1.5 pl-[26px] text-xs text-muted">
             {perm === 'unsupported'
               ? '此浏览器不支持系统通知'
               : perm === 'granted'
@@ -208,10 +200,10 @@ function GeneralPane() {
                   : '还没授权：打开开关时浏览器会弹出授权框，点「允许」即可'}
           </p>
           {perm === 'granted' && (
-            <p className="mt-1 pl-28 text-xs">
+            <p className="mt-1 pl-[26px] text-xs">
               <button
                 type="button"
-                className="text-accent underline-offset-2 hover:underline"
+                className="cursor-pointer text-accent underline-offset-2 hover:underline"
                 onClick={() => {
                   const sent = notifyTest();
                   if (!notifyOn) {
@@ -231,60 +223,42 @@ function GeneralPane() {
             </p>
           )}
         </div>
-        <div>
-          <label className="flex items-center gap-4 text-sm">
-            <span className="w-24 text-muted">界面字号</span>
-            <Select
-              value={font}
-              onChange={(e) => {
-                const value = e.target.value as FontChoice;
-                setFont(value);
-                saveFont(value);
-              }}
-            >
-              <option value="standard">标准</option>
-              <option value="large">大（每档 +1px）</option>
-            </Select>
-          </label>
-          <p className="mt-1 pl-28 text-xs text-muted">
-            正文、表格与说明文字一起放大；只影响本机显示，不写进运行配置
-          </p>
+
+        <p className="border-t border-line pt-4 text-xs leading-5 text-muted">
+          浏览器形态：启动用 start.cmd，退出用右上角电源按钮。签到节奏、网络与采集间隔等运行配置在下方「配置」区统一管理。
+          <br />
+          本工具不提供「开机自启」——没有桌面壳，就没有「登录后自动拉起」这件事。需要开机就跑，把
+          start.cmd 的快捷方式放进「启动」文件夹即可。后端启动后会一直跑（关掉页面也不退），随时重新打开
+          http://127.0.0.1:5274 就能接着用。
+        </p>
+
+        {/* 快捷键就地可查（P1-12）：命令面板以前是「知道的人才知道」的隐藏能力 */}
+        <div className="border-t border-line pt-4">
+          <h3 className="text-xs font-semibold text-fg2">快捷键</h3>
+          <ul className="mt-2 grid gap-x-6 gap-y-1 text-xs text-muted md:grid-cols-2">
+            <li>
+              <Kbd>Ctrl</Kbd> + <Kbd>K</Kbd> 搜索页面 / 动作 / 会话（顶栏「搜索」同效）
+            </li>
+            <li>
+              <Kbd>1</Kbd>…<Kbd>7</Kbd> 直达对应能力页（输入框内不触发）
+            </li>
+            <li>
+              <Kbd>↑</Kbd> <Kbd>↓</Kbd> 在列表 / 表格行之间移动，<Kbd>Enter</Kbd> 打开
+            </li>
+            <li>
+              <Kbd>Esc</Kbd> 关闭弹窗与面板，焦点回到原处
+            </li>
+          </ul>
         </div>
       </div>
-      <p className="mt-2 text-xs text-muted">
-        浏览器形态：启动用 start.cmd，退出用右上角电源按钮。签到节奏、网络与采集间隔等运行配置在下方「配置」区统一管理。
-      </p>
-      <p className="mt-1 text-xs text-muted">
-        启动方式：本工具用命令行启动（start.cmd），不提供「开机自启」——没有桌面壳，就没有「登录后自动拉起」这件事。
-        需要开机就跑，把 start.cmd 的快捷方式放进「启动」文件夹即可。后端启动后会一直跑（关掉页面也不退），
-        随时重新打开 http://127.0.0.1:5274 就能接着用。
-      </p>
-      {/* 快捷键就地可查（P1-12）：命令面板以前是「知道的人才知道」的隐藏能力 */}
-      <div className="mt-3 border-t border-line pt-2">
-        <h3 className="text-xs font-semibold text-fg2">快捷键</h3>
-        <ul className="mt-1 grid gap-x-6 gap-y-0.5 text-xs text-muted md:grid-cols-2">
-          <li>
-            <Kbd>Ctrl</Kbd> + <Kbd>K</Kbd> 搜索页面 / 动作 / 会话（顶栏「搜索」同效）
-          </li>
-          <li>
-            <Kbd>1</Kbd>…<Kbd>7</Kbd> 直达对应能力页（输入框内不触发）
-          </li>
-          <li>
-            <Kbd>↑</Kbd> <Kbd>↓</Kbd> 在列表 / 表格行之间移动，<Kbd>Enter</Kbd> 打开
-          </li>
-          <li>
-            <Kbd>Esc</Kbd> 关闭弹窗与面板，焦点回到原处
-          </li>
-        </ul>
-      </div>
-    </div>
+    </Section>
   );
 }
 
 /** 键帽：只用于快捷键说明，不做成可点元素。 */
 function Kbd({ children }: { children: string }) {
   return (
-    <kbd className="rounded-sm border border-line bg-bg px-1 font-sans text-[11px] text-fg2">
+    <kbd className="rounded-sm border border-line bg-bg px-1 font-sans text-xs text-fg2">
       {children}
     </kbd>
   );
@@ -311,12 +285,7 @@ function ConfigPane() {
   const patch = (change: Partial<AppConfig>) => setDraft({ ...draft, ...change });
 
   return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">配置</h2>
-        <span className="flex-1" />
-        <span className="text-xs text-muted">配置文件：data\config.toml（手改后重启生效）</span>
-      </div>
+    <Section title="配置" note="data\config.toml · 手改文件后重启生效">
       <div className="grid gap-4 md:grid-cols-2">
         <div>
           <label className="flex items-center gap-4 text-sm">
@@ -453,6 +422,50 @@ function ConfigPane() {
         {/* 桌面时代的「关闭按钮 / 自启最小化」已随托盘退役：字段仍在配置里
             （兼容旧 config.toml），但不再提供界面入口——浏览器形态没有窗口可关。 */}
       </div>
+
+      {/* CodeBuddy 两个客户端的数据目录：默认装在各软件缺省位置，改了安装/配置目录才填。
+          留空 = 用缺省；决定账号详情里「切换 IDE / 切换插件」是否能点、写盘往哪写。 */}
+      <div className="mt-3 border-t border-line pt-3">
+        <div className="mb-1 text-xs font-semibold text-fg2">CodeBuddy 客户端目录（可选）</div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="flex items-center gap-4 text-sm">
+              <span
+                className="w-28 shrink-0 text-muted"
+                title="CodeBuddy IDE 的数据目录（缺省 %APPDATA%\CodeBuddy CN）。改了 user-data-dir / 安装目录才需要填，留空用缺省。"
+              >
+                CodeBuddy IDE
+              </span>
+              <Input
+                className="min-w-0 flex-1"
+                value={draft.codebuddy.ide_dir}
+                placeholder="%APPDATA%\CodeBuddy CN"
+                onChange={(e) =>
+                  patch({ codebuddy: { ...draft.codebuddy, ide_dir: e.target.value } })
+                }
+              />
+            </label>
+          </div>
+          <div>
+            <label className="flex items-center gap-4 text-sm">
+              <span
+                className="w-28 shrink-0 text-muted"
+                title="JetBrains 配置目录（缺省 %APPDATA%\JetBrains，插件与 secret-storage.xml 所在）。改了 idea.config.path 才需要填，留空用缺省。"
+              >
+                插件（IDEA）
+              </span>
+              <Input
+                className="min-w-0 flex-1"
+                value={draft.codebuddy.idea_dir}
+                placeholder="%APPDATA%\JetBrains"
+                onChange={(e) =>
+                  patch({ codebuddy: { ...draft.codebuddy, idea_dir: e.target.value } })
+                }
+              />
+            </label>
+          </div>
+        </div>
+      </div>
       <div className="mt-3 flex items-center gap-2">
         <Button
           size="sm"
@@ -483,7 +496,7 @@ function ConfigPane() {
         <span className="flex-1" />
         <span className="text-xs text-muted">并发实际执行收敛到 1-6，间隔上限 60 秒，越界值保存时按此修正</span>
       </div>
-    </div>
+    </Section>
   );
 }
 
@@ -568,12 +581,7 @@ function FeaturesPane() {
     : [];
 
   return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">各软件功能</h2>
-        <span className="flex-1" />
-        <span className="text-xs text-muted">勾选即时生效，写入 data\config.toml 的 [features.*]</span>
-      </div>
+    <Section title="各软件功能" note="勾选即时生效 · 写入 [features.*]">
       <p className="mb-2 text-xs leading-relaxed text-muted">
         决定账号中心显示哪些入口：签到、切换账号、
         <span className="text-fg2">切换 IDE / 切换插件</span>
@@ -594,7 +602,7 @@ function FeaturesPane() {
           <DataTable dense columns={columns} rows={data.platforms} rowKey={(row) => row.key} empty={null} />
         </div>
       )}
-    </div>
+    </Section>
   );
 }
 
@@ -653,12 +661,7 @@ const KNOWN_LIMITS: { scope: string; title: string; detail: string; workaround?:
 
 function LimitsPane() {
   return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">已知限制</h2>
-        <span className="flex-1" />
-        <span className="text-xs text-muted">平台侧约束，本应用无法绕过</span>
-      </div>
+    <Section title="已知限制" note="平台侧约束，本应用无法绕过">
       <p className="mb-3 text-xs text-muted">
         下面这些是平台本身的硬限制（登录态设备绑定、接口不提供、加密格式等），不是本应用没做。
         遇到对应情况时，按「怎么做」处理即可。
@@ -680,7 +683,7 @@ function LimitsPane() {
           </div>
         ))}
       </div>
-    </div>
+    </Section>
   );
 }
 
@@ -690,10 +693,10 @@ function LimitsPane() {
  * 数据来自后端 `app/capability.rs` 的唯一真源表——前端不判断平台，
  * 只把 state 渲染成符号。这样「平台限制」和「本应用还没做」不会再被混为一谈。
  */
-const SUPPORT_MARK: Record<Support, { mark: string; cls: string; label: string }> = {
-  full: { mark: '✓', cls: 'text-ok', label: '支持' },
-  partial: { mark: '△', cls: 'text-warn', label: '部分支持' },
-  none: { mark: '—', cls: 'text-muted', label: '不支持' },
+const SUPPORT_MARK: Record<Support, { Icon: LucideIcon; cls: string; label: string }> = {
+  full: { Icon: Check, cls: 'text-ok', label: '支持' },
+  partial: { Icon: CircleDot, cls: 'text-warn', label: '部分支持' },
+  none: { Icon: Minus, cls: 'text-muted', label: '不支持' },
 };
 
 function CapabilityPane() {
@@ -720,12 +723,14 @@ function CapabilityPane() {
           cell: (row: CapabilityRow) => {
             const cell = row.cells[index];
             const meta = SUPPORT_MARK[cell.state];
+            const Icon = meta.Icon;
             return (
               <span
-                className={`cursor-help ${meta.cls}`}
+                className={`inline-flex cursor-help ${meta.cls}`}
                 title={cell.note || `${meta.label}：${feature.hint}`}
+                aria-label={meta.label}
               >
-                {meta.mark}
+                <Icon size={14} />
               </span>
             );
           },
@@ -734,16 +739,25 @@ function CapabilityPane() {
     : [];
 
   return (
-    <div className="p-4">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <h2 className="text-sm font-semibold">平台能力</h2>
-        <span className="flex-1" />
+    <Section
+      title="平台能力"
+      actions={
         <span className="flex items-center gap-3 text-xs text-muted">
-          <span className="text-ok">✓ 支持</span>
-          <span className="text-warn">△ 部分支持</span>
-          <span>— 不支持</span>
+          <span className="inline-flex items-center gap-1 text-ok">
+            <Check size={13} />
+            支持
+          </span>
+          <span className="inline-flex items-center gap-1 text-warn">
+            <CircleDot size={13} />
+            部分支持
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <Minus size={13} />
+            不支持
+          </span>
         </span>
-      </div>
+      }
+    >
       <p className="mb-2 text-xs text-muted">
         悬停任意格子看具体限制。「不支持」是平台本身的约束（登录态设备绑定、没有签到玩法等），
         不是本应用没做——需要去客户端操作的那几项，格子里会写清走哪条路。
@@ -766,7 +780,7 @@ function CapabilityPane() {
           />
         </div>
       )}
-    </div>
+    </Section>
   );
 }
 
@@ -780,11 +794,11 @@ function SelfcheckPane() {
   const [report, setReport] = useState<SelfcheckReport | null>(null);
 
   return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">网络自检</h2>
-        <span className="flex-1" />
-        <Button size="sm" loading={busy === 'selfcheck'} disabled={busy === 'selfcheck'} onClick={() =>
+    <Section
+      title="网络自检"
+      note="国际版链路排障"
+      actions={
+        <Button size="sm" variant="soft" loading={busy === 'selfcheck'} disabled={busy === 'selfcheck'} onClick={() =>
           runBusy('selfcheck', async () => {
             const report = await runCmd('network_selfcheck');
             if (report !== undefined) setReport(report);
@@ -792,7 +806,8 @@ function SelfcheckPane() {
         }>
           {busy === 'selfcheck' ? '检测中…' : '运行自检'}
         </Button>
-      </div>
+      }
+    >
       {!report && (
         <p className="text-xs text-muted">
           国际版账号报「网络错误」时先跑这里：一次看清新系代理是否开启、三个国际端点是否可达、登录态档案是否完整。
@@ -843,7 +858,7 @@ function SelfcheckPane() {
           )}
         </div>
       )}
-    </div>
+    </Section>
   );
 }
 
@@ -866,15 +881,15 @@ function RuntimePane() {
   const report = health.data;
 
   return (
-    <div className="p-4">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <h2 className="text-sm font-semibold">运行与存储</h2>
-        <span className="flex-1" />
-        {space.data && <span className="text-xs text-muted">合计 {fmtSize(space.data.total)}</span>}
+    <Section
+      title="运行与存储"
+      note={space.data ? `合计 ${fmtSize(space.data.total)}` : undefined}
+      actions={
         <Button size="sm" onClick={() => void runCmd('maintenance_open_data')}>
           打开数据目录
         </Button>
-      </div>
+      }
+    >
 
       {report && (
         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
@@ -907,7 +922,7 @@ function RuntimePane() {
         {(space.data?.entries ?? []).map((entry) => (
           <div
             key={entry.name}
-            className="flex items-center gap-2 border-b border-line/60 px-1 py-1 text-sm last:border-b-0"
+            className="flex items-center gap-2 border-b border-line px-1 py-1 text-sm last:border-b-0"
           >
             <span className="flex-1 truncate" title={entry.path}>
               {entry.name}
@@ -916,7 +931,7 @@ function RuntimePane() {
           </div>
         ))}
       </div>
-    </div>
+    </Section>
   );
 }
 
@@ -934,27 +949,26 @@ function ArchiveEntryPane() {
   });
   const total = archived.data?.total ?? 0;
   return (
-    <div className="p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-sm font-semibold">已归档会话</h2>
-        <span className="text-xs text-muted">
-          {archived.isLoading ? '统计中…' : total > 0 ? `已归档 ${total} 条` : '还没有归档的会话'}
-        </span>
-        <span className="flex-1" />
+    <Section
+      title="已归档会话"
+      note={archived.isLoading ? '统计中…' : total > 0 ? `已归档 ${total} 条` : '还没有归档的会话'}
+      actions={
         <Button
           size="sm"
+          variant="soft"
           onClick={() =>
             window.dispatchEvent(new CustomEvent('aim:navigate', { detail: 'sessions-archive' }))
           }
         >
           打开已归档会话
         </Button>
-      </div>
+      }
+    >
       <p className="mt-1 text-xs text-muted">
         归档只写本地标记、不删文件；在独立页里可以预览、取消归档或彻底删除，支持一键全选与 Ctrl 多选。
         自动归档按「最后活动时间」算（不是创建时间）：超过设定天数没动过、且还出现在会话列表里的，会被收进来。
       </p>
-    </div>
+    </Section>
   );
 }
 
@@ -968,18 +982,17 @@ function MaintenancePane() {
   // 批次明细收进对话框：设置页只留一行摘要
   const [trashOpen, setTrashOpen] = useState(false);
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-5">
       {/* 摘要行：批次明细与逐批删除收进对话框，设置页不再被回收站列表撑高 */}
-      <div className="p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold">平台技能回收站</h2>
-          <span className="text-xs text-muted">
-            {(trash.data ?? []).length > 0
-              ? `${(trash.data ?? []).length} 个批次 · 共 ${fmtSize((trash.data ?? []).reduce((sum, batch) => sum + batch.size, 0))}`
-              : '空的。'}
-          </span>
-          <span className="flex-1" />
-          {(trash.data ?? []).length > 0 && (
+      <Section
+        title="平台技能回收站"
+        note={
+          (trash.data ?? []).length > 0
+            ? `${(trash.data ?? []).length} 个批次 · 共 ${fmtSize((trash.data ?? []).reduce((sum, batch) => sum + batch.size, 0))}`
+            : '空的'
+        }
+        actions={
+          (trash.data ?? []).length > 0 && (
             <>
               <Button size="sm" onClick={() => setTrashOpen(true)}>
                 查看批次
@@ -992,23 +1005,24 @@ function MaintenancePane() {
                 onClick={() =>
                   runBusy('purge', async () => {
                     if (!(await confirmAction({ title: '确认操作', message: '清空整个回收站？不可恢复。', danger: true }))) return;
-
-                      const bytes = await runCmd('maintenance_purge_trash', { tag: null });
-
-                      if (bytes === undefined) return;
-                      toast(`已释放 ${fmtSize(bytes)}`);
-                      qc.invalidateQueries({ queryKey: ['maint-trash'] });
-                      qc.invalidateQueries({ queryKey: ['space'] });
-
+                    const bytes = await runCmd('maintenance_purge_trash', { tag: null });
+                    if (bytes === undefined) return;
+                    toast(`已释放 ${fmtSize(bytes)}`);
+                    qc.invalidateQueries({ queryKey: ['maint-trash'] });
+                    qc.invalidateQueries({ queryKey: ['space'] });
                   })
                 }
               >
                 清空
               </Button>
             </>
-          )}
-        </div>
-      </div>
+          )
+        }
+      >
+        <p className="text-xs leading-5 text-muted">
+          移除平台技能时，原文件副本先进这里，确认没问题再清空。会话删除不进回收站——那条路径不可恢复，删除前会单独确认。
+        </p>
+      </Section>
 
       <Dialog
         open={trashOpen}
@@ -1219,10 +1233,9 @@ function ScheduleCard() {
     });
 
   return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">定时任务</h2>
-        <span className="flex-1" />
+    <Section
+      title="定时任务"
+      actions={
         <Button
           size="sm"
           loading={busy === 'status-now'}
@@ -1232,7 +1245,8 @@ function ScheduleCard() {
         >
           立即刷新账号状态
         </Button>
-      </div>
+      }
+    >
 
       {/* 冲突语义（P2-5）：口径取自 desktop/background.rs::spawn_scheduler 的真实行为，
           不是「应该会排队」的想象——同 id 靠 running 集合跳过，不同 id 各自 spawn。 */}
@@ -1380,7 +1394,7 @@ function ScheduleCard() {
         </Button>
         {editing && <Button size="sm" variant="ghost" disabled={!!busy} onClick={resetForm}>取消</Button>}
       </div>
-    </div>
+    </Section>
   );
 }
 

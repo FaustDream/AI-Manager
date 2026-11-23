@@ -43,17 +43,17 @@ export function TargetPicker({
           return (
             <label
               key={t.key}
-              className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
+              className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors duration-[var(--dur-1)] ${
                 isLocked
                   ? 'cursor-not-allowed border-line opacity-70'
-                  : `cursor-pointer ${checked ? 'border-accent bg-hover font-medium' : 'border-line hover:bg-hover'}`
+                  : `cursor-pointer ${checked ? 'border-accent bg-accent-soft font-medium' : 'border-line hover:border-line-strong hover:bg-hover'}`
               }`}
             >
               <Checkbox checked={checked} disabled={isLocked} onChange={() => onToggle(t.key)} />
               <span className="min-w-0 flex-1 truncate">{t.label}</span>
-              {isLocked && <span className="shrink-0 text-[10px] text-muted">{lockedLabel ?? '已部署'}</span>}
+              {isLocked && <span className="shrink-0 text-xs text-muted">{lockedLabel ?? '已部署'}</span>}
               {!isLocked && hints?.[t.key] && (
-                <span className="shrink-0 text-[10px] text-warn">{hints[t.key]}</span>
+                <span className="shrink-0 text-xs text-warn">{hints[t.key]}</span>
               )}
             </label>
           );
@@ -113,18 +113,27 @@ export function SubTabs({
   items: { key: string; label: string }[];
 }) {
   return (
-    <div className="flex items-center gap-1">
-      {items.map((it) => (
-        <button
-          key={it.key}
-          className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
-            value === it.key ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
-          }`}
-          onClick={() => onChange(it.key)}
-        >
-          {it.label}
-        </button>
-      ))}
+    // 下划线式：与上一行的实心 accent 主标签区分开，一眼看出是「页内子视图」
+    <div role="tablist" className="flex items-center gap-1 border-b border-line">
+      {items.map((it) => {
+        const on = value === it.key;
+        return (
+          <button
+            key={it.key}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            className={`-mb-px cursor-pointer border-b-2 px-2.5 py-1.5 text-xs transition-colors duration-[var(--dur-1)] ${
+              on
+                ? 'border-accent font-medium text-accent'
+                : 'border-transparent text-muted hover:border-line-strong hover:text-fg'
+            }`}
+            onClick={() => onChange(it.key)}
+          >
+            {it.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

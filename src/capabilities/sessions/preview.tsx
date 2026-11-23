@@ -113,7 +113,7 @@ export function PreviewBody({
             msg.role === 'user' ? 'border-l-accent' : 'border-l-ok'
           }`}
         >
-          <div className="flex items-baseline gap-2 text-[11px] tracking-wide text-muted">
+          <div className="flex items-baseline gap-2 text-xs tracking-wide text-muted">
             <span>{msg.role === 'user' ? '用户' : msg.role === 'gap' ? '' : 'AI'}</span>
             {msg.time > 0 && <span className="tabular-nums">{fmtTime(msg.time)}</span>}
           </div>

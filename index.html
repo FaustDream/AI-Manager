@@ -8,23 +8,55 @@
       启动画面：样式必须内联。
       原因：index.css 是打包产物的一部分，等它加载完才画，中间就是一片白；
       这段 HTML 在 webview 解析到这里时立刻上屏，React 挂载后再淡出。
+      配色取四套风格的真实画布/文字/主色值，见 src/index.css 的令牌表。
     -->
+    <script>
+      // 风格真源在后端 kv，首屏这一刻还读不到；用上一次落地的提示值先上色，
+      // 暗色风格的用户才不会先被闪一屏白。读不到就按系统深浅色兜底。
+      try {
+        var hint = localStorage.getItem('aim.ui.theme');
+        if (hint) document.documentElement.setAttribute('data-splash', hint);
+      } catch (e) {
+        /* 隐私模式读不到 localStorage：走系统兜底 */
+      }
+    </script>
     <style>
       :root {
-        --splash-bg: #ffffff;
-        --splash-fg: #1c1f23;
-        --splash-muted: #6b7280;
-        --splash-line: #e5e7eb;
+        --splash-bg: #f3f5f9;
+        --splash-fg: #1c2430;
+        --splash-muted: #6b7684;
+        --splash-line: #e4e8f0;
         --splash-accent: #2563eb;
       }
       @media (prefers-color-scheme: dark) {
-        :root {
-          --splash-bg: #16181d;
-          --splash-fg: #e6e8ec;
-          --splash-muted: #9aa3af;
-          --splash-line: #2a2e37;
-          --splash-accent: #5b8cff;
+        :root:not([data-splash]) {
+          --splash-bg: #0a0c12;
+          --splash-fg: #e8ebf2;
+          --splash-muted: #8b95a9;
+          --splash-line: #262c3d;
+          --splash-accent: #8b6bff;
         }
+      }
+      [data-splash='tech'] {
+        --splash-bg: #0a0c12;
+        --splash-fg: #e8ebf2;
+        --splash-muted: #8b95a9;
+        --splash-line: #262c3d;
+        --splash-accent: #8b6bff;
+      }
+      [data-splash='soft'] {
+        --splash-bg: #f1f0fb;
+        --splash-fg: #2b2a45;
+        --splash-muted: #7b7899;
+        --splash-line: #e6e3f5;
+        --splash-accent: #6366f1;
+      }
+      [data-splash='minimal'] {
+        --splash-bg: #f2eee5;
+        --splash-fg: #332e26;
+        --splash-muted: #8a8070;
+        --splash-line: #e3dccd;
+        --splash-accent: #a05a2c;
       }
       html,
       body {

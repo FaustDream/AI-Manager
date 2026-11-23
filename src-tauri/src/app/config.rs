@@ -113,6 +113,22 @@ pub struct AccountsConfig {
     pub scan_on_startup: bool,
 }
 
+/// CodeBuddy 系两个客户端的数据目录覆盖。
+///
+/// 两个客户端的登录态分别落在各自软件的缺省数据目录里；用户改过安装/配置目录时
+/// （IDE 改了 user-data-dir、JetBrains 改了 idea.config.path），检测「有没有装」与
+/// 切换写盘都会找错地方。这里给一条自定义通道，留空 = 用缺省位置。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CodebuddyConfig {
+    /// CodeBuddy IDE 数据目录（缺省 `%APPDATA%\CodeBuddy CN`）；留空用缺省
+    pub ide_dir: String,
+    /// JetBrains 配置目录（缺省 `%APPDATA%\JetBrains`，插件与 secret-storage.xml 所在）；留空用缺省
+    pub idea_dir: String,
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -130,6 +146,8 @@ pub struct AppConfig {
     pub dashboard: DashboardConfig,
     #[serde(default)]
     pub accounts: AccountsConfig,
+    #[serde(default)]
+    pub codebuddy: CodebuddyConfig,
     #[serde(default)]
     pub window: WindowConfig,
     /// 平台功能开关（设置 → 常规 → 各软件功能）：界面显示什么由用户定，不写死在页面里
@@ -238,6 +256,12 @@ stale_refresh_min = 10
 # 启动时扫描本地客户端登录态并入库。
 # 关掉 = 账号只从浏览器登录添加；已入库的账号、切换、云端校验都不受影响。
 scan_on_startup = true
+
+[codebuddy]
+# CodeBuddy IDE 数据目录（缺省 %APPDATA%\CodeBuddy CN）；改了安装/数据目录才需要填。
+ide_dir = ""
+# JetBrains 配置目录（缺省 %APPDATA%\JetBrains，插件与 secret-storage.xml 所在）。
+idea_dir = ""
 
 [window]
 # 点关闭按钮：tray = 收进托盘继续常驻；exit = 直接退出

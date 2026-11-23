@@ -94,11 +94,11 @@ export function CommandPalette({ items, placeholder }: { items: PaletteItem[]; p
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-[12vh]"
+      className="overlay-in fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-[12vh]"
       onClick={() => setOpen(false)}
     >
       <div
-        className="w-[min(560px,92vw)] overflow-hidden rounded-lg border border-line bg-card shadow-card-hover"
+        className="view-enter w-[min(560px,92vw)] overflow-hidden rounded-xl border border-line bg-bg shadow-pop"
         onClick={(event) => event.stopPropagation()}
       >
         <input
@@ -147,19 +147,21 @@ export function CommandPalette({ items, placeholder }: { items: PaletteItem[]; p
               // 焦点始终留在输入框（combobox 模式），条目本身不进 Tab 序列
               tabIndex={-1}
               className={cn(
-                'flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm',
-                position === index ? 'bg-hover' : 'hover:bg-hover',
+                'flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors duration-[var(--dur-1)]',
+                position === index ? 'bg-accent-soft text-fg' : 'hover:bg-hover',
               )}
               onMouseEnter={() => setIndex(position)}
               onClick={() => runAt(position)}
             >
-              <span className="w-8 text-[10px] text-muted">{item.group}</span>
+              <span className={cn('w-8 shrink-0 text-xs', position === index ? 'text-accent' : 'text-muted')}>
+                {item.group}
+              </span>
               <span className="flex-1 truncate">{item.title}</span>
               {item.hint && <span className="text-xs text-muted">{item.hint}</span>}
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-3 border-t border-line px-3 py-1.5 text-[11px] text-muted">
+        <div className="flex items-center gap-3 border-t border-line px-3 py-1.5 text-xs text-muted">
           <span>↑↓ 选择</span>
           <span>Enter 执行</span>
           <span>Esc 关闭</span>

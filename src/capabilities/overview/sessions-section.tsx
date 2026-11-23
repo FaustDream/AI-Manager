@@ -4,6 +4,7 @@
 // 遵循仪表盘既定口味：瓦片只留数字、解释进 tooltip；排名列表 + 行底 3px 份额条。
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import { StateBlock } from '@/components/ui/form';
 import { queryCmd } from '@/lib/cmd';
 import { errText } from '@/lib/ipc';
@@ -23,11 +24,10 @@ export function SessionsSection({ range }: { range: Range }) {
   const data = stats.data;
 
   return (
-    <section className="p-3">
+    <Card className="p-5" aria-label="会话统计">
       <SectionTitle
-        className="mb-0"
         right={
-          <Button size="sm" variant="ghost" onClick={() => navigate('sessions')}>
+          <Button size="sm" variant="soft" onClick={() => navigate('sessions')}>
             去会话页 →
           </Button>
         }
@@ -36,9 +36,9 @@ export function SessionsSection({ range }: { range: Range }) {
       </SectionTitle>
 
       {stats.isLoading && (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="h-[92px] skeleton-block rounded-lg bg-hover" />
+            <div key={index} className="h-[92px] skeleton-block rounded-md bg-hover" />
           ))}
         </div>
       )}
@@ -53,8 +53,8 @@ export function SessionsSection({ range }: { range: Range }) {
       )}
 
       {data && (
-        <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="flex flex-col gap-4">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <Metric
               label={`活跃 · ${range.label}`}
               value={String(data.active)}
@@ -77,8 +77,8 @@ export function SessionsSection({ range }: { range: Range }) {
             />
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-2">
-            <div className="p-3">
+          <div className="grid gap-4 border-t border-line pt-4 lg:grid-cols-2">
+            <div>
               {/* 表头与排名行同一内边距（px-3）：差 8px 整列数字就会看着歪 */}
               <div className="mb-1 flex items-baseline justify-between gap-2 px-3 text-xs text-muted">
                 <span>来源</span>
@@ -87,22 +87,21 @@ export function SessionsSection({ range }: { range: Range }) {
               <RankedSources bySource={data.by_source} total={data.active} />
             </div>
 
-            <div className="p-3">
+            <div>
               <div className="mb-1 flex items-baseline justify-between gap-2 px-3 text-xs text-muted">
                 <span>项目 Top 8</span>
                 <span>会话数 · 占比</span>
               </div>
               {data.by_project.length === 0 ? (
-                <p className="px-1 py-3 text-xs text-muted">还没有项目信息（会话都来自临时工作区或无项目路径）。</p>
+                <p className="px-3 py-3 text-xs text-muted">还没有项目信息（会话都来自临时工作区或无项目路径）。</p>
               ) : (
                 <RankedProjects byProject={data.by_project} total={data.active} />
               )}
             </div>
           </div>
-
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -121,7 +120,7 @@ function RankedSources({
         <button
           key={row.source_key}
           title={`${row.label} · ${row.count} 条会话（点击去会话页按来源筛选）`}
-          className="group relative flex h-11 w-full items-center gap-3 rounded-[10px] px-3 pb-1.5 text-left text-sm text-fg hover:bg-hover/60"
+          className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
           onClick={() => navigate('sessions', { source: row.source_key })}
         >
           <ShareBar pct={(row.count / max) * 100} />
@@ -151,7 +150,7 @@ function RankedProjects({
         <div
           key={row.project}
           title={`${row.project} · ${row.count} 条会话`}
-          className="group relative flex h-11 w-full items-center gap-3 rounded-[10px] px-3 pb-1.5 text-left text-sm text-fg hover:bg-hover/60"
+          className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
         >
           <ShareBar pct={(row.count / max) * 100} />
           <span className="relative min-w-0 flex-1 truncate" title={row.project}>

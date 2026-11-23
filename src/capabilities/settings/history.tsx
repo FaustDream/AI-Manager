@@ -3,8 +3,10 @@
 // 配置写坏了没有第二次机会：定时任务一改错，自动签到就静默不跑了。
 // 这里把每次写入前的旧值列出来，看得到、滚得回。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { ArrowRight } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Section } from '@/components/ui/card';
 import { confirmAction } from '@/components/ui/confirm';
 import { Dialog } from '@/components/ui/dialog';
 import { SkeletonBlock } from '@/components/ui/form';
@@ -79,48 +81,53 @@ export function HistoryPane() {
     });
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-5">
       {/* 摘要行：详情（查看/回滚逐条）收进对话框，设置页不再被长列表撑高 */}
-      <div className="p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold">配置历史</h2>
-          <span className="text-xs text-muted">
-            {(history.data ?? []).length > 0
-              ? `${(history.data ?? []).length} 条快照 · 最近「${(history.data ?? [])[0]?.key}」 ${fmtTime((history.data ?? [])[0]?.at ?? 0)}`
-              : '还没有配置变更记录；回滚前会再记一条'}
-          </span>
-          <span className="flex-1" />
-          <Button
-            size="sm"
-            disabled={!!busy || (history.data ?? []).length === 0}
-            onClick={() => setListOpen(true)}
-          >
-            查看与回滚
-          </Button>
-          <Button
-            size="sm"
-            variant="danger"
-            disabled={!!busy || (history.data ?? []).length === 0}
-            onClick={() =>
-              run('clear-history', async () => {
-                if (
-                  !(await confirmAction({
-                    title: '清空配置历史',
-                    message: '清空后无法回滚任何配置变更。确定？',
-                    danger: true,
-                  }))
-                )
-                  return;
-                if ((await runCmd('config_snapshot_clear')) === undefined) return;
-                toast('配置历史已清空');
-                await qc.invalidateQueries({ queryKey: ['config-history'] });
-              })
-            }
-          >
-            清空
-          </Button>
-        </div>
-      </div>
+      <Section
+        title="配置历史"
+        note={
+          (history.data ?? []).length > 0
+            ? `${(history.data ?? []).length} 条快照 · 最近「${(history.data ?? [])[0]?.key}」 ${fmtTime((history.data ?? [])[0]?.at ?? 0)}`
+            : '还没有配置变更记录；回滚前会再记一条'
+        }
+        actions={
+          <>
+            <Button
+              size="sm"
+              disabled={!!busy || (history.data ?? []).length === 0}
+              onClick={() => setListOpen(true)}
+            >
+              查看与回滚
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={!!busy || (history.data ?? []).length === 0}
+              onClick={() =>
+                run('clear-history', async () => {
+                  if (
+                    !(await confirmAction({
+                      title: '清空配置历史',
+                      message: '清空后无法回滚任何配置变更。确定？',
+                      danger: true,
+                    }))
+                  )
+                    return;
+                  if ((await runCmd('config_snapshot_clear')) === undefined) return;
+                  toast('配置历史已清空');
+                  await qc.invalidateQueries({ queryKey: ['config-history'] });
+                })
+              }
+            >
+              清空
+            </Button>
+          </>
+        }
+      >
+        <p className="text-xs leading-5 text-muted">
+          每次改配置都会留一份变更前的快照（最近 30 次）。改坏了可以逐条回滚，回滚本身也会先记一条。
+        </p>
+      </Section>
 
       <Dialog
         open={listOpen}
@@ -160,56 +167,58 @@ export function HistoryPane() {
         ))}
       </Dialog>
 
-      {/* 与「配置历史」「回收站」同构：p-4 + 单行摘要，不额外加 mb，
-          这样三张卡在设置页里的高度完全一致；更新结果也收进同一行。 */}
-      <div className="p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold">关于与更新</h2>
-          {update &&
-            (update.has_update ? (
-              <Tag tone="warn">检测到可用更新</Tag>
-            ) : (
-              <Tag tone="ok">已是最新</Tag>
-            ))}
-          <span className="flex-1" />
-          {update?.has_update && (
-            <Button size="sm" variant="ghost" onClick={() => setNotesOpen(true)}>
-              更新说明
+      {/* 与「配置历史」「回收站」同构：Section + 单行摘要，三张卡在设置页里高度一致 */}
+      <Section
+        title="关于与更新"
+        note={
+          update &&
+          (update.has_update ? <Tag tone="warn">检测到可用更新</Tag> : <Tag tone="ok">已是最新</Tag>)
+        }
+        actions={
+          <>
+            {update?.has_update && (
+              <Button size="sm" variant="ghost" onClick={() => setNotesOpen(true)}>
+                更新说明
+              </Button>
+            )}
+            {update?.has_update && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  if (update) void runCmd('open_external', { url: update.url });
+                }}
+              >
+                打开发布页
+              </Button>
+            )}
+            <Button size="sm" onClick={() => setRecordsOpen(true)} title="逐版本查看改动要点">
+              更新记录
             </Button>
-          )}
-          {update?.has_update && (
+            <Button size="sm" variant="soft" onClick={checkUpdate} loading={busy === 'update'}>
+              检查更新
+            </Button>
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => {
-                if (update) void runCmd('open_external', { url: update.url });
-              }}
+              onClick={exportBundle}
+              loading={busy === 'bundle'}
+              title="导出日志、账号状态（脱敏）与配置，便于排查或求助"
             >
-              打开发布页
+              导出诊断包
             </Button>
-          )}
-          <Button size="sm" onClick={() => setRecordsOpen(true)} title="逐版本查看改动要点">
-            更新记录
-          </Button>
-          <Button size="sm" onClick={checkUpdate} loading={busy === 'update'}>
-            检查更新
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={exportBundle}
-            loading={busy === 'bundle'}
-            title="导出日志、账号状态（脱敏）与配置，便于排查或求助"
-          >
-            导出诊断包
-          </Button>
-        </div>
-
+          </>
+        }
+      >
         {/* 检查出新版就把版本号与要点摘要直接摆出来（P1-6）：
             以前只有一个「检测到可用更新」的标签，要点还得再点一次「更新说明」。 */}
-        {update?.has_update && (
-          <div className="mt-2 text-xs leading-relaxed">
-            <span className="text-muted">当前 {update.current} → 最新 </span>
+        {update?.has_update ? (
+          <div className="text-xs leading-relaxed">
+            <span className="inline-flex items-center gap-1 text-muted">
+              当前 {update.current}
+              <ArrowRight size={12} />
+              最新
+            </span>{' '}
             <span className="font-semibold text-fg">{update.latest}</span>
             {update.published_at && (
               <span className="text-muted"> · 发布于 {update.published_at.slice(0, 10)}</span>
@@ -222,10 +231,16 @@ export function HistoryPane() {
               </ul>
             )}
           </div>
+        ) : (
+          <p className="text-xs leading-5 text-muted">
+            {update
+              ? `当前 v${update.current}。更新只做提示，不会自动下载或替换任何文件——要不要升级由你决定。`
+              : '点「检查更新」比对 GitHub 上的最新发布；更新只做提示，不会自动下载或替换文件。'}
+          </p>
         )}
 
         {bundlePath && (
-          <div className="mt-2 flex items-center gap-2 text-xs">
+          <div className="mt-3 flex items-center gap-2 border-t border-line pt-3 text-xs">
             <span className="text-muted">诊断包</span>
             <span className="truncate font-mono" title={bundlePath}>
               {bundlePath}
@@ -243,7 +258,7 @@ export function HistoryPane() {
             </Button>
           </div>
         )}
-      </div>
+      </Section>
 
       <Dialog
         open={viewing !== null}
@@ -256,13 +271,13 @@ export function HistoryPane() {
           <div className="grid gap-3 md:grid-cols-2">
             <div>
               <div className="mb-1 text-xs text-muted">回滚到（变更前）</div>
-              <pre className="max-h-72 overflow-auto rounded-md border border-line bg-bg p-2 text-xs">
+              <pre className="max-h-72 overflow-auto rounded-md border border-line bg-sunken p-2 text-xs">
                 {pretty(viewing.before)}
               </pre>
             </div>
             <div>
               <div className="mb-1 text-xs text-muted">变更后</div>
-              <pre className="max-h-72 overflow-auto rounded-md border border-line bg-bg p-2 text-xs">
+              <pre className="max-h-72 overflow-auto rounded-md border border-line bg-sunken p-2 text-xs">
                 {pretty(viewing.after)}
               </pre>
             </div>

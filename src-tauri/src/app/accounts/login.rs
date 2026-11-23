@@ -334,14 +334,8 @@ async fn wait_workbuddy(db: &Db, platform: &str, ticket: &str) -> Result<LoginOu
             name
         }
     };
-    // 与客户端扫描同一套主键规则：国际版加 @intl，避免同 uid 两版冲突
-    let account_id = if uid.is_empty() {
-        format!("acct-{}", random_hex(6))
-    } else if intl {
-        format!("{uid}@intl")
-    } else {
-        uid.clone()
-    };
+    // 与客户端扫描同一套主键规则：国际版加 @intl，避免同 uid 两版冲突。
+    let account_id = wb_account_id(&uid, intl);
 
     let mut meta = Map::new();
     meta.insert("uid".into(), json!(uid));
@@ -382,6 +376,24 @@ fn wb_label(intl: bool) -> &'static str {
         crate::app::products::Product::WorkBuddyIntl.label()
     } else {
         crate::app::products::Product::WorkBuddyCn.label()
+    }
+}
+
+/// WorkBuddy 账号主键：国内版 = uid，国际版 = `uid@intl`。
+///
+/// 接口没回 uid 时的兜底也要带版本后缀——曾在这里丢过 `@intl`，导致国际版登录
+/// 落成 `workbuddy:acct-xxxx`（国内版形态），后续「切换登录」关/开的就是国内版客户端。
+fn wb_account_id(uid: &str, intl: bool) -> String {
+    if uid.is_empty() {
+        if intl {
+            format!("acct-{}@intl", random_hex(6))
+        } else {
+            format!("acct-{}", random_hex(6))
+        }
+    } else if intl {
+        format!("{uid}@intl")
+    } else {
+        uid.to_string()
     }
 }
 
@@ -1347,6 +1359,16 @@ mod tests {
             };
             assert_eq!(reauth_platform(&db, iid).unwrap(), expected, "{iid}");
         }
+    }
+
+    /// 回归：接口没回 uid 时，兜底主键也不能丢 `@intl`——否则国际版登录落成
+    /// 国内版 iid，切换登录就会去动国内版客户端。
+    #[test]
+    fn wb_account_id_keeps_the_edition_in_the_fallback() {
+        assert!(wb_account_id("", true).ends_with("@intl"));
+        assert!(!wb_account_id("", false).ends_with("@intl"));
+        assert_eq!(wb_account_id("u1", true), "u1@intl");
+        assert_eq!(wb_account_id("u1", false), "u1");
     }
 
     fn identity(iid: &str) -> AccountIdentity {

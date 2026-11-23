@@ -18,8 +18,10 @@
 // 运行细节（存储占用、定时任务）与领取明细分别归设置页与日志页。
 // 首启的「只在本机运行」安全说明也已撤：它属于一次性说明，不该常驻占位。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { ArrowRight } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Card, PageHeader } from '@/components/ui/card';
 import { StateBlock } from '@/components/ui/form';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { fmtAmount } from '@/lib/format';
@@ -200,51 +202,60 @@ export default function OverviewPage() {
   ) : null;
 
   return (
-    <div className="stagger relative flex flex-col gap-4">
+    <div className="stagger relative flex flex-col gap-6">
       {/* 极光底纹（叙事页专属）：只在仪表盘顶部铺一层极淡的慢渐变，
-          表格页不挂——读表时底色在动会分神。不拦截指针。 */}
-      <div className="aurora-glow" aria-hidden />
-      {/* 页头只留全局过滤：标题已由侧栏导航给出，重复一遍是占位；
-          「更新 时间」也不再摆——补刷是后台行为，用户不需要为它分心。 */}
-      <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5">
-        {/* 全局过滤：三块（积分 / Token / 会话）共用这一个区间。
-            各卡自己再挂一份控件，等于同一个页面有三个时间口径。 */}
-        <span
-          className="flex flex-wrap items-center justify-end gap-1.5"
-          role="group"
-          aria-label="全局过滤"
-          title="统一控制积分统计、Token 统计与会话统计的时间区间"
-        >
-          <span className="text-xs text-muted">全局过滤</span>
-          <RangeControl range={range} />
-        </span>
+          表格页不挂——读表时底色在动会分神。不拦截指针。
+          外层负责裁切：底纹本身要放大位移，不裁的话会给 main 撑出一条横向滚动条。
+          负 z 让它落在卡片与文字之下，只染画布。 */}
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[460px] overflow-hidden">
+        <div className="aurora-glow" />
       </div>
+      <PageHeader
+        title="仪表盘"
+        note="积分进了多少、Token 花在哪、会话资产有多少——三块共用页头这一个时间区间。"
+        actions={
+          // 全局过滤：三块（积分 / Token / 会话）共用这一个区间。
+          // 各卡自己再挂一份控件，等于同一个页面有三个时间口径。
+          <span
+            className="flex flex-wrap items-center gap-1.5"
+            role="group"
+            aria-label="全局过滤"
+            title="统一控制积分统计、Token 统计与会话统计的时间区间"
+          >
+            <span className="text-xs text-muted">全局过滤</span>
+            <RangeControl range={range} />
+          </span>
+        }
+      />
 
-      {/* 两栏：左积分、右用量。两张卡**同构**——标题行（区间控件）+ 2×2 数字 + 两个子块。
+      {/* 两栏：左积分、右用量。两张卡**同构**——标题行 + 2×2 数字 + 两个子块。
           对齐靠 subgrid：父栅格定出「标题 / 数字 / 子块一 / 子块二」四行，两张卡各跨满四行，
           行高取两侧较大值——于是两栏的子块边界也落在同一条水平线上，不用手调高度。
           窄屏（<xl）回落成上下堆叠（此时卡内是普通单列栅格）。 */}
-      <div className="grid gap-3 xl:grid-cols-2 xl:grid-rows-[auto_auto_auto_auto]">
+      <div className="grid gap-5 xl:grid-cols-2 xl:grid-rows-[auto_auto_auto_auto]">
         {creditPlaceholder ? (
           <div className="min-w-0 self-start">{creditPlaceholder}</div>
         ) : (
-          <section className="grid min-w-0 gap-3 p-3 xl:row-span-4 xl:grid-rows-subgrid">
+          <Card
+            className="grid min-w-0 gap-4 p-5 xl:row-span-4 xl:grid-rows-subgrid"
+            aria-label="积分统计"
+          >
             <div>
               {/* 区间控件已上移到页头「全局过滤」：这一行只留标题，但保留行高，
                   否则右栏的标题行会被 subgrid 拉高、两卡数字行对不齐 */}
-              <SectionTitle className="mb-0 min-h-7 items-center">积分统计</SectionTitle>
+              <SectionTitle className="mb-0 min-h-7">积分统计</SectionTitle>
             </div>
 
             {/* 四个数字回答「进了多少、花了多少、还剩多少、有没有要紧事」。
                 半栏宽度下排成 2×2：四列会把每个数字挤到读不出来。 */}
             {flow.isLoading ? (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-4">
                 {Array.from({ length: 4 }).map((_, i) => (
                   <div key={i} className="h-[92px] skeleton-block rounded-lg bg-hover" />
                 ))}
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3" role="group" aria-label="关键指标">
+              <div className="grid grid-cols-2 gap-4" role="group" aria-label="关键指标">
                 <Metric
                   label={`进账 · ${rangeText}`}
                   value={fmtAmount(earnedSum)}
@@ -280,11 +291,10 @@ export default function OverviewPage() {
             )}
 
             {/* 子块一：按天看进账/消耗（或余额走势）。
-                flex-1 是关键：两栏的卡片总高相同，两个子块各分一半剩余高度，
-                于是左右两张卡的子块边界也落在同一条水平线上。 */}
-            <div className="p-3">
-              <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                <h4 className="text-xs font-semibold tracking-wide text-fg2">
+                两栏行高由 subgrid 取较大值，于是左右子块边界落在同一条水平线上。 */}
+            <div>
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <h4 className="text-xs font-semibold tracking-wide text-muted">
                   积分{chartMode === 'flow' ? '收支' : '趋势'}
                 </h4>
                 <span className="flex-1" />
@@ -311,7 +321,7 @@ export default function OverviewPage() {
                 <CreditTrend points={trendPoints} />
               )}
 
-              <div className="mt-1 flex items-center gap-2 text-xs text-muted">
+              <div className="mt-2 flex items-center gap-2 border-t border-line pt-2 text-xs text-muted">
                 <span>
                   7 天内到期{' '}
                   <span className={expiringCredit > 0 ? 'font-medium text-warn' : ''}>
@@ -321,23 +331,25 @@ export default function OverviewPage() {
                 </span>
                 <span className="flex-1" />
                 <button
-                  className="cursor-pointer hover:text-fg"
+                  type="button"
+                  className="inline-flex cursor-pointer items-center gap-1 rounded-sm text-accent transition-colors duration-[var(--dur-1)] hover:text-accent-strong"
                   onClick={() => go('account-center')}
                 >
-                  去用掉 →
+                  去用掉
+                  <ArrowRight size={13} />
                 </button>
               </div>
             </div>
 
             {/* 子块二：同一份账目按软件拆开，看「钱花在哪」 */}
-            <div className="p-3">
+            <div className="border-t border-line pt-3">
               {flow.isLoading ? (
                 <div className="h-[180px] skeleton-block rounded-md bg-hover" />
               ) : (
                 <CreditPlatformSplit flush platforms={platformFlows} note={rangeText} />
               )}
             </div>
-          </section>
+          </Card>
         )}
 
         <UsageSection query={usage} range={range} />

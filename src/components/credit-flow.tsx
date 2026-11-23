@@ -33,7 +33,9 @@ export function CreditFlowChart({
   platforms?: CreditPlatformFlow[];
 }) {
   const palette = useChartPalette();
-  const colors = [palette.accent, palette.ok, palette.warn, '#8b5cf6', '#06b6d4', '#f472b6'];
+  // 直接引用色板快照（主题不变时是同一个数组），别在这里新建数组：
+  // 它进了下面 useMemo 的依赖，每次渲染新建会让 option 白白重算一遍。
+  const colors = palette.series;
 
   // 堆叠模式：过滤掉区间内完全没流水的软件（图例上挂着一家全零没意义）
   const stackedPlatforms = useMemo(() => {

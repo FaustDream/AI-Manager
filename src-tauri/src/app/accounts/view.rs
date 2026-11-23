@@ -67,6 +67,9 @@ pub struct AccountView {
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub lot_expires_at: Option<i64>,
     pub lot_amount: Option<f64>,
+    /// 未来 10 天内到期的批次合计。`None` = 从来没拿到过批次
+    /// （与「0」区分：0 是拿到了、但 10 天内没有要过期的）
+    pub expiring_10d: Option<f64>,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub next_at: Option<i64>,
     /// 最近一次查询失败的原因。**有值不代表整行不可用**——余额查不到不该挡住别名。
@@ -115,6 +118,7 @@ impl AccountView {
             quota_at: None,
             lot_expires_at: None,
             lot_amount: None,
+            expiring_10d: None,
             next_at: None,
             error: None,
         }

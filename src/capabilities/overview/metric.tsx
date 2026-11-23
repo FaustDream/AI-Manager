@@ -102,7 +102,7 @@ export function Metric({
   const display = raw !== undefined && format ? <CountUp raw={raw} format={format} /> : value;
 
   const valueCls = cn(
-    'mt-1 text-2xl font-semibold tabular-nums tracking-[-.03em] transition-colors duration-[var(--dur-2)]',
+    'mt-1.5 text-3xl font-semibold tabular-nums tracking-[-.03em] transition-colors duration-[var(--dur-2)]',
     tone === 'ok' && 'text-ok',
     tone === 'warn' && 'text-warn',
     flash && 'text-accent',
@@ -119,8 +119,15 @@ export function Metric({
       </div>
     </>
   );
-  // 数字瓦片只保留留白与姿态（倾斜/按压），不再有边框、底色与阴影
-  const cls = 'p-4 transition-transform duration-[var(--dur-2)]';
+  /*
+   * 瓦片是卡片里的「凹槽」：底色比卡面深一档（sunken），不描边、不投影。
+   * 三层中性色 canvas → card → sunken 把页面深度做出来，同时避免卡中卡的边框噪声。
+   * 可点瓦片 hover 时提亮到 hover 档，让「这个数字能点」看得见。
+   */
+  const cls = cn(
+    'rounded-md bg-sunken p-4 transition-[transform,background-color] duration-[var(--dur-2)]',
+    onClick && 'hover:bg-hover',
+  );
   const motion = {
     onPointerMove: onMove,
     onPointerLeave: () => {
@@ -156,9 +163,10 @@ export function SectionTitle({
   className?: string;
 }) {
   return (
-    // 标题与内容留 10px（V-05 的「卡片内行距」档），扫读时分得清区块边界
-    <div className={cn('mb-2.5 flex items-baseline gap-2', className)}>
-      <h3 className="text-xs font-semibold tracking-wide text-fg2">{children}</h3>
+    // 卡标题左侧一枚 accent 短竖：四套风格换肤时它跟着变，是卡片的身份标记
+    <div className={cn('mb-3 flex items-center gap-2', className)}>
+      <span aria-hidden className="h-3.5 w-[3px] shrink-0 rounded-full bg-accent" />
+      <h3 className="text-lg font-semibold tracking-tight text-fg">{children}</h3>
       <span className="flex-1" />
       {right && <span className="text-xs text-muted">{right}</span>}
     </div>
@@ -184,16 +192,20 @@ export function Segmented({
 }) {
   return (
     <span
-      className="flex flex-wrap items-center gap-0.5 rounded border border-line p-0.5"
+      className="flex flex-wrap items-center gap-0.5 rounded-md border border-line bg-sunken p-0.5"
       title={title}
+      role="group"
     >
       {options.map((item) => (
         <button
           key={item.key}
           type="button"
+          aria-pressed={item.key === value}
           className={cn(
-            'cursor-pointer rounded px-1.5 py-0.5 text-xs',
-            item.key === value ? 'bg-accent text-on-accent' : 'text-muted hover:text-fg',
+            'cursor-pointer rounded-sm px-2 py-0.5 text-xs transition-colors duration-[var(--dur-1)]',
+            item.key === value
+              ? 'bg-accent font-medium text-on-accent shadow-card'
+              : 'text-muted hover:bg-hover hover:text-fg',
           )}
           title={item.title}
           onClick={() => onPick(item.key)}

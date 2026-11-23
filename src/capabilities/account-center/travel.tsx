@@ -162,7 +162,7 @@ export function TravelCard({ account }: { account: AccountView }) {
       )}
 
       {status.letter && (
-        <details className="mt-2 rounded-md border border-line bg-bg px-2 py-1.5 text-xs text-muted">
+        <details className="mt-2 rounded-md border border-line bg-sunken px-2 py-1.5 text-xs text-muted">
           <summary className="cursor-pointer">Buddy 的来信</summary>
           <p className="mt-1 whitespace-pre-wrap text-fg2">{status.letter}</p>
         </details>
@@ -234,7 +234,7 @@ export function TravelCard({ account }: { account: AccountView }) {
 
       {/* 旅行记录：本机事件为主、平台记录折叠；限高滚动，数据再多也不把卡片撑长 */}
       {(events.length > 0 || records.length > 0) && (
-        <div className="mt-2 border-t border-line/60 pt-1.5">
+        <div className="mt-2 border-t border-line pt-1.5">
           <div className="mb-1 flex items-baseline gap-2 text-xs text-muted">
             <span>旅行记录</span>
             <span className="flex-1" />

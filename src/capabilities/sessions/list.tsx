@@ -10,11 +10,12 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight } from 'lucide-react';
 import { errText } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
-import { Checkbox, Input, Select, SkeletonRows } from '@/components/ui/form';
+import { Checkbox, Input, Select, SkeletonRows, StateBlock } from '@/components/ui/form';
 import { Notice, Tag } from '@/components/ui';
-import { DataTable, type RowActivateEvent } from '@/components/ui/table';
+import { DataTable, LoadMore, type RowActivateEvent } from '@/components/ui/table';
 import { toast } from '@/components/ui/toast';
 import { usePersistedChoice, usePersistedSet } from '@/lib/ui-state';
 import { onFocusSession, takePreset } from '@/lib/nav';
@@ -512,12 +513,14 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
     (filter.tags?.length ?? 0) > 0;
 
   return (
-    <div className="stagger flex h-[calc(100vh-118px)] flex-col gap-3 overflow-auto">
+    <div className="stagger flex h-full flex-col gap-3 overflow-auto">
       <div className={selected ? 'flex min-h-0 flex-1 flex-col gap-3 lg:flex-row' : 'flex flex-col gap-3'}>
         {/* ---------------------------------------------------------- 列表区 */}
         <section className={selected ? 'flex min-h-0 min-w-0 flex-1 flex-col gap-2' : 'flex min-h-0 flex-col gap-2'}>
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold">{archived ? '已归档会话' : '活跃会话'}</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-semibold tracking-tight">
+              {archived ? '已归档会话' : '活跃会话'}
+            </h2>
             {archived && <Tag tone="warn">已归档</Tag>}
             <span className="text-xs text-muted">
               共 {total} 条
@@ -525,184 +528,189 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
             </span>
             {!archived && facetsData && (
               <button
-                className="text-xs text-muted hover:text-fg"
+                type="button"
+                className="inline-flex cursor-pointer items-center gap-1 rounded-sm text-xs text-accent transition-colors duration-[var(--dur-1)] hover:text-accent-strong"
                 onClick={() => navigateArchive()}
                 title="归档只写本地标记，取消归档可恢复"
               >
-                已归档（{archiveCount(facetsData)}）→
+                已归档（{archiveCount(facetsData)}）
+                <ArrowRight size={12} />
               </button>
             )}
             {archived && (
               <button
-                className="text-xs text-muted hover:text-fg"
+                type="button"
+                className="inline-flex cursor-pointer items-center gap-1 rounded-sm text-xs text-accent transition-colors duration-[var(--dur-1)] hover:text-accent-strong"
                 onClick={() => window.dispatchEvent(new CustomEvent('aim:navigate', { detail: 'sessions' }))}
               >
-                ← 回活跃列表
+                <ArrowLeft size={12} />
+                回活跃列表
               </button>
             )}
           </div>
 
           {/* 筛选条：一份列表，维度全在下面两行里。
               第一行挑子集（平台 / 状态 / 项目 / 标签 + 搜索 + 快筛），
-              第二行只改「怎么摆」和扫描入口。 */}
-          <div className="flex flex-wrap items-center gap-3 border-b border-line pb-2 text-sm">
-            <label className="flex items-center gap-1 text-muted">
-              平台
-              <Select
-                value={filter.source ?? ''}
-                onChange={(e) => setFilter((f) => ({ ...f, source: e.target.value || null }))}
-              >
-                <option value="">全部</option>
-                {platformOptions.map((s) => (
-                  <option key={s.value} value={s.value}>
-                    {s.label}（{s.count}）
-                  </option>
-                ))}
-              </Select>
-            </label>
-            {!archived && (
+              第二行只改「怎么摆」和扫描入口。两行合成一张工具条，边界只有一圈。 */}
+          <div className="overflow-hidden rounded-md border border-line bg-card shadow-card">
+            <div className="flex flex-wrap items-center gap-3 border-b border-line bg-sunken px-2.5 py-2 text-sm">
               <label className="flex items-center gap-1 text-muted">
-                状态
+                平台
                 <Select
-                  value={filter.state ?? ''}
-                  onChange={(e) => setFilter((f) => ({ ...f, state: e.target.value || null }))}
+                  value={filter.source ?? ''}
+                  onChange={(e) => setFilter((f) => ({ ...f, source: e.target.value || null }))}
                 >
                   <option value="">全部</option>
-                  {(facetsData?.states ?? []).map((s) => (
+                  {platformOptions.map((s) => (
                     <option key={s.value} value={s.value}>
-                      {s.label}
+                      {s.label}（{s.count}）
                     </option>
                   ))}
                 </Select>
               </label>
-            )}
-            <label className="flex items-center gap-1 text-muted">
-              项目
-              <Select
-                value={filter.project ?? ''}
-                onChange={(e) => setFilter((f) => ({ ...f, project: e.target.value || null }))}
-              >
-                <option value="">全部</option>
-                {projectOptions.map((p) => (
-                  <option key={p.value} value={p.value}>
-                    {p.label}（{p.count}）
-                  </option>
-                ))}
-              </Select>
-            </label>
-            {(facetsData?.tags.length ?? 0) > 0 && (
+              {!archived && (
+                <label className="flex items-center gap-1 text-muted">
+                  状态
+                  <Select
+                    value={filter.state ?? ''}
+                    onChange={(e) => setFilter((f) => ({ ...f, state: e.target.value || null }))}
+                  >
+                    <option value="">全部</option>
+                    {(facetsData?.states ?? []).map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              )}
               <label className="flex items-center gap-1 text-muted">
-                标签
+                项目
                 <Select
-                  value={filter.tags?.[0] ?? ''}
-                  onChange={(e) => setFilter((f) => ({ ...f, tags: e.target.value ? [e.target.value] : [] }))}
+                  value={filter.project ?? ''}
+                  onChange={(e) => setFilter((f) => ({ ...f, project: e.target.value || null }))}
                 >
                   <option value="">全部</option>
-                  {(facetsData?.tags ?? []).map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}（{t.count}）
+                  {projectOptions.map((p) => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}（{p.count}）
                     </option>
                   ))}
                 </Select>
               </label>
-            )}
-            <label className="flex items-center gap-1 text-muted">
-              搜索
-              <Input
-                ref={searchRef}
-                className="w-44"
-                value={searchDraft}
-                onChange={(e) => setSearchDraft(e.target.value)}
-                placeholder={bodyMode ? '正文关键词（≥3 字更快）' : '标题 / 项目 / 平台'}
+              {(facetsData?.tags.length ?? 0) > 0 && (
+                <label className="flex items-center gap-1 text-muted">
+                  标签
+                  <Select
+                    value={filter.tags?.[0] ?? ''}
+                    onChange={(e) => setFilter((f) => ({ ...f, tags: e.target.value ? [e.target.value] : [] }))}
+                  >
+                    <option value="">全部</option>
+                    {(facetsData?.tags ?? []).map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}（{t.count}）
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              )}
+              <label className="flex items-center gap-1 text-muted">
+                搜索
+                <Input
+                  ref={searchRef}
+                  className="w-44"
+                  value={searchDraft}
+                  onChange={(e) => setSearchDraft(e.target.value)}
+                  placeholder={bodyMode ? '正文关键词（≥3 字更快）' : '标题 / 项目 / 平台'}
+                />
+              </label>
+              <FilterChip
+                active={bodyMode}
+                label="正文"
+                title="按会话正文全文搜索（FTS，中文按子串匹配）；关闭时搜索标题与项目"
+                onClick={() => {
+                  setBodyMode((v) => !v);
+                  setSearchDraft('');
+                }}
               />
-            </label>
-            <FilterChip
-              active={bodyMode}
-              label="正文"
-              title="按会话正文全文搜索（FTS，中文按子串匹配）；关闭时搜索标题与项目"
-              onClick={() => {
-                setBodyMode((v) => !v);
-                setSearchDraft('');
-              }}
-            />
-            {!archived && (
-              <>
-                <FilterChip
-                  active={filter.unnamed}
-                  label={`未命名${facetsData?.unnamed ? `（${facetsData.unnamed}）` : ''}`}
-                  title="只看标题是「（未命名会话）」占位文案的会话"
-                  onClick={() => setFilter((f) => ({ ...f, unnamed: !f.unnamed }))}
-                />
-                <FilterChip
-                  active={filter.pinned}
-                  label={`置顶${facetsData?.pinned ? `（${facetsData.pinned}）` : ''}`}
-                  title="只看置顶的会话；置顶的会话也永远排在列表最前"
-                  onClick={() => setFilter((f) => ({ ...f, pinned: !f.pinned }))}
-                />
-                <FilterChip
-                  active={filter.hidden}
-                  label={`已隐藏${facetsData?.hidden ? `（${facetsData.hidden}）` : ''}`}
-                  title="本地隐藏的会话（含 Trae 家族远端删不掉的删除墓碑），可从这里取消隐藏"
-                  onClick={() => setFilter((f) => ({ ...f, hidden: !f.hidden }))}
-                />
-              </>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <label className="flex items-center gap-1 text-muted">
-              排序
-              <Select
-                value={filter.sort ?? 'last_at'}
-                onChange={(e) => setFilter((f) => ({ ...f, sort: e.target.value as Filter['sort'] }))}
-              >
-                <option value="last_at">最近时间</option>
-                <option value="size">占用大小</option>
-                <option value="msgs">消息数</option>
-              </Select>
-            </label>
-            <label className="flex items-center gap-1 text-muted">
-              分组
-              <Select value={group} onChange={(e) => setGroup(e.target.value as GroupMode)}>
-                <option value="none">不分组</option>
-                <option value="source">按平台</option>
-                <option value="project">按项目</option>
-                {!archived && <option value="state">按状态</option>}
-              </Select>
-            </label>
-            {!archived && (
-              <label
-                className="flex items-center gap-1 text-muted"
-                title="超过这个天数没活动的会话，扫描时自动归档"
-              >
-                自动归档
+              {!archived && (
+                <>
+                  <FilterChip
+                    active={filter.unnamed}
+                    label={`未命名${facetsData?.unnamed ? `（${facetsData.unnamed}）` : ''}`}
+                    title="只看标题是「（未命名会话）」占位文案的会话"
+                    onClick={() => setFilter((f) => ({ ...f, unnamed: !f.unnamed }))}
+                  />
+                  <FilterChip
+                    active={filter.pinned}
+                    label={`置顶${facetsData?.pinned ? `（${facetsData.pinned}）` : ''}`}
+                    title="只看置顶的会话；置顶的会话也永远排在列表最前"
+                    onClick={() => setFilter((f) => ({ ...f, pinned: !f.pinned }))}
+                  />
+                  <FilterChip
+                    active={filter.hidden}
+                    label={`已隐藏${facetsData?.hidden ? `（${facetsData.hidden}）` : ''}`}
+                    title="本地隐藏的会话（含 Trae 家族远端删不掉的删除墓碑），可从这里取消隐藏"
+                    onClick={() => setFilter((f) => ({ ...f, hidden: !f.hidden }))}
+                  />
+                </>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-3 px-2.5 py-2 text-sm">
+              <label className="flex items-center gap-1 text-muted">
+                排序
                 <Select
-                  value={String(retention.data ?? 0)}
-                  onChange={(e) => {
-                    const days = Number(e.target.value);
-                    void queryCmd('session_retention_set', { days })
-                      .then((saved) => {
-                        qc.setQueryData(['retention'], saved);
-                        toast(saved === 0 ? '已关闭自动归档' : `超过 ${saved} 天没动的会话会自动归档`);
-                        refresh();
-                      })
-                      .catch((e) => toast(errText(e)));
-                  }}
+                  value={filter.sort ?? 'last_at'}
+                  onChange={(e) => setFilter((f) => ({ ...f, sort: e.target.value as Filter['sort'] }))}
                 >
-                  {RETENTION_CHOICES.map((choice) => (
-                    <option key={choice.days} value={choice.days}>
-                      {choice.label}
-                    </option>
-                  ))}
+                  <option value="last_at">最近时间</option>
+                  <option value="size">占用大小</option>
+                  <option value="msgs">消息数</option>
                 </Select>
               </label>
-            )}
-            <span className="flex-1" />
-            {!archived && (
-              <Button size="sm" onClick={scan} loading={busy === 'scan'} disabled={!!busy}>
-                重新扫描
-              </Button>
-            )}
+              <label className="flex items-center gap-1 text-muted">
+                分组
+                <Select value={group} onChange={(e) => setGroup(e.target.value as GroupMode)}>
+                  <option value="none">不分组</option>
+                  <option value="source">按平台</option>
+                  <option value="project">按项目</option>
+                  {!archived && <option value="state">按状态</option>}
+                </Select>
+              </label>
+              {!archived && (
+                <label
+                  className="flex items-center gap-1 text-muted"
+                  title="超过这个天数没活动的会话，扫描时自动归档"
+                >
+                  自动归档
+                  <Select
+                    value={String(retention.data ?? 0)}
+                    onChange={(e) => {
+                      const days = Number(e.target.value);
+                      void queryCmd('session_retention_set', { days })
+                        .then((saved) => {
+                          qc.setQueryData(['retention'], saved);
+                          toast(saved === 0 ? '已关闭自动归档' : `超过 ${saved} 天没动的会话会自动归档`);
+                          refresh();
+                        })
+                        .catch((e) => toast(errText(e)));
+                    }}
+                  >
+                    {RETENTION_CHOICES.map((choice) => (
+                      <option key={choice.days} value={choice.days}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              )}
+              <span className="flex-1" />
+              {!archived && (
+                <Button size="sm" variant="soft" onClick={scan} loading={busy === 'scan'} disabled={!!busy}>
+                  重新扫描
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* 已隐藏视图的口径说明：取消隐藏=恢复显示（Trae 家族的删除就是隐藏墓碑） */}
@@ -859,7 +867,7 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
             </p>
           )}
 
-          <div className="min-h-[140px] flex-1 overflow-auto">
+          <div className="min-h-[140px] flex-1 overflow-auto rounded-md border border-line bg-card shadow-card">
             {listQuery.isLoading ? (
               // 骨架行必须待在 <tbody> 里：直接塞进 div 会被浏览器搬出表格
               <table className="w-full table-fixed border-collapse">
@@ -936,12 +944,17 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                 <div key={g.key} className="mb-2">
                   <button
                     type="button"
-                    className="flex w-full cursor-pointer items-center gap-2 border-b border-line bg-hover px-2 py-1 text-left text-xs font-semibold"
+                    className="flex w-full cursor-pointer items-center gap-2 border-b border-line bg-sunken px-2.5 py-1.5 text-left text-xs font-semibold transition-colors duration-[var(--dur-1)] hover:bg-hover"
                     onClick={() => toggle(collapsed, setCollapsed, g.key)}
+                    aria-expanded={!collapsed.has(g.key)}
                   >
-                    <span>{collapsed.has(g.key) ? '▸' : '▾'}</span>
+                    {collapsed.has(g.key) ? (
+                      <ChevronRight size={12} aria-hidden className="shrink-0 text-muted" />
+                    ) : (
+                      <ChevronDown size={12} aria-hidden className="shrink-0 text-muted" />
+                    )}
                     <span>{g.label}</span>
-                    <span className="text-muted">{g.rows.length} 条</span>
+                    <span className="font-normal text-muted tabular-nums">{g.rows.length} 条</span>
                   </button>
                   {!collapsed.has(g.key) && (
                     <DataTable<SessionRow>
@@ -982,10 +995,12 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
               ))
             )}
             <div ref={sentinel} className="h-px" />
-            {isFetchingNextPage && <div className="p-2 text-center text-xs text-muted">加载中…</div>}
-            {!hasNextPage && items.length > 0 && (
-              <div className="p-2 text-center text-xs text-muted">共 {items.length} 条，到底了</div>
-            )}
+            <LoadMore
+              count={items.length}
+              hasMore={hasNextPage}
+              loading={isFetchingNextPage}
+              onMore={() => void fetchNextPage()}
+            />
           </div>
         </section>
 
@@ -1096,10 +1111,10 @@ function FilterChip({
   return (
     <button
       type="button"
-      className={`cursor-pointer rounded-md px-2 py-1 text-sm ${
+      className={`cursor-pointer rounded-md border px-2.5 py-1 text-sm transition-colors duration-[var(--dur-1)] ${
         active
-          ? 'bg-accent font-medium text-on-accent'
-          : 'border border-line text-muted hover:bg-hover hover:text-fg'
+          ? 'border-accent bg-accent font-medium text-on-accent'
+          : 'border-line bg-bg text-fg2 hover:border-line-strong hover:bg-hover hover:text-fg'
       }`}
       onClick={onClick}
       title={title}
@@ -1129,29 +1144,37 @@ function EmptyState({
 }) {
   if (hasFilters) {
     return (
-      <div className="flex flex-col items-center gap-2 py-6">
-        <p className="text-sm text-muted">没有符合条件的会话。</p>
-        <Button size="sm" variant="ghost" onClick={onClear}>
-          清空筛选
-        </Button>
-      </div>
+      <StateBlock
+        kind="empty"
+        title="没有符合条件的会话"
+        detail="筛选条件叠得太窄了。清空后回到全部会话，再逐项收窄。"
+        action={
+          <Button size="sm" variant="soft" onClick={onClear}>
+            清空筛选
+          </Button>
+        }
+      />
     );
   }
   return (
-    <div className="flex flex-col items-center gap-2 py-6">
-      <p className="text-sm text-muted">
-        {archived
-          ? '还没有已归档的会话。'
+    <StateBlock
+      kind="empty"
+      title={archived ? '还没有已归档的会话' : total === 0 ? '还没有会话记录' : '没有符合条件的会话'}
+      detail={
+        archived
+          ? '归档只写本地标记，不动客户端文件。在活跃列表里选会话点「归档」，就会出现在这里。'
           : total === 0
-            ? '还没有会话记录。装好客户端并登录后，会话会在扫描时自动出现。'
-            : '没有符合条件的会话。'}
-      </p>
-      {!archived && (
-        <Button size="sm" variant="ghost" onClick={onScan} loading={scanning}>
-          重新扫描
-        </Button>
-      )}
-    </div>
+            ? '装好客户端并登录后，会话会在扫描时自动出现。'
+            : '换个平台或清空搜索词再试。'
+      }
+      action={
+        archived ? undefined : (
+          <Button size="sm" variant="soft" onClick={onScan} loading={scanning}>
+            重新扫描
+          </Button>
+        )
+      }
+    />
   );
 }
 

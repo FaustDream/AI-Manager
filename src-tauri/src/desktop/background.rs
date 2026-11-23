@@ -298,7 +298,7 @@ pub fn spawn_session_scan(service: Arc<crate::app::sessions::Service>) {
                             "schedule",
                             report.errors.is_empty(),
                             started.elapsed().as_millis() as u64,
-                            report.summary(),
+                            format!("{}{}", report.summary(), report.error_detail()),
                         );
                     }
                     crate::app::events::emit("session:scan", &report);

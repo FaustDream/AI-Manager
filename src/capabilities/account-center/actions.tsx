@@ -8,12 +8,11 @@
 // 暂时不可用（没凭据、不是当前账号）**置灰**，平台根本没有这个功能（或用户在设置里
 // 关掉了）则**槽位留空不画图标**——功能不存在的图标只是噪音，但宽度必须保持，
 // 否则少一个按钮后面的整体左移，十行看下来是锯齿。
-import { useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { IconDelete, IconHistory, IconPower, IconSwitch } from '@/components/ui/icons';
 import type { AccountView } from '@/lib/types';
-import type { EndRow } from './ends';
 
 /** 四个槽位的固定宽度（px）：切换 / 恢复对话 / 启停 / 删除。
  *  「当前登录」不再占槽位——它由行背景表达，文字标签是重复信息。 */
@@ -46,7 +45,7 @@ function RowAction({
       type="button"
       // 点击区 28×28（总纲 P1-11）：图标仍是 15px，但可点面积够手指与触控板命中。
       // 只加高不加宽——OPS_WIDTH 由 ACTION_SLOTS 算出，动宽度会牵动整表列宽。
-      className={`flex h-7 w-7 items-center justify-center rounded-sm transition-colors ${
+      className={`flex h-7 w-7 items-center justify-center rounded-sm transition-colors duration-[var(--dur-1)] ${
         disabled
           ? 'cursor-default text-muted opacity-40'
           : danger
@@ -152,192 +151,6 @@ export function RowActions({
         </RowAction>
       </div>
     </div>
-  );
-}
-
-/**
- * 端行的操作：切换这一端的登录、以及透过所属账号做的恢复对话 / 启停。
- *
- * 与账号行共用同一套槽位宽度，顺序也对齐（切换 / 恢复 / 启停），删掉的是「删除」
- * ——端不是账号库里的记录，没有可删的东西，槽位留空保持列宽不跳。
- */
-export function EndRowActions({
-  canSwitch,
-  canRestore,
-  canToggle,
-  restoreDisabled,
-  ownerEnabled,
-  busy,
-  onSwitch,
-  onRestore,
-  onToggleEnabled,
-}: {
-  canSwitch: boolean;
-  /** 所属账号存在且有「恢复对话」入口 */
-  canRestore: boolean;
-  /** 所属账号存在：启停是账号级的开关 */
-  canToggle: boolean;
-  /** 所属账号不是 WorkBuddy 本体当前登录：恢复对话只能对当前登录号做 */
-  restoreDisabled: boolean;
-  ownerEnabled: boolean;
-  busy: boolean;
-  onSwitch: () => void;
-  onRestore: () => void;
-  onToggleEnabled: () => void;
-}) {
-  return (
-    <div className="flex justify-end">
-      <div
-        className="grid items-center gap-1"
-        style={{ gridTemplateColumns: ACTION_SLOTS.map((w) => `${w}px`).join(' ') }}
-      >
-        {canSwitch ? (
-          <RowAction
-            label="切换这一端的登录"
-            onClick={onSwitch}
-            disabled={busy}
-            title="把这个端的登录换成账号库里另一个同平台的号"
-          >
-            <IconSwitch size={15} />
-          </RowAction>
-        ) : (
-          <span />
-        )}
-        {canRestore ? (
-          <RowAction
-            label="恢复对话"
-            onClick={onRestore}
-            disabled={restoreDisabled || busy}
-            title={
-              restoreDisabled
-                ? '只能恢复当前登录账号的会话：先让 WorkBuddy 本体切到这个账号'
-                : '把本机已有的历史会话关联到所属账号（只改归属，不动正文）'
-            }
-          >
-            <IconHistory size={15} />
-          </RowAction>
-        ) : (
-          <span />
-        )}
-        {canToggle ? (
-          <RowAction
-            label={ownerEnabled ? '停用账号' : '启用账号'}
-            onClick={onToggleEnabled}
-            disabled={busy}
-            title={
-              ownerEnabled
-                ? '停用所属账号：不参与自动签到、自动轮询与积分刷新；手动操作仍可执行'
-                : '启用所属账号：重新参与自动签到与积分轮询'
-            }
-          >
-            <IconPower size={15} />
-          </RowAction>
-        ) : (
-          <span />
-        )}
-        <span />
-      </div>
-    </div>
-  );
-}
-
-/**
- * 端行切账号：先选号，再确认。
- *
- * 候选只给同平台（WorkBuddy 国内版）——端写的是它的登录态档案，别的平台后端直接拒。
- * 选号这一步不能省：账号行的「切换」是「切到这一行」，端行反过来是「这一端切到谁」，
- * 没有默认目标。
- */
-export function EndSwitchDialog({
-  end,
-  candidates,
-  switchable,
-  busy,
-  onClose,
-  onConfirm,
-}: {
-  end: EndRow | null;
-  candidates: AccountView[];
-  /** 有完整客户端档案、真的能写进去的号：没有档案的候选照样列出，但选中前先说清原因 */
-  switchable: Set<string>;
-  busy: boolean;
-  onClose: () => void;
-  onConfirm: (iid: string) => void;
-}) {
-  const [picked, setPicked] = useState<string | null>(null);
-  const notReady = candidates.filter((row) => !switchable.has(row.iid));
-  return (
-    <Dialog
-      open={!!end}
-      title={end ? `切换「${end.label}」登录` : '切换登录'}
-      onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>取消</Button>
-          <Button
-            variant="primary"
-            disabled={!picked}
-            loading={busy}
-            onClick={() => picked && onConfirm(picked)}
-          >
-            确认切换
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-2 text-sm text-muted">
-        <p className="whitespace-pre-wrap">
-          {end ? `把「${end.label}」的登录换成下面选中的账号；` : ''}
-          只动这一端的登录态，WorkBuddy 本体与另一端不受影响，写前自动备份。
-        </p>
-        {candidates.length === 0 ? (
-          <p className="rounded-md border border-line bg-card px-2 py-1.5 text-fg">
-            账号库里还没有其它 WorkBuddy 国内版账号：先「添加账号」登录一个，或在设置里确认这一端的切换能力已打开。
-          </p>
-        ) : (
-          <div className="flex max-h-64 flex-col gap-1 overflow-y-auto">
-            {candidates.map((row) => {
-              // 缺档案的候选也列出来：用户要能看到「想切的那个号就在库里」，
-              // 而不是对着一个空列表猜自己是不是选错了端
-              const ready = switchable.has(row.iid);
-              return (
-                <button
-                  key={row.iid}
-                  type="button"
-                  disabled={!ready}
-                  onClick={() => setPicked(row.iid)}
-                  aria-pressed={picked === row.iid}
-                  title={
-                    ready
-                      ? `把这一端切到「${row.name}」`
-                      : '本机没有这个账号的客户端登录态档案：先在 WorkBuddy 客户端里登录一次（添加账号 → 改用客户端登录），档案生成后就能切'
-                  }
-                  className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left transition-colors duration-[var(--dur-1)] ${
-                    !ready
-                      ? 'cursor-not-allowed border-line bg-card/60 text-muted opacity-60'
-                      : picked === row.iid
-                        ? 'cursor-pointer border-accent bg-accent/10 text-fg'
-                        : 'cursor-pointer border-line bg-card text-fg2 hover:bg-hover'
-                  }`}
-                >
-                  <span className="min-w-0 truncate">{row.name}</span>
-                  <span className="shrink-0 text-xs text-muted">
-                    {ready ? row.platform_label : '缺客户端档案'}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-        {notReady.length > 0 && (
-          <p className="rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-xs text-fg2">
-            标「缺客户端档案」的号是网页登录进来的：客户端登录态只能由客户端那次登录签发。
-            在 WorkBuddy 客户端里登录一次该账号（账号中心 → 添加账号 → 改用客户端登录），
-            档案会在那次流程里保存，之后本体与两个端都能切过去。
-          </p>
-        )}
-      </div>
-    </Dialog>
   );
 }
 

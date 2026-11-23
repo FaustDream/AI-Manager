@@ -6,6 +6,8 @@ export const manifest: Manifest = {
   id: 'sessions-archive',
   title: '已归档会话',
   icon: 'sessions',
+  group: '账号与资产',
+  note: '已删除会话的历史仓，可捞回',
   fluid: true,
   order: 8,
   hidden: true,

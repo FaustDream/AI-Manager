@@ -4,6 +4,7 @@
 // 这里把它下沉成可复用的表体；账号中心自己的表带拖拽/列宽调整，仍保留原实现。
 import { useMemo, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import { ChevronDown, ChevronsUpDown, ChevronUp, LoaderCircle } from 'lucide-react';
 import { cn } from './button';
 import { SkeletonRows, StateBlock } from './form';
 import { nextSort, sortRows, type SortState, type SortValue } from '@/lib/sort';
@@ -80,7 +81,8 @@ export interface DataTableProps<R> {
 
 const headCls = (dense?: boolean) =>
   cn(
-    // 表头同样单行：表头折行会把整列的基线抬高一截，和表体对不齐
+    // 表头同样单行：表头折行会把整列的基线抬高一截，和表体对不齐。
+    // 行高刻意保持紧凑（双密度里的「表格页」一侧）：一屏能多看几行比留白更重要。
     'whitespace-nowrap border-b border-line-strong text-left text-xs font-semibold text-muted',
     dense ? 'px-2 py-1' : 'px-2.5 py-1.5',
   );
@@ -89,6 +91,57 @@ const cellCls = (dense?: boolean) => cn('border-b border-line', dense ? 'px-2 py
 
 const widthStyle = (w?: number | string): CSSProperties | undefined =>
   w === undefined ? undefined : { width: typeof w === 'number' ? `${w}px` : w };
+
+/**
+ * 游标分页的表尾。会话/日志这类流式列表用「滚动到底自动续页」而不是页码：
+ * 数据按时间倒序持续追加，页码会随新数据漂移，第 3 页刷新后就不是原来那批了。
+ *
+ * 所以这里只回答三件事：还有没有下一页、正在不在取、一共看了多少条。
+ * `onMore` 是自动续页失败（哨兵没进视口 / 手动想立刻要）时的兜底入口。
+ */
+export function LoadMore({
+  count,
+  hasMore,
+  loading,
+  onMore,
+  doneText = '到底了',
+}: {
+  count: number;
+  hasMore?: boolean;
+  loading?: boolean;
+  onMore?: () => void;
+  doneText?: string;
+}) {
+  if (count === 0) return null;
+  return (
+    <div className="flex items-center justify-center gap-2 border-t border-line bg-sunken/60 px-3 py-2 text-xs text-muted">
+      <span className="tabular-nums">已显示 {count} 条</span>
+      <span aria-hidden className="text-line-strong">
+        ·
+      </span>
+      {loading ? (
+        <span className="inline-flex items-center gap-1.5">
+          <LoaderCircle size={12} className="animate-spin" aria-hidden />
+          正在加载下一页
+        </span>
+      ) : hasMore ? (
+        onMore ? (
+          <button
+            type="button"
+            onClick={onMore}
+            className="cursor-pointer rounded-sm text-accent transition-colors duration-[var(--dur-1)] hover:text-accent-strong"
+          >
+            加载更多
+          </button>
+        ) : (
+          <span>继续下滑加载</span>
+        )
+      ) : (
+        <span>{doneText}</span>
+      )}
+    </div>
+  );
+}
 
 export function DataTable<R>({
   columns,
@@ -128,7 +181,13 @@ export function DataTable<R>({
 
   return (
     <table className={cn('w-full border-collapse', className)} style={style}>
-      <thead className={stickyHead ? 'sticky top-0 bg-bg' : undefined}>
+      {/* border-collapse 下 th 的 border 不跟着 sticky 走，吸顶那条分隔线用 inset 阴影画 */}
+      <thead
+        className={cn(
+          'bg-sunken',
+          stickyHead && 'sticky top-0 z-10 [&_th]:shadow-[inset_0_-1px_0_var(--color-line-strong)]',
+        )}
+      >
         <tr>
           {lead && (
             <th className={headCls(dense)} style={widthStyle(lead.width)}>
@@ -150,16 +209,21 @@ export function DataTable<R>({
                   <button
                     type="button"
                     onClick={() => toggleSort(col.key)}
-                    className="inline-flex cursor-pointer items-center gap-0.5 hover:text-fg"
+                    className={cn(
+                      'inline-flex cursor-pointer items-center gap-1 rounded-sm transition-colors duration-[var(--dur-1)] hover:text-fg',
+                      dir && 'text-accent',
+                    )}
                     title="点击排序：升序 → 降序 → 取消"
                   >
                     {col.header}
-                    <span
-                      aria-hidden
-                      className={cn('text-[9px] leading-none', dir ? 'opacity-100' : 'opacity-25')}
-                    >
-                      {dir === 'desc' ? '▼' : '▲'}
-                    </span>
+                    {dir === 'asc' ? (
+                      <ChevronUp size={12} aria-hidden className="shrink-0" />
+                    ) : dir === 'desc' ? (
+                      <ChevronDown size={12} aria-hidden className="shrink-0" />
+                    ) : (
+                      // 未排序也给一枚淡的双向箭头：否则用户看不出这列能点
+                      <ChevronsUpDown size={12} aria-hidden className="shrink-0 opacity-30" />
+                    )}
                   </button>
                 ) : (
                   col.header

@@ -8,11 +8,13 @@
 // 上下文按文件物理行号取（后端 `log_context`），前后行数由用户在现场决定。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { errText } from '@/lib/ipc';
 import { Button, cn } from '@/components/ui/button';
 import { confirmAction } from '@/components/ui/confirm';
 import { Dialog } from '@/components/ui/dialog';
+import { Drawer } from '@/components/ui/drawer';
 import { Checkbox, Input, Select, SkeletonBlock, SkeletonRows, StateBlock } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { Tag } from '@/components/ui';
@@ -177,16 +179,21 @@ function LogsPane() {
 
   // 空态要说清是「这 10 分钟没写」还是「所选范围没有」：默认窗口下只说「没有日志」，
   // 用户会以为日志丢了，其实是超过 10 分钟的日志被默认隐藏了。
-  const emptyText =
+  const emptyState =
     view === 'alert'
-      ? `最近 ${windowLabel} 没有异常日志。`
+      ? defaultWindow
+        ? {
+            title: '最近 10 分钟没有异常日志',
+            detail: '警告与错误都为 0。想确认更早的情况，把上方时间窗改大。',
+          }
+        : { title: '所选时间范围内没有异常日志', detail: '警告与错误都为 0。' }
       : view === 'action'
         ? defaultWindow
-          ? '最近 10 分钟没有执行动作。要看更早的记录，把上方时间窗改成「今天」或更长。'
-          : '所选时间范围内没有执行动作。'
+          ? { title: '最近 10 分钟没有执行动作', detail: '要看更早的记录，把上方时间窗改成「今天」或更长。' }
+          : { title: '所选时间范围内没有执行动作' }
         : defaultWindow
-          ? '最近 10 分钟没有日志。更早的日志已按时间窗隐藏，想看就把时间窗改大。'
-          : '所选时间范围内没有日志。';
+          ? { title: '最近 10 分钟没有日志', detail: '更早的日志已按时间窗隐藏，想看就把时间窗改大。' }
+          : { title: '所选时间范围内没有日志' };
 
   const query = useQuery<LogLine[]>({
     queryKey: ['log', JSON.stringify(filter)],
@@ -335,13 +342,19 @@ function LogsPane() {
     setContextAnchor({ anchor: line.seq ?? null, ts: line.ts, before, after: before });
 
   return (
-    <div className="stagger flex h-[calc(100vh-7.5rem)] flex-col gap-2">
+    <div className="stagger flex h-full flex-col gap-2">
       {/* 工具栏：视图 / 时间窗 / 筛选 / 计数。放在滚动容器外面——筛选条件不该跟着日志滚走 */}
-      <div>
-        <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
-          <div className="flex items-center gap-1 rounded-md border border-line p-0.5">
+      <div className="overflow-hidden rounded-md border border-line bg-card shadow-card">
+        <div className="flex flex-wrap items-center gap-2 border-b border-line bg-sunken px-2.5 py-2">
+          <div
+            role="tablist"
+            aria-label="日志视图"
+            className="flex items-center gap-0.5 rounded-md border border-line bg-card p-0.5"
+          >
             <Button
               size="sm"
+              role="tab"
+              aria-selected={view === 'all'}
               variant={view === 'all' ? 'primary' : 'ghost'}
               onClick={() => {
                 setView('all');
@@ -354,6 +367,8 @@ function LogsPane() {
             </Button>
             <Button
               size="sm"
+              role="tab"
+              aria-selected={view === 'alert'}
               variant={view === 'alert' ? 'primary' : 'ghost'}
               onClick={openAlerts}
               title="只显示 warn / error，信息级噪声全部隐藏"
@@ -362,6 +377,8 @@ function LogsPane() {
             </Button>
             <Button
               size="sm"
+              role="tab"
+              aria-selected={view === 'action'}
               variant={view === 'action' ? 'primary' : 'ghost'}
               onClick={() => setView('action')}
             >
@@ -369,6 +386,8 @@ function LogsPane() {
             </Button>
             <Button
               size="sm"
+              role="tab"
+              aria-selected={view === 'stat'}
               variant={view === 'stat' ? 'primary' : 'ghost'}
               onClick={() => setView('stat')}
               title="按「模块 + 动作 + 结果」聚合，回答哪一类在反复出问题"
@@ -377,6 +396,8 @@ function LogsPane() {
             </Button>
             <Button
               size="sm"
+              role="tab"
+              aria-selected={view === 'claims'}
               variant={view === 'claims' ? 'primary' : 'ghost'}
               onClick={() => setView('claims')}
               title="本工具实际领取过的积分（签到 / 活动 / 猫猫旅行）"
@@ -488,16 +509,23 @@ function LogsPane() {
         </div>
 
         {view !== 'claims' && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-line/60 px-2 py-1">
+          <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-1.5">
             <span className="text-xs text-muted">时间窗</span>
-            <span className="flex flex-wrap items-center gap-0.5 rounded border border-line p-0.5">
+            <span
+              role="group"
+              aria-label="时间窗"
+              className="flex flex-wrap items-center gap-0.5 rounded-md border border-line bg-sunken p-0.5"
+            >
               {WINDOWS.map((item) => (
                 <button
                   key={item.key}
                   type="button"
+                  aria-pressed={windowKey === item.key}
                   className={cn(
-                    'cursor-pointer rounded px-1.5 py-0.5 text-xs',
-                    windowKey === item.key ? 'bg-accent text-on-accent' : 'text-muted hover:text-fg',
+                    'cursor-pointer rounded-sm px-1.5 py-0.5 text-xs transition-colors duration-[var(--dur-1)]',
+                    windowKey === item.key
+                      ? 'bg-accent font-medium text-on-accent'
+                      : 'text-muted hover:bg-hover hover:text-fg',
                   )}
                   onClick={() => setWindowKey(item.key)}
                 >
@@ -567,7 +595,7 @@ function LogsPane() {
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-3 border-t border-line/60 px-2 py-1 text-xs">
+        <div className="flex flex-wrap items-center gap-3 px-2.5 py-1.5 text-xs">
           {view === 'claims' ? (
             <span className="text-muted">最近 {(claims.data ?? []).length} 条 · 按领取时间倒序</span>
           ) : (
@@ -615,7 +643,7 @@ function LogsPane() {
 
       {/* 新异常提示条：不遮挡列表，点一下切到异常视图；看过即推进水位 */}
       {hasNewAlert && (
-        <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-warn/5 px-3 py-1.5 text-xs">
+        <div className="flex items-center gap-2 rounded-md border border-warn/40 bg-warn-soft px-3 py-1.5 text-xs">
           <span className="font-medium text-warn">发现新的异常日志</span>
           <span className="text-muted">
             {windowLabel}内错误 {errorCount} 次、警告 {warnCount} 次
@@ -637,13 +665,14 @@ function LogsPane() {
       {/* 日志列表：页面上唯一会滚动的区域；「滚到底部」跟的是它 */}
       <div
         ref={listRef}
-        className="min-h-0 flex-1 overflow-auto rounded-lg border border-line bg-card shadow-card"
+        className="min-h-0 flex-1 overflow-auto rounded-md border border-line bg-card shadow-card"
         onScroll={() => {
           const el = listRef.current;
           if (el) nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
-        <div className="p-2">
+        {/* 表格视图不留内边距：表头色带要铺满卡片宽度，单元格自己带 px */}
+        <div className={view === 'claims' || view === 'stat' ? undefined : 'p-2'}>
           {view === 'claims' ? (
             <ClaimsTable
               rows={claims.data ?? []}
@@ -677,7 +706,7 @@ function LogsPane() {
                 />
               )}
               {!query.isLoading && !query.isError && rows.length === 0 && (
-                <p className="py-6 text-center text-sm text-muted">{emptyText}</p>
+                <StateBlock kind="empty" title={emptyState.title} detail={emptyState.detail} />
               )}
               {mainRows.map((line, i) => (
                 <LogRow
@@ -690,10 +719,13 @@ function LogsPane() {
               ))}
               {okRows.length > 0 && (
                 <button
-                  className="block w-full cursor-pointer border-b border-line px-2 py-1.5 text-left text-xs text-muted hover:bg-hover"
+                  type="button"
+                  aria-expanded={showOk}
+                  className="flex w-full cursor-pointer items-center gap-1 border-y border-line bg-sunken px-2 py-1.5 text-left text-xs text-muted transition-colors duration-[var(--dur-1)] hover:bg-hover hover:text-fg"
                   onClick={() => setShowOk((v) => !v)}
                 >
-                  {showOk ? '▾ 收起成功日志' : `▸ 成功日志 ${okRows.length} 条（默认折叠，点击展开）`}
+                  {showOk ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  {showOk ? '收起成功日志' : `成功日志 ${okRows.length} 条（默认折叠，点击展开）`}
                 </button>
               )}
               {showOk &&
@@ -731,7 +763,7 @@ function LogsPane() {
         </button>
       </div>
 
-      <ContextDialog
+      <ContextDrawer
         anchor={contextAnchor}
         onClose={() => setContextAnchor(null)}
         onOpenDetail={(line) => {
@@ -792,41 +824,43 @@ function ClaimsTable({
   if (error) return <StateBlock kind="error" title="读领取记录失败" detail={error} onRetry={onRetry} />;
   if (rows.length === 0) {
     return (
-      <p className="py-6 text-center text-sm text-muted">
-        还没有领取记录。签到成功、领取活动或猫猫旅行领奖后，这里会出现明细。
-      </p>
+      <StateBlock
+        kind="empty"
+        title="还没有领取记录"
+        detail="签到成功、领取活动或猫猫旅行领奖后，这里会出现明细。"
+      />
     );
   }
   return (
     <table className="w-full border-collapse text-xs">
-      <thead>
-        <tr className="text-left text-muted">
-          <th className="w-40 py-1 font-medium">时间</th>
-          <th className="w-44 py-1 font-medium">账号</th>
-          <th className="w-24 py-1 font-medium">来源</th>
-          <th className="w-24 py-1 text-right font-medium">积分</th>
-          <th className="py-1 font-medium">说明</th>
+      <thead className="bg-sunken text-left text-muted">
+        <tr>
+          <th className="w-40 px-2.5 py-1.5 font-semibold">时间</th>
+          <th className="w-44 px-2.5 py-1.5 font-semibold">账号</th>
+          <th className="w-24 px-2.5 py-1.5 font-semibold">来源</th>
+          <th className="w-24 px-2.5 py-1.5 text-right font-semibold">积分</th>
+          <th className="px-2.5 py-1.5 font-semibold">说明</th>
         </tr>
       </thead>
       <tbody>
         {rows.map((claim) => (
           <tr
             key={`${claim.iid}-${claim.claimed_at}-${claim.description}`}
-            className="cursor-pointer border-t border-line/60 hover:bg-hover"
+            className="cursor-pointer border-t border-line transition-colors duration-[var(--dur-1)] hover:bg-hover"
             onClick={() => goAccount(claim.iid)}
             title="跳到账号中心"
           >
-            <td className="whitespace-nowrap py-1 tabular-nums text-muted">{fmtTime(claim.claimed_at)}</td>
-            <td className="truncate py-1">{claim.name}</td>
-            <td className="whitespace-nowrap py-1">
+            <td className="whitespace-nowrap px-2.5 py-1.5 tabular-nums text-muted">{fmtTime(claim.claimed_at)}</td>
+            <td className="truncate px-2.5 py-1.5">{claim.name}</td>
+            <td className="whitespace-nowrap px-2.5 py-1.5">
               <Tag tone={claim.source === 'travel' ? 'ok' : 'muted'}>
                 {CLAIM_SOURCE[claim.source] ?? claim.source}
               </Tag>
             </td>
-            <td className="whitespace-nowrap py-1 pr-4 text-right tabular-nums">
+            <td className="whitespace-nowrap px-2.5 py-1.5 text-right tabular-nums">
               {claim.amount === null ? '—' : `+${fmtAmount(claim.amount)}`}
             </td>
-            <td className="max-w-[420px] truncate py-1 pl-1 text-fg2" title={claim.description}>
+            <td className="max-w-[420px] truncate px-2.5 py-1.5 text-fg2" title={claim.description}>
               {claim.description}
             </td>
           </tr>
@@ -980,7 +1014,7 @@ function LogRow({
         <span className="text-muted tabular-nums">{shortTs(line.ts)}</span>
         <span
           className={cn(
-            'rounded px-1 text-[10px] font-semibold uppercase',
+            'rounded px-1 text-xs font-semibold uppercase',
             line.level === 'error'
               ? 'bg-bad/15 text-bad'
               : line.level === 'warn'
@@ -993,7 +1027,7 @@ function LogRow({
         {/* 合并行：同一句话重复 N 次只留这一条，次数必须显眼，否则会被当成「只发生了一次」 */}
         {line.repeat != null && line.repeat > 1 && (
           <span
-            className="rounded bg-accent/15 px-1 text-[10px] font-semibold tabular-nums text-accent"
+            className="rounded bg-accent/15 px-1 text-xs font-semibold tabular-nums text-accent"
             title={
               line.last_ts
                 ? `相同内容合并 ${line.repeat} 次，最近一次 ${shortTs(line.last_ts)}`
@@ -1020,7 +1054,7 @@ function LogRow({
         <span className="ml-auto flex items-center gap-2">
           {failed && onDetail && (
             <button
-              className="cursor-pointer font-sans text-[11px] font-medium text-bad hover:underline"
+              className="cursor-pointer font-sans text-xs font-medium text-bad hover:underline"
               onClick={(event) => {
                 event.stopPropagation();
                 onDetail();
@@ -1032,7 +1066,7 @@ function LogRow({
           )}
           {onContext && (
             <button
-              className="cursor-pointer font-sans text-[11px] text-accent hover:underline"
+              className="cursor-pointer font-sans text-xs text-accent hover:underline"
               onClick={(event) => {
                 event.stopPropagation();
                 onContext();
@@ -1055,7 +1089,7 @@ function LogRow({
       </div>
       {long && !forceExpanded && (
         <button
-          className="mt-0.5 cursor-pointer pl-1 text-[11px] text-accent hover:underline"
+          className="mt-0.5 cursor-pointer pl-1 text-xs text-accent hover:underline"
           onClick={(event) => {
             event.stopPropagation();
             setExpanded((v) => !v);
@@ -1065,7 +1099,7 @@ function LogRow({
         </button>
       )}
       {(line.step || line.evidence || line.attempts) && (
-        <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 pl-1 text-[11px]">
+        <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 pl-1 text-xs">
           {line.step && <span className="text-muted">环节={line.step}</span>}
           {line.evidence && (
             <span className="break-all text-muted" title={line.evidence}>
@@ -1080,10 +1114,11 @@ function LogRow({
 }
 
 /**
- * 上下文弹窗：按文件物理行号取「前后各 N 行」，N 由用户现场决定。
- * 异常行在窗口里高亮并可继续打开详情——上下文回答因果，详情回答这一条到底报了什么。
+ * 上下文抽屉：按文件物理行号取「前后各 N 行」，N 由用户现场决定。
+ * 用抽屉不用弹窗：几十到几百行连续流水要吃满视口高度，弹窗的 max-h 会把滚动切成两层。
+ * 异常行在里面高亮并可继续打开详情——上下文回答因果，详情回答这一条到底报了什么。
  */
-function ContextDialog({
+function ContextDrawer({
   anchor,
   onClose,
   onOpenDetail,
@@ -1112,11 +1147,20 @@ function ContextDialog({
     ? lines.filter((line) => line.level === 'warn' || line.level === 'error')
     : lines;
 
+  // 打开就把锚点滚到视野中间：前后各几十行时，锚点默认落在折叠线以下，
+  // 用户得先自己找「我点的是哪一行」——那正是他打开这个抽屉的理由。
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const anchorSeq = query.data?.anchor;
+  useEffect(() => {
+    if (!open || anchorSeq == null) return;
+    anchorRef.current?.scrollIntoView({ block: 'center' });
+  }, [open, anchorSeq, onlyAlert]);
+
   return (
-    <Dialog
+    <Drawer
       open={open}
       title="日志上下文"
-      wide
+      width={760}
       subtitle={
         anchor
           ? `${shortTs(anchor.ts)} 前后各 ${span} 行 · 共 ${lines.length} 行`
@@ -1134,7 +1178,7 @@ function ContextDialog({
         </>
       }
     >
-      <div className="flex flex-col gap-2">
+      <div className="flex h-full flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
           <span>上下文行数</span>
           <Select
@@ -1169,29 +1213,32 @@ function ContextDialog({
           />
         )}
         {!query.isLoading && !query.isError && lines.length === 0 && (
-          <p className="py-6 text-center text-sm text-muted">
-            日志文件里找不到这一行（可能已被清空或轮转）。重新写入后再试。
-          </p>
+          <StateBlock
+            kind="empty"
+            title="日志文件里找不到这一行"
+            detail="可能已被清空或轮转。重新写入后再试。"
+          />
         )}
         {visible.length > 0 && (
-          <div className="max-h-[52vh] overflow-auto rounded-md border border-line bg-bg">
+          <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line bg-sunken">
             {visible.map((line, index) => {
               const isAnchor = query.data?.anchor != null && line.seq === query.data.anchor;
               const failed = line.level === 'warn' || line.level === 'error';
               return (
                 <div
                   key={`${line.seq ?? 'x'}-${line.ts}-${index}`}
+                  ref={isAnchor ? anchorRef : undefined}
                   className={cn(
-                    'border-b border-line/60 px-2 py-1 font-mono text-[11px]',
-                    failed ? 'bg-bad/5' : '',
-                    isAnchor && 'bg-accent/10 ring-1 ring-accent/50',
+                    'border-b border-line px-2 py-1 font-mono text-xs last:border-b-0',
+                    failed ? 'bg-bad-soft' : '',
+                    isAnchor && 'bg-accent-soft ring-1 ring-accent/50',
                   )}
                 >
                   <div className="flex flex-wrap items-baseline gap-x-2">
                     <span className="text-muted tabular-nums">{shortTs(line.ts)}</span>
                     <span
                       className={cn(
-                        'rounded px-1 text-[10px] font-semibold uppercase',
+                        'rounded-sm px-1 text-xs font-semibold uppercase',
                         line.level === 'error'
                           ? 'bg-bad/15 text-bad'
                           : line.level === 'warn'
@@ -1207,7 +1254,7 @@ function ContextDialog({
                     {isAnchor && <Tag tone="accent">锚点</Tag>}
                     {failed && (
                       <button
-                        className="ml-auto cursor-pointer text-[11px] text-bad hover:underline"
+                        className="ml-auto cursor-pointer text-xs text-bad hover:underline"
                         onClick={() => onOpenDetail(line)}
                         title="打开异常详情"
                       >
@@ -1227,7 +1274,7 @@ function ContextDialog({
           </div>
         )}
       </div>
-    </Dialog>
+    </Drawer>
   );
 }
 
@@ -1289,7 +1336,7 @@ function DetailDialog({
       <div className="flex flex-col gap-3">
         <div
           className={cn(
-            'rounded-md border border-line border-l-[3px] bg-bg px-3 py-2',
+            'rounded-md border border-line border-l-[3px] bg-sunken px-3 py-2',
             line.level === 'error'
               ? 'border-l-bad'
               : line.level === 'warn'
@@ -1300,7 +1347,7 @@ function DetailDialog({
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={cn(
-                'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+                'rounded-sm px-1.5 py-0.5 text-xs font-semibold uppercase',
                 line.level === 'error'
                   ? 'bg-bad/15 text-bad'
                   : line.level === 'warn'
@@ -1322,8 +1369,8 @@ function DetailDialog({
         </div>
 
         <section>
-          <h4 className="mb-1 text-xs font-semibold text-fg2">概要</h4>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-md border border-line bg-bg p-2.5 text-[11px] sm:grid-cols-3">
+          <h4 className="mb-1.5 text-xs font-semibold tracking-wide text-fg2">概要</h4>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-md border border-line bg-sunken p-2.5 text-xs sm:grid-cols-3">
             {fields.map((field) => (
               <div key={field.label} className="flex min-w-0 gap-1">
                 <span className="shrink-0 text-muted">{field.label}</span>
@@ -1334,13 +1381,13 @@ function DetailDialog({
         </section>
 
         <section>
-          <div className="mb-1 flex items-center gap-2">
-            <h4 className="text-xs font-semibold text-fg2">证据</h4>
-            <span className="text-[11px] text-muted">接口 / 状态码 / 错误原文</span>
+          <div className="mb-1.5 flex items-center gap-2">
+            <h4 className="text-xs font-semibold tracking-wide text-fg2">证据</h4>
+            <span className="text-xs text-muted">接口 / 状态码 / 错误原文</span>
             <span className="flex-1" />
             {line.evidence && (
               <button
-                className="cursor-pointer text-[11px] text-accent hover:underline"
+                className="cursor-pointer text-xs text-accent hover:underline"
                 onClick={() => void copyText(line.evidence ?? '', '已复制证据')}
               >
                 复制证据
@@ -1348,22 +1395,22 @@ function DetailDialog({
             )}
           </div>
           {line.evidence ? (
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-bg p-2.5 font-mono text-[11px] leading-relaxed text-fg2 select-all">
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-sunken p-2.5 font-mono text-xs leading-relaxed text-fg2 select-all">
               {line.evidence}
             </pre>
           ) : (
-            <p className="rounded-md border border-line bg-bg px-2.5 py-2 text-[11px] text-muted">
+            <p className="rounded-md border border-line bg-sunken px-2.5 py-2 text-xs text-muted">
               这条日志没有记录证据字段。若是异常，说明失败分支漏了 `log::fail` 的证据参数。
             </p>
           )}
         </section>
 
         <section>
-          <div className="mb-1 flex items-center gap-2">
-            <h4 className="text-xs font-semibold text-fg2">原始 JSON</h4>
-            <span className="text-[11px] text-muted">app.jsonl 的同一行</span>
+          <div className="mb-1.5 flex items-center gap-2">
+            <h4 className="text-xs font-semibold tracking-wide text-fg2">原始 JSON</h4>
+            <span className="text-xs text-muted">app.jsonl 的同一行</span>
           </div>
-          <pre className="max-h-64 overflow-auto rounded-md border border-line bg-bg p-2.5 font-mono text-[11px] leading-relaxed text-muted select-all">
+          <pre className="max-h-64 overflow-auto rounded-md border border-line bg-sunken p-2.5 font-mono text-xs leading-relaxed text-muted select-all">
             {raw}
           </pre>
         </section>
@@ -1401,18 +1448,18 @@ function StatTable({
   }
   if (error) return <StateBlock kind="error" title="聚合失败" detail={error} onRetry={onRetry} />;
   if (stats.length === 0) {
-    return <p className="py-6 text-center text-sm text-muted">没有可聚合的日志。</p>;
+    return <StateBlock kind="empty" title="没有可聚合的日志" detail="换个时间窗或放宽级别筛选。" />;
   }
   return (
     <table className="w-full border-collapse text-xs">
-      <thead>
-        <tr className="text-left text-muted">
-          <th className="w-16 py-1 font-medium">次数</th>
-          <th className="w-14 py-1 font-medium">级别</th>
-          <th className="w-40 py-1 font-medium">模块 / 动作</th>
-          <th className="w-16 py-1 font-medium">结果</th>
-          <th className="w-36 py-1 font-medium">最近一次</th>
-          <th className="py-1 font-medium">代表内容</th>
+      <thead className="bg-sunken text-left text-muted">
+        <tr>
+          <th className="w-16 px-2.5 py-1.5 font-semibold">次数</th>
+          <th className="w-14 px-2.5 py-1.5 font-semibold">级别</th>
+          <th className="w-40 px-2.5 py-1.5 font-semibold">模块 / 动作</th>
+          <th className="w-16 px-2.5 py-1.5 font-semibold">结果</th>
+          <th className="w-36 px-2.5 py-1.5 font-semibold">最近一次</th>
+          <th className="px-2.5 py-1.5 font-semibold">代表内容</th>
         </tr>
       </thead>
       <tbody>
@@ -1421,15 +1468,15 @@ function StatTable({
           return (
             <tr
               key={`${stat.module}-${stat.action ?? ''}-${stat.outcome ?? ''}-${stat.level}-${index}`}
-              className="cursor-pointer border-t border-line hover:bg-hover"
+              className="cursor-pointer border-t border-line transition-colors duration-[var(--dur-1)] hover:bg-hover"
               onClick={() => onPick(stat)}
               title="点击回到明细，并按这一类的模块与动作筛选"
             >
-              <td className="whitespace-nowrap py-1 font-semibold tabular-nums">{stat.occurrences}</td>
-              <td className="whitespace-nowrap py-1">
+              <td className="whitespace-nowrap px-2.5 py-1.5 font-semibold tabular-nums">{stat.occurrences}</td>
+              <td className="whitespace-nowrap px-2.5 py-1.5">
                 <span
                   className={cn(
-                    'rounded px-1 text-[10px] font-semibold uppercase',
+                    'rounded-sm px-1 text-xs font-semibold uppercase',
                     stat.level === 'error'
                       ? 'bg-bad/15 text-bad'
                       : stat.level === 'warn'
@@ -1440,15 +1487,15 @@ function StatTable({
                   {stat.level}
                 </span>
               </td>
-              <td className="truncate py-1" title={stat.action ?? stat.module}>
+              <td className="truncate px-2.5 py-1.5" title={stat.action ?? stat.module}>
                 {stat.action ?? stat.module}
                 {stat.action && <span className="ml-1 text-muted">{stat.module}</span>}
               </td>
               <td className={cn('whitespace-nowrap py-1', outcome?.className ?? 'text-muted')}>
                 {outcome?.text ?? '—'}
               </td>
-              <td className="whitespace-nowrap py-1 tabular-nums text-muted">{shortTs(stat.last_ts)}</td>
-              <td className="max-w-[420px] truncate py-1 text-fg2" title={stat.sample}>
+              <td className="whitespace-nowrap px-2.5 py-1.5 tabular-nums text-muted">{shortTs(stat.last_ts)}</td>
+              <td className="max-w-[420px] truncate px-2.5 py-1.5 text-fg2" title={stat.sample}>
                 {stat.sample}
               </td>
             </tr>

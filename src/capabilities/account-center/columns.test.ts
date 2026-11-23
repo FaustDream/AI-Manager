@@ -39,6 +39,29 @@ describe('积分 / 配额列', () => {
   });
 });
 
+describe('10 天内到期列', () => {
+  const expiring = COLUMNS.find((c) => c.key === 'expiring')!;
+
+  it('从没拿到过批次时显示「—」，不能当成 0', () => {
+    const cell = expiring.cell(account({ expiring_10d: null }), {});
+    expect(cell.text).toBe('—');
+    expect(cell.tone).toBe('muted');
+  });
+
+  it('有批次但 10 天内没有到期时显示「无」', () => {
+    const cell = expiring.cell(account({ expiring_10d: 0 }), {});
+    expect(cell.text).toBe('无');
+    expect(cell.tone).toBe('muted');
+  });
+
+  it('有金额时按金额显示并标警示色，口径写在 title', () => {
+    const cell = expiring.cell(account({ expiring_10d: 170 }), {});
+    expect(cell.text).toBe('170');
+    expect(cell.tone).toBe('warn');
+    expect(cell.title).toContain('10 天内到期');
+  });
+});
+
 describe('凭据到期列', () => {
   const login = COLUMNS.find((c) => c.key === 'login')!;
   const valid = {

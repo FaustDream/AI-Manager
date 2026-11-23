@@ -11,6 +11,7 @@
 // 按 dashboard-design 技能：瓦片只留数字与 delta 徽章（口径进 tooltip）；
 // 占比用排名列表 + 行底 3px 份额条，不用环形图（七个切片读不出差异）。
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import { Card } from '@/components/ui/card';
 import { StateBlock } from '@/components/ui/form';
 import { queryCmd } from '@/lib/cmd';
 import { errText } from '@/lib/ipc';
@@ -46,20 +47,20 @@ export function UsageSection({
   return (
     // 四行 subgrid（标题 / 数字 / 子块一 / 子块二）：与左栏共用父栅格的行高，
     // 所以两栏的子块边界必然对齐。多一个直接子节点就会顶错行，条件块必须收在容器里。
-    <section className="grid min-w-0 gap-3 p-3 xl:row-span-4 xl:grid-rows-subgrid">
+    <Card className="grid min-w-0 gap-4 p-5 xl:row-span-4 xl:grid-rows-subgrid" aria-label="Token 统计">
       <div>
         {/* 与左栏同理：区间控件归页头「全局过滤」，这里保留行高让两卡数字行对齐 */}
-        <SectionTitle className="mb-0 min-h-7 items-center">Token 统计</SectionTitle>
+        <SectionTitle className="mb-0 min-h-7">Token 统计</SectionTitle>
       </div>
 
       {query.isLoading && (
-        <div className="grid gap-3">
-          <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-4">
+          <div className="grid grid-cols-2 gap-4">
             {Array.from({ length: 4 }).map((_, index) => (
-              <div key={index} className="h-[92px] skeleton-block rounded-lg bg-hover" />
+              <div key={index} className="h-[92px] skeleton-block rounded-md bg-hover" />
             ))}
           </div>
-          <div className="h-[300px] skeleton-block rounded-lg bg-hover" />
+          <div className="h-[300px] skeleton-block rounded-md bg-hover" />
         </div>
       )}
 
@@ -85,7 +86,7 @@ export function UsageSection({
       {data && !empty && (
         <>
           {/* 四个瓦片全部跟区间走：换区间时四个数一起变，不会出现「两个数变了、两个没变」 */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-4">
             <Metric
               label={`Token · ${range.label}`}
               value={fmtTokens(data.total.tokens)}
@@ -116,9 +117,9 @@ export function UsageSection({
           </div>
 
           {/* 子块一：走势（与左栏的收支图占同一个位置、同一个高度） */}
-          <div className="p-3">
-            <div className="mb-1.5 flex flex-wrap items-center gap-2">
-              <h4 className="text-xs font-semibold tracking-wide text-fg2">Token 消耗趋势</h4>
+          <div>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <h4 className="text-xs font-semibold tracking-wide text-muted">Token 消耗趋势</h4>
               <span className="flex-1" />
               <span className="text-xs text-muted">
                 {data.scanned_at ? `采集 ${fmtTime(data.scanned_at)}` : '尚未采集'}
@@ -128,13 +129,13 @@ export function UsageSection({
           </div>
 
           {/* 子块二：按软件与模型拆分（与左栏「各软件消耗」占同一个位置、同一个高度） */}
-          <div className="p-3">
+          <div className="border-t border-line pt-3">
             <div className="mb-1 flex items-baseline justify-between gap-2 px-3 text-xs text-muted">
               <span>软件</span>
               <span>Token · 占比</span>
             </div>
             <RankedAppUsage byApp={data.by_app} totalTokens={data.total.tokens} />
-            <div className="mb-1 mt-2 flex items-baseline justify-between gap-2 border-t border-line/70 px-3 pt-2 text-xs text-muted">
+            <div className="mb-1 mt-2 flex items-baseline justify-between gap-2 border-t border-line px-3 pt-2 text-xs text-muted">
               <span>模型</span>
               <span>Token · 占比</span>
             </div>
@@ -142,7 +143,7 @@ export function UsageSection({
           </div>
         </>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -158,7 +159,7 @@ function RankedAppUsage({ byApp, totalTokens }: { byApp: UsageSlice[]; totalToke
           title={`${appLabel(row.platform)} · ${fmtTokensExact(row.tokens)} Token · ${row.calls} 次调用 · 积分 ${
             row.credit > 0 ? fmtAmount(row.credit) : '—'
           }`}
-          className="group relative flex h-11 w-full items-center gap-3 rounded-[10px] px-3 pb-1.5 text-left text-sm text-fg hover:bg-hover/60"
+          className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
         >
           <ShareBar pct={(row.tokens / max) * 100} />
           <span className="relative min-w-0 flex-1 truncate">{appLabel(row.platform)}</span>
@@ -184,7 +185,7 @@ function RankedModelUsage({ byModel, totalTokens }: { byModel: UsageModel[]; tot
         <div
           key={row.model}
           title={`${row.model} · ${fmtTokensExact(row.tokens)} Token · ${row.calls} 次调用`}
-          className="group relative flex h-11 w-full items-center gap-3 rounded-[10px] px-3 pb-1.5 text-left text-sm text-fg hover:bg-hover/60"
+          className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
         >
           <ShareBar pct={(row.tokens / max) * 100} />
           <span className="relative min-w-0 flex-1 truncate" title={row.model}>

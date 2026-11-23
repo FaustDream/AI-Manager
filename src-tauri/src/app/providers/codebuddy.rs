@@ -159,9 +159,10 @@ pub fn statuses(roots: &Roots) -> Vec<CodebuddyTargetStatus> {
                 .and_then(|a| a.get("uid"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            // 授权域可能在 `auth.domain`（标准会话），也可能被拍平到顶层（转换版会话）
             let edition = session
                 .as_ref()
-                .and_then(|s| s.pointer("/auth/domain"))
+                .and_then(|s| s.pointer("/auth/domain").or_else(|| s.get("domain")))
                 .and_then(|v| v.as_str())
                 .and_then(edition_of_domain);
             CodebuddyTargetStatus {
@@ -235,20 +236,46 @@ pub fn current_login(roots: &Roots, target: Target) -> Option<EndLogin> {
 }
 
 /// 授权域 → 版本：`www.workbuddy.cn` 是国内版、`www.workbuddy.ai` 是国际版。
+///
+/// 按「包含」判而不是「结尾」：同一条记录既可能是裸域（`www.workbuddy.cn`），
+/// 也可能是带协议的完整地址（`https://www.workbuddy.cn/api`），结尾匹配会把后者判成未知版。
 fn edition_of_domain(domain: &str) -> Option<String> {
-    if domain.ends_with("workbuddy.cn") {
+    let domain = domain.trim().to_ascii_lowercase();
+    if domain.contains("workbuddy.cn") {
         Some("cn".into())
-    } else if domain.ends_with("workbuddy.ai") {
+    } else if domain.contains("workbuddy.ai") {
         Some("intl".into())
     } else {
         None
     }
 }
 
+/// CodeBuddy IDE 数据目录：默认 `%APPDATA%\CodeBuddy CN`，设置里配过自定义目录就按它。
+///
+/// 两个客户端的登录态都落在各自软件的数据目录里，用户改过 user-data-dir 后，
+/// 检测「有没有装」与切换写盘还盯默认目录就会判成「未安装」。这里统一取一次。
+fn ide_base(roots: &Roots) -> PathBuf {
+    let custom = crate::app::config::get().codebuddy.ide_dir;
+    let custom = custom.trim();
+    if !custom.is_empty() {
+        return PathBuf::from(custom);
+    }
+    roots.appdata.join("CodeBuddy CN")
+}
+
+/// JetBrains 配置目录：默认 `%APPDATA%\JetBrains`，插件与 secret-storage.xml 都在它下面。
+/// 用户改过 idea.config.path（把 IDE 配置迁到别处）时用自定义目录覆盖。
+fn jetbrains_base(roots: &Roots) -> PathBuf {
+    let custom = crate::app::config::get().codebuddy.idea_dir;
+    let custom = custom.trim();
+    if !custom.is_empty() {
+        return PathBuf::from(custom);
+    }
+    roots.appdata.join("JetBrains")
+}
+
 fn software_vscdb(roots: &Roots) -> PathBuf {
-    roots
-        .appdata
-        .join("CodeBuddy CN/User/globalStorage/state.vscdb")
+    ide_base(roots).join("User/globalStorage/state.vscdb")
 }
 
 /// 本机所有**装了 CodeBuddy 插件**的 IDE 的 secret-storage.xml。
@@ -257,7 +284,7 @@ fn software_vscdb(roots: &Roots) -> PathBuf {
 /// 跑一次都会生成那个文件，按它写等于把 WorkBuddy 的令牌撒进用户所有 IDE 的密钥库。
 fn idea_stores(roots: &Roots) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(dirs) = std::fs::read_dir(roots.appdata.join("JetBrains")) else {
+    let Ok(dirs) = std::fs::read_dir(jetbrains_base(roots)) else {
         return out;
     };
     for dir in dirs.flatten() {
@@ -296,21 +323,60 @@ fn read_current_uid(roots: &Roots, target: Target) -> Option<String> {
 }
 
 /// 读 CodeBuddy 软件 state.vscdb 里的会话（v10 信封解开 + Buffer-JSON 解包）。
+///
+/// 读不到只留 debug 痕迹：状态行会显示「未登录」，没有这一步的话「为什么判成未登录」
+/// 就只剩猜——是主密钥解不开、库被锁，还是会话 JSON 里换了字段。
 fn read_software_session(roots: &Roots) -> Option<Value> {
-    let base = roots.appdata.join("CodeBuddy CN");
-    let key = secret::chromium_key(&base.join("Local State")).ok()?;
-    let conn = rusqlite::Connection::open(base.join("User/globalStorage/state.vscdb")).ok()?;
+    match read_software_session_inner(roots) {
+        Ok(session) => Some(session),
+        Err(e) => {
+            crate::app::log::log(
+                crate::app::log::Level::Debug,
+                "codebuddy",
+                format!("读 CodeBuddy IDE 登录态失败：{}", e.message),
+            );
+            None
+        }
+    }
+}
+
+fn read_software_session_inner(roots: &Roots) -> Result<Value> {
+    let base = ide_base(roots);
+    let key = secret::chromium_key(&base.join("Local State"))?;
+    let conn = rusqlite::Connection::open(base.join("User/globalStorage/state.vscdb"))
+        .map_err(|e| AppError::new(ErrorKind::Io, format!("打开 state.vscdb 失败：{e}")))?;
     let value: Vec<u8> = conn
         .query_row(
             "SELECT value FROM ItemTable WHERE key LIKE '%planning-genie%'",
             [],
-            |r| r.get(0),
+            |r| {
+                // 同一个条目，老版 IDE 存 BLOB、新版存 TEXT（JSON 文本）。
+                // 只认 BLOB 会得到「Invalid column type Text at index 0」，
+                // 整条登录态于是被判成「未登录」——而 IDE 里明明已登录。
+                Ok(match r.get_ref(0)? {
+                    rusqlite::types::ValueRef::Blob(bytes) => bytes.to_vec(),
+                    rusqlite::types::ValueRef::Text(text) => text.to_vec(),
+                    other => {
+                        return Err(rusqlite::Error::InvalidColumnType(
+                            0,
+                            "value".to_string(),
+                            other.data_type(),
+                        ))
+                    }
+                })
+            },
         )
-        .ok()?;
-    let outer: Value = serde_json::from_slice(&value).ok()?;
-    let blob: Vec<u8> = serde_json::from_value(outer.get("data")?.clone()).ok()?;
-    let plain = secret::chromium_open(&key, &blob).ok()?;
-    serde_json::from_slice(&plain).ok()
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("读会话条目失败：{e}")))?;
+    let outer: Value = serde_json::from_slice(&value)
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("会话条目不是 JSON：{e}")))?;
+    let data = outer
+        .get("data")
+        .ok_or_else(|| AppError::new(ErrorKind::Invalid, "会话条目里没有 data"))?;
+    let blob: Vec<u8> = serde_json::from_value(data.clone())
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("data 不是字节数组：{e}")))?;
+    let plain = secret::chromium_open(&key, &blob)?;
+    serde_json::from_slice(&plain)
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("会话明文不是 JSON：{e}")))
 }
 
 /// 读插件在 secret-storage.xml 里的会话（明文 Entry）。
@@ -426,7 +492,7 @@ fn decrypt_tree(node: &Value) -> Result<Value> {
 
 /// CodeBuddy 软件：state.vscdb 的 `secret://` 键（Buffer-JSON 包着的 v10 信封）。
 fn write_software(roots: &Roots, session: &Value) -> Result<PathBuf> {
-    let base = roots.appdata.join("CodeBuddy CN");
+    let base = ide_base(roots);
     let local_state = base.join("Local State");
     let vscdb = software_vscdb(roots);
     if !vscdb.exists() {
@@ -443,12 +509,26 @@ fn write_software(roots: &Roots, session: &Value) -> Result<PathBuf> {
     let conn = rusqlite::Connection::open(&vscdb)
         .map_err(|e| AppError::new(ErrorKind::Io, format!("打开 state.vscdb 失败：{e}")))?;
     let key_text = software_secret_key("planning-genie.new.accessTokencn");
-    let rows = conn
-        .execute(
+    // 写回时必须保持原条目的列类型：新版 IDE 存 TEXT，老版存 BLOB。
+    // 用错类型 IDE 自己读不出来——切换看起来成功，客户端却还在旧登录态。
+    let existing_type: Option<String> = conn
+        .query_row(
+            "SELECT typeof(value) FROM ItemTable WHERE key = ?1",
+            rusqlite::params![key_text],
+            |r| r.get(0),
+        )
+        .ok();
+    let rows = match existing_type.as_deref() {
+        Some("text") => conn.execute(
+            "UPDATE ItemTable SET value = ?1 WHERE key = ?2",
+            rusqlite::params![String::from_utf8_lossy(&value).into_owned(), key_text],
+        ),
+        _ => conn.execute(
             "UPDATE ItemTable SET value = ?1 WHERE key = ?2",
             rusqlite::params![value.as_slice(), key_text],
-        )
-        .map_err(|e| AppError::new(ErrorKind::Io, format!("写 state.vscdb 失败：{e}")))?;
+        ),
+    }
+    .map_err(|e| AppError::new(ErrorKind::Io, format!("写 state.vscdb 失败：{e}")))?;
     if rows == 0 {
         return Err(AppError::new(
             ErrorKind::Invalid,

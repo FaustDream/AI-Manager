@@ -15,7 +15,7 @@ import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useState, type ReactNode } from 'react';
 import { errText } from '@/lib/ipc';
 import { fmtSize } from '@/lib/format';
-import { Button } from '@/components/ui/button';
+import { Button, cn } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { SkeletonRows, StateBlock } from '@/components/ui/form';
 import { DataTable } from '@/components/ui/table';
@@ -70,9 +70,10 @@ function PaneCard({
   children: ReactNode;
 }) {
   return (
-    <div className="p-3">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">
+    // 表格页：分区头保持紧凑（px-3 py-2），表体自带边界所以不再套内边距
+    <div className="overflow-hidden rounded-md border border-line bg-card shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-sunken px-3 py-2">
+        <h2 className="text-md font-semibold">
           {title}
           {hint && <span className="ml-2 text-xs font-normal text-muted">{hint}</span>}
         </h2>
@@ -230,13 +231,13 @@ export default function HubPage() {
   if (hub.isLoading) {
     return (
       <div className="flex flex-col gap-3" aria-busy="true">
-        <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
+        <div className="flex flex-wrap gap-1 self-start rounded-lg border border-line bg-card p-1 shadow-card">
           {Array.from({ length: 4 }).map((_, index) => (
             <div key={index} className="skeleton-in h-7 w-24 rounded-md bg-hover" />
           ))}
         </div>
         <p className="skeleton-in text-xs text-muted">正在读取各软件的技能目录…</p>
-        <div className="p-3">
+        <div className="overflow-hidden rounded-md border border-line bg-card p-3 shadow-card">
           <div className="mb-2 h-4 w-28 skeleton-block rounded bg-hover" />
           <table className="w-full border-collapse">
             <tbody>
@@ -291,13 +292,21 @@ export default function HubPage() {
   return (
     <div className="stagger flex flex-col gap-4">
       {/* 分发中心 = 分发库 + 本工具写过的 MCP；单个软件 = 该软件的技能副本与 MCP 配置 */}
-      <div className="flex flex-wrap items-center gap-1 border-b border-line pb-2">
+      <div
+        role="tablist"
+        aria-label="分发范围"
+        className="flex flex-wrap gap-1 self-start rounded-lg border border-line bg-card p-1 shadow-card"
+      >
         <button
-          className={`rounded-md px-3 py-1 text-sm transition-colors ${
+          type="button"
+          role="tab"
+          aria-selected={tab === 'distribute'}
+          className={cn(
+            'cursor-pointer rounded-md px-3.5 py-1.5 text-sm transition-colors duration-[var(--dur-1)]',
             tab === 'distribute'
               ? 'bg-accent font-medium text-on-accent'
-              : 'text-muted hover:bg-hover hover:text-fg'
-          }`}
+              : 'text-fg2 hover:bg-hover hover:text-fg',
+          )}
           onClick={() => setTab('distribute')}
           title="技能与 MCP 的分发入口：把分发库部署到各软件"
         >
@@ -306,12 +315,19 @@ export default function HubPage() {
         {snap.targets.map((t) => (
           <button
             key={t.key}
-            className={`rounded-md px-3 py-1 text-sm transition-colors ${
-              tab === t.key ? 'bg-accent font-medium text-on-accent' : 'text-muted hover:bg-hover hover:text-fg'
-            }`}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key}
+            className={cn(
+              'cursor-pointer rounded-md px-3.5 py-1.5 text-sm transition-colors duration-[var(--dur-1)]',
+              tab === t.key
+                ? 'bg-accent font-medium text-on-accent'
+                : 'text-fg2 hover:bg-hover hover:text-fg',
+            )}
             onClick={() => setTab(t.key)}
           >
-            {t.label}（{t.skills}）
+            {t.label}
+            <span className="ml-1 tabular-nums opacity-70">（{t.skills}）</span>
           </button>
         ))}
       </div>
@@ -417,23 +433,23 @@ export default function HubPage() {
                   {
                     key: 'states',
                     header: (
-                      <div className="grid w-44 grid-cols-8">
+                      <div className="grid w-56 grid-cols-8">
                         {snap.targets.map((t) => (
-                          <span key={t.key} title={t.label} className="cursor-help text-center text-[9px] leading-4 text-muted">
+                          <span key={t.key} title={t.label} className="cursor-help text-center text-xs leading-4 text-muted">
                             {CODE[t.key] ?? t.key}
                           </span>
                         ))}
                       </div>
                     ),
-                    width: 192,
+                    width: 240,
                     cell: (skill) => (
-                      <div className="grid w-44 grid-cols-8">
+                      <div className="grid w-56 grid-cols-8">
                         {snap.targets.map((t) => {
                           const state = skill.states.find(([k]) => k === t.key)?.[1] ?? 'missing';
                           return (
                             <span key={t.key} className="flex justify-center">
                               <button
-                                className={`h-2.5 w-2.5 cursor-pointer transition-transform hover:scale-125 ${
+                                className={`h-2.5 w-2.5 cursor-pointer transition-transform duration-[var(--dur-1)] hover:scale-125 ${
                                   state === 'synced'
                                     ? 'rounded-full bg-ok'
                                     : state === 'stale'
@@ -1011,7 +1027,7 @@ export default function HubPage() {
           支持标准 mcpServers、ZCode 的 mcp.servers、单条目、数组、裸对象。写前会自动备份原配置。
         </p>
         <textarea
-          className="h-40 w-full rounded-md border border-line bg-bg p-2 font-mono text-xs"
+          className="h-40 w-full rounded-md border border-line bg-sunken p-2 font-mono text-xs"
           value={mcpText}
           onChange={(e) => setMcpText(e.target.value)}
           placeholder='{"mcpServers": {"github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]}}}'

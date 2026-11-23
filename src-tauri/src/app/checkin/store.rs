@@ -585,6 +585,25 @@ fn nearest_lot(
     (Some(day.timestamp_millis()), Some(amount))
 }
 
+/// 未来 `days` 天内到期的批次合计（已过期的不算：它们已经不能用了，再提醒也没意义）。
+fn expiring_within(lots: &[crate::types::CreditLot], now: DateTime<Local>, days: i64) -> f64 {
+    let Some(horizon) = now.checked_add_signed(chrono::Duration::days(days)) else {
+        return 0.0;
+    };
+    let total: f64 = lots
+        .iter()
+        .filter_map(|lot| lot.expires_at.map(|exp| (exp, lot.amount)))
+        .filter(|(exp, _)| *exp > now && *exp <= horizon)
+        .map(|(_, amount)| amount)
+        .sum();
+    // 归掉 -0.0：JSON 里会原样写成「-0」，前端按负数显示
+    if total == 0.0 {
+        0.0
+    } else {
+        total
+    }
+}
+
 /// 把库里已有的状态补进账号视图。
 ///
 /// 契约 21 的落地方式：余额与下次可签时刻**从库里读**，不是从某次查询的返回值里
@@ -624,20 +643,28 @@ pub fn hydrate(db: &Db, rows: &mut [crate::app::accounts::AccountView], clock: &
                 .last_checkin_at(&row.iid)
                 .map(|at| at.timestamp_millis());
         }
+        // 「最近到期」与「10 天内到期」共用同一份批次：分开算会出现两张卡对不上。
+        // 只有从来没拿到过批次时才留空（空 ≠ 0）。
+        let mut lots = Vec::new();
         if let Some(view) = &view {
             // 空配额 = 这个平台没有额度概念，不是「额度用完了」：别让配额列显示「无额度」
             if !view.quota.is_empty() {
                 row.quota = view.quota.clone();
                 row.quota_at = Some(view.at);
             }
-            (row.lot_expires_at, row.lot_amount) =
-                nearest_lot(&lots_for_display(&row.iid, view.lots.clone()), now);
+            lots = lots_for_display(&row.iid, view.lots.clone());
         }
-        if row.lot_expires_at.is_none() && !is_intl_account(&row.iid) {
+        if nearest_lot(&lots, now).0.is_none() && !is_intl_account(&row.iid) {
             // 没有实时批次（免签到平台 / 还没刷过）：退回本工具发放台账。
             // 国际版不参与：它的批次到期本身不可信，台账里的旧日期也不该翻出来。
-            (row.lot_expires_at, row.lot_amount) = nearest_lot(&lots_of(db, &row.iid, 30), now);
+            lots = lots_of(db, &row.iid, 30);
         }
+        (row.lot_expires_at, row.lot_amount) = nearest_lot(&lots, now);
+        row.expiring_10d = if lots.is_empty() {
+            None
+        } else {
+            Some(expiring_within(&lots, now, 10))
+        };
     }
 }
 
@@ -928,6 +955,7 @@ mod tests {
                     lot(30.0, 9, "b"),
                     lot(120.0, 3, "a"),
                     lot(50.0, 3, "c"),
+                    lot(40.0, 15, "d"),
                 ]),
                 Some(88.0),
                 at,
@@ -944,6 +972,30 @@ mod tests {
         let expected = (clock.now() + chrono::Duration::days(3)).timestamp_millis();
         assert_eq!(row.lot_expires_at, Some(expected));
         assert_eq!(row.lot_amount, Some(170.0));
+        // 10 天内到期是**多笔合计**（3 天 170 + 9 天 30），15 天那笔不在窗口内
+        assert_eq!(row.expiring_10d, Some(200.0));
+    }
+
+    /// 10 天窗口：边界含第 10 天，已过期与更远的都不算，空结果不能是 -0.0。
+    #[test]
+    fn expiring_within_counts_only_the_next_ten_days() {
+        let clock = FakeClock::at("2026-11-02T09:00:00+08:00");
+        let now = clock.now();
+        let lot = |amount: f64, days: i64| CreditLot {
+            amount,
+            expires_at: Some(now + chrono::Duration::days(days)),
+            granted_at: None,
+            lot_key: String::new(),
+            label: String::new(),
+        };
+        assert_eq!(
+            expiring_within(&[lot(7.5, 10), lot(99.0, 11)], now, 10),
+            7.5,
+            "第 10 天算在窗口内，第 11 天不算"
+        );
+        let none = expiring_within(&[lot(10.0, 30), lot(5.0, -1)], now, 10);
+        assert_eq!(none, 0.0);
+        assert!(!none.is_sign_negative(), "不能是 -0.0：JSON 会写成「-0」");
     }
 
     /// 没有配额窗口的平台不该被写成「无额度」。

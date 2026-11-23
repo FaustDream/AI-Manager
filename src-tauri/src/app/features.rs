@@ -83,16 +83,8 @@ const PLATFORMS: &[PlatformDef] = &[
         label: "WorkBuddy 国际版",
         capability: "workbuddy_intl",
     },
-    PlatformDef {
-        key: "codebuddy_ide",
-        label: "CodeBuddy IDE",
-        capability: "codebuddy",
-    },
-    PlatformDef {
-        key: "codebuddy_idea",
-        label: "CodeBuddy 插件（IDEA）",
-        capability: "codebuddy",
-    },
+    // CodeBuddy IDE / CodeBuddy 插件（IDEA）不再单独列成一行：它们的「切换 IDE / 切换插件」
+    // 入口已经嵌进 WorkBuddy 国内版账号的详情，这里只保留这两列，供用户按「workbuddy」这一行开关。
     PlatformDef {
         key: "zcode",
         label: "ZCode",
@@ -165,14 +157,13 @@ pub struct FeatureMatrix {
 // ------------------------------------------------------------------ 判据
 
 /// 功能表的平台键 → 平台定义。**能力表查询必须先过这一步**：
-/// 两张表的键并不总相同（`codebuddy_ide` / `codebuddy_idea` 在能力表里共用 `codebuddy`
-/// 一行），直接拿功能表键查能力表会查不到而被判成「不支持」。
+/// 两张表的键统一经 `capability` 字段映射，直接拿功能表键查能力表可能查不到。
 fn platform_def(key: &str) -> Option<&'static PlatformDef> {
     PLATFORMS.iter().find(|p| p.key == key)
 }
 
 /// 平台本身有没有这个能力。`Partial` 也算有（能用但有限制，限制写在能力表里）。
-/// `platform` 是功能表的平台键（`workbuddy` / `codebuddy_ide` …）。
+/// `platform` 是功能表的平台键（`workbuddy` / `zcode` …）。
 pub fn available(platform: &str, feature: &str) -> bool {
     let Some(def) = platform_def(platform) else {
         return false;
@@ -302,19 +293,13 @@ mod tests {
             .collect();
         assert_eq!(
             enabled,
-            vec![
-                "workbuddy",
-                "workbuddy_intl",
-                "codebuddy_ide",
-                "codebuddy_idea",
-                "zcode"
-            ],
-            "切换账号只对 WorkBuddy / CodeBuddy 系 / ZCode 开放"
+            vec!["workbuddy", "workbuddy_intl", "zcode"],
+            "切换账号只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放"
         );
     }
 
-    /// 界面看的是 `enabled` 而不是 `available`：能力表的行键与功能表的平台键不同时
-    /// （CodeBuddy IDE / IDEA 插件共用 `codebuddy` 一行），取错键就会把按钮整排藏掉。
+    /// 界面看的是 `enabled` 而不是 `available`：CodeBuddy IDE / IDEA 插件不再单独列行，
+    /// 切换入口落到 WorkBuddy 国内版这一行上。
     #[test]
     fn switch_row_is_enabled_for_the_supported_softwares() {
         let m = matrix();
@@ -331,21 +316,15 @@ mod tests {
             .collect();
         assert_eq!(
             enabled,
-            vec![
-                "workbuddy",
-                "workbuddy_intl",
-                "codebuddy_ide",
-                "codebuddy_idea",
-                "zcode"
-            ],
+            vec!["workbuddy", "workbuddy_intl", "zcode"],
             "切换入口必须在这些软件上默认可见"
         );
     }
 
-    /// 「切换 IDE / 切换插件」只对 CodeBuddy 系与 WorkBuddy 国内版开放：
-    /// 别的软件必须显示「平台不支持」，而不是给一个点不动的勾。
+    /// 「切换 IDE / 切换插件」两列保留，但只对 WorkBuddy 国内版这一行开放——
+    /// 入口已经嵌进它的账号详情，别的软件必须显示「平台不支持」。
     #[test]
-    fn codebuddy_client_switches_only_open_where_those_clients_live() {
+    fn codebuddy_client_switches_only_open_on_the_workbuddy_row() {
         let m = matrix();
         for feature in [SWITCH_IDE, SWITCH_IDEA] {
             let index = m
@@ -361,8 +340,8 @@ mod tests {
                 .collect();
             assert_eq!(
                 enabled,
-                vec!["workbuddy", "codebuddy_ide", "codebuddy_idea"],
-                "{feature} 只在这三家开放"
+                vec!["workbuddy"],
+                "{feature} 只对 WorkBuddy 国内版开放"
             );
         }
     }

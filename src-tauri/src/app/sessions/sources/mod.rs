@@ -110,7 +110,9 @@ pub fn scan_one(
         .into_iter()
         .find(|s| s.platform == key)
     {
-        return Ok(codebuddy::scan(&src, errors));
+        // CodeBuddy 两端不再回写错误：目录在但会话为零只算「空来源」，不是读取失败
+        // （见 codebuddy::scan 末尾），所以这条路径不需要 errors。
+        return Ok(codebuddy::scan(&src));
     }
     if key == "Trae CN" || key == "Trae" {
         let label = trae::EDITIONS

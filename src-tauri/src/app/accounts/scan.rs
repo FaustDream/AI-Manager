@@ -141,8 +141,10 @@ fn persist(db: &Db, mut scanned: ScannedAccount, user_platform: &str) -> Result<
         // 只更新身份字段（昵称 / 来源），凭据与到期时间保持本地那份
         scanned.identity.expires_at = local_expiry;
         repo::upsert_identity(db, &scanned.identity, now)?;
+        // Info 而不是 Warn：这是「按策略保留」，不是异常。打在 Warn 上会让每次启动扫描
+        // 都刷出一排红字，把真正需要处理的过期 / 401 淹掉。
         crate::app::log::log(
-            crate::app::log::Level::Warn,
+            crate::app::log::Level::Info,
             "accounts",
             format!(
                 "{}：客户端登录态不比本地更新，保留本地凭据（本地到期 {}）",

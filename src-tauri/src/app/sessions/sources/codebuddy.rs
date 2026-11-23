@@ -110,7 +110,7 @@ fn fingerprint(dirs: &[(String, PathBuf)]) -> String {
     format!("v2|{}", parts.join("|"))
 }
 
-pub fn scan(src: &CodeSource, errors: &mut Vec<String>) -> Vec<RawRow> {
+pub fn scan(src: &CodeSource) -> Vec<RawRow> {
     let mut out = Vec::new();
     for (uid, history) in &src.dirs {
         let Ok(workspaces) = std::fs::read_dir(history) else {
@@ -177,7 +177,13 @@ pub fn scan(src: &CodeSource, errors: &mut Vec<String>) -> Vec<RawRow> {
         }
     }
     if out.is_empty() && src.dirs.iter().any(|(_, dir)| dir.is_dir()) {
-        errors.push(format!("{}：工作区索引里没有读到会话", src.label));
+        // 目录在、会话为零：这是「空来源」，不是读取失败——装了 IDE 却没在里面聊过，
+        // 或历史已被客户端清掉。算进 errors 会让每轮扫描都红一次，这里只留 debug 痕迹。
+        crate::app::log::log(
+            crate::app::log::Level::Debug,
+            "sessions",
+            format!("{}：工作区索引里没有读到会话", src.label),
+        );
     }
     out
 }
