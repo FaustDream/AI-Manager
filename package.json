@@ -1,7 +1,7 @@
 {
   "name": "ai-manager-ui",
   "private": true,
-  "version": "2.0.49",
+  "version": "2.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
