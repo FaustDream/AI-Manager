@@ -86,8 +86,8 @@ jobs:
       - name: 挂到 Release
         uses: softprops/action-gh-release@v2
         with:
-          # 变更说明由提交记录生成，CHANGELOG.md 仍是人读的正式版本
-          generate_release_notes: true
+          # 描述不写变更内容；正式变更记录见 CHANGELOG.md
+          generate_release_notes: false
           files: |
             release/*.exe
             release/*.zip
