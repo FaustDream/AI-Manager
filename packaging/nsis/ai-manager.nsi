@@ -19,7 +19,8 @@
 Unicode true
 
 !define PRODUCT_NAME "AI Manager"
-!define PRODUCT_VERSION "2.1.0"
+; 版本从 Cargo.toml 单一真源读取，不再手写；找不到时编译失败，避免产物名与包版本脱节。
+!searchparse /file "..\..\src-tauri\Cargo.toml" `version = "` PRODUCT_VERSION `"`
 !define PRODUCT_PUBLISHER "FaustDream"
 !define PRODUCT_EXE "ai-manager.exe"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\AI Manager"
