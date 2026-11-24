@@ -92,16 +92,6 @@ pub struct WindowConfig {
     pub start_minimized: bool,
 }
 
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DashboardConfig {
-    /// 积分数据超过多少分钟没刷新，仪表盘就自动补刷一轮
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub stale_refresh_min: u64,
-}
-
 /// 账号库的来源策略。状态与凭据的真源已经是云端（见 `accounts::cloud`），
 /// 这里只管「启动时要不要顺手扫一遍本地客户端把新账号捞进来」。
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -142,8 +132,6 @@ pub struct AppConfig {
     pub usage: UsageConfig,
     #[serde(default)]
     pub activity: ActivityConfig,
-    #[serde(default)]
-    pub dashboard: DashboardConfig,
     #[serde(default)]
     pub accounts: AccountsConfig,
     #[serde(default)]
@@ -196,13 +184,6 @@ impl Default for ActivityConfig {
         }
     }
 }
-impl Default for DashboardConfig {
-    fn default() -> Self {
-        Self {
-            stale_refresh_min: 10,
-        }
-    }
-}
 impl Default for AccountsConfig {
     fn default() -> Self {
         // 缺省保持现状：老用户升级后账号列表不会突然空掉。
@@ -247,10 +228,6 @@ scan_interval_min = 30
 travel_events_limit = 50
 # ZCode 活动自动领取（要开浏览器过验证码，缺省关）
 zcode_auto_claim = false
-
-[dashboard]
-# 积分数据多少分钟没刷新就自动补刷一轮
-stale_refresh_min = 10
 
 [accounts]
 # 启动时扫描本地客户端登录态并入库。

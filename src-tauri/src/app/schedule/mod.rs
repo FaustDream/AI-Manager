@@ -20,6 +20,8 @@ use std::sync::Mutex;
 const KV_KEY: &str = "schedules";
 /// 「每天状态刷新」只补一次的标记：补过之后用户删了就是删了。
 const STATUS_SEEDED_KV: &str = "schedule.status_daily_seeded";
+/// 默认「积分刷新」任务只删一次的标记：删过之后用户再自己加就不再动。
+const CREDITS_SEED_REMOVED_KV: &str = "schedule.credits_seed_removed";
 // kv 的单次写入原子，但读改写不是；偏好联动与调度标记必须串行，避免互相覆盖。
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 static CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
@@ -297,13 +299,7 @@ impl ScheduleAction {
     }
 }
 
-/// 默认积分刷新间隔（分钟）。改这里就等于改「新装用户多久看到一次新余额」。
-///
-/// 取 5 分钟而不是 10：余额变化本身是几分钟级的（签到/旅行到账），
-/// 而一轮刷新只有十几个轻量 GET（并发 3），五分钟完全扛得住。
-/// 用户嫌吵或撞上限流，在设置里改回小时即可。
-const SEED_CREDITS_MINUTES: u32 = 5;
-
+/// 读取全部定时任务，并按需做一次性升级（补状态任务、移除默认积分任务）。
 pub fn list(db: &Db) -> Result<Vec<Schedule>> {
     let _guard = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     load(db, Local::now())
@@ -334,7 +330,14 @@ fn load(db: &Db, now: DateTime<Local>) -> Result<Vec<Schedule>> {
             task.created_at = Some(now.to_rfc3339());
             dirty = true;
         }
-        if tighten_legacy_credits(task) {
+    }
+    // 积分改为「进入账号中心才查」：老库里由默认种子留下的积分刷新任务只删一次，
+    // 用户之后自己在设置里加了就不再动。
+    if db.kv_get(CREDITS_SEED_REMOVED_KV)?.is_none() {
+        let _ = db.kv_set(CREDITS_SEED_REMOVED_KV, "1");
+        let before = list.len();
+        list.retain(|task| !is_seeded_credits_task(task));
+        if list.len() != before {
             dirty = true;
         }
     }
@@ -369,26 +372,14 @@ fn load(db: &Db, now: DateTime<Local>) -> Result<Vec<Schedule>> {
     Ok(list)
 }
 
-/// 按小时（默认 1 小时）配下的「积分刷新」任务，读到就收紧到 `SEED_CREDITS_MINUTES`。
-///
-/// 判定必须窄：只认**默认种子那两个 id**（`credits-hourly` / `credits-10min`），
-/// 且必须是全局、`every`、启用、间隔正好 60 分钟。用户自己改过的 id 与间隔一律不动——
-/// 他能改成 3 小时，说明已经知道这里可配，再替他改就是抢方向盘。
-fn tighten_legacy_credits(task: &mut Schedule) -> bool {
-    let legacy = task.action == ScheduleAction::CreditsRound
+/// 默认种子留下的积分刷新任务：只认历史 id，用户自建的任务（时间戳 id）一律不动。
+fn is_seeded_credits_task(task: &Schedule) -> bool {
+    task.action == ScheduleAction::CreditsRound
         && task.account_iid.is_none()
-        && task.kind == RuleKind::Every
-        && task.enabled
-        && matches!(task.id.as_str(), "credits-hourly" | "credits-10min")
-        && task.minutes.is_none()
-        && task.hours == Some(1);
-    if !legacy {
-        return false;
-    }
-    task.minutes = Some(SEED_CREDITS_MINUTES);
-    task.hours = None;
-    task.id = format!("credits-{SEED_CREDITS_MINUTES}min");
-    true
+        && matches!(
+            task.id.as_str(),
+            "credits-hourly" | "credits-10min" | "credits-5min"
+        )
 }
 
 /// 每天刷新一次账号状态：云端校验凭据 + 校正到期时间。
@@ -452,11 +443,10 @@ pub fn sync_travel_prefs(
     Ok(saved)
 }
 
-/// 默认两条：每天 08:30 签到、每 `SEED_CREDITS_MINUTES` 分钟刷一次积分。
+/// 默认两条：每天 08:30 签到、每天 09:00 刷新账号状态。
 ///
-/// 积分默认给到分钟级：一小时的间隔让列表里的余额看起来永远是旧的，
-/// 而积分接口本身很轻（一轮十几个账号两秒多），五分钟完全扛得住。
-/// 用户嫌吵或撞上限流，在设置里改回小时即可。
+/// 积分不设默认任务：只有在进入账号中心时查一次余额，避免后台每隔几分钟
+/// 对所有账号重复打平台接口；想自动刷的用户可以在设置里自己加「积分刷新」。
 ///
 /// 签到的默认值沿用升级前写死在 `desktop/mod.rs` 的行为——用户不该因为一次
 /// 升级就「签到突然不跑了」；「每天」带补跑语义，升级后首次启动仍会补跑一轮。
@@ -472,20 +462,6 @@ fn seed() -> Vec<Schedule> {
             at: Some("08:30".into()),
             hours: None,
             minutes: None,
-            enabled: true,
-            last_run: None,
-            next_at: None,
-        },
-        Schedule {
-            id: format!("credits-{SEED_CREDITS_MINUTES}min"),
-            name: "积分刷新".into(),
-            action: ScheduleAction::CreditsRound,
-            account_iid: None,
-            created_at: None,
-            kind: RuleKind::Every,
-            at: None,
-            hours: None,
-            minutes: Some(SEED_CREDITS_MINUTES),
             enabled: true,
             last_run: None,
             next_at: None,
@@ -1087,26 +1063,19 @@ mod tests {
     }
 
     #[test]
-    fn every_saved_task_and_seed_have_a_fixed_first_deadline() {
+    fn every_saved_task_has_a_fixed_first_deadline() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
-        let seed = list(&db)
-            .unwrap()
-            .into_iter()
-            .find(|s| s.kind == RuleKind::Every)
-            .unwrap();
         let mut input = daily("08:30");
         input.kind = RuleKind::Every;
         input.hours = Some(1);
         let saved = save(&db, input).unwrap();
-        for task in [seed, saved] {
-            let created = DateTime::parse_from_rfc3339(task.created_at.as_deref().unwrap())
-                .unwrap()
-                .with_timezone(&Local);
-            assert_eq!(task.last_run, None);
-            assert!(!task.due(created));
-            assert!(task.due(created + Duration::hours(1)));
-        }
+        let created = DateTime::parse_from_rfc3339(saved.created_at.as_deref().unwrap())
+            .unwrap()
+            .with_timezone(&Local);
+        assert_eq!(saved.last_run, None);
+        assert!(!saved.due(created));
+        assert!(saved.due(created + Duration::hours(1)));
     }
 
     #[test]
@@ -1270,10 +1239,10 @@ mod tests {
         assert_eq!(prefs.location_id, Some(3));
     }
 
-    /// 老库里默认那条「每小时刷积分」读到就收紧到分钟级——否则改代码对它无效。
-    /// 反之：用户自己配的间隔、关掉的任务、别的任务一律不动。
+    /// 老库里默认那条「积分刷新」读到就删掉（积分改为进入账号中心才查），
+    /// 且只删一次：用户自己配的间隔 / 自建任务一律不动。
     #[test]
-    fn legacy_hourly_credits_seed_is_tightened_once() {
+    fn seeded_credits_task_is_removed_once() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
         let legacy = serde_json::to_value(Schedule {
@@ -1291,57 +1260,61 @@ mod tests {
             next_at: None,
         })
         .unwrap();
-        // 用户自己改过的同类任务：3 小时、自定 id，必须原样保留
+        // 用户自己加的任务：id 是时间戳，必须原样保留
         let mut custom = legacy.clone();
-        custom["id"] = "credits-mine".into();
-        custom["hours"] = 3.into();
-        // 用户停用的默认任务：不擅自恢复成更快的频率
-        let mut disabled = legacy.clone();
-        disabled["id"] = "credits-off".into();
-        disabled["enabled"] = false.into();
+        custom["id"] = "credits-20261104100000".into();
+        custom["minutes"] = 30.into();
+        custom["hours"] = serde_json::Value::Null;
         db.kv_set(
             KV_KEY,
-            &serde_json::json!([legacy, custom, disabled]).to_string(),
+            &serde_json::json!([legacy.clone(), custom]).to_string(),
         )
         .unwrap();
 
         let tasks = list(&db).unwrap();
-        let tightened = tasks.iter().find(|s| s.minutes.is_some()).unwrap();
-        assert_eq!(tightened.id, format!("credits-{SEED_CREDITS_MINUTES}min"));
-        assert_eq!(tightened.minutes, Some(SEED_CREDITS_MINUTES));
-        assert_eq!(tightened.hours, None);
-        let custom = tasks.iter().find(|s| s.id == "credits-mine").unwrap();
-        assert_eq!(custom.hours, Some(3));
-        assert_eq!(custom.minutes, None);
-        let off = tasks.iter().find(|s| s.id == "credits-off").unwrap();
-        assert_eq!(off.hours, Some(1));
-        assert!(!off.enabled);
+        assert!(
+            !tasks.iter().any(|s| s.id == "credits-hourly"),
+            "默认积分任务要删掉"
+        );
+        assert!(
+            tasks.iter().any(|s| s.id == "credits-20261104100000"),
+            "用户自建的积分任务不能动"
+        );
+
+        // 只删一次：用户之后又把同 id 的任务加回来，不再被清掉
+        db.kv_set(KV_KEY, &serde_json::json!([legacy]).to_string())
+            .unwrap();
+        let again = list(&db).unwrap();
+        assert!(again.iter().any(|s| s.id == "credits-hourly"));
     }
 
     #[test]
     fn store_roundtrip_and_seed() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
-        // 第一次读：写入默认种子（签到 + 积分 + 每日状态刷新）
+        // 第一次读：写入默认种子（每日签到 + 每日状态刷新），不再默认刷积分
         let seeded = list(&db).unwrap();
-        assert_eq!(seeded.len(), 3);
+        assert_eq!(seeded.len(), 2);
         assert!(seeded
             .iter()
             .any(|s| s.action == ScheduleAction::CheckinRound));
         assert!(seeded
             .iter()
             .any(|s| s.action == ScheduleAction::StatusRound));
+        assert!(!seeded
+            .iter()
+            .any(|s| s.action == ScheduleAction::CreditsRound));
 
         let mut added = daily("21:15");
         added.id = String::new();
         let saved = save(&db, added).unwrap();
-        assert_eq!(list(&db).unwrap().len(), 4);
+        assert_eq!(list(&db).unwrap().len(), 3);
 
         let marked = mark_ran(&db, &saved.id).unwrap().unwrap();
         assert!(marked.last_run.is_some(), "跑过要留痕");
 
         delete(&db, &saved.id).unwrap();
-        assert_eq!(list(&db).unwrap().len(), 3);
+        assert_eq!(list(&db).unwrap().len(), 2);
         assert!(delete(&db, "nope").is_err());
     }
 

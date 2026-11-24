@@ -208,10 +208,18 @@ const expiringCell = (a: AccountView): Cell => {
   if (amount <= 0) {
     return { text: '无', tone: 'muted', title: '10 天内没有要过期的积分' };
   }
+  // 悬停给出最近一笔的到期日：列表只放合计，用户想知道「到底哪天开始过期」不必先点开详情
+  const nearest = a.lot_expires_at ? fmtFullDay(a.lot_expires_at) : null;
   return {
     text: fmtAmount(amount),
     tone: 'warn',
-    title: `未来 10 天内到期 ${fmtAmount(amount)} 积分（已过期的不计）；具体批次见下方详情`,
+    title: [
+      `未来 10 天内到期 ${fmtAmount(amount)} 积分（已过期的不计）`,
+      nearest ? `最近一笔到期：${nearest}` : '',
+      '具体批次见下方详情',
+    ]
+      .filter(Boolean)
+      .join('\n'),
   };
 };
 

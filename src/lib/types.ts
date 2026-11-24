@@ -5,7 +5,6 @@ export type { AccountHealth } from './types/AccountHealth';
 export type { AppConfig } from './types/AppConfig';
 export type { ActivityConfig } from './types/ActivityConfig';
 export type { CheckinConfig } from './types/CheckinConfig';
-export type { DashboardConfig } from './types/DashboardConfig';
 export type { NetworkConfig } from './types/NetworkConfig';
 export type { UsageConfig } from './types/UsageConfig';
 export type { WindowConfig } from './types/WindowConfig';

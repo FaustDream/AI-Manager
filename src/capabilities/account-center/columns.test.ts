@@ -60,6 +60,18 @@ describe('10 天内到期列', () => {
     expect(cell.tone).toBe('warn');
     expect(cell.title).toContain('10 天内到期');
   });
+
+  it('悬停给出最近一笔的到期日，精确到日', () => {
+    const cell = expiring.cell(
+      account({
+        expiring_10d: 170,
+        lot_expires_at: new Date(2026, 10, 28, 15, 30).getTime(),
+      }),
+      {},
+    );
+    expect(cell.title).toContain('最近一笔到期：2026-11-28');
+    expect(cell.title).not.toContain('15:30');
+  });
 });
 
 describe('凭据到期列', () => {

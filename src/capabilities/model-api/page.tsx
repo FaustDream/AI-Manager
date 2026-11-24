@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { Notice, Tag } from '@/components/ui';
 import { Button, cn } from '@/components/ui/button';
-import { PageHeader, Section } from '@/components/ui/card';
+import { Section } from '@/components/ui/card';
 import { confirmAction } from '@/components/ui/confirm';
 import { Input, SkeletonBlock, StateBlock } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
@@ -244,10 +244,6 @@ ANTHROPIC_MODEL=<模型 ID>`,
 
   return (
     <div className="stagger flex flex-col gap-5">
-      <PageHeader
-        title="接口反代"
-        note="把豆包账号暴露成本机 OpenAI / Anthropic / Responses 兼容接口，客户端填地址、Key 与模型 ID 即可调用。"
-      />
       <Section
         title="豆包接口反代"
         note={

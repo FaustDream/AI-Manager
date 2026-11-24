@@ -41,7 +41,7 @@ function EventBridges() {
           toast(`会话扫描：${first}`);
         }
       }),
-      // 积分轮询完成（默认每 5 分钟，间隔在「设置 → 定时任务」改）：
+      // 积分轮询完成（用户在「设置 → 定时任务」里配了「积分刷新」才会有）：
       // 账号列表的余额/配额可能变了，静默重取，不弹 toast
       listen<unknown>('credits:round', () => {
         qc.invalidateQueries({ queryKey: ['accounts'] });

@@ -120,7 +120,7 @@ export function TravelCard({ account }: { account: AccountView }) {
     });
 
   return (
-    <section className="border-t border-line px-3 py-2.5">
+    <section className="px-4 py-3">
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <h3 className="text-xs font-semibold tracking-wide text-fg2">猫猫旅行</h3>
         {buddyName && <Tag tone="muted">{buddyName}</Tag>}

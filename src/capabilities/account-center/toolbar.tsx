@@ -12,7 +12,7 @@ import { queryCmd, runCmd } from '@/lib/cmd';
 import { listen } from '@/lib/events';
 import { Check, Copy, ExternalLink, Link } from 'lucide-react';
 import { Button, cn } from '@/components/ui/button';
-import { IconAdd, IconCalendar, IconKey, IconLaptop, IconMoney } from '@/components/ui/icons';
+import { IconAdd, IconCalendar, IconKey, IconMoney } from '@/components/ui/icons';
 import { Dialog } from '@/components/ui/dialog';
 import { Input, Select, Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
@@ -54,16 +54,13 @@ export function AccountToolbar({
   busy,
   onAdd,
   onRefresh,
-  onRefreshState,
   onRefreshCredentials,
   onCheckin,
 }: {
   busy: string | null;
   onAdd: () => void;
   onRefresh: () => void;
-  /** 重扫客户端登录态 + 校正到期时间：让本地库追上客户端的实际登录情况 */
-  onRefreshState: () => void;
-  /** 逐个账号刷新凭据：不管是否过期都重扫，把最新凭据与有效期写回 */
+  /** 重扫客户端并写回最新凭据、到期时间与当前登录标记：账号状态与凭据只留这一个刷新入口 */
   onRefreshCredentials: () => void;
   onCheckin: () => void;
 }) {
@@ -75,8 +72,8 @@ export function AccountToolbar({
   const features = usePlatformFeatures();
   const checkinAnywhere = anyFeatureOn(features.data, FEATURE_CHECKIN);
   return (
-    /* 图标 + 一个词：纯图标在五个「刷新类」动作之间分不出来，纯文字又太长。
-       每个按钮留两字短名（积分 / 状态 / 凭据 / 签到），完整口径进 title 气泡。 */
+    /* 图标 + 一个词：纯图标在几个刷新类动作之间分不出来，纯文字又太长。
+       每个按钮留两字短名（积分 / 刷新 / 签到），完整口径进 title 气泡。 */
     <div className="flex flex-wrap items-center gap-1.5">
       {/* 主按钮给「添加账号」：这是页面唯一的正经工作流。
           账号同步已改为启动时后台自动扫描，这里不再放手动「扫描客户端」按钮。 */}
@@ -84,7 +81,7 @@ export function AccountToolbar({
         <IconAdd size={14} />
         添加账号
       </Button>
-      {/* 与「刷新账号状态」的区别：这个打的是平台接口，拿余额与配额 */}
+      {/* 与「刷新」的区别：这个打的是平台接口，拿余额与配额 */}
       <Button
         onClick={onRefresh}
         loading={busy === 'credits'}
@@ -98,34 +95,20 @@ export function AccountToolbar({
         <IconMoney size={14} />
         积分
       </Button>
-      {/* 与「刷新积分」的区别：不联网，只让本地库追上客户端的实际登录态 */}
-      <Button
-        onClick={onRefreshState}
-        loading={busy === 'refresh-state'}
-        disabled={!!busy}
-        title={
-          busy === 'refresh-state'
-            ? '正在重扫客户端…'
-            : '刷新账号状态：重扫客户端登录态，并用凭据包校正各账号的到期时间与当前登录标记（不查平台余额）'
-        }
-      >
-        <IconLaptop size={14} />
-        状态
-      </Button>
-      {/* 与「刷新账号状态」的区别：那个是全量重扫；这个针对当前列表里的账号逐个给结论，
-          且**不会因为未过期就跳过** */}
+      {/* 账号状态与凭据合并成一个入口：重扫客户端，把每个账号的最新凭据、
+          到期时间与「当前登录」标记一起写回本地库，不查平台余额 */}
       <Button
         onClick={onRefreshCredentials}
         loading={busy === 'refresh-credentials'}
         disabled={!!busy}
         title={
           busy === 'refresh-credentials'
-            ? '正在逐个刷新凭据…'
-            : '刷新凭据：对列表里的账号逐个重扫客户端，把最新凭据与有效期写回本地库（不管是否过期都会刷）'
+            ? '正在重扫客户端并刷新账号…'
+            : '刷新账号：重扫客户端，更新列表里每个账号的最新凭据、到期时间与当前登录标记（不查平台余额）'
         }
       >
         <IconKey size={14} />
-        凭据
+        刷新
       </Button>
       {checkinAnywhere && (
         <Button

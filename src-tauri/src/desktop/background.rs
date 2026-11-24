@@ -157,7 +157,7 @@ pub(crate) async fn execute_schedule(
             ScheduleOutcome {
                 ok: failed == 0,
                 detail: format!("{total} 个账号，失败 {failed}"),
-                // 全绿没有可看的信息：余额数字在账号列表上，日志里不必每 5 分钟重复一遍
+                // 全绿没有可看的信息：余额数字在账号列表上，日志里不必按任务间隔重复一遍
                 changed: failed > 0,
                 next_wake_ms: None,
             }

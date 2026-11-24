@@ -138,20 +138,19 @@ pub fn switch(db: &Db, roots: &Roots, iid: &str) -> Result<SwitchResult> {
 
     let mut message = outcome.message;
 
-    // WorkBuddy：切完把旧账号名下的会话按引用关联到新账号（契约 10）。
+    // WorkBuddy：切完把该版本**所有账号**的历史会话按引用关联到新账号（契约 10）。
+    // 用户要的是「切到谁，全部历史对话就都归谁用」，不再只搬切换前那一个账号的会话。
     // 必须在客户端重新启动之前做——写客户端库要求进程已退出。
-    // clone：收尾那行还要用它写「原账号是谁」
-    if let Some(previous) = previous.clone() {
+    if providers::platform_of(iid) == Some("workbuddy") {
         let uid = uid_of(&identity.account_id);
         let edition = edition_of(&identity.account_id);
-        let source = uid_of(&previous);
-        match crate::app::sessions::restore::from_account(roots, edition, uid, source, &subject) {
+        match crate::app::sessions::restore::account(roots, edition, uid, &subject) {
             Ok(report) if report.changed_rows > 0 => {
                 message.push_str(&format!("，已关联 {} 条历史会话", report.changed_rows));
                 log::item(
                     log::Item::new("切换账号", &subject, log::Outcome::Ok)
                         .step("关联历史会话")
-                        .reason(format!("已关联 {} 条", report.changed_rows))
+                        .reason(format!("已关联 {} 条（全平台账号）", report.changed_rows))
                         .evidence(format!("版本={edition}"))
                         .ms(started.elapsed().as_millis() as u64),
                 );
@@ -163,10 +162,10 @@ pub fn switch(db: &Db, roots: &Roots, iid: &str) -> Result<SwitchResult> {
                     log::Item::new("切换账号", &subject, log::Outcome::Partial)
                         .step("关联历史会话")
                         .reason(e.message.clone())
-                        .evidence("处置=登录态已切好，可在账号上点「恢复会话」重试")
+                        .evidence("处置=登录态已切好，可在账号上点「恢复对话」重试")
                         .ms(started.elapsed().as_millis() as u64),
                 );
-                message.push_str("，历史会话未关联（可在账号上点「恢复会话」重试）");
+                message.push_str("，历史会话未关联（可在账号上点「恢复对话」重试）");
             }
         }
     }

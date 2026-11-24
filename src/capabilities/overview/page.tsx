@@ -17,19 +17,19 @@
 // 顶栏与命令面板里都有，结论以账号中心为准，这里不再重复一份。
 // 运行细节（存储占用、定时任务）与领取明细分别归设置页与日志页。
 // 首启的「只在本机运行」安全说明也已撤：它属于一次性说明，不该常驻占位。
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { ArrowRight } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, PageHeader } from '@/components/ui/card';
+import { Card } from '@/components/ui/card';
 import { StateBlock } from '@/components/ui/form';
-import { queryCmd, runCmd } from '@/lib/cmd';
+import { queryCmd } from '@/lib/cmd';
 import { fmtAmount } from '@/lib/format';
 import { errText } from '@/lib/ipc';
 import { CreditFlowChart } from '@/components/credit-flow';
 import { CreditPlatformSplit } from '@/components/credit-platforms';
 import { CreditTrend } from '@/components/credit-trend';
-import type { AccountView, AppConfig, CreditFlowReport, HealthReport, TrendPoint } from '@/lib/types';
+import type { AccountView, CreditFlowReport, HealthReport, TrendPoint } from '@/lib/types';
 import { Metric, SectionTitle, Segmented } from './metric';
 import { RangeControl, useRange } from './range';
 import { SessionsSection } from './sessions-section';
@@ -45,7 +45,6 @@ function go(id: string, iid?: string) {
 }
 
 export default function OverviewPage() {
-  const qc = useQueryClient();
   // 默认看最近 7 天：当天还没刷新积分时收支常常是 0，一排 0 会被读成「坏了」
   // 一份区间喂给三块：积分 / Token / 会话（页头的「全局过滤」）
   const range = useRange(7);
@@ -96,12 +95,6 @@ export default function OverviewPage() {
     [flow.data],
   );
   const trendPoints = trend.data ?? [];
-  // 补刷阈值来自应用配置（设置界面可调）；配置没到时用默认值兜底
-  const config = useQuery<AppConfig>({
-    queryKey: ['config'],
-    queryFn: () => queryCmd('config_get'),
-  });
-  const staleAfterMs = (config.data?.dashboard.stale_refresh_min ?? 10) * 60 * 1000;
 
   const report = health.data;
   const rows = accounts.data ?? [];
@@ -146,35 +139,6 @@ export default function OverviewPage() {
     }, 0);
   }, [rows]);
 
-  const autoRefreshing = useRef(false);
-  const lastAutoTry = useRef(0);
-
-  // 积分不是实时接口：超过 10 分钟就自动刷一轮，否则「已用掉的积分」会一直挂在告警里
-  useEffect(() => {
-    if (!report || autoRefreshing.current) return;
-    const at = report.credits_at;
-    const stale = at === null || Date.now() - at > staleAfterMs;
-    if (!stale || Date.now() - lastAutoTry.current < 5 * 60 * 1000) return;
-    const iids = rows.filter((row) => row.has_secret && row.enabled).map((row) => row.iid);
-    if (iids.length === 0) return;
-    autoRefreshing.current = true;
-    lastAutoTry.current = Date.now();
-    void (async () => {
-      try {
-        // 自动刷新失败不弹 toast：失败细节在动作日志里，别为后台补刷打断用户；
-        // trigger=auto 与手动按钮区分，动作日志里显示「自动」而不是「手动」
-        await runCmd('checkin_credits', { iids, trigger: 'auto' }, { onError: () => {} });
-        await Promise.all([
-          qc.invalidateQueries({ queryKey: ['accounts'] }),
-          qc.invalidateQueries({ queryKey: ['health'] }),
-          qc.invalidateQueries({ queryKey: ['flow'] }),
-        ]);
-      } finally {
-        autoRefreshing.current = false;
-      }
-    })();
-  }, [report, rows, qc, staleAfterMs]);
-
   // 左栏的两种「替代卡」：健康报告失败 / 还没账号。任一成立就整栏只放这一张卡
   // （不占满行高），右栏的用量照常显示——它与账号无关。
   const creditPlaceholder = health.isError ? (
@@ -210,23 +174,19 @@ export default function OverviewPage() {
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[460px] overflow-hidden">
         <div className="aurora-glow" />
       </div>
-      <PageHeader
-        title="仪表盘"
-        note="积分进了多少、Token 花在哪、会话资产有多少——三块共用页头这一个时间区间。"
-        actions={
-          // 全局过滤：三块（积分 / Token / 会话）共用这一个区间。
-          // 各卡自己再挂一份控件，等于同一个页面有三个时间口径。
-          <span
-            className="flex flex-wrap items-center gap-1.5"
-            role="group"
-            aria-label="全局过滤"
-            title="统一控制积分统计、Token 统计与会话统计的时间区间"
-          >
-            <span className="text-xs text-muted">全局过滤</span>
-            <RangeControl range={range} />
-          </span>
-        }
-      />
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {/* 全局过滤：三块（积分 / Token / 会话）共用这一个区间。
+            各卡自己再挂一份控件，等于同一个页面有三个时间口径。 */}
+        <span
+          className="flex flex-wrap items-center gap-1.5"
+          role="group"
+          aria-label="全局过滤"
+          title="统一控制积分统计、Token 统计与会话统计的时间区间"
+        >
+          <span className="text-xs text-muted">全局过滤</span>
+          <RangeControl range={range} />
+        </span>
+      </div>
 
       {/* 两栏：左积分、右用量。两张卡**同构**——标题行 + 2×2 数字 + 两个子块。
           对齐靠 subgrid：父栅格定出「标题 / 数字 / 子块一 / 子块二」四行，两张卡各跨满四行，

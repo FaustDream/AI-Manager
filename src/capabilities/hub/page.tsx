@@ -334,14 +334,6 @@ export default function HubPage() {
 
       {tab === 'distribute' && (
         <>
-          {/* 概念图例（P1-5）：「我的技能在哪、发到哪」是这一页最常被问住的两件事，
-              三个词条各一句话摆在页首，不用去翻 README。 */}
-          <p className="text-xs leading-relaxed text-muted">
-            <span className="text-fg2">分发库</span> = 本工具维护、可部署到各软件的技能与 MCP（不是全部技能汇总）；
-            <span className="text-fg2"> 个人技能</span> = 你自己写或导入的；
-            <span className="text-fg2"> 收录技能</span> = 从官方仓库收进来的。
-            部署 = 把库里的一份复制到所选软件，之后各软件独立更新。
-          </p>
           {conflicts.length > 0 && (
             <Notice tone="warn">
               {conflicts.length} 个技能的平台副本与库不一致（启动自动同步会在下次启动时刷新已部署的平台）。

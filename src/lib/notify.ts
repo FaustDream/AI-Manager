@@ -113,7 +113,7 @@ function expiringAlertDue(): boolean {
  * 领取入账，外加启动时一次凭据临期体检（数据源 = system_health 的 accounts.expiring）。
  * 未启用时订阅照常建立但 notify 静默跳过——开关随时打开随时生效，不用重挂。
  *
- * 刻意不通知的事件：`credits:round` 每 5 分钟一轮且载荷只有账号数（拿不到失败数，
+ * 刻意不通知的事件：`credits:round` 载荷只有账号数（拿不到失败数，
  * 全绿也弹就是纯噪音）、`log:line` 逐行推、`session:scan` 与 `accounts:scanned`
  * 是后台同步完成信号，用户没有要做的动作。
  */

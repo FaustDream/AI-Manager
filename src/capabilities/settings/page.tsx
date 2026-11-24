@@ -9,7 +9,7 @@ import { CalendarClock, Check, CircleDot, Minus, SlidersHorizontal, Stethoscope,
 import { fmtSize, fmtTime } from '@/lib/format';
 import { numOr } from '@/lib/num';
 import { Button, cn } from '@/components/ui/button';
-import { PageHeader, Section } from '@/components/ui/card';
+import { Section } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Checkbox, Input, Select, SkeletonBlock, SkeletonRows } from '@/components/ui/form';
 import { DataTable, type Column } from '@/components/ui/table';
@@ -52,10 +52,6 @@ export default function SettingsPage() {
   const [tab, setTab] = useState<TabKey>('general');
   return (
     <div className="stagger flex flex-col gap-5">
-      <PageHeader
-        title="设置"
-        note="外观、运行参数、定时任务与维护入口。凭据与账号数据始终留在本机。"
-      />
       <TabBar tab={tab} onChange={setTab} />
       {tab === 'general' && (
         <>
@@ -356,21 +352,6 @@ function ConfigPane() {
               {[10, 15, 30, 60, 120].map((n) => (
                 <option key={n} value={n}>
                   {n} 分钟
-                </option>
-              ))}
-            </Select>
-          </label>
-        </div>
-        <div>
-          <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted" title="打开仪表盘时，数据比这个时长旧就自动补刷一次。调小更实时（打开就联网），调大打开更快但可能看到旧数字。">仪表盘补刷</span>
-            <Select
-              value={String(draft.dashboard.stale_refresh_min)}
-              onChange={(e) => patch({ dashboard: { ...draft.dashboard, stale_refresh_min: numOr(e.target.value, 10) } })}
-            >
-              {[5, 10, 15, 30, 60].map((n) => (
-                <option key={n} value={n}>
-                  数据超过 {n} 分钟
                 </option>
               ))}
             </Select>
@@ -1219,8 +1200,8 @@ function ScheduleCard() {
       qc.invalidateQueries({ queryKey: ['activity'] });
     });
 
-  // 与账号中心的「刷新状态」同一个命令：能续的有效期由云端/客户端给出并写回，
-  // 续不了的留失败标记。这里给一个不用跳页面的入口。
+  // 账号状态刷新：云端校验凭据有效性 + 校正到期时间（不重扫入库）。
+  // 与账号中心「刷新」（重扫客户端、写回最新凭据）分开，这里给一个不用跳页面的入口。
   const refreshStatusNow = () =>
     runBusy('status-now', async () => {
       const report = await runCmd('account_refresh_all');
@@ -1241,7 +1222,7 @@ function ScheduleCard() {
           loading={busy === 'status-now'}
           disabled={!!busy}
           onClick={refreshStatusNow}
-          title="与账号中心的「刷新状态」同一条链路：云端校验凭据 + 校正到期时间"
+          title="云端校验凭据有效性并校正到期时间（不重扫客户端）"
         >
           立即刷新账号状态
         </Button>

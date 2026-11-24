@@ -126,7 +126,7 @@ export function RowActions({
             title={
               !isCurrent
                 ? '只能恢复当前登录账号的会话：先切换过去'
-                : '把本机已有的历史会话关联到这个账号（只改归属，不动正文）'
+                : '把本平台所有账号的历史会话关联到这个账号（只改归属，不动正文）'
             }
           >
             <IconHistory size={15} />
@@ -195,7 +195,7 @@ export function SwitchDialog({
               切换到：{target?.name}（{target?.platform_label}）
             </p>
             {target?.platform === 'workbuddy' && (
-              <p>WorkBuddy 切换完成后，会把原账号名下的历史会话一并关联到新账号。</p>
+              <p>切换完成后会自动把该平台所有账号的历史会话关联到新账号，不需要再点「恢复对话」。</p>
             )}
           </>
         ) : (
@@ -242,7 +242,7 @@ export function RestoreDialog({
     >
       <div className="flex flex-col gap-2 text-sm text-muted">
         <p className="whitespace-pre-wrap">
-          把本机已有的项目会话关联到「{target?.name}」：只改会话归属引用，
+          把本平台所有账号的历史会话都关联到「{target?.name}」：只改会话归属引用，
           正文一个字节都不动，可重复执行，不会产生副本。
         </p>
         <p>会先关闭 WorkBuddy，写客户端库前自动备份整份库文件，完成后重新打开客户端。</p>

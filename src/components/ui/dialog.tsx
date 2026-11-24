@@ -14,8 +14,10 @@ export function Dialog({
   subtitle,
   children,
   footer,
+  actions,
   onClose,
   wide,
+  xwide,
 }: {
   open: boolean;
   title: string;
@@ -23,8 +25,12 @@ export function Dialog({
   subtitle?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  /** 头部动作：固定在标题右侧，切内容/滚动都不消失 */
+  actions?: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  /** 数据表类弹窗：需要横向空间摆多列，又不至于占满整屏 */
+  xwide?: boolean;
 }) {
   const { panel, visible, closing } = useModal(open, onClose);
   if (!visible) return null;
@@ -49,7 +55,7 @@ export function Dialog({
           // 面板：淡入 + 上移 4px + 97%→100% 缩放。遮罩只淡不位移，两层都位移会「抖两下」
           closing ? 'view-exit' : 'dialog-in',
           'flex max-h-[85vh] w-full flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-pop',
-          wide ? 'max-w-[560px]' : 'max-w-[420px]',
+          xwide ? 'max-w-[1040px]' : wide ? 'max-w-[560px]' : 'max-w-[420px]',
         )}
       >
         <header className="flex items-start gap-3 border-b border-line px-5 py-3.5">
@@ -57,6 +63,11 @@ export function Dialog({
             <h3 className="text-md leading-5 font-semibold">{title}</h3>
             {subtitle && <p className="mt-1 text-xs leading-4 text-muted">{subtitle}</p>}
           </div>
+          {actions && (
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 self-center">
+              {actions}
+            </div>
+          )}
           <button
             type="button"
             onClick={onClose}
@@ -69,7 +80,9 @@ export function Dialog({
         </header>
         <div className="min-h-0 flex-1 overflow-auto px-5 py-4">{children}</div>
         {footer && (
-          <footer className="flex justify-end gap-2 border-t border-line px-5 py-3">{footer}</footer>
+          <footer className="flex flex-wrap justify-end gap-2 border-t border-line px-5 py-3">
+            {footer}
+          </footer>
         )}
       </div>
     </div>

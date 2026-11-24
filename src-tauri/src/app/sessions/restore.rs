@@ -74,28 +74,10 @@ fn client_key(edition: &str) -> &'static str {
 
 /// `edition` 取 `cn` / `intl`。`uid` 是目标账号的 uid，`subject` 是执行记录里的主体名。
 pub fn account(roots: &Roots, edition: &str, uid: &str, subject: &str) -> Result<RestoreReport> {
-    run(roots, edition, uid, None, subject)
+    run(roots, edition, uid, subject)
 }
 
-/// 账号切换专用：只搬「切换前那个账号」名下的会话，别把同一版本里
-/// 其他账号的会话也划过来（手动恢复才允许全量）。
-pub fn from_account(
-    roots: &Roots,
-    edition: &str,
-    uid: &str,
-    source: &str,
-    subject: &str,
-) -> Result<RestoreReport> {
-    run(roots, edition, uid, Some(source), subject)
-}
-
-fn run(
-    roots: &Roots,
-    edition: &str,
-    uid: &str,
-    from: Option<&str>,
-    subject: &str,
-) -> Result<RestoreReport> {
+fn run(roots: &Roots, edition: &str, uid: &str, subject: &str) -> Result<RestoreReport> {
     let started = std::time::Instant::now();
     // 失败一律走这里：环节 + 根因 + 处置，缺一个用户就得自己猜
     let fail = |step: &str, cause: &str, action: &str, e: &AppError| {
@@ -108,10 +90,10 @@ fn run(
         );
     };
 
-    log::item(log::Item::marker("恢复会话", subject).note(format!(
-        "开始 | 版本={edition} | 来源={}",
-        from.unwrap_or("全量对齐")
-    )));
+    log::item(
+        log::Item::marker("恢复会话", subject)
+            .note(format!("开始 | 版本={edition} | 来源=全量对齐")),
+    );
 
     if edition != "cn" && edition != "intl" {
         let e = AppError::new(ErrorKind::Invalid, format!("未知版本：{edition}"));
@@ -200,22 +182,13 @@ fn run(
         return Err(e);
     }
 
-    let changed = match from {
-        // 来源就是目标：没有可搬的，别退化成「全量对齐」把别人的会话也划过来
-        Some(source) if source == uid => Ok(0usize),
-        Some(source) => conn.execute(
-            "UPDATE sessions SET user_id = ?1
-             WHERE transport = 'local' AND user_id = ?2",
-            [uid, source],
-        ),
-        // 没有来源账号（手动恢复）：全量对齐
-        None => conn.execute(
+    let changed = conn
+        .execute(
             "UPDATE sessions SET user_id = ?1
              WHERE transport = 'local' AND user_id <> ?1",
             [uid],
-        ),
-    }
-    .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("改归属失败：{e}")));
+        )
+        .map_err(|e| AppError::new(ErrorKind::Sqlite, format!("改归属失败：{e}")));
 
     let changed = match changed {
         Ok(changed) => changed,

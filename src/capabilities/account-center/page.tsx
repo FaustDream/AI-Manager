@@ -21,17 +21,12 @@ import {
 } from '@/lib/features';
 import type { AccountView } from '@/lib/types';
 import { COLUMNS, type Cell } from './columns';
-import { DetailPanel } from './detail';
+import { AccountDetailDialog } from './detail';
 import { OPS_WIDTH, RestoreDialog, RowActions, SwitchDialog } from './actions';
 import { AddAccountDialog, AccountToolbar } from './toolbar';
 import { moveBy, useRowDrag } from './use-row-drag';
 
-/// 打开列表时补刷余额的陈旧阈值：超过它就当场刷一轮。
-/// 取 90 秒 —— 后台默认 5 分钟一跳，用户在两次轮询之间打开页面时，
-/// 90 秒内的数据已经够新，没必要为一个刚看过的数字再打一轮接口。
-const LOOK_REFRESH_MS = 90 * 1000;
-/// 模块级节流：组件重挂载（切页回来）不该重新触发一轮
-let lastLookRefresh = 0;
+/// 每次进入账号中心补刷一轮余额：积分查询的唯一自动触发点。
 
 function CellView({ cell, badge }: { cell: Cell; badge?: string }) {
   // 图标由列定义给名字，这里才取组件——列定义是纯数据，不碰 JSX
@@ -170,23 +165,19 @@ export default function AccountCenterPage() {
     setSelected(iid);
   }, []);
 
-  // 打开页面就把「看起来是旧的」余额刷一遍：后台轮询默认 5 分钟一跳，
-  // 而用户真正会盯着看的就是这个列表——等他打开时补一发，比调快全局频率省得多。
-  // 用模块级时间戳节流，来回切页面不会每次都打一轮接口。
+  // 每次进入账号中心补刷一轮余额：积分查询的唯一自动触发点。
+  // 不挂后台轮询，也不在模块层做节流——用户点进来就是要看最新数字，一次进入打一轮。
+  // 用 ref 保证同一次挂载只跑一次（React StrictMode 会双跑 effect）。
+  const creditsLooked = useRef(false);
   useEffect(() => {
-    if (rows.length === 0) return;
+    if (creditsLooked.current || rows.length === 0) return;
     const iids = rows.filter((r) => r.has_secret && r.enabled).map((r) => r.iid);
-    if (iids.length === 0) return;
-    const newest = rows.reduce<number>(
-      (max, r) => Math.max(max, r.last_ok_at ?? 0),
-      0,
-    );
-    // 刚刷过（或刚从后台轮询收到）就什么都不做
-    if (Date.now() - newest < LOOK_REFRESH_MS || Date.now() - lastLookRefresh < LOOK_REFRESH_MS) {
+    if (iids.length === 0) {
+      creditsLooked.current = true;
       return;
     }
-    lastLookRefresh = Date.now();
-    void runCmd('checkin_credits', { iids, trigger: 'auto' }, { onError: () => {} }).then(
+    creditsLooked.current = true;
+    void runCmd('checkin_credits', { iids, trigger: 'user' }, { onError: () => {} }).then(
       (out) => {
         if (out === undefined) return;
         void qc.invalidateQueries({ queryKey: ['accounts'] });
@@ -328,45 +319,8 @@ export default function AccountCenterPage() {
       );
     });
 
-  // 刷的是「凭据还能不能用」：**云端优先**——本地拿不到可用期（未知 / 已过期 / 临期）
-  // 的账号先拿凭据问平台，能通即有效、401 即失效；云端问不出来才回退读本机客户端。
-  // 与「刷新积分」分开：那个打平台接口拿余额，这个只判有效性与到期时间。
-  const refreshState = () =>
-    runBusy('refresh-state', async () => {
-      const report = await runCmd('account_refresh_all');
-      if (report === undefined) return;
-      const parts = [
-        `${report.total} 个账号`,
-        `有凭据 ${report.with_secret}`,
-        report.missing_secret > 0 ? `缺凭据 ${report.missing_secret}` : '',
-        report.expired > 0 ? `已过期 ${report.expired}` : '',
-        report.expiring > 0 ? `临期 ${report.expiring}` : '',
-        report.updated > 0 ? `校正到期 ${report.updated}` : '',
-        report.cloud_ok > 0 ? `云端确认 ${report.cloud_ok}` : '',
-        report.cloud_expired > 0 ? `云端判定失效 ${report.cloud_expired}` : '',
-        report.cloud_fallback > 0 ? `回退本机 ${report.cloud_fallback}` : '',
-      ].filter(Boolean);
-      const head = `账号状态已刷新：${parts.join(' · ')} · ${fmtMs(report.ms)}`;
-      toast(
-        report.errors.length === 0
-          ? head
-          : `${head}\n${report.errors.slice(0, 2).join('\n')}${
-              report.errors.length > 2 ? `\n…另 ${report.errors.length - 2} 条见日志` : ''
-            }`,
-      );
-      // 到期时间、「当前登录」标记都在这一批里更新过：列表、当前账号、详情一起重取
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ['accounts'] }),
-        qc.invalidateQueries({ queryKey: ['current'] }),
-        qc.invalidateQueries({ queryKey: ['switchable'] }),
-        qc.invalidateQueries({ queryKey: ['detail'] }),
-        qc.invalidateQueries({ queryKey: ['codebuddy-targets'] }),
-      ]);
-    });
-
-  // 批量刷新凭据：对当前筛选出的账号逐个重扫并写回**最新凭据与有效期**。
-  // 与「刷新账号状态」的分工：那个是全量重扫 + 校正 + 更新当前登录标记；
-  // 这个是针对当前筛选的一批账号，逐个给出「更新了 / 已是最新 / 需重新授权」的结论。
+  // 批量刷新账号：重扫客户端，把每个账号的最新凭据、到期时间写回本地库，
+  // 并同步「当前登录 / 可切换」标记。余额不在这一步查（那是「积分」按钮）。
   // 不管是否过期都会刷——平台侧的有效期可能已经被客户端续过。
   const batchRefreshCredentials = () =>
     runBusy('refresh-credentials', async () => {
@@ -384,7 +338,7 @@ export default function AccountCenterPage() {
         report.unsupported > 0 ? `不支持 ${report.unsupported}` : '',
         report.failed > 0 ? `失败 ${report.failed}` : '',
       ].filter(Boolean);
-      const head = `刷新凭据完成：${report.total} 个账号 · ${parts.join(' · ') || '无需处理'} · ${fmtMs(report.ms)}`;
+      const head = `刷新完成：${report.total} 个账号 · ${parts.join(' · ') || '无需处理'} · ${fmtMs(report.ms)}`;
       toast(
         report.errors.length === 0
           ? head
@@ -392,15 +346,19 @@ export default function AccountCenterPage() {
               report.errors.length > 2 ? `\n…另 ${report.errors.length - 2} 条见日志` : ''
             }`,
       );
+      // 重扫也会更新「当前登录」与可切换范围：一起重取，别等下一次进页面
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['accounts'] }),
         qc.invalidateQueries({ queryKey: ['detail'] }),
+        qc.invalidateQueries({ queryKey: ['current'] }),
+        qc.invalidateQueries({ queryKey: ['switchable'] }),
+        qc.invalidateQueries({ queryKey: ['codebuddy-targets'] }),
       ]);
     });
 
   const batchCheckin = () =>
     runBusy('checkin', async () => {
-      // 与「刷新凭据」同一口径：只处理当前筛选出来的账号（按钮说的是「列表里」）
+      // 与「刷新」同一口径：只处理当前筛选出来的账号（按钮说的是「列表里」）
       const iids = visible
         .filter(
           (r) =>
@@ -535,7 +493,6 @@ export default function AccountCenterPage() {
           busy={busy}
           onAdd={() => setAddOpen(true)}
           onRefresh={refreshCredits}
-          onRefreshState={refreshState}
           onRefreshCredentials={batchRefreshCredentials}
           onCheckin={batchCheckin}
         />
@@ -801,11 +758,16 @@ export default function AccountCenterPage() {
       </table>
       </div>
 
-      <DetailPanel
-        account={selectedRow}
-        isCurrent={selectedRow ? currentSet.has(selectedRow.iid) : false}
-        error={selectedRow ? queryErrors[selectedRow.iid] : undefined}
-      />
+      {/* 点行即开详情弹窗：概览 / 积分批次 / 领取记录 / 旅行分标签页，不再在表下铺长面板 */}
+      {selectedRow && (
+        <AccountDetailDialog
+          key={selectedRow.iid}
+          account={selectedRow}
+          isCurrent={currentSet.has(selectedRow.iid)}
+          error={queryErrors[selectedRow.iid]}
+          onClose={() => setSelected(null)}
+        />
+      )}
 
       <AddAccountDialog
         open={addOpen}
