@@ -1,6 +1,4 @@
-# 敏感数据（红线 2/6）：账号密文、DPAPI 凭据、运行期台账，绝不入库
 data/
-data-v1-archive/
 
 # 可再生构建产物
 node_modules/
@@ -13,22 +11,14 @@ src-tauri/gen/
 __pycache__/
 *.py[cod]
 
-# 本机私有配置（src-tauri/.cargo 是本机 cargo 镜像配置，CI 走默认源）
 src-tauri/.cargo/
 .codebuddy/
 .workbuddy/
 .workbuddy-ai/
 .trae/
-# ZCode 工作区本地配置与会话数据（技能装在用户目录 ~/.zcode/skills，与仓库无关）
 .zcode/
-
-# 本地留存，不入库（docs/shots 截图带账号昵称等信息；tools/ 开发脚本与素材随本机走）
-docs/
-AGENTS.md
 tools/
-.trae/skills/
 
-# 打包脚本必须入库（发布要可复现），只忽略产物
 packaging/nsis/*.exe
 
 # 临时与系统垃圾
