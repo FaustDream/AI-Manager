@@ -4,6 +4,7 @@
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/components/ui/button';
+import { Hint, Tooltip } from '@/components/ui';
 
 /*
  * 数值滚动（count-up）：只在 KPI 瓦片上做，400ms 三次缓出。
@@ -114,8 +115,8 @@ export function Metric({
         <span className="min-w-0 truncate">{label}</span>
         {delta}
       </div>
-      <div className={valueCls} title={exact}>
-        {display}
+      <div className={valueCls}>
+        <Hint content={exact} focusable={false}>{display}</Hint>
       </div>
     </>
   );
@@ -140,15 +141,19 @@ export function Metric({
   };
   if (onClick) {
     return (
-      <button type="button" className={cn(cls, 'cursor-pointer text-left')} title={hint} onClick={onClick} {...motion}>
-        {body}
-      </button>
+      <Tooltip content={hint}>
+        <button type="button" className={cn(cls, 'cursor-pointer text-left')} onClick={onClick} {...motion}>
+          {body}
+        </button>
+      </Tooltip>
     );
   }
   return (
-    <div className={cls} title={hint} {...motion}>
-      {body}
-    </div>
+    <Tooltip content={hint}>
+      <div className={cls} {...motion}>
+        {body}
+      </div>
+    </Tooltip>
   );
 }
 
@@ -191,29 +196,30 @@ export function Segmented({
   title?: string;
 }) {
   return (
-    <span
-      className="flex flex-wrap items-center gap-0.5 rounded-md border border-line bg-sunken p-0.5"
-      title={title}
-      role="group"
-    >
-      {options.map((item) => (
-        <button
-          key={item.key}
-          type="button"
-          aria-pressed={item.key === value}
-          className={cn(
-            'cursor-pointer rounded-sm px-2 py-0.5 text-xs transition-colors duration-[var(--dur-1)]',
-            item.key === value
-              ? 'bg-accent font-medium text-on-accent shadow-card'
-              : 'text-muted hover:bg-hover hover:text-fg',
-          )}
-          title={item.title}
-          onClick={() => onPick(item.key)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </span>
+    <Hint content={title} focusable={false}>
+      <span
+        className="flex flex-wrap items-center gap-0.5 rounded-md border border-line bg-sunken p-0.5"
+        role="group"
+      >
+        {options.map((item) => (
+          <Tooltip key={item.key} content={item.title}>
+            <button
+              type="button"
+              aria-pressed={item.key === value}
+              className={cn(
+                'cursor-pointer rounded-sm px-2 py-0.5 text-xs transition-colors duration-[var(--dur-1)]',
+                item.key === value
+                  ? 'bg-accent font-medium text-on-accent shadow-card'
+                  : 'text-muted hover:bg-hover hover:text-fg',
+              )}
+              onClick={() => onPick(item.key)}
+            >
+              {item.label}
+            </button>
+          </Tooltip>
+        ))}
+      </span>
+    </Hint>
   );
 }
 

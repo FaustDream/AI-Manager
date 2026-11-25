@@ -15,11 +15,11 @@ import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useState, type ReactNode } from 'react';
 import { errText } from '@/lib/ipc';
 import { fmtSize } from '@/lib/format';
-import { Button, cn } from '@/components/ui/button';
+import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { SkeletonRows, StateBlock } from '@/components/ui/form';
 import { DataTable } from '@/components/ui/table';
-import { Notice, Tag } from '@/components/ui';
+import { Hint, Notice, Tabs, Tag, Tooltip } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import type { HubSnapshot, Step } from '@/lib/types';
 
@@ -37,9 +37,9 @@ function reportText(steps: Step[]): string {
  */
 function Clip({ text, max }: { text: string; max: string }) {
   return (
-    <span className={`inline-block ${max} truncate align-bottom`} title={text}>
-      {text}
-    </span>
+    <Hint content={text} focusable={false}>
+      <span className={`inline-block ${max} truncate align-bottom`}>{text}</span>
+    </Hint>
   );
 }
 
@@ -292,45 +292,30 @@ export default function HubPage() {
   return (
     <div className="stagger flex flex-col gap-4">
       {/* 分发中心 = 分发库 + 本工具写过的 MCP；单个软件 = 该软件的技能副本与 MCP 配置 */}
-      <div
-        role="tablist"
-        aria-label="分发范围"
-        className="flex flex-wrap gap-1 self-start rounded-lg border border-line bg-card p-1 shadow-card"
-      >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'distribute'}
-          className={cn(
-            'cursor-pointer rounded-md px-3.5 py-1.5 text-sm transition-colors duration-[var(--dur-1)]',
-            tab === 'distribute'
-              ? 'bg-accent font-medium text-on-accent'
-              : 'text-fg2 hover:bg-hover hover:text-fg',
-          )}
-          onClick={() => setTab('distribute')}
-          title="技能与 MCP 的分发入口：把分发库部署到各软件"
-        >
-          分发中心
-        </button>
-        {snap.targets.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.key}
-            className={cn(
-              'cursor-pointer rounded-md px-3.5 py-1.5 text-sm transition-colors duration-[var(--dur-1)]',
-              tab === t.key
-                ? 'bg-accent font-medium text-on-accent'
-                : 'text-fg2 hover:bg-hover hover:text-fg',
-            )}
-            onClick={() => setTab(t.key)}
-          >
-            {t.label}
-            <span className="ml-1 tabular-nums opacity-70">（{t.skills}）</span>
-          </button>
-        ))}
-      </div>
+      <Tabs
+        label="分发范围"
+        size="md"
+        variant="solid"
+        value={tab}
+        className="self-start rounded-lg border border-line bg-card p-1 shadow-card"
+        onValueChange={setTab}
+        items={[
+          {
+            value: 'distribute',
+            label: '分发中心',
+            hint: '技能与 MCP 的分发入口：把分发库部署到各软件',
+          },
+          ...snap.targets.map((t) => ({
+            value: t.key,
+            label: (
+              <>
+                {t.label}
+                <span className="ml-0.5 tabular-nums opacity-70">（{t.skills}）</span>
+              </>
+            ),
+          })),
+        ]}
+      />
 
       {tab === 'distribute' && (
         <>
@@ -427,9 +412,9 @@ export default function HubPage() {
                     header: (
                       <div className="grid w-56 grid-cols-8">
                         {snap.targets.map((t) => (
-                          <span key={t.key} title={t.label} className="cursor-help text-center text-xs leading-4 text-muted">
+                          <Hint key={t.key} content={t.label} focusable={false} className="cursor-help text-center text-xs leading-4 text-muted">
                             {CODE[t.key] ?? t.key}
-                          </span>
+                          </Hint>
                         ))}
                       </div>
                     ),
@@ -440,18 +425,19 @@ export default function HubPage() {
                           const state = skill.states.find(([k]) => k === t.key)?.[1] ?? 'missing';
                           return (
                             <span key={t.key} className="flex justify-center">
-                              <button
-                                className={`h-2.5 w-2.5 cursor-pointer transition-transform duration-[var(--dur-1)] hover:scale-125 ${
-                                  state === 'synced'
-                                    ? 'rounded-full bg-ok'
-                                    : state === 'stale'
-                                      ? 'rotate-45 bg-warn'
-                                      : 'rounded-full border border-line-strong bg-transparent'
-                                }`}
-                                title={`${t.label}：${STATE_LABEL[state] ?? state}`}
-                                aria-label={`${skill.name} 在 ${t.label}：${STATE_LABEL[state] ?? state}，点击去该软件页`}
-                                onClick={() => setTab(t.key)}
-                              />
+                              <Tooltip content={`${t.label}：${STATE_LABEL[state] ?? state}`}>
+                                <button
+                                  className={`h-2.5 w-2.5 cursor-pointer transition-transform duration-[var(--dur-1)] hover:scale-125 ${
+                                    state === 'synced'
+                                      ? 'rounded-full bg-ok'
+                                      : state === 'stale'
+                                        ? 'rotate-45 bg-warn'
+                                        : 'rounded-full border border-line-strong bg-transparent'
+                                  }`}
+                                  aria-label={`${skill.name} 在 ${t.label}：${STATE_LABEL[state] ?? state}，点击去该软件页`}
+                                  onClick={() => setTab(t.key)}
+                                />
+                              </Tooltip>
                             </span>
                           );
                         })}
@@ -565,13 +551,13 @@ export default function HubPage() {
                 {activeTarget.mcp} 条
               </span>
             </div>
-            <div className="mt-1 truncate text-xs text-muted" title={activeTarget.skill_dir}>
+            <Hint content={activeTarget.skill_dir} className="mt-1 block truncate text-xs text-muted">
               技能目录：{activeTarget.skill_dir}
-            </div>
+            </Hint>
             {activeTarget.mcp_file ? (
-              <div className="truncate text-xs text-muted" title={activeTarget.mcp_file}>
+              <Hint content={activeTarget.mcp_file} className="block truncate text-xs text-muted">
                 MCP 配置：{activeTarget.mcp_file}
-              </div>
+              </Hint>
             ) : (
               <div className="text-xs text-muted">
                 MCP：这个客户端只在应用内管理，本地没有可写的配置文件
@@ -633,9 +619,9 @@ export default function HubPage() {
                             <Clip text={inst.name} max="max-w-[360px]" />
                             {info && !info.valid && <Tag tone="bad">{info.reason}</Tag>}
                             {inst.description && (
-                              <span className="block max-w-[420px] truncate text-xs text-muted" title={inst.description}>
+                              <Hint content={inst.description} focusable={false} className="block max-w-[420px] truncate text-xs text-muted">
                                 {inst.description}
-                              </span>
+                              </Hint>
                             )}
                           </>
                         );
@@ -737,9 +723,9 @@ export default function HubPage() {
                         <>
                           <Clip text={inst.name} max="max-w-[360px]" />
                           {inst.description && (
-                            <span className="block max-w-[420px] truncate text-xs text-muted" title={inst.description}>
+                            <Hint content={inst.description} focusable={false} className="block max-w-[420px] truncate text-xs text-muted">
                               {inst.description}
-                            </span>
+                            </Hint>
                           )}
                         </>
                       ),
@@ -750,16 +736,17 @@ export default function HubPage() {
                       header: '操作',
                       width: 112,
                       cell: (inst) => (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          loading={busy === `take:${inst.name}`}
-                          disabled={!!busy && busy !== `take:${inst.name}`}
-                          onClick={() => void takeSkill(inst.name, tab)}
-                          title="复制进分发库，之后就能像个人技能一样部署到其他软件"
-                        >
-                          收录
-                        </Button>
+                        <Hint content="复制进分发库，之后就能像个人技能一样部署到其他软件" focusable={false}>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            loading={busy === `take:${inst.name}`}
+                            disabled={!!busy && busy !== `take:${inst.name}`}
+                            onClick={() => void takeSkill(inst.name, tab)}
+                          >
+                            收录
+                          </Button>
+                        </Hint>
                       ),
                     },
                   ]}
@@ -897,19 +884,20 @@ export default function HubPage() {
                       header: '操作',
                       width: 112,
                       cell: (row) => (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setClaim({ name: row.name, source: tab });
-                            setClaimPicked(
-                              new Set(snap.targets.filter((t) => t.key !== tab && !row.present.includes(t.key)).map((t) => t.key)),
-                            );
-                          }}
-                          title="收进分发库，之后就能部署到其他软件"
-                        >
-                          收录
-                        </Button>
+                        <Hint content="收进分发库，之后就能部署到其他软件" focusable={false}>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setClaim({ name: row.name, source: tab });
+                              setClaimPicked(
+                                new Set(snap.targets.filter((t) => t.key !== tab && !row.present.includes(t.key)).map((t) => t.key)),
+                              );
+                            }}
+                          >
+                            收录
+                          </Button>
+                        </Hint>
                       ),
                     },
                   ]}

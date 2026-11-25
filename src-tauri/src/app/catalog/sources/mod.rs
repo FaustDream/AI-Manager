@@ -1,5 +1,6 @@
 mod bilibili;
 mod iqiyi;
+mod mgtv;
 mod netflix;
 mod tencent;
 mod youku;
@@ -36,6 +37,7 @@ pub const SOURCES: &[SourceSpec] = &[
     SourceSpec { id: "tencent", label: "腾讯视频", implemented: true, requires_key: false, default_enabled: false, coverage: "公开移动首页节目卡片，非全量目录；首播日期不能当作更新日期。", license_note: "现有公开页面，只读节目资料；页面改版可能无法采集。" },
     SourceSpec { id: "iqiyi", label: "爱奇艺", implemented: true, requires_key: false, default_enabled: false, coverage: "公开频道资料第一页（接口为推荐模块，无可靠全量分页契约）；不得冒充完整日历。", license_note: "现有公开频道资料；推荐页不作为全量数据源。" },
     SourceSpec { id: "youku", label: "优酷", implemented: true, requires_key: false, default_enabled: false, coverage: "公开电视频道卡片，非全量；无确认集数日期，不进入更新日历。", license_note: "现有公开页面，只读资料；不获取播放线路。" },
+    SourceSpec { id: "mgtv", label: "芒果TV", implemented: true, requires_key: false, default_enabled: true, coverage: "公开频道列表（综艺/电视剧/动漫），带中文简介、类型、年份、集数与知乎评分；无确认单集日期，不进入更新日历。", license_note: "现有公开列表接口，只读节目元数据；不获取播放线路。" },
     SourceSpec { id: "omdb", label: "OMDb / IMDb / Rotten Tomatoes", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按库内IMDb ID逐项获取原始评分；覆盖取决于OMDb授权，不推测观众好评率或评分人数。",  license_note: "需要 OMDb API key，评分字段取决于账户与授权；不抓取评价网站。" },
     SourceSpec { id: "tvdb", label: "TheTVDB", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：需要 API v4 授权/订阅。", license_note: "需要遵守 TheTVDB 许可，不能借用他人 key。" },
     SourceSpec { id: "trakt", label: "Trakt", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：需要注册应用 client ID；当前无授权。", license_note: "遵守 Trakt API 授权及速率限制。" },
@@ -70,12 +72,14 @@ pub async fn fetch(source: &str, ctx: AdapterContext, tx: Sender<IngestionBatch>
         "simkl" => supplemental::simkl(ctx, tx).await,
         "kitsu" => supplemental::kitsu(ctx, tx).await,
         "tmdb" => supplemental::tmdb(ctx, tx).await,
-        "bilibili" | "tencent" | "iqiyi" | "youku" => {
-            let drafts = match source {
-                "bilibili" => bilibili::fetch(ctx.http).await?,
-                "tencent" => tencent::fetch(ctx.http).await?,
-                "iqiyi" => iqiyi::fetch(ctx.http).await?,
-                _ => youku::fetch(ctx.http).await?,
+        "bilibili" => bilibili::fetch(ctx, tx).await,
+        "iqiyi" => iqiyi::fetch(ctx, tx).await,
+        "mgtv" => mgtv::fetch(ctx, tx).await,
+        "tencent" | "youku" => {
+            let drafts = if source == "tencent" {
+                tencent::fetch(ctx.http).await?
+            } else {
+                youku::fetch(ctx.http).await?
             };
             let items = drafts.into_iter().map(legacy_draft).collect();
             publish(&tx, IngestionBatch { items, page: 1, complete: true, http_status: Some(200), ..Default::default() }).await
@@ -156,19 +160,25 @@ pub struct Draft {
     pub poster: Option<String>,
 }
 
-impl Draft {
-    pub fn key(&self) -> String { format!("{}:{}", self.platform, self.native_id) }
-}
-
 fn legacy_draft(d: Draft) -> MediaDraft {
     use crate::app::catalog::types::{CatalogMedia, CatalogRelease};
+    let note = d.update_note.as_deref().unwrap_or("");
+    let (episode_count, aired_episodes) = episode_numbers(note);
+    let status = if d.finished {
+        "completed"
+    } else if note.contains("更新至") || aired_episodes.is_some() {
+        "airing"
+    } else {
+        "unknown"
+    };
     let mut out = MediaDraft {
         source: d.platform.into(), external_id: d.native_id,
         media: CatalogMedia {
             title: d.title, kind: d.kind.into(), regions: Vec::new(),
             platforms: vec![spec(d.platform).map(|s| s.label.to_string()).unwrap_or_default()],
-            status: if d.finished { "completed" } else { "unknown" }.into(),
+            status: status.into(),
             year: d.year, premiered: if d.platform != "bilibili" { d.air_date.clone() } else { None },
+            episode_count, aired_episodes,
             poster: d.poster, source_url: d.url.clone(), ..Default::default()
         }, ..Default::default()
     };
@@ -206,4 +216,109 @@ pub fn normalize_date(text: &str, fallback_year: i32) -> Option<String> {
 }
 pub fn year_of(date: Option<&str>) -> Option<i32> { date.and_then(|d| d.get(..4)).and_then(|y| y.parse().ok()) }
 pub fn is_finished(note: &str) -> bool { let n = note.trim(); !n.is_empty() && (n.starts_with('全') || n.contains("集全")) }
+/// 从「全40集 / 24集全 / 更新至第17集」里取（总集数，已发行集数）。
+/// 只解析平台原样的集数说明，不把年份、期数换算成集数。
+pub fn episode_numbers(note: &str) -> (Option<u32>, Option<u32>) {
+    fn number_after(text: &str, marker: &str) -> Option<u32> {
+        let (_, rest) = text.split_once(marker)?;
+        let rest = rest.trim_start().trim_start_matches('第');
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse().ok()
+    }
+    fn number_before(text: &str, marker: &str) -> Option<u32> {
+        let (head, _) = text.split_once(marker)?;
+        let digits: String = head
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        digits.parse().ok()
+    }
+    if let Some(total) = number_after(note, "全").or_else(|| number_before(note, "集全")) {
+        return (Some(total), Some(total));
+    }
+    if let Some(aired) = number_after(note, "更新至") {
+        return (None, Some(aired));
+    }
+    (None, None)
+}
+/// 国内源的中文地区/产地标签映射到 ISO 码；未识别返回 None，不猜。
+pub fn cn_region(value: &str) -> Option<&'static str> {
+    match value.trim() {
+        "内地" | "中国大陆" | "中国" | "大陆" => Some("CN"),
+        "香港" | "中国香港" => Some("HK"),
+        "台湾" | "中国台湾" => Some("TW"),
+        "日本" | "日本国" => Some("JP"),
+        "韩国" | "南韩" => Some("KR"),
+        "美国" => Some("US"),
+        "英国" => Some("GB"),
+        "泰国" => Some("TH"),
+        "新加坡" => Some("SG"),
+        _ => None,
+    }
+}
+
 pub fn non_empty(value: Option<&str>) -> Option<String> { value.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn episode_notes_are_parsed_without_guessing() {
+        assert_eq!(episode_numbers("全40集"), (Some(40), Some(40)));
+        assert_eq!(episode_numbers("24集全"), (Some(24), Some(24)));
+        assert_eq!(episode_numbers("更新至第17集"), (None, Some(17)));
+        assert_eq!(episode_numbers("更新至168集"), (None, Some(168)));
+        assert_eq!(episode_numbers("2026-11-20期"), (None, None));
+        assert_eq!(episode_numbers("第15话~第16话"), (None, None));
+    }
+
+    #[test]
+    fn legacy_drafts_mark_airing_and_completed_from_the_note() {
+        let airing = legacy_draft(Draft {
+            platform: "tencent",
+            native_id: "c1".into(),
+            kind: "tv",
+            title: "更新中的剧".into(),
+            update_note: Some("更新至12集".into()),
+            year: None,
+            air_date: None,
+            finished: false,
+            url: None,
+            episode_id: None,
+            local_time: None,
+            poster: None,
+        });
+        assert_eq!(airing.media.status, "airing");
+        assert_eq!(airing.media.aired_episodes, Some(12));
+
+        let done = legacy_draft(Draft {
+            platform: "youku",
+            native_id: "c2".into(),
+            kind: "tv",
+            title: "完结的剧".into(),
+            update_note: Some("全40集".into()),
+            year: None,
+            air_date: None,
+            finished: true,
+            url: None,
+            episode_id: None,
+            local_time: None,
+            poster: None,
+        });
+        assert_eq!(done.media.status, "completed");
+        assert_eq!(done.media.episode_count, Some(40));
+    }
+
+    #[test]
+    fn chinese_region_labels_map_to_iso_or_nothing() {
+        assert_eq!(cn_region("内地"), Some("CN"));
+        assert_eq!(cn_region("中国香港"), Some("HK"));
+        assert_eq!(cn_region("日本"), Some("JP"));
+        assert_eq!(cn_region("火星"), None);
+    }
+}

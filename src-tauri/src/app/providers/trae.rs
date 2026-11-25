@@ -11,7 +11,9 @@ use crate::app::accounts::credential::{iso_from_ms, Credential};
 use crate::app::accounts::AccountIdentity;
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
-use crate::types::{trim_f64, ActionResult, CreditLot, CreditSnapshot, StatusResult};
+use crate::types::{
+    trim_f64, ActionResult, CreditLot, CreditSnapshot, CredentialKind, CredentialShape, StatusResult,
+};
 use async_trait::async_trait;
 use base64::Engine;
 use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
@@ -328,6 +330,18 @@ impl Provider for TraeProvider {
 
     // ------------------------------------------------------------ P3：签到与积分
 
+    fn credential_shape(&self) -> CredentialShape {
+        CredentialShape {
+            kind: CredentialKind::DeviceBound,
+            label: "设备绑定只读".into(),
+            multi_account: false,
+            // 加密格式与设备绑定，写回会把客户端登出——只能读
+            switchable: false,
+            expiry_known: true,
+            note: "Trae 的登录态是设备绑定的加密格式，本工具只读不写：写回会让客户端登出。换号请在 Trae 客户端里手动操作，下次启动自动扫描会补存".into(),
+        }
+    }
+
     /// Trae 自带积分批次（谁在什么时候到账、什么时候到期），所以不写台账（契约 5）
     fn live_credit(&self) -> bool {
         true
@@ -374,6 +388,8 @@ impl Provider for TraeProvider {
             balance,
             lots,
             quota: None,
+            // 签到状态在另一个端点上，这一发没看到就不填（见 CreditSnapshot::checked_in）
+            checked_in: None,
         })
     }
 

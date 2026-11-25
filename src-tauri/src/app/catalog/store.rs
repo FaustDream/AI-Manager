@@ -416,6 +416,17 @@ fn clean_media(mut media: CatalogMedia) -> CatalogMedia {
         latest_chapter,
         source_url
     );
+    // 类型在入库前统一成中文：国际源的英文类型与国内源的中文类型落到同一列，
+    // 筛选项、列表、详情不会出现「Action / 动作」两套写法。已入库的旧英文值
+    // 由 facets 的 genre_label 兜底翻译，不改写历史行。
+    let mut localized = Vec::with_capacity(media.genres.len());
+    for genre in std::mem::take(&mut media.genres) {
+        let value = super::genres::localize_genre(&genre).unwrap_or(genre.as_str());
+        if !localized.iter().any(|existing: &String| existing == value) {
+            localized.push(value.to_string());
+        }
+    }
+    media.genres = localized;
     media
 }
 fn search_text(media: &CatalogMedia) -> String {
@@ -1139,10 +1150,15 @@ fn platform_label(platform: &str) -> &str {
         "tencent" => "腾讯视频",
         "iqiyi" => "爱奇艺",
         "youku" => "优酷",
+        "mgtv" => "芒果TV",
         "netflix" => "奈飞",
         "disney_plus" => "Disney+",
         _ => platform,
     }
+}
+/// 旧行里可能还存着英文类型；显示时翻一次，不回写历史数据。
+fn genre_label(genre: &str) -> &str {
+    super::genres::localize_genre(genre).unwrap_or(genre)
 }
 fn facet_counts(
     conn: &Connection,
@@ -1164,7 +1180,7 @@ pub fn facets(db: &Db) -> Result<CatalogFacets> {
     db.read(|conn| {
         let kinds = facet_counts(conn, "SELECT kind,COUNT(*) FROM media GROUP BY kind ORDER BY COUNT(*) DESC,kind", kind_label)?;
         let regions = facet_counts(conn, "SELECT region,COUNT(DISTINCT media_key) FROM media_regions GROUP BY region ORDER BY COUNT(DISTINCT media_key) DESC,region", region_label)?;
-        let genres = facet_counts(conn, "SELECT genre,COUNT(DISTINCT media_key) FROM media_genres GROUP BY genre ORDER BY COUNT(DISTINCT media_key) DESC,genre", |s| s)?;
+        let genres = facet_counts(conn, "SELECT genre,COUNT(DISTINCT media_key) FROM media_genres GROUP BY genre ORDER BY COUNT(DISTINCT media_key) DESC,genre", genre_label)?;
         let platforms = facet_counts(conn, "SELECT platform,COUNT(DISTINCT media_key) FROM media_platforms GROUP BY platform ORDER BY COUNT(DISTINCT media_key) DESC,platform", platform_label)?;
         let mut stmt = conn.prepare("SELECT DISTINCT year FROM media WHERE year IS NOT NULL ORDER BY year DESC")?;
         let years = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;

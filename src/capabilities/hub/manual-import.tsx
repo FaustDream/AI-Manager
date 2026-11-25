@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
+import { Tabs } from '@/components/ui';
 import { Dialog } from '@/components/ui/dialog';
 import { Input, Textarea } from '@/components/ui/form';
 import { runCmd } from '@/lib/cmd';
@@ -83,31 +84,18 @@ export function ManualSkillDialog({
       }
     >
       <div className="flex flex-col gap-3 text-sm">
-        <div
-          role="tablist"
-          aria-label="导入方式"
-          className="flex items-center gap-0.5 self-start rounded-md border border-line bg-sunken p-0.5"
-        >
-          {[
-            { key: 'folder', label: '本地技能目录' },
-            { key: 'paste', label: '粘贴 SKILL.md' },
-          ].map((it) => (
-            <button
-              key={it.key}
-              type="button"
-              role="tab"
-              aria-selected={mode === it.key}
-              className={`cursor-pointer rounded-sm px-2.5 py-1 text-xs transition-colors duration-[var(--dur-1)] ${
-                mode === it.key
-                  ? 'bg-accent font-medium text-on-accent'
-                  : 'text-muted hover:bg-hover hover:text-fg'
-              }`}
-              onClick={() => setMode(it.key as 'folder' | 'paste')}
-            >
-              {it.label}
-            </button>
-          ))}
-        </div>
+        <Tabs
+          label="导入方式"
+          size="sm"
+          variant="solid"
+          value={mode}
+          className="self-start rounded-md border border-line bg-sunken p-0.5"
+          onValueChange={(next) => setMode(next as 'folder' | 'paste')}
+          items={[
+            { value: 'folder', label: '本地技能目录' },
+            { value: 'paste', label: '粘贴 SKILL.md' },
+          ]}
+        />
 
         {mode === 'folder' ? (
           <>

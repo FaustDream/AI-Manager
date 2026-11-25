@@ -15,7 +15,7 @@ const MANGADEX_PAGE_SIZE: u64 = 100;
 // This is a source API restriction, not a configurable resource/completeness limit.
 const MANGADEX_OFFSET_LIMIT: u64 = 10_000;
 const TVMAZE_NOTE: &str = "仅覆盖所选日期、国家电视日历与全球网络日历；TVmaze 台站国家是发行国家，缺少可靠制作国家时地区留空。";
-const ANILIST_NOTE: &str = "动漫仅覆盖所选 UTC 播出范围；漫画仅当前非成人连载目录，不是历史全库，也不把元数据更新时间当作章节日期。播出日历不支持成人过滤参数，返回的成人条目不入库。";
+const ANILIST_NOTE: &str = "动漫按所选 UTC 播出范围采集更新日历；全量模式再补完整连载漫画与非成人已完结动漫目录（含已完结作品），漫画不是历史全库，也不把元数据更新时间当作章节日期。播出日历不支持成人过滤参数，返回的成人条目不入库。";
 const MANGADEX_NOTE: &str = "章节日期是 MangaDex 译本/平台发布时间（UTC）；目录仅覆盖所选更新时间范围内的当前安全/建议级元数据，不重建历史快照。API 无 publishAtUntil，按时间升序在排他结束边界停止。";
 const OFFSET_NOTE: &str = "MangaDex 已到达 offset + limit ≤ 10000 的 API 限制，已保留未完成游标；同范围重试或增加预算不能越过限制，须缩小日期范围重新采集。";
 
@@ -247,6 +247,16 @@ fn anilist_request(phase: &str, page: u64, start: i64, end: i64) -> HttpRequest 
                 }}
             }}
         }}"#)
+    } else if phase == "finished" {
+        // 已完结作品按人气取，不按更新时间：这是补全目录，不是增量日历。
+        format!(r#"query($page: Int!) {{
+            Page(page: $page, perPage: 50) {{
+                pageInfo {{ total hasNextPage lastPage }}
+                media(type: ANIME, status: FINISHED, sort: POPULARITY_DESC, isAdult: false) {{
+                    {ANILIST_MEDIA_FIELDS}
+                }}
+            }}
+        }}"#)
     } else {
         format!(r#"query($page: Int!) {{
             Page(page: $page, perPage: 50) {{
@@ -265,7 +275,7 @@ fn anilist_request(phase: &str, page: u64, start: i64, end: i64) -> HttpRequest 
 
 pub async fn anilist(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<()> {
     let mut cursor = Cursor::load(&ctx, "anilist", "airing", 1)?;
-    if !matches!(cursor.phase.as_str(), "airing" | "manga") || cursor.next == 0 || cursor.next > i32::MAX as u64 {
+    if !matches!(cursor.phase.as_str(), "airing" | "manga" | "finished") || cursor.next == 0 || cursor.next > i32::MAX as u64 {
         return Err(AppError::new(ErrorKind::Invalid, "AniList 采集游标无效"));
     }
     let (start, end) = range_epochs(&ctx);
@@ -285,6 +295,7 @@ pub async fn anilist(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<
         let has_next = data["pageInfo"]["hasNextPage"].as_bool()
             .ok_or_else(|| payload_error("AniList", "pageInfo.hasNextPage"))?;
         let airing = cursor.phase == "airing";
+        let dated = cursor.phase == "manga";
         let rows = required_array(&data[if airing { "airingSchedules" } else { "media" }], "AniList", "Page items")?;
         if rows.is_empty() && has_next { return Err(payload_error("AniList", "nonempty next page")); }
         let mut items = Vec::with_capacity(rows.len());
@@ -293,15 +304,17 @@ pub async fn anilist(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<
         for row in rows {
             let media = if airing { &row["media"] } else { row };
             let adult = media["isAdult"].as_bool().ok_or_else(|| payload_error("AniList", "isAdult"))?;
-            let updated = if airing { None } else {
+            let updated = if dated {
                 let updated = media["updatedAt"].as_i64().ok_or_else(|| payload_error("AniList", "updatedAt"))?;
                 if previous_update.is_some_and(|previous| updated > previous) {
                     return Err(payload_error("AniList", "UPDATED_AT_DESC order"));
                 }
                 previous_update = Some(updated);
                 Some(updated)
+            } else {
+                None
             };
-            if !airing && ctx.mode != "full" {
+            if dated && ctx.mode != "full" {
                 if updated.is_some_and(|updated| updated < start) { before_start = true; continue; }
                 if updated.is_some_and(|updated| updated >= end) { continue; }
             }
@@ -321,13 +334,35 @@ pub async fn anilist(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<
                     timezone: Some("UTC".into()), utc_time: Some(utc_text(date)), episode: Some(episode),
                     platform: Some("AniList".into()), release_kind: "episode".into(), ..Default::default()
                 });
-            } else if draft.media.kind != "manga" { return Err(payload_error("AniList", "manga media.type")); }
+            } else if dated && draft.media.kind != "manga" {
+                return Err(payload_error("AniList", "manga media.type"));
+            } else if !dated && draft.media.kind != "anime" {
+                return Err(payload_error("AniList", "finished media.type"));
+            }
             items.push(draft);
         }
         let exhausted = !has_next || before_start;
         if exhausted {
-            if airing { cursor.phase = "manga".into(); cursor.next = 1; }
-            else { cursor.phase = "done".into(); cursor.next = 0; }
+            cursor = match cursor.phase.as_str() {
+                "airing" => {
+                    let mut next = cursor;
+                    next.phase = "manga".into();
+                    next.next = 1;
+                    next
+                }
+                "manga" if ctx.mode == "full" => {
+                    let mut next = cursor;
+                    next.phase = "finished".into();
+                    next.next = 1;
+                    next
+                }
+                _ => {
+                    let mut next = cursor;
+                    next.phase = "done".into();
+                    next.next = 0;
+                    next
+                }
+            };
         } else {
             cursor.next = cursor.next.checked_add(1).ok_or_else(|| payload_error("AniList", "page cursor"))?;
         }
@@ -783,7 +818,10 @@ mod tests {
         let manga = value!({"data": {"Page": {
             "pageInfo": {"hasNextPage": false}, "media": [anilist_media(8, "MANGA")]
         }}}).to_string();
-        http.on_sequence(ANILIST_URL, vec![(200, &first), (200, &second), (200, &manga)]);
+        let finished = value!({"data": {"Page": {
+            "pageInfo": {"hasNextPage": false}, "media": [anilist_media(9, "ANIME")]
+        }}}).to_string();
+        http.on_sequence(ANILIST_URL, vec![(200, &first), (200, &second), (200, &manga), (200, &finished)]);
         let (tx, rx) = mpsc::channel(1);
         let (result, batches) = tokio::join!(anilist(ctx.clone(), tx), collect(rx));
         result.unwrap();
@@ -802,12 +840,21 @@ mod tests {
         resumed.max_pages = 1;
         resumed.cursor = batches[1].cursor.clone();
         let (tx, rx) = mpsc::channel(1);
-        let (result, manga_batches) = tokio::join!(anilist(resumed, tx), collect(rx));
+        let (result, manga_batches) = tokio::join!(anilist(resumed.clone(), tx), collect(rx));
         result.unwrap();
-        assert!(manga_batches[0].complete);
+        assert!(!manga_batches[0].complete, "全量模式漫画之后还要补已完结动漫");
         assert!(manga_batches[0].items[0].releases.is_empty());
         assert!(manga_batches[0].items[0].media.aliases.contains(&"Gendai".into()));
         assert!(http.last_body(ANILIST_URL).unwrap().contains("isAdult: false"));
+        // 已完结动漫目录：同一游标继续，取完后整源完成。
+        let mut last = resumed;
+        last.cursor = manga_batches[0].cursor.clone();
+        let (tx, rx) = mpsc::channel(1);
+        let (result, finished_batches) = tokio::join!(anilist(last, tx), collect(rx));
+        result.unwrap();
+        assert!(finished_batches[0].complete);
+        assert_eq!(finished_batches[0].items[0].media.kind, "anime");
+        assert!(http.last_body(ANILIST_URL).unwrap().contains("status: FINISHED"));
     }
 
     fn dex_manga() -> Value {

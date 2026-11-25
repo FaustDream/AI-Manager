@@ -25,6 +25,7 @@ import {
   RefreshCw,
   SquarePlus,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react';
 import type { LucideProps } from 'lucide-react';
 
@@ -76,6 +77,7 @@ export const IconNotebook = wrap(NotebookPen);
 export const IconLink = wrap(Link);
 /** 领取活动 */
 export const IconGift = wrap(Gift);
+export const IconWarning = wrap(TriangleAlert);
 
 /** 图标名 → 组件。列定义里只存名字，渲染时才取组件（纯数据不碰 JSX）。 */
 export const ICONS = {
@@ -97,6 +99,7 @@ export const ICONS = {
   notebook: IconNotebook,
   link: IconLink,
   gift: IconGift,
+  warning: IconWarning,
 } as const;
 
 export type IconName = keyof typeof ICONS;

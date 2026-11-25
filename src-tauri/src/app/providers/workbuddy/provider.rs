@@ -12,7 +12,9 @@ use crate::app::activity::{TravelConfig, TravelRecord, TravelStatus};
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::Http;
 use crate::app::providers::{Provider, ScannedAccount, Sink};
-use crate::types::{trim_f64, ActionResult, CreditSnapshot, StatusResult};
+use crate::types::{
+    trim_f64, ActionResult, CreditSnapshot, CredentialKind, CredentialShape, StatusResult,
+};
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{json, Value};
@@ -139,6 +141,21 @@ impl Provider for WorkBuddyProvider {
         } else {
             uid
         })
+    }
+
+    fn credential_shape(&self) -> CredentialShape {
+        CredentialShape {
+            kind: CredentialKind::ProfilePack,
+            label: "会话档案包".into(),
+            // 一个 uid 一份档案 = 一个账号；国内版与国际版各自独立
+            multi_account: true,
+            switchable: true,
+            expiry_known: true,
+            note: format!(
+                "{} 一个账号一份完整会话档案（含 CodeBuddy IDE / IDEA 插件收进来的号），可一键切换；到期时间来自票据。档案只能由客户端登录产生，网页登录造不出来",
+                self.label()
+            ),
+        }
     }
 
     fn keep_local_credential(&self, local: &Credential, scanned: &Credential, now: i64) -> bool {
@@ -303,6 +320,8 @@ impl Provider for WorkBuddyProvider {
             balance: Some(total),
             lots: Some(lots),
             quota: None,
+            // 签到状态在 daily-checkin 侧，这一发没看到就不填（见 CreditSnapshot::checked_in）
+            checked_in: None,
         })
     }
 

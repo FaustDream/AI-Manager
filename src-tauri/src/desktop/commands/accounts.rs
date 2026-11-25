@@ -23,6 +23,10 @@ pub async fn account_list(
     for row in &mut rows {
         row.name = row.display_name();
     }
+    // 登录态按各平台自己声明的凭据形态算，界面只渲染结论
+    crate::app::accounts::login_state::decorate(state.db.clone(), &mut rows)
+        .await
+        .map_err(err_text)?;
     Ok(rows)
 }
 

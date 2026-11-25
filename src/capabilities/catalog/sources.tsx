@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, RefreshCw, RotateCcw } from 'lucide-react';
-import { Button, Card, Dialog, Field, Input, Notice, Section, Select, SkeletonBlock, StateBlock, Tag, confirmAction } from '@/components/ui';
+import { Button, Card, Dialog, Field, Input, Notice, Picker, Section, SkeletonBlock, StateBlock, Tag, Tooltip, confirmAction } from '@/components/ui';
 import { DataTable, type Column } from '@/components/ui/table';
 import { errMsg, queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import type { CatalogJob, CatalogRefreshReport, CatalogSourceStatus, CatalogSyncRequest } from '@/lib/types';
@@ -84,9 +84,15 @@ export function CatalogSources() {
     { key: 'progress', header: '分页 / HTTP / 游标', wrap: true, cell: (row) => <Progress row={row} attempted={row.last_attempt !== null} /> },
     { key: 'error', header: '错误 / 警告', wrap: true, cell: (row) => <Problems row={row} /> },
     { key: 'actions', header: '来源操作', wrap: true, cell: (row) => <div className="flex flex-wrap gap-1">
-      <Button type="button" size="sm" variant="soft" disabled={!!busy || !sourceReady(row) || !!dateError} loading={busy === `refresh:${row.source}`} title={dateError || unavailableReason(row) || '按上方采集模式与日期范围刷新此来源'} onClick={() => void refresh(row.source)}><RefreshCw size={12} aria-hidden />采集</Button>
-      <Button type="button" size="sm" variant="ghost" disabled={!!busy || !row.implemented || row.status === 'running'} loading={busy === `toggle:${row.source}`} title={!row.implemented ? '该来源尚未接入' : row.status === 'running' ? '采集完成后可修改' : undefined} aria-label={`${row.enabled ? '停用' : '启用'} ${row.label}`} aria-pressed={row.enabled} onClick={() => void toggle(row)}>{row.enabled ? '停用' : '启用'}</Button>
-      {row.requires_key && row.implemented && <Button type="button" size="sm" variant="ghost" disabled={!!busy || row.status === 'running'} title={row.status === 'running' ? '采集完成后可修改密钥' : undefined} aria-label={`配置 ${row.label} 密钥`} onClick={() => { setToken(''); setKeyError(null); setKeySource(row); }}><KeyRound size={12} aria-hidden />密钥</Button>}
+      <Tooltip content={dateError || unavailableReason(row) || '按上方采集模式与日期范围刷新此来源'}>
+        <Button type="button" size="sm" variant="soft" disabled={!!busy || !sourceReady(row) || !!dateError} loading={busy === `refresh:${row.source}`} onClick={() => void refresh(row.source)}><RefreshCw size={12} aria-hidden />采集</Button>
+      </Tooltip>
+      <Tooltip content={!row.implemented ? '该来源尚未接入' : row.status === 'running' ? '采集完成后可修改' : undefined}>
+        <Button type="button" size="sm" variant="ghost" disabled={!!busy || !row.implemented || row.status === 'running'} loading={busy === `toggle:${row.source}`} aria-label={`${row.enabled ? '停用' : '启用'} ${row.label}`} aria-pressed={row.enabled} onClick={() => void toggle(row)}>{row.enabled ? '停用' : '启用'}</Button>
+      </Tooltip>
+      {row.requires_key && row.implemented && <Tooltip content={row.status === 'running' ? '采集完成后可修改密钥' : undefined}>
+        <Button type="button" size="sm" variant="ghost" disabled={!!busy || row.status === 'running'} aria-label={`配置 ${row.label} 密钥`} onClick={() => { setToken(''); setKeyError(null); setKeySource(row); }}><KeyRound size={12} aria-hidden />密钥</Button>
+      </Tooltip>}
     </div> },
   ];
   const jobColumns: Column<CatalogJob>[] = [
@@ -97,18 +103,33 @@ export function CatalogSources() {
     { key: 'error', header: '错误 / 警告', wrap: true, cell: (row) => <Problems row={row} /> },
     { key: 'retry', header: '操作', cell: (row) => {
       const source = sources.find((item) => item.source === row.source);
-      return canRetry(row.status) ? <Button type="button" size="sm" variant="soft" disabled={!!busy || !source || !sourceReady(source)} title={source ? unavailableReason(source) || '重试此失败/部分完成任务' : '来源状态尚未读取'} loading={busy === `retry:${row.id}`} onClick={() => void retry(row)}><RotateCcw size={12} aria-hidden />重试</Button> : <span className="text-xs text-muted">无重试操作</span>;
+      return canRetry(row.status) ? <Tooltip content={source ? unavailableReason(source) || '重试此失败/部分完成任务' : '来源状态尚未读取'}>
+        <Button type="button" size="sm" variant="soft" disabled={!!busy || !source || !sourceReady(source)} loading={busy === `retry:${row.id}`} onClick={() => void retry(row)}><RotateCcw size={12} aria-hidden />重试</Button>
+      </Tooltip> : <span className="text-xs text-muted">无重试操作</span>;
     } },
   ];
 
   return <div className="flex flex-col gap-3">
     <Card className="flex flex-col gap-3 bg-sunken p-3">
       <div className="flex flex-wrap items-end gap-3">
-        <Field label="采集模式" htmlFor="catalog-sync-mode"><Select id="catalog-sync-mode" value={mode} disabled={!!busy} onChange={(event) => setMode(event.target.value as SyncMode)}>{Object.entries(SYNC_MODES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</Select></Field>
-        <Field label="来源" htmlFor="catalog-sync-target"><Select id="catalog-sync-target" value={target} disabled={!!busy} onChange={(event) => setTarget(event.target.value)}><option value="">全部已启用且已配置来源</option>{sources.filter((row) => row.implemented).map((row) => <option key={row.source} value={row.source} disabled={!sourceReady(row)}>{row.label}{!sourceReady(row) ? `（${unavailableReason(row)}）` : ''}</option>)}</Select></Field>
-        <Field label="开始日期" htmlFor="catalog-sync-start"><Input id="catalog-sync-start" type="date" value={start} disabled={!!busy} invalid={!!dateError && !!start} onChange={(event) => setStart(event.target.value)} title="不填则使用后端配置范围；历史回填必须填写" /></Field>
-        <Field label="结束日期（不含当天）" htmlFor="catalog-sync-end"><Input id="catalog-sync-end" type="date" value={end} disabled={!!busy} invalid={!!dateError && !!end} onChange={(event) => setEnd(event.target.value)} title="开始日期包含，结束日期不包含；历史回填必须填写" /></Field>
-        <Button type="button" size="sm" variant="primary" disabled={!!busy || !!dateError || !available.length || statusQ.isError || statusQ.isLoading} loading={busy === 'refresh:all'} title={dateError || (!available.length ? '没有可采集的已接入、已启用且已配置来源' : '手动采集；自动调度由后端负责')} onClick={() => void refresh()}><RefreshCw size={13} aria-hidden />手动采集</Button>
+        <Field label="采集模式" htmlFor="catalog-sync-mode"><Picker id="catalog-sync-mode" value={mode} disabled={!!busy} onValueChange={(next) => setMode(next as SyncMode)} options={Object.entries(SYNC_MODES).map(([key, label]) => ({ value: key, label }))} /></Field>
+        <Field label="来源" htmlFor="catalog-sync-target"><Picker id="catalog-sync-target" value={target} disabled={!!busy} onValueChange={setTarget} options={[
+          { value: '', label: '全部已启用且已配置来源' },
+          ...sources.filter((row) => row.implemented).map((row) => ({
+            value: row.source,
+            label: `${row.label}${!sourceReady(row) ? `（${unavailableReason(row)}）` : ''}`,
+            disabled: !sourceReady(row),
+          })),
+        ]} /></Field>
+        <Field label="开始日期" htmlFor="catalog-sync-start"><Tooltip content="不填则使用后端配置范围；历史回填必须填写">
+          <Input id="catalog-sync-start" type="date" value={start} disabled={!!busy} invalid={!!dateError && !!start} onChange={(event) => setStart(event.target.value)} />
+        </Tooltip></Field>
+        <Field label="结束日期（不含当天）" htmlFor="catalog-sync-end"><Tooltip content="开始日期包含，结束日期不包含；历史回填必须填写">
+          <Input id="catalog-sync-end" type="date" value={end} disabled={!!busy} invalid={!!dateError && !!end} onChange={(event) => setEnd(event.target.value)} />
+        </Tooltip></Field>
+        <Tooltip content={dateError || (!available.length ? '没有可采集的已接入、已启用且已配置来源' : '手动采集；自动调度由后端负责')}>
+          <Button type="button" size="sm" variant="primary" disabled={!!busy || !!dateError || !available.length || statusQ.isError || statusQ.isLoading} loading={busy === 'refresh:all'} onClick={() => void refresh()}><RefreshCw size={13} aria-hidden />手动采集</Button>
+        </Tooltip>
       </div>
       {dateError && <Notice tone="warn">{dateError}</Notice>}
       {report && <div className="text-xs text-fg2" role="status">上次手动任务：新增 {report.added} · 更新 {report.updated} · 发行 {report.releases} · 全库 {report.total}；逐源结果见下表。</div>}

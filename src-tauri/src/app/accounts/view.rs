@@ -74,6 +74,9 @@ pub struct AccountView {
     pub next_at: Option<i64>,
     /// 最近一次查询失败的原因。**有值不代表整行不可用**——余额查不到不该挡住别名。
     pub error: Option<String>,
+    /// 登录态：由 `login_state::decorate` 按**各平台自己声明的凭据形态**算出来。
+    /// `None` = 这条路径没做装饰（诊断/导出），界面回落旧日期渲染，不猜。
+    pub login: Option<crate::types::AccountLoginState>,
 }
 
 impl AccountView {
@@ -121,6 +124,7 @@ impl AccountView {
             expiring_10d: None,
             next_at: None,
             error: None,
+            login: None,
         }
     }
 

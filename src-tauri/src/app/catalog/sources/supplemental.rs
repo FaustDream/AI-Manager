@@ -9,17 +9,17 @@ use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
 use tokio::sync::mpsc::Sender;
 
-const BANGUMI_CALENDAR: &str = "https://api.bgm.tv/calendar";
+const BANGUMI_BROWSE: &str = "https://api.bgm.tv/v0/subjects";
 const SIMKL_CALENDAR: &str = "https://data.simkl.in/calendar/anime.json";
 const SIMKL_MOVIE_CALENDAR: &str = "https://data.simkl.in/calendar/movie_release.json";
 const SIMKL_TV_CALENDAR: &str = "https://data.simkl.in/calendar/tv.json";
 const METADATA_BATCH: usize = 20;
+const BANGUMI_BATCH: usize = 50;
 const SNAPSHOT_BATCH: usize = 100;
 const TMDB_PAGE_LIMIT: u64 = 500;
-const BANGUMI_NOTE: &str = "仅覆盖 Bangumi 当前周历作品；星期不是单集日期，不生成推测日历。完整模式只补充这些作品的公开详情，不代表历史全集。";
+const BANGUMI_NOTE: &str = "覆盖 Bangumi 全站动漫目录（含已完结与在播），中文名、中文简介、类型与评分来自作品页；放送星期不是单集日期，不生成推测日历。";
 const SIMKL_NOTE: &str = "覆盖 SIMKL 公开动漫/电影/电视日历快照；按原始固定偏移保留当地日期，电影记为首映、电视带季集号。快照会变化，续传按当前位置继续；制作国家未知时留空，需授权的 API 端点不采集。";
 const KITSU_NOTE: &str = "仅覆盖 Kitsu 当前动漫及漫画目录；元数据更新时间不是单集或章节发布时间，不生成推测日历。";
 const TMDB_NOTE: &str = "仅覆盖指定首播日期范围的 TMDb 发现目录；电视只保留详情中日期确认的最近/下一集，不展开历史季。电影首映与单集更新分开记录；日期资料没有时区。";
@@ -214,12 +214,15 @@ fn bangumi_item(value: &Value) -> Result<MediaDraft> {
         subkind: text(&value["platform"]), summary: string(&value["summary"]),
         poster: string(&value["images"]["large"]).or_else(|| string(&value["images"]["common"])),
         year: year_of(premiered.as_deref()), premiered,
-        episode_count: count(value.get("total_episodes").unwrap_or(&value["eps"]), "Bangumi", "subject.total_episodes")?,
+        episode_count: bangumi_episodes(value)?,
         status: "unknown".into(), source_url: Some(format!("https://bgm.tv/subject/{native_id}")),
         ..Default::default()
     };
     unique(&mut media.aliases, native);
     unique(&mut media.aliases, chinese);
+    let today = chrono::Local::now().date_naive().to_string();
+    let mut ended = false;
+    let mut genres = Vec::new();
     if let Some(infobox) = optional_array(&value["infobox"], "Bangumi", "subject.infobox")? {
         for entry in infobox {
             // infobox 是可选富化：v0 用 key、旧接口用 name，缺字段的条目跳过而非整源失败。
@@ -233,6 +236,19 @@ fn bangumi_item(value: &Value) -> Result<MediaDraft> {
                         }
                     }
                 }
+                "类型" | "题材" | "类型/题材" | "genre" | "Genre" => {
+                    for value in values {
+                        for part in value.split(['、', '/', ',', '，', ';', '；']) {
+                            let part = part.trim();
+                            if !part.is_empty() && !genres.iter().any(|g| g == part) {
+                                genres.push(part.to_string());
+                            }
+                        }
+                    }
+                }
+                "放送结束" | "结束" | "完结" => {
+                    ended = values.iter().any(|v| !v.trim().is_empty());
+                }
                 "导演" | "監督" => for value in values { unique(&mut media.directors, Some(value)); },
                 "脚本" | "系列构成" => for value in values { unique(&mut media.writers, Some(value)); },
                 "动画制作" | "動畫製作" | "制作公司" => for value in values { unique(&mut media.studios, Some(value)); },
@@ -241,6 +257,44 @@ fn bangumi_item(value: &Value) -> Result<MediaDraft> {
             }
         }
     }
+    if genres.is_empty() {
+        if let Some(tags) = value["meta_tags"].as_array() {
+            for tag in tags.iter().filter_map(|v| v.as_str()) {
+                if bangumi_noise_tag(tag) || genres.iter().any(|g| g == tag) {
+                    continue;
+                }
+                genres.push(tag.to_string());
+            }
+        }
+    }
+    media.genres = genres;
+    // meta_tags 里的国家名同样映射成地区；与 infobox 的「国家」去重。
+    if let Some(tags) = value["meta_tags"].as_array() {
+        for tag in tags.iter().filter_map(|v| v.as_str()) {
+            if let Some(code) = country(tag) {
+                if !media.regions.iter().any(|r| r == &code) {
+                    media.regions.push(code);
+                }
+            }
+        }
+    }
+    media.status = if ended {
+        "completed".into()
+    } else if media.premiered.as_deref().is_some_and(|d| d > today.as_str()) {
+        "upcoming".into()
+    } else if media
+        .premiered
+        .as_deref()
+        .is_some_and(|d| bangumi_older_than(d, &today, 730))
+    {
+        // Bangumi 没有状态字段，只有 infobox 的「放送结束」。两年以前开播又没写结束的
+        // 绝大多数是已完结旧作（OVA/特别篇常见）；长连载是少数例外，宁可判完结也不谎报在播。
+        "completed".into()
+    } else if media.premiered.is_some() {
+        "airing".into()
+    } else {
+        "unknown".into()
+    };
     let mut out = draft("bangumi", native_id, media);
     if !value["rating"].is_null() {
         object(&value["rating"], "Bangumi", "subject.rating")?;
@@ -255,53 +309,75 @@ fn bangumi_item(value: &Value) -> Result<MediaDraft> {
     Ok(out)
 }
 
-pub async fn bangumi(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<()> {
-    // offset 是已保存的最大 subject ID，周历重新排序不会跳过未保存的旧条目。
-    let mut cursor = resume(&ctx, "bangumi", "calendar", 0, false)?;
-    if cursor.phase != "calendar" { return Err(AppError::new(ErrorKind::Invalid, "Bangumi 续传阶段错误")); }
-    if ctx.max_pages == 0 { return save(&tx, vec![], 0, Some(&cursor), BANGUMI_NOTE, true).await; }
-    let payload = get(&ctx, HttpRequest::get(BANGUMI_CALENDAR)).await?;
-    let mut subjects = BTreeMap::new();
-    for day in array(&payload, "Bangumi", "calendar")? {
-        object(day, "Bangumi", "calendar.day")?;
-        for subject in array(&day["items"], "Bangumi", "calendar.items")? {
-            let native_id = id(&subject["id"], "Bangumi", "calendar.items.id")?;
-            let kind = integer(&subject["type"], "Bangumi", "calendar.items.type")?;
-            if kind == 2 {
-                let number = native_id.parse::<u64>().map_err(|_| provider("Bangumi", "calendar.items.id"))?;
-                subjects.insert(number, subject);
+/// `total_episodes` 在浏览接口里常是 0，`eps` 才是话数；两个都不给才留空。
+fn bangumi_episodes(value: &Value) -> Result<Option<u32>> {
+    for field in ["total_episodes", "eps"] {
+        if let Some(count) = count(&value[field], "Bangumi", "subject.episodes")? {
+            if count > 0 {
+                return Ok(Some(count));
             }
         }
     }
+    Ok(None)
+}
+
+fn bangumi_older_than(date: &str, today: &str, days: i64) -> bool {
+    let (Ok(date), Ok(today)) = (
+        NaiveDate::parse_from_str(date, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(today, "%Y-%m-%d"),
+    ) else {
+        return false;
+    };
+    today.signed_duration_since(date).num_days() > days
+}
+
+/// Bangumi 的标签里混着放送形态、国家和改编方式，不是题材。
+fn bangumi_noise_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "TV" | "WEB" | "OVA" | "OAD" | "剧场版" | "动画" | "日本" | "中国" | "韩国" | "美国"
+            | "原创" | "漫画改" | "小说改" | "游戏改" | "音乐" | "CM"
+    )
+}
+
+pub async fn bangumi(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<()> {
+    let mut cursor = resume(&ctx, "bangumi", "browse", 0, false)?;
+    // 旧版本按周历采集，游标阶段不同：换新口径时从头开始，不误报整源失败。
+    if cursor.phase != "browse" {
+        cursor.phase = "browse".into();
+        cursor.offset = 0;
+    }
+    if ctx.max_pages == 0 {
+        return save(&tx, vec![], 0, Some(&cursor), BANGUMI_NOTE, true).await;
+    }
     for page in 1..=ctx.max_pages {
-        let rows: Vec<_> = subjects.iter().filter(|(id, _)| **id > cursor.offset)
-            .take(METADATA_BATCH).collect();
-        let mut items = Vec::with_capacity(rows.len());
-        let mut after = cursor.offset;
-        for (native_id, subject) in rows {
-            let value = if ctx.mode == "full" {
-                let detail = get(&ctx, HttpRequest::get(format!("https://api.bgm.tv/v0/subjects/{native_id}"))).await?;
-                object(&detail, "Bangumi", "subject detail")?;
-                if id(&detail["id"], "Bangumi", "subject detail.id")? != native_id.to_string()
-                    || integer(&detail["type"], "Bangumi", "subject detail.type")? != 2
-                {
-                    return Err(provider("Bangumi", "subject detail.id/type mismatch"));
-                }
-                let mut merged = (**subject).clone();
-                let map = merged.as_object_mut().ok_or_else(|| provider("Bangumi", "calendar.subject"))?;
-                if let Some(fields) = detail.as_object() {
-                    for (key, value) in fields { if !value.is_null() { map.insert(key.clone(), value.clone()); } }
-                }
-                merged
-            } else { (**subject).clone() };
-            items.push(bangumi_item(&value)?);
-            after = *native_id;
+        let mut url = Url::parse(BANGUMI_BROWSE)
+            .map_err(|_| AppError::new(ErrorKind::Invalid, "Bangumi 地址配置无效"))?;
+        url.query_pairs_mut()
+            .append_pair("type", "2")
+            .append_pair("limit", &BANGUMI_BATCH.to_string())
+            .append_pair("offset", &cursor.offset.to_string());
+        let payload = get(&ctx, HttpRequest::get(url.as_str())).await?;
+        let rows = array(&payload["data"], "Bangumi", "data")?;
+        if rows.is_empty() {
+            return save(&tx, vec![], page, None, BANGUMI_NOTE, false).await;
         }
-        let more = subjects.keys().any(|id| *id > after);
+        let mut items = Vec::with_capacity(rows.len());
+        for subject in rows {
+            if subject["nsfw"].as_bool() == Some(true) {
+                continue;
+            }
+            items.push(bangumi_item(subject)?);
+        }
+        let total = payload["total"].as_u64().unwrap_or(0);
+        let next_offset = cursor.offset + rows.len() as u64;
+        let more = next_offset < total;
         let mut next = cursor.clone();
-        next.offset = after;
+        next.offset = next_offset;
         save(&tx, items, page, more.then_some(&next), BANGUMI_NOTE, page == ctx.max_pages).await?;
-        if !more { return Ok(()); }
+        if !more {
+            return Ok(());
+        }
         cursor = next;
     }
     Ok(())
@@ -484,7 +560,7 @@ fn kitsu_item(value: &Value, phase: &str) -> Result<MediaDraft> {
         .ok_or_else(|| provider("Kitsu", "attributes.canonicalTitle/titles"))?;
     let premiered = date(&attrs["startDate"], "Kitsu", "attributes.startDate")?;
     let status = match attrs["status"].as_str() {
-        Some("current") if phase == "manga" => "ongoing",
+        // 应用统一用「更新中」表达连载；ongoing 是 Kitsu 自己的词，不直接透传给界面。
         Some("current") => "airing",
         Some("finished") => "completed",
         Some("upcoming" | "unreleased") => "upcoming",
@@ -970,20 +1046,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bangumi_weekday_never_becomes_a_requested_episode_date() {
+    async fn bangumi_browse_keeps_chinese_metadata_and_never_fabricates_dates() {
         let http = Arc::new(MockHttp::new());
-        http.on(BANGUMI_CALENDAR, 200, &json!([{"weekday":{"id":1},"items":[{
-            "id":7,"type":2,"name":"Native","name_cn":"中文","air_date":"2026-10-01","air_weekday":1,
-            "rating":{"score":7.2,"total":90,"count":{"10":2}},"collection":{"doing":1234}
-        }]}]).to_string());
+        http.on(&format!("{BANGUMI_BROWSE}?type=2&limit=50&offset=0"), 200, &json!({
+            "data": [{
+                "id":7,"type":2,"name":"Native","name_cn":"中文","date":"2026-10-01",
+                "summary":"中文简介","platform":"TV","eps":12,
+                "meta_tags":["科幻","日本","TV"],
+                "infobox":[
+                    {"key":"放送结束","value":"2026-12-20"},
+                    {"key":"类型","value":["科幻","冒险"]}
+                ],
+                "rating":{"score":7.2,"total":90,"rank":100}
+            }],
+            "total": 1
+        }).to_string());
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         bangumi(context(http, 1), tx).await.unwrap();
         let batch = rx.recv().await.unwrap();
         let item = &batch.items[0];
         assert!(batch.complete);
-        assert!(item.releases.is_empty() && item.media.regions.is_empty());
-        assert!(item.media.aired_episodes.is_none());
-        assert_eq!(item.media.premiered.as_deref(), Some("2026-10-01"));
+        assert!(item.releases.is_empty(), "星期不是单集日期，不生成日历");
+        assert_eq!(item.media.title, "中文");
+        assert_eq!(item.media.summary.as_deref(), Some("中文简介"));
+        assert_eq!(item.media.genres, vec!["科幻", "冒险"]);
+        assert_eq!(item.media.regions, vec!["JP"]);
+        assert_eq!(item.media.status, "completed", "有放送结束就是已完结");
+        assert_eq!(item.media.episode_count, Some(12));
         assert_eq!((item.ratings[0].category.as_str(), item.ratings[0].votes), ("audience", Some(90)));
         assert!(item.media.aliases.contains(&"Native".into()) && item.media.aliases.contains(&"中文".into()));
     }
@@ -1036,7 +1125,8 @@ mod tests {
             let http = Arc::new(MockHttp::new());
             let mut ctx = context(http.clone(), 1);
             let url = match source {
-                "bangumi" => BANGUMI_CALENDAR.into(), "simkl" => SIMKL_CALENDAR.into(),
+                "bangumi" => format!("{BANGUMI_BROWSE}?type=2&limit=50&offset=0"),
+                "simkl" => SIMKL_CALENDAR.into(),
                 "kitsu" => kitsu_first("anime"), _ => tmdb_discover(&ctx, "tv", 1).unwrap(),
             };
             http.on(&url, 200, "{}");

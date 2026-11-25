@@ -5,8 +5,9 @@
 // 搜索做成「看起来像输入框的按钮」：真正的搜索在命令面板里（页面/动作/会话三类），
 // 这里给的是它的显性入口 —— Ctrl+K 以前是隐藏能力，界面上没有任何提示。
 import type { ReactNode } from 'react';
-import { ArrowLeft, PanelLeft, RefreshCw, Search } from 'lucide-react';
+import { ArrowLeft, PanelLeft, Search } from 'lucide-react';
 import { Button, cn } from '@/components/ui/button';
+import { Hint, Tooltip } from '@/components/ui/tooltip';
 import { QuitButton } from './QuitButton';
 import { ThemeMenu } from './ThemeMenu';
 import { navIcon } from './nav-icons';
@@ -22,8 +23,6 @@ export function Navbar({
   backTitle,
   onBack,
   onPalette,
-  onRunRound,
-  running,
   progress,
 }: {
   layout: NavLayout;
@@ -36,8 +35,6 @@ export function Navbar({
   backTitle?: string | null;
   onBack: () => void;
   onPalette: () => void;
-  onRunRound: () => void;
-  running: boolean;
   /** 切页进度线是否可见 */
   progress: boolean;
 }) {
@@ -52,9 +49,11 @@ export function Navbar({
       )}
     >
       {!topbar && (
-        <Button size="sm" variant="ghost" onClick={onToggleNav} title={collapsed ? '展开侧边栏' : '收起侧边栏'} aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}>
-          <PanelLeft size={15} />
-        </Button>
+        <Hint content={collapsed ? '展开侧边栏' : '收起侧边栏'} focusable={false}>
+          <Button size="sm" variant="ghost" onClick={onToggleNav} aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}>
+            <PanelLeft size={15} />
+          </Button>
+        </Hint>
       )}
       {!topbar && collapsed && (
         <span className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-fg2">
@@ -84,43 +83,37 @@ export function Navbar({
 
       <span className="flex-1" />
 
-      <button
-        type="button"
-        onClick={onPalette}
-        title="搜索页面 / 动作 / 会话（Ctrl+K）"
-        aria-label="打开搜索面板"
-        className={cn(
-          'hidden h-8 shrink-0 cursor-pointer items-center gap-2 rounded-md border border-line bg-sunken px-2.5 text-sm text-muted',
-          'transition-colors duration-[var(--dur-1)] hover:border-line-strong hover:text-fg2 md:flex',
-          topbar ? 'w-52 lg:w-64' : 'w-56 lg:w-72',
-        )}
-      >
-        <Search size={14} className="shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-left">搜索页面 / 动作 / 会话</span>
-        <kbd className="shrink-0 rounded-sm border border-line bg-bg px-1 text-xs leading-4">Ctrl K</kbd>
-      </button>
+      <Tooltip content="搜索页面 / 动作 / 会话（Ctrl+K）">
+        <button
+          type="button"
+          onClick={onPalette}
+          aria-label="打开搜索面板"
+          className={cn(
+            'hidden h-8 shrink-0 cursor-pointer items-center gap-2 rounded-md border border-line bg-sunken px-2.5 text-sm text-muted',
+            'transition-colors duration-[var(--dur-1)] hover:border-line-strong hover:text-fg2 md:flex',
+            topbar ? 'w-52 lg:w-64' : 'w-56 lg:w-72',
+          )}
+        >
+          <Search size={14} className="shrink-0" />
+          <span className="min-w-0 flex-1 truncate text-left">搜索页面 / 动作 / 会话</span>
+          <kbd className="shrink-0 rounded-sm border border-line bg-bg px-1 text-xs leading-4">Ctrl K</kbd>
+        </button>
+      </Tooltip>
       {/* 窄窗口下搜索收成图标按钮，入口不消失 */}
-      <Button size="sm" variant="ghost" className="md:hidden" onClick={onPalette} title="搜索（Ctrl+K）" aria-label="打开搜索面板">
-        <Search size={15} />
-      </Button>
+      <Hint content="搜索（Ctrl+K）" focusable={false}>
+        <Button size="sm" variant="ghost" className="md:hidden" onClick={onPalette} aria-label="打开搜索面板">
+          <Search size={15} />
+        </Button>
+      </Hint>
 
       {backTitle && (
-        <Button size="sm" variant="ghost" className="group" title={`返回${backTitle}`} aria-label="返回上一页" onClick={onBack}>
-          <ArrowLeft size={14} className="transition-transform duration-[var(--dur-1)] group-hover:-translate-x-0.5" />
-          <span className="hidden lg:inline">返回</span>
-        </Button>
+        <Hint content={`返回${backTitle}`} focusable={false}>
+          <Button size="sm" variant="ghost" className="group" aria-label="返回上一页" onClick={onBack}>
+            <ArrowLeft size={14} className="transition-transform duration-[var(--dur-1)] group-hover:-translate-x-0.5" />
+            <span className="hidden lg:inline">返回</span>
+          </Button>
+        </Hint>
       )}
-
-      <Button
-        size="sm"
-        variant="ghost"
-        loading={running}
-        title="立即跑一轮每日轮询（签到 / 活动 / 积分）"
-        aria-label="立即跑一轮每日轮询"
-        onClick={onRunRound}
-      >
-        <RefreshCw size={14} />
-      </Button>
 
       <ThemeMenu />
       <QuitButton />

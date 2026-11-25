@@ -15,7 +15,7 @@ const SOURCE_LABELS: Record<string, string> = {
   rotten_tomatoes: 'Rotten Tomatoes', rottentomatoes: 'Rotten Tomatoes', rt: 'Rotten Tomatoes',
   metacritic: 'Metacritic', douban: '豆瓣', mal: 'MyAnimeList', myanimelist: 'MyAnimeList',
   jikan: 'Jikan', tvdb: 'TheTVDB', trakt: 'Trakt', bilibili: '哔哩哔哩',
-  tencent: '腾讯视频', iqiyi: '爱奇艺', youku: '优酷', netflix: 'Netflix',
+  tencent: '腾讯视频', iqiyi: '爱奇艺', youku: '优酷', mgtv: '芒果TV', netflix: 'Netflix',
 };
 const REGION_LABELS: Record<string, string> = {
   CN: '中国大陆', JP: '日本', KR: '韩国', US: '美国', GB: '英国', TH: '泰国',
@@ -115,6 +115,7 @@ export function originalRating(rating: Pick<CatalogRating, 'value' | 'scale'>): 
 const AUDIENCE_SCALES: Record<string, number> = {
   tvmaze: 10, anilist: 100, kitsu: 100, bangumi: 10, simkl: 10, tmdb: 10,
   imdb: 10, douban: 10, mal: 10, myanimelist: 10, rt: 100, rotten_tomatoes: 100, rottentomatoes: 100,
+  bilibili: 10, iqiyi: 10, mgtv: 100,
 };
 export function audienceRating(media: Pick<CatalogMedia, 'rating' | 'rating_source'>): string {
   if (media.rating === null || !Number.isFinite(media.rating) || media.rating < 0 || !media.rating_source) return '暂无评分';

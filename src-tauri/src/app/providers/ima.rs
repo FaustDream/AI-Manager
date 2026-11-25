@@ -12,7 +12,9 @@ use crate::app::accounts::credential::Credential;
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::providers::{Provider, ScannedAccount, Sink};
-use crate::types::{trim_f64, ActionResult, CreditSnapshot, StatusResult};
+use crate::types::{
+    trim_f64, ActionResult, CreditSnapshot, CredentialKind, CredentialShape, StatusResult,
+};
 use aes_gcm::{Aes256Gcm, Key};
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -330,6 +332,18 @@ impl Provider for ImaProvider {
         self.cookies().ok().flatten().map(|jar| jar.ima_uid)
     }
 
+    fn credential_shape(&self) -> CredentialShape {
+        CredentialShape {
+            kind: CredentialKind::RefreshCookie,
+            label: "Refresh Token".into(),
+            multi_account: false,
+            switchable: false,
+            // 只存 refresh token；2 小时的 access token 每次请求重换，没有可显示的到期日
+            expiry_known: false,
+            note: "读本机 ima 客户端 Cookie 库，只保存 refresh token；短期令牌每次请求重换，所以没有固定的凭据到期日。签到与算力由同一发活动面板回答".into(),
+        }
+    }
+
     fn credits_min_interval_minutes(&self) -> u64 {
         0
     }
@@ -355,6 +369,9 @@ impl Provider for ImaProvider {
             // 平台只回当前余额，没有发放批次与到期日
             lots: None,
             quota: None,
+            // 活动面板与算力是同一发 snapshot 拉的，签到结论已经在手上：
+            // 带下去零新增请求，用户在官方客户端签过也能立刻显示已签。
+            checked_in: activity.checked_in,
         })
     }
 

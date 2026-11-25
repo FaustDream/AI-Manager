@@ -5,17 +5,18 @@
 // 端口/Key/模型的读写仍走命令面（model_api_*），页面不直接 invoke。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
-import { Notice, Tag } from '@/components/ui';
+import { Hint, Notice, Tag, Tooltip } from '@/components/ui';
 import { Button, cn } from '@/components/ui/button';
 import { Section } from '@/components/ui/card';
 import { confirmAction } from '@/components/ui/confirm';
 import { Input, SkeletonBlock, StateBlock } from '@/components/ui/form';
+import { DataTable, type Column } from '@/components/ui/table';
 import { toast } from '@/components/ui/toast';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { fmtMs, fmtTime } from '@/lib/format';
 import { errText } from '@/lib/ipc';
 import { navigate } from '@/lib/nav';
-import type { ModelApiInfo, ModelApiProbe, ModelApiStats, ModelEntry } from '@/lib/types';
+import type { CallRecord, ModelApiInfo, ModelApiProbe, ModelApiStats, ModelEntry } from '@/lib/types';
 
 /** 运行时长：超过一天只说天/小时，秒级只在刚启动时有意义。 */
 function fmtUptime(secs: number): string {
@@ -35,6 +36,49 @@ const ENDPOINT_LABEL: Record<string, string> = {
   '/responses': 'OpenAI Responses',
   '/v1/models': '模型目录',
 };
+
+/** 调用记录没有主键：ts + path + 原顺序拼成行 key，同一毫秒的并发请求也不会撞。 */
+type CallRow = { call: CallRecord; key: string };
+
+const callColumns: Column<CallRow>[] = [
+  {
+    key: 'ts',
+    header: '时间',
+    width: 128,
+    className: 'tabular-nums text-muted',
+    cell: (row) => fmtTime(row.call.ts),
+  },
+  {
+    key: 'endpoint',
+    header: '接口',
+    truncate: true,
+    title: (row) => row.call.path,
+    cell: (row) => (
+      <>
+        <span className="text-fg2">{ENDPOINT_LABEL[row.call.path] ?? row.call.path}</span>
+        <span className="ml-1 font-mono text-xs text-muted">{row.call.path}</span>
+      </>
+    ),
+  },
+  {
+    key: 'status',
+    header: '状态',
+    width: 80,
+    cell: (row) => (
+      <span className={cn('tabular-nums', row.call.ok ? 'text-ok' : 'text-bad')}>
+        {row.call.status || '—'}
+      </span>
+    ),
+  },
+  {
+    key: 'ms',
+    header: '耗时',
+    width: 80,
+    align: 'right',
+    className: 'text-muted',
+    cell: (row) => fmtMs(row.call.ms),
+  },
+];
 
 export default function ModelApiPage() {
   const qc = useQueryClient();
@@ -267,26 +311,28 @@ ANTHROPIC_MODEL=<模型 ID>`,
               >
                 {info.running ? '停止' : '启动'}
               </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => void restart()}
-                loading={restarting}
-                disabled={!info.running}
-                title="停掉旧监听后按配置端口重新绑定"
-              >
-                重启
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => void probeRun()}
-                loading={probing}
-                disabled={!info.running}
-                title="带 Key 真发一次 /v1/models，验证监听、鉴权与上游"
-              >
-                自检
-              </Button>
+              <Hint content="停掉旧监听后按配置端口重新绑定" focusable={false}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => void restart()}
+                  loading={restarting}
+                  disabled={!info.running}
+                >
+                  重启
+                </Button>
+              </Hint>
+              <Hint content="带 Key 真发一次 /v1/models，验证监听、鉴权与上游" focusable={false}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => void probeRun()}
+                  loading={probing}
+                  disabled={!info.running}
+                >
+                  自检
+                </Button>
+              </Hint>
             </>
           )
         }
@@ -420,20 +466,20 @@ ANTHROPIC_MODEL=<模型 ID>`,
           >
             <div className="flex flex-wrap gap-1 rounded-md border border-line bg-sunken p-0.5">
               {snippetTabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => setSnippetKey(tab.key)}
-                  className={cn(
-                    'cursor-pointer rounded-sm px-2 py-0.5 text-xs transition-colors duration-[var(--dur-1)]',
-                    snippetKey === tab.key
-                      ? 'bg-accent font-medium text-on-accent'
-                      : 'text-muted hover:bg-hover hover:text-fg',
-                  )}
-                  title={tab.endpoint}
-                >
-                  {tab.label}
-                </button>
+                <Tooltip key={tab.key} content={tab.endpoint}>
+                  <button
+                    type="button"
+                    onClick={() => setSnippetKey(tab.key)}
+                    className={cn(
+                      'cursor-pointer rounded-sm px-2 py-0.5 text-xs transition-colors duration-[var(--dur-1)]',
+                      snippetKey === tab.key
+                        ? 'bg-accent font-medium text-on-accent'
+                        : 'text-muted hover:bg-hover hover:text-fg',
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                </Tooltip>
               ))}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
@@ -473,19 +519,19 @@ ANTHROPIC_MODEL=<模型 ID>`,
                 ) : (
                   <div className="mt-2 flex max-h-[19rem] flex-col gap-1 overflow-y-auto rounded-md border border-line bg-sunken p-2">
                     {visibleModels.map((model) => (
-                      <button
-                        key={model.id}
-                        type="button"
-                        onClick={() => void copy(model.id, `model:${model.id}`)}
-                        className="flex cursor-pointer items-baseline gap-2 rounded-sm px-2 py-1 text-left transition-colors duration-[var(--dur-1)] hover:bg-hover"
-                        title="点击复制模型 ID"
-                      >
-                        <span className="shrink-0 text-xs text-fg2">{model.name}</span>
-                        <code className="min-w-0 flex-1 truncate text-xs text-muted">{model.id}</code>
-                        <span className="shrink-0 text-xs text-muted">
-                          {copied === `model:${model.id}` ? '已复制' : ''}
-                        </span>
-                      </button>
+                      <Tooltip key={model.id} content="点击复制模型 ID">
+                        <button
+                          type="button"
+                          onClick={() => void copy(model.id, `model:${model.id}`)}
+                          className="flex cursor-pointer items-baseline gap-2 rounded-sm px-2 py-1 text-left transition-colors duration-[var(--dur-1)] hover:bg-hover"
+                        >
+                          <span className="shrink-0 text-xs text-fg2">{model.name}</span>
+                          <code className="min-w-0 flex-1 truncate text-xs text-muted">{model.id}</code>
+                          <span className="shrink-0 text-xs text-muted">
+                            {copied === `model:${model.id}` ? '已复制' : ''}
+                          </span>
+                        </button>
+                      </Tooltip>
                     ))}
                   </div>
                 )}
@@ -526,31 +572,16 @@ ANTHROPIC_MODEL=<模型 ID>`,
             }
           />
         ) : (
-          <table className="w-full border-collapse text-xs">
-            <thead className="bg-sunken">
-              <tr className="text-left text-muted">
-                <th className="w-32 py-1 font-medium">时间</th>
-                <th className="py-1 font-medium">接口</th>
-                <th className="w-20 py-1 font-medium">状态</th>
-                <th className="w-20 py-1 text-right font-medium">耗时</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.recent.map((call, index) => (
-                <tr key={`${call.ts}-${call.path}-${index}`} className="border-t border-line">
-                  <td className="whitespace-nowrap py-1 tabular-nums text-muted">{fmtTime(call.ts)}</td>
-                  <td className="py-1">
-                    <span className="text-fg2">{ENDPOINT_LABEL[call.path] ?? call.path}</span>
-                    <span className="ml-1 font-mono text-xs text-muted">{call.path}</span>
-                  </td>
-                  <td className={cn('py-1 tabular-nums', call.ok ? 'text-ok' : 'text-bad')}>
-                    {call.status || '—'}
-                  </td>
-                  <td className="py-1 text-right tabular-nums text-muted">{fmtMs(call.ms)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <DataTable
+            columns={callColumns}
+            rows={stats.recent.map((call, index) => ({
+              call,
+              key: `${call.ts}-${call.path}-${index}`,
+            }))}
+            rowKey={(row) => row.key}
+            dense
+            className="text-xs"
+          />
         )}
       </Section>
 

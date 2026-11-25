@@ -23,6 +23,92 @@ pub enum PlatformKey {
     ZCode,
 }
 
+// ---------------------------------------------------------------- 凭据形态与登录态
+//
+// 各平台的登录态**不是一回事**：WorkBuddy 是一份可切换的档案包、豆包是用户粘贴的
+// 浏览器 Cookie、Trae 是设备绑定且只读、ima 只存 refresh token 每次重换、
+// ZCode 的令牌根本不含到期时间。把这些压成一个「到期日」列，读起来全一样，
+// 用户分不清哪个号能切、哪个号只是网页登录。
+//
+// 所以形态由**各平台自己声明**（Provider::credential_shape），
+// 状态由 accounts::login_state 统一计算，界面只渲染，不猜。
+
+/// 凭据的物理形态。决定「能不能切换」「要不要重扫」「到期时间可不可信」。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialKind {
+    /// 客户端自己写的令牌文件（Qoder / ZCode）
+    ClientToken,
+    /// 整套会话档案包，一份 = 一个账号（WorkBuddy 含 CodeBuddy 系）
+    ProfilePack,
+    /// 用户从浏览器粘贴的 Cookie，一份 = 一个账号（豆包）
+    PastedCookie,
+    /// 设备绑定的加密登录态，只能读不能写回（Trae）
+    DeviceBound,
+    /// 只存 refresh token，短期令牌每次请求重换（ima）
+    RefreshCookie,
+}
+
+/// 一个平台的凭据口径。**静态声明，不做 I/O**。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialShape {
+    pub kind: CredentialKind,
+    /// 人类可读的形态名，进列表第二行
+    pub label: String,
+    /// 该平台是否「一份凭据 = 一个账号」（多账号并存，互不覆盖）
+    pub multi_account: bool,
+    /// 本工具能否把它写回客户端完成一键切换
+    pub switchable: bool,
+    /// 平台是否下发可信的到期时间。false 时到期列只能说「未知」，不是「没登录」
+    pub expiry_known: bool,
+    /// 口径说明，进 tooltip
+    pub note: String,
+}
+
+/// 登录态结论。**按平台口径算出来的**，界面直接用。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginStateKind {
+    /// 这就是客户端当前登录的号
+    Current,
+    /// 凭据在本机、有效，但不是当前登录
+    Saved,
+    /// 3 天内到期
+    ExpiringSoon,
+    /// 凭据已过期，需要在客户端重新登录一次
+    Expired,
+    /// 凭据在，但平台不下发到期时间（ZCode / ima / 豆包）
+    UnknownExpiry,
+    /// 本机没有凭据：不能切换，也不参与自动签到
+    NotSaved,
+    /// 最近一次查询因凭据问题失败（登录失效等，不含网络/限流）
+    Failed,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountLoginState {
+    pub kind: LoginStateKind,
+    /// 主行结论文案
+    pub label: String,
+    /// 悬停详情：为什么是这个结论、下一步做什么
+    pub detail: String,
+    pub shape: CredentialShape,
+    /// 是否客户端当前登录
+    pub current: bool,
+    /// 现在能不能一键切换（形态支持 **且** 通过切换预检）
+    pub switchable: bool,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub expires_at: Option<i64>,
+}
+
 /// 积分数字展示：整数值不带小数点，其余原样。
 /// 三家平台适配器各写过一份，第三次照写前提到了这里。
 pub fn trim_f64(value: f64) -> String {
@@ -95,6 +181,15 @@ pub struct CreditSnapshot {
     pub lots: Option<Vec<CreditLot>>,
     /// 额度型平台：窗口名 → 已用百分比
     pub quota: Option<HashMap<String, f64>>,
+    /// 今天签没签——**只有本平台这一发积分请求已经顺带看到结论时才填**。
+    ///
+    /// 各平台的接口切分不一样，这里必须按平台隔离，不能统一去「顺便查一下状态」：
+    /// ima 的算力与签到由同一发活动面板回答，丢掉结论等于白付一次请求；
+    /// Trae / Qoder / WorkBuddy 的积分接口与签到状态接口是分开的，
+    /// 为了填这个字段去打状态端点，就把高频积分刷新变成了状态端点的脚本样本。
+    /// 那几家一律留 `None`，已签结论由真实签到或本地去重表回答。
+    #[serde(default)]
+    pub checked_in: Option<bool>,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

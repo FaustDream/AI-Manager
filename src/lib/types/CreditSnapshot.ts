@@ -10,4 +10,14 @@ error: string | null, balance: number | null, lots: Array<CreditLot> | null,
 /**
  * 额度型平台：窗口名 → 已用百分比
  */
-quota: { [key: string]: number } | null, };
+quota: { [key: string]: number } | null, 
+/**
+ * 今天签没签——**只有本平台这一发积分请求已经顺带看到结论时才填**。
+ *
+ * 各平台的接口切分不一样，这里必须按平台隔离，不能统一去「顺便查一下状态」：
+ * ima 的算力与签到由同一发活动面板回答，丢掉结论等于白付一次请求；
+ * Trae / Qoder / WorkBuddy 的积分接口与签到状态接口是分开的，
+ * 为了填这个字段去打状态端点，就把高频积分刷新变成了状态端点的脚本样本。
+ * 那几家一律留 `None`，已签结论由真实签到或本地去重表回答。
+ */
+checked_in: boolean | null, };

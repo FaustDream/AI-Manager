@@ -12,9 +12,10 @@ import { queryCmd, runCmd } from '@/lib/cmd';
 import { listen } from '@/lib/events';
 import { Check, Copy, ExternalLink, Link } from 'lucide-react';
 import { Button, cn } from '@/components/ui/button';
-import { IconAdd, IconCalendar, IconKey, IconMoney } from '@/components/ui/icons';
+import { IconAdd, IconKey, IconMoney } from '@/components/ui/icons';
 import { Dialog } from '@/components/ui/dialog';
-import { Input, Select, Textarea } from '@/components/ui/form';
+import { Input, Textarea } from '@/components/ui/form';
+import { Hint, Picker, Tooltip } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { errText } from '@/lib/ipc';
 import { anyFeatureOn, featurePlatform, FEATURE_CHECKIN, usePlatformFeatures } from '@/lib/features';
@@ -55,78 +56,72 @@ const platformOf = (key: string) => PLATFORMS.find((p) => p.key === key) ?? PLAT
 export function AccountToolbar({
   busy,
   onAdd,
-  onRefresh,
+  onRefreshAndCheckin,
   onRefreshCredentials,
-  onCheckin,
 }: {
   busy: string | null;
   onAdd: () => void;
-  onRefresh: () => void;
-  /** 重扫客户端并写回最新凭据、到期时间与当前登录标记：账号状态与凭据只留这一个刷新入口 */
+  /** 签到 · 积分：先刷平台余额，再对今天还没签的账号签到；已签的只刷积分 */
+  onRefreshAndCheckin: () => void;
+  /** 重扫客户端并写回最新凭据、到期时间与当前登录标记 */
   onRefreshCredentials: () => void;
-  onCheckin: () => void;
 }) {
   // 批量动作的实时读数：后端 progress 事件 → 「3 / 12」。总数只有后端知道，
   // 前端只累加完成数；拿不到（事件丢了）就退回默认省略号文案，不编数字。
-  const checkinProgress = useProgress('checkin_batch');
-  const creditsProgress = useProgress('checkin_credits');
-  // 所有软件的签到入口都被关掉时，这个按钮点了也只会说「没有需要签到的账号」——不摆它
+  const roundProgress = useProgress('checkin_refresh');
+  // 所有软件的签到入口都被关掉时，这个按钮只刷积分——文案要说实话，不承诺签到
   const features = usePlatformFeatures();
   const checkinAnywhere = anyFeatureOn(features.data, FEATURE_CHECKIN);
   return (
     /* 图标 + 一个词：纯图标在几个刷新类动作之间分不出来，纯文字又太长。
-       每个按钮留两字短名（积分 / 刷新 / 签到），完整口径进 title 气泡。 */
+       完整口径进 title 气泡。 */
     <div className="flex flex-wrap items-center gap-1.5">
       {/* 主按钮给「添加账号」：这是页面唯一的正经工作流。
           账号同步已改为启动时后台自动扫描，这里不再放手动「扫描客户端」按钮。 */}
-      <Button variant="primary" onClick={onAdd} disabled={!!busy} title="客户端登录、网页登录或粘贴 Cookie，登录后保存账号">
-        <IconAdd size={14} />
-        添加账号
-      </Button>
-      {/* 与「刷新」的区别：这个打的是平台接口，拿余额与配额 */}
-      <Button
-        onClick={onRefresh}
-        loading={busy === 'credits'}
-        disabled={!!busy}
-        title={
-          busy === 'credits'
-            ? batchText('刷新平台余额中', creditsProgress)
-            : '刷新积分：调平台接口重查余额与配额（会联网）；只用本机数据时不必点它'
+      <Tooltip content="客户端登录、网页登录或粘贴 Cookie，登录后保存账号">
+        <Button variant="primary" onClick={onAdd} disabled={!!busy}>
+          <IconAdd size={14} />
+          添加账号
+        </Button>
+      </Tooltip>
+      {/* 签到与积分合并成一个入口：同一批账号、同一份凭据、同一个并发预算，
+          分两个按钮用户得记住先点哪个，还会把同一批凭据读两遍。 */}
+      <Tooltip
+        content={
+          busy === 'round'
+            ? batchText('签到与积分刷新中', roundProgress)
+            : checkinAnywhere
+              ? '签到 · 积分：先调平台接口重查余额与配额，再对今天还没签的账号执行签到；今日已签的只刷积分，不重复提交（会联网）'
+              : '签到 · 积分：所有软件的签到入口都已在设置里关掉，本次只重查余额与配额（会联网）'
         }
       >
-        <IconMoney size={14} />
-        积分
-      </Button>
-      {/* 账号状态与凭据合并成一个入口：重扫客户端，把每个账号的最新凭据、
-          到期时间与「当前登录」标记一起写回本地库，不查平台余额 */}
-      <Button
-        onClick={onRefreshCredentials}
-        loading={busy === 'refresh-credentials'}
-        disabled={!!busy}
-        title={
+        <Button
+          onClick={onRefreshAndCheckin}
+          loading={busy === 'round'}
+          disabled={!!busy}
+        >
+          <IconMoney size={14} />
+          签到 · 积分
+        </Button>
+      </Tooltip>
+      {/* 与上一个的区别：这个重扫本机客户端，把最新凭据、到期时间与
+          「当前登录」标记写回本地库，不查平台余额 */}
+      <Tooltip
+        content={
           busy === 'refresh-credentials'
             ? '正在重扫客户端并刷新账号…'
-            : '刷新账号：重扫客户端，更新列表里每个账号的最新凭据、到期时间与当前登录标记（不查平台余额）'
+            : '刷新凭据：重扫客户端，更新每个账号的最新凭据、到期时间与登录态（不查平台余额）'
         }
       >
-        <IconKey size={14} />
-        刷新
-      </Button>
-      {checkinAnywhere && (
         <Button
-          onClick={onCheckin}
-          loading={busy === 'checkin'}
+          onClick={onRefreshCredentials}
+          loading={busy === 'refresh-credentials'}
           disabled={!!busy}
-          title={
-            busy === 'checkin'
-              ? batchText('签到中', checkinProgress)
-              : '批量签到：对列表里今天还没签的账号执行今日签到（会调平台签到接口）'
-          }
         >
-          <IconCalendar size={14} />
-          签到
+          <IconKey size={14} />
+          刷新凭据
         </Button>
-      )}
+      </Tooltip>
     </div>
   );
 }
@@ -534,22 +529,20 @@ export function AddAccountDialog({
       <div className="flex flex-col gap-4">
         <label className="flex flex-col gap-1.5">
           <span className="text-xs text-muted">平台</span>
-          <Select
+          <Picker
+            label="平台"
             value={platform}
             disabled={!!reauthTarget || stage === 'working' || scanning}
-            onChange={(e) => setPlatform(e.target.value)}
+            onValueChange={setPlatform}
             className="max-w-none"
-          >
-            {PLATFORMS.map((item) => {
+            options={PLATFORMS.map((item) => {
               const count = counts[item.key] ?? 0;
-              return (
-                <option key={item.key} value={item.key}>
-                  {item.label}
-                  {count > 0 ? `（已有 ${count} 个）` : '（还没有账号）'}
-                </option>
-              );
+              return {
+                value: item.key,
+                label: `${item.label}${count > 0 ? `（已有 ${count} 个）` : '（还没有账号）'}`,
+              };
             })}
-          </Select>
+          />
         </label>
 
         {stage === 'client-choice' && (
@@ -781,9 +774,13 @@ function LoginLink({
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-2">
         <Link size={13} className="shrink-0 text-muted" />
-        <span className="min-w-0 flex-1 truncate text-xs text-fg2 select-all" title={url}>
+        <Hint
+          content={url}
+          focusable={false}
+          className="min-w-0 flex-1 truncate text-xs text-fg2 select-all"
+        >
           {url}
-        </span>
+        </Hint>
       </div>
       {/* 两个快捷动作等宽同高：主次靠底色区分，不靠大小差 */}
       <div className="grid grid-cols-2 gap-2">

@@ -9,6 +9,7 @@ import { useState, type ReactNode } from 'react';
 import { Check, Monitor } from 'lucide-react';
 import { cn } from '@/components/ui/button';
 import { Section } from '@/components/ui/card';
+import { Hint } from '@/components/ui';
 import { applyFont, saveTheme, THEME_STYLES, useThemeChoice } from '@/lib/theme';
 import {
   loadFontChoice,
@@ -74,11 +75,10 @@ export function AppearancePane() {
         </fieldset>
 
         <fieldset className="border-t border-line pt-5">
-          <legend
-            className="mb-2 text-xs font-medium text-fg2"
-            title="正文、表格与说明文字一起放大；只影响本机显示，不写进运行配置"
-          >
-            界面字号
+          <legend className="mb-2 text-xs font-medium text-fg2">
+            <Hint content="正文、表格与说明文字一起放大；只影响本机显示，不写进运行配置" focusable={false}>
+              界面字号
+            </Hint>
           </legend>
           <div className="flex flex-wrap items-center gap-3">
             {(['standard', 'large'] as const).map((key) => (

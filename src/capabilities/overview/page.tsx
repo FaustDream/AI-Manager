@@ -20,6 +20,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRight } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { Hint } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { StateBlock } from '@/components/ui/form';
@@ -177,15 +178,16 @@ export default function OverviewPage() {
       <div className="flex flex-wrap items-center justify-end gap-2">
         {/* 全局过滤：三块（积分 / Token / 会话）共用这一个区间。
             各卡自己再挂一份控件，等于同一个页面有三个时间口径。 */}
-        <span
-          className="flex flex-wrap items-center gap-1.5"
-          role="group"
-          aria-label="全局过滤"
-          title="统一控制积分统计、Token 统计与会话统计的时间区间"
-        >
-          <span className="text-xs text-muted">全局过滤</span>
-          <RangeControl range={range} />
-        </span>
+        <Hint content="统一控制积分统计、Token 统计与会话统计的时间区间" focusable={false}>
+          <span
+            className="flex flex-wrap items-center gap-1.5"
+            role="group"
+            aria-label="全局过滤"
+          >
+            <span className="text-xs text-muted">全局过滤</span>
+            <RangeControl range={range} />
+          </span>
+        </Hint>
       </div>
 
       {/* 两栏：左积分、右用量。两张卡**同构**——标题行 + 2×2 数字 + 两个子块。

@@ -213,8 +213,9 @@ async fn batch_limits_default_to_legacy_behavior() {
     assert_eq!(service.batch_limits_for_test().await, (3, 0));
 }
 
-/// 积分刷新只打积分接口；签到结论只由本地去重表 / 真实签到回答。
-/// 平台侧已签的账号在下一次签到提交时会被 provider 拦住并落本地标记，不该靠刷新去猜。
+/// 积分刷新只打积分接口；Trae 的签到状态在另一个端点上，这一发看不到就不许猜。
+/// 平台侧已签的账号在下一次签到提交时会被 provider 拦住并落本地标记。
+/// （ima 那种「算力与签到同一发回答」的平台走另一条路，见本文件末尾的 ima 用例。）
 #[tokio::test]
 async fn refresh_does_not_query_checkin_status() {
     let paths = TestPaths::new();
@@ -716,4 +717,238 @@ async fn credits_batch_marks_only_real_failures() {
     assert_eq!(ok.1.balance, Some(60.0));
     assert!(bad.1.error.is_some(), "真正的错误要有显式标记");
     assert!(bad.1.error.as_ref().unwrap().contains("没有保存凭据"));
+}
+
+// ---------------------------------------------------------------- ima：算力与签到同源
+
+const IMA_REFRESH_URL: &str = "https://ima.qq.com/cgi-bin/auth_login/refresh";
+const IMA_ACTIVITY_URL: &str = "https://ima.qq.com/cgi-bin/daily_login_activity/get_activity_info";
+const IMA_BALANCE_URL: &str = "https://ima.qq.com/cgi-bin/token_manager/get_balance";
+const IMA_CHECKIN_URL: &str = "https://ima.qq.com/cgi-bin/daily_login_activity/check_in";
+
+fn seed_ima_account(db: &Db) -> String {
+    let iid = "ima:1234567890123456".to_string();
+    repo::upsert_identity(
+        db,
+        &AccountIdentity {
+            iid: iid.clone(),
+            platform: "ima".into(),
+            platform_label: "ima".into(),
+            account_id: "1234567890123456".into(),
+            name: "ima 账号".into(),
+            expires_at: None,
+            source: "Cookies".into(),
+            requires_checkin: true,
+            has_secret: true,
+        },
+        0,
+    )
+    .unwrap();
+    let secret = br#"{"refresh_token":"rt-live","expires_at":"","meta":{"ima_uid":"1234567890123456","uid_type":"2","ima_guid":"guid-abc"}}"#;
+    repo::set_secret(db, &iid, secret, None).unwrap();
+    iid
+}
+
+/// `today_status == 2` = 平台说今天已签。
+fn ima_http(today: i64) -> Arc<MockHttp> {
+    let http = Arc::new(MockHttp::new());
+    http.on(IMA_REFRESH_URL, 200, r#"{"code":0,"token":"tk-live"}"#);
+    http.on(
+        IMA_ACTIVITY_URL,
+        200,
+        &format!(
+            r#"{{"code":0,"infos":[{{"top":"今日","status":{today}}},{{"top":"满签奖励","status":4}}],"checkin_days":5,"total_reward_points":120}}"#
+        ),
+    );
+    http.on(IMA_BALANCE_URL, 200, r#"{"code":0,"balance":"650","display_amount":"650"}"#);
+    http.on(IMA_CHECKIN_URL, 200, r#"{"code":0,"reward_received":10}"#);
+    http
+}
+
+/// ima 的「查算力」和「今天签没签」是**同一发活动面板请求**回答的。
+///
+/// 用户在 ima 官方客户端签过之后，本工具刷一次算力就该显示「已签」——
+/// 活动面板已经在手上，把结论丢掉等于让用户对着「待查询」干等，
+/// 而且下一轮还会再问一次接口。这里断言零新增请求。
+#[tokio::test]
+async fn ima_credits_refresh_records_platform_checkin() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_ima_account(&db);
+    let http = ima_http(2);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    let store = ai_manager::app::checkin::SqliteCheckin::new(&db);
+    assert!(
+        !store.marked_today(&iid, clock.as_ref()),
+        "前提：本工具没有这个账号的签到记录（用户在官方客户端签的）"
+    );
+
+    let snapshot = service.credits(&iid).await.unwrap();
+    assert_eq!(snapshot.balance, Some(650.0), "算力照旧要刷出来");
+    assert_eq!(
+        snapshot.checked_in,
+        Some(true),
+        "活动面板已经说了今天已签，结论不能丢"
+    );
+    assert!(
+        store.marked_today(&iid, clock.as_ref()),
+        "平台确认已签后，本地标记必须补上"
+    );
+
+    let mut rows = repo::list(&db).unwrap();
+    ai_manager::app::checkin::store::hydrate(&db, &mut rows, clock.as_ref());
+    assert_eq!(
+        rows[0].checked_in,
+        Some(true),
+        "列表要显示「已签」，不是「待查询」"
+    );
+
+    // 隔离要求：这一发只能是 snapshot 自己的三个请求，不许为了签到状态多发一次
+    assert_eq!(http.call_count(IMA_REFRESH_URL), 1);
+    assert_eq!(http.call_count(IMA_ACTIVITY_URL), 1);
+    assert_eq!(http.call_count(IMA_BALANCE_URL), 1);
+    assert_eq!(http.call_count(IMA_CHECKIN_URL), 0, "查状态不该顺手提交签到");
+    assert_eq!(http.calls().len(), 3, "零新增请求");
+}
+
+/// 平台说「今天还没签」时不能凭本地猜测补标记，也不许顺手替用户签。
+#[tokio::test]
+async fn ima_credits_refresh_does_not_mark_when_platform_says_unchecked() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_ima_account(&db);
+    let http = ima_http(3);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    let snapshot = service.credits(&iid).await.unwrap();
+    assert_eq!(snapshot.checked_in, Some(false));
+    assert!(
+        !ai_manager::app::checkin::SqliteCheckin::new(&db)
+            .marked_today(&iid, clock.as_ref()),
+        "平台说没签就不能标记已签"
+    );
+    assert_eq!(http.call_count(IMA_CHECKIN_URL), 0, "刷积分不代签");
+
+    let mut rows = repo::list(&db).unwrap();
+    ai_manager::app::checkin::store::hydrate(&db, &mut rows, clock.as_ref());
+    assert_eq!(rows[0].checked_in, Some(false), "列表要显示「未签」");
+}
+
+/// 隔离防线：接口分离的平台，积分那一发**不许**顺带去看签到状态。
+///
+/// ima 的算力与签到同源，可以带结论；Trae 的签到状态在另一个端点上，
+/// 为了填一个字段去打它，就把 5 分钟一轮的积分刷新变成了状态端点的脚本样本。
+/// 这条断言存在的意义是：以后有人想「顺手统一一下」时会立刻红。
+#[tokio::test]
+async fn split_endpoint_platforms_never_report_checkin_from_credits() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_trae_account(&db);
+    let http = mock_http(200, r#"{"code":0}"#);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    let snapshot = service.credits(&iid).await.unwrap();
+    assert_eq!(
+        snapshot.checked_in, None,
+        "Trae 的积分接口看不到签到状态，必须留 None"
+    );
+    assert_eq!(http.call_count(STATUS_URL), 0);
+    assert_eq!(http.call_count(CLAIM_URL), 0);
+    assert!(
+        !ai_manager::app::checkin::SqliteCheckin::new(&db)
+            .marked_today(&iid, clock.as_ref()),
+        "没观察到结论就不能落任何标记"
+    );
+}
+
+/// 「签到 · 积分」对今日已签的账号只刷积分，绝不重复提交签到接口。
+#[tokio::test]
+async fn refresh_round_skips_checkin_for_already_marked_accounts() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_trae_account(&db);
+    let http = mock_http(200, r#"{"code":0}"#);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+    ai_manager::app::checkin::SqliteCheckin::new(&db)
+        .mark_today(&iid, clock.as_ref())
+        .unwrap();
+
+    let report = service
+        .refresh_round(std::slice::from_ref(&iid), "user")
+        .await;
+    assert_eq!(report.total, 1);
+    assert_eq!(report.already, 1, "已签应归入「已签」而不是新签");
+    assert_eq!(report.signed, 0);
+    assert_eq!(report.credits.len(), 1);
+    assert_eq!(report.credits[0].snapshot.balance, Some(60.0), "积分照旧要刷");
+    assert_eq!(http.call_count(CLAIM_URL), 0, "已签不许再提交");
+    assert_eq!(http.call_count(STATUS_URL), 0, "已签也不许再查状态");
+}
+
+/// 平台在积分那一发说「已签」（ima），合并按钮同样不再提交签到。
+#[tokio::test]
+async fn refresh_round_trusts_platform_verdict_without_reclaiming() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_ima_account(&db);
+    let http = ima_http(2);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    let report = service
+        .refresh_round(std::slice::from_ref(&iid), "user")
+        .await;
+    assert_eq!(report.total, 1);
+    assert_eq!(report.already, 1);
+    assert_eq!(report.signed, 0);
+    assert_eq!(report.credits[0].snapshot.balance, Some(650.0));
+    assert_eq!(http.call_count(IMA_CHECKIN_URL), 0, "平台说已签就别再签");
+    assert!(
+        ai_manager::app::checkin::SqliteCheckin::new(&db)
+            .marked_today(&iid, clock.as_ref()),
+        "平台结论要落本地标记"
+    );
+}
+
+/// 还没签的账号，合并按钮要真的把它签掉——一次调用走完两件事。
+#[tokio::test]
+async fn refresh_round_signs_pending_accounts_in_one_pass() {
+    let paths = TestPaths::new();
+    let db = Arc::new(Db::open_at(&paths.join("app.db")).unwrap());
+    let iid = seed_ima_account(&db);
+    // today_status == 3 = 可领取
+    let http = ima_http(3);
+    let clock = Arc::new(clock_at("2026-10-30T10:00:00+08:00"));
+    let service = Service::new(db.clone(), http.clone(), clock.clone());
+
+    let report = service
+        .refresh_round(std::slice::from_ref(&iid), "user")
+        .await;
+    assert_eq!(report.total, 1);
+    assert_eq!(report.signed, 1, "没签的账号要真的签一次");
+    assert_eq!(report.already, 0);
+    assert!(http.call_count(IMA_CHECKIN_URL) >= 1, "必须真的提交签到");
+    assert!(
+        ai_manager::app::checkin::SqliteCheckin::new(&db)
+            .marked_today(&iid, clock.as_ref()),
+        "签成功要落标记，下次不再触发"
+    );
+
+    // 再点一次：已签，不重复提交
+    let before = http.call_count(IMA_CHECKIN_URL);
+    let again = service
+        .refresh_round(std::slice::from_ref(&iid), "user")
+        .await;
+    assert_eq!(again.already, 1);
+    assert_eq!(again.signed, 0);
+    assert_eq!(
+        http.call_count(IMA_CHECKIN_URL),
+        before,
+        "第二次点按钮不能再打签到接口"
+    );
 }

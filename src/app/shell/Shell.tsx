@@ -18,6 +18,7 @@ import { ToastHost, toast } from '@/components/ui/toast';
 import { ConfirmHost } from '@/components/ui/confirm';
 import { BackToTop } from './BackToTop';
 import { cn } from '@/components/ui/button';
+import { Tooltip } from '@/components/ui/tooltip';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { onIdle } from '@/lib/idle';
 import { CommandPalette, type PaletteItem } from './CommandPalette';
@@ -106,7 +107,6 @@ export function Shell() {
   }, [layout, railExpanded, sidebarCollapsed, setRailExpanded, setSidebarCollapsed]);
 
   // 手动轮询的忙碌态：按钮自己转圈，不用户猜「点了没反应」
-  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     void loadTheme();
@@ -246,17 +246,6 @@ export function Shell() {
     return () => window.removeEventListener('keydown', onKey);
   }, [navCaps, go]);
 
-  const runRound = useCallback(async () => {
-    if (running) return;
-    setRunning(true);
-    try {
-      // 结果由事件桥 checkin:round 统一失效 ['accounts']，这里不猜完成时刻
-      if ((await runCmd('daily_run_now')) !== undefined) toast('已开始跑一轮每日轮询');
-    } finally {
-      setRunning(false);
-    }
-  }, [running]);
-
   // 会话快搜（Ctrl+K）：最近的 30 条进面板，命中后跳会话页并打开预览。
   // 正文级搜索在会话页（FTS）；面板只做标题级的快速定位。
   const recentSessions = useQuery<Page<SessionRow>>({
@@ -330,21 +319,24 @@ export function Shell() {
         const Icon = navIcon(cap.manifest.id);
         const on = active === cap.manifest.id;
         return (
-          <button
+          <Tooltip
             key={cap.manifest.id}
-            type="button"
-            className={cn(
-              'flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm whitespace-nowrap',
-              'transition-colors duration-[var(--dur-1)]',
-              on ? 'bg-accent-soft font-medium text-fg' : 'text-fg2 hover:bg-hover hover:text-fg',
-            )}
-            title={`${cap.manifest.note ?? cap.manifest.title}（快捷键 ${at + 1}）`}
-            aria-current={on ? 'page' : undefined}
-            onClick={() => go(cap.manifest.id)}
+            content={`${cap.manifest.note ?? cap.manifest.title}（快捷键 ${at + 1}）`}
           >
-            <Icon size={15} className={on ? 'text-accent' : 'text-muted'} />
-            {cap.manifest.title}
-          </button>
+            <button
+              type="button"
+              className={cn(
+                'flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm whitespace-nowrap',
+                'transition-colors duration-[var(--dur-1)]',
+                on ? 'bg-accent-soft font-medium text-fg' : 'text-fg2 hover:bg-hover hover:text-fg',
+              )}
+              aria-current={on ? 'page' : undefined}
+              onClick={() => go(cap.manifest.id)}
+            >
+              <Icon size={15} className={on ? 'text-accent' : 'text-muted'} />
+              {cap.manifest.title}
+            </button>
+          </Tooltip>
         );
       })}
     </nav>
@@ -408,8 +400,6 @@ export function Shell() {
             backTitle={backTo ? caps.find((c) => c.manifest.id === backTo)?.manifest.title ?? '上一页' : null}
             onBack={back}
             onPalette={openPalette}
-            onRunRound={() => void runRound()}
-            running={running}
             progress={lineVisible}
           />
           {content}

@@ -19,7 +19,7 @@ use crate::app::accounts::AccountIdentity;
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, paths, process};
-use crate::types::{CreditSnapshot, StatusResult};
+use crate::types::{CreditSnapshot, CredentialKind, CredentialShape, StatusResult};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::Aes256Gcm;
 use async_trait::async_trait;
@@ -569,6 +569,18 @@ impl Provider for ZCodeProvider {
         Some(identity(&creds).0)
     }
 
+    fn credential_shape(&self) -> CredentialShape {
+        CredentialShape {
+            kind: CredentialKind::ClientToken,
+            label: "客户端令牌".into(),
+            multi_account: false,
+            switchable: true,
+            // 智谱的令牌不含 exp：到期列只能说「未知」，不是「没登录」
+            expiry_known: false,
+            note: "读本机 ~/.zcode 的加密凭据（密钥在 Windows 凭据管理器）。令牌不含到期时间，只能确认凭据已加密存在本机；可一键切换".into(),
+        }
+    }
+
     // ------------------------------------------------------------ P3：额度（无签到）
 
     /// ZCode 没有签到玩法：只查额度，界面上显示额度条而不是积分
@@ -595,6 +607,8 @@ impl Provider for ZCodeProvider {
             balance: None,
             lots: None,
             quota: Some(quota.windows),
+            // ZCode 没有签到玩法（活动领取走 claim_plans）
+            checked_in: None,
         })
     }
 

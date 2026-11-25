@@ -61,6 +61,7 @@ pub fn list(db: &Db) -> Result<Vec<AccountView>> {
                 expiring_10d: None,
                 next_at: None,
                 error: None,
+                login: None,
             })
         })?;
         let mut out = Vec::new();

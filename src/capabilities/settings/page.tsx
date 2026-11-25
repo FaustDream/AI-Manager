@@ -10,12 +10,12 @@ import { usePageToggles } from '@/lib/ui-state';
 
 import { fmtSize, fmtTime } from '@/lib/format';
 import { numOr } from '@/lib/num';
-import { Button, cn } from '@/components/ui/button';
+import { Button } from '@/components/ui/button';
 import { Section } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
-import { Checkbox, Input, Select, SkeletonBlock, SkeletonRows } from '@/components/ui/form';
+import { Input, SkeletonBlock, SkeletonRows, StateBlock } from '@/components/ui/form';
 import { DataTable, type Column } from '@/components/ui/table';
-import { Tag } from '@/components/ui';
+import { Hint, Picker, Switch, Tabs, Tag, Tooltip } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import {
   disableNotify,
@@ -90,34 +90,18 @@ function TabBar({ tab, onChange }: { tab: TabKey; onChange: (t: TabKey) => void 
     { key: 'about', label: '关于', icon: Info },
   ];
   return (
-    <div
-      role="tablist"
-      aria-label="设置分区"
-      className="flex flex-wrap gap-1 self-start rounded-lg border border-line bg-card p-1 shadow-card"
-    >
-      {tabs.map((t) => {
-        const Icon = t.icon;
-        const on = tab === t.key;
-        return (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={on}
-            onClick={() => onChange(t.key)}
-            className={cn(
-              'flex cursor-pointer items-center gap-1.5 rounded-md px-3.5 py-1.5 text-sm transition-colors duration-[var(--dur-1)]',
-              on
-                ? 'bg-accent font-medium text-on-accent'
-                : 'text-fg2 hover:bg-hover hover:text-fg',
-            )}
-          >
-            <Icon size={14} />
-            {t.label}
-          </button>
-        );
+    <Tabs
+      label="设置分区"
+      size="md"
+      variant="solid"
+      value={tab}
+      onValueChange={(next) => onChange(next as TabKey)}
+      className="self-start rounded-lg border border-line bg-card p-1 shadow-card"
+      items={tabs.map((item) => {
+        const Icon = item.icon;
+        return { value: item.key, label: item.label, icon: <Icon size={14} /> };
       })}
-    </div>
+    />
   );
 }
 
@@ -151,13 +135,14 @@ function GeneralPane() {
       <div className="flex flex-col gap-4">
         <div>
           <label className="flex items-center gap-3 text-sm">
-            <Checkbox
+            <Switch
               // 开关状态以「浏览器权限 + 本地开关」双满足为准：
               // 权限没给时哪怕本地开着也发不出去，不能让开关骗人。
               checked={notifyOn && perm === 'granted'}
               disabled={!notifySupported()}
-              onChange={async (e) => {
-                if (!e.target.checked) {
+              label="桌面通知"
+              onCheckedChange={async (next) => {
+                if (!next) {
                   disableNotify();
                   setNotifyOn(false);
                   setPerm(notifyPermission());
@@ -197,25 +182,26 @@ function GeneralPane() {
           </p>
           {perm === 'granted' && (
             <p className="mt-1 pl-[26px] text-xs">
-              <button
-                type="button"
-                className="cursor-pointer text-accent underline-offset-2 hover:underline"
-                title="授权后立即验证能不能真弹出来"
-                onClick={() => {
-                  const sent = notifyTest();
-                  if (!notifyOn) {
-                    toast('先打开上面的开关，再来试发（权限已允许，开关还没开）');
-                    return;
-                  }
-                  toast(
-                    sent
-                      ? '已发出测试通知：没看到请检查 Windows 通知中心是否把浏览器静音了'
-                      : '测试通知没有发出去：确认系统通知没被关闭',
-                  );
-                }}
-              >
-                发一条测试通知
-              </button>
+              <Tooltip content="授权后立即验证能不能真弹出来">
+                <button
+                  type="button"
+                  className="cursor-pointer text-accent underline-offset-2 hover:underline"
+                  onClick={() => {
+                    const sent = notifyTest();
+                    if (!notifyOn) {
+                      toast('先打开上面的开关，再来试发（权限已允许，开关还没开）');
+                      return;
+                    }
+                    toast(
+                      sent
+                        ? '已发出测试通知：没看到请检查 Windows 通知中心是否把浏览器静音了'
+                        : '测试通知没有发出去：确认系统通知没被关闭',
+                    );
+                  }}
+                >
+                  发一条测试通知
+                </button>
+              </Tooltip>
             </p>
           )}
         </div>
@@ -244,11 +230,12 @@ function PageSwitchPane() {
           <label
             key={cap.manifest.id}
             className="flex min-w-0 cursor-pointer items-center gap-3 text-sm"
-            title={cap.manifest.note}
           >
-            <Checkbox
+            <Switch
               checked={!hidden.has(cap.manifest.id)}
-              onChange={(e) => setEnabled(cap.manifest.id, e.target.checked)}
+              onCheckedChange={(next) => setEnabled(cap.manifest.id, next)}
+              label={cap.manifest.title}
+              hint={cap.manifest.note}
             />
             <span className="truncate font-medium">{cap.manifest.title}</span>
             <span className="shrink-0 text-xs text-muted">{cap.manifest.group}</span>
@@ -283,45 +270,59 @@ function ConfigPane() {
     <Section
       title="配置"
       note={
-        <span title="并发实际执行收敛到 1-6，间隔上限 60 秒，越界值保存时按此修正">
+        <Hint content="并发实际执行收敛到 1-6，间隔上限 60 秒，越界值保存时按此修正">
           data\config.toml
-        </span>
+        </Hint>
       }
     >
       <div className="grid gap-4 md:grid-cols-2">
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted" title="同时跑几个账号的签到。调大更快，但同一平台短时间请求过多更容易被限流；网络差或常失败时调回 1-2。">签到并发</span>
-            <Select
+            <Hint
+              className="w-28 shrink-0 text-muted"
+              content="同时跑几个账号的签到。调大更快，但同一平台短时间请求过多更容易被限流；网络差或常失败时调回 1-2。"
+            >
+              签到并发
+            </Hint>
+            <Picker
+              label="签到并发"
               value={String(draft.checkin.max_concurrent)}
-              onChange={(e) => patch({ checkin: { ...draft.checkin, max_concurrent: numOr(e.target.value, 3) } })}
-            >
-              {[1, 2, 3, 4, 5, 6].map((n) => (
-                <option key={n} value={n}>
-                  {n} 个
-                </option>
-              ))}
-            </Select>
+              onValueChange={(next) =>
+                patch({ checkin: { ...draft.checkin, max_concurrent: numOr(next, 3) } })
+              }
+              options={[1, 2, 3, 4, 5, 6].map((n) => ({ value: String(n), label: `${n} 个` }))}
+            />
           </label>
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted" title="两个账号之间等多久再发下一个。调大更稳、更不容易被限流，代价是一轮签到更慢；0 = 不等待。">账号间隔</span>
-            <Select
+            <Hint
+              className="w-28 shrink-0 text-muted"
+              content="两个账号之间等多久再发下一个。调大更稳、更不容易被限流，代价是一轮签到更慢；0 = 不等待。"
+            >
+              账号间隔
+            </Hint>
+            <Picker
+              label="账号间隔"
               value={String(draft.checkin.gap_ms)}
-              onChange={(e) => patch({ checkin: { ...draft.checkin, gap_ms: numOr(e.target.value, 0) } })}
-            >
-              {[0, 500, 1000, 2000, 5000].map((ms) => (
-                <option key={ms} value={ms}>
-                  {ms === 0 ? '不间隔' : `${ms / 1000} 秒`}
-                </option>
-              ))}
-            </Select>
+              onValueChange={(next) =>
+                patch({ checkin: { ...draft.checkin, gap_ms: numOr(next, 0) } })
+              }
+              options={[0, 500, 1000, 2000, 5000].map((ms) => ({
+                value: String(ms),
+                label: ms === 0 ? '不间隔' : `${ms / 1000} 秒`,
+              }))}
+            />
           </label>
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted" title="单次请求最多等多少秒。走代理或平台慢时调大，能少一些「超时」失败；调太小会把本来能成的请求判成失败。">请求超时</span>
+            <Hint
+              className="w-28 shrink-0 text-muted"
+              content="单次请求最多等多少秒。走代理或平台慢时调大，能少一些「超时」失败；调太小会把本来能成的请求判成失败。"
+            >
+              请求超时
+            </Hint>
             <Input
               type="number"
               min={3}
@@ -335,23 +336,31 @@ function ConfigPane() {
         </div>
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted" title="只读请求（查积分/查状态）失败后再试几次。调大能扛偶发抖动，但一轮耗时变长；写动作不重试，避免重复提交。">GET 重试</span>
-            <Select
-              value={String(draft.network.get_retry)}
-              onChange={(e) => patch({ network: { ...draft.network, get_retry: numOr(e.target.value, 1) } })}
+            <Hint
+              className="w-28 shrink-0 text-muted"
+              content="只读请求（查积分/查状态）失败后再试几次。调大能扛偶发抖动，但一轮耗时变长；写动作不重试，避免重复提交。"
             >
-              {[0, 1, 2, 3].map((n) => (
-                <option key={n} value={n}>
-                  {n} 次
-                </option>
-              ))}
-            </Select>
+              GET 重试
+            </Hint>
+            <Picker
+              label="GET 重试"
+              value={String(draft.network.get_retry)}
+              onValueChange={(next) =>
+                patch({ network: { ...draft.network, get_retry: numOr(next, 1) } })
+              }
+              options={[0, 1, 2, 3].map((n) => ({ value: String(n), label: `${n} 次` }))}
+            />
           </label>
         </div>
         {/* 用量采集、ZCode 领取、启动扫描属于后台循环，统一放到「自动任务 → 内置任务」里改 */}
         <div>
           <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted" title="每个账号在详情页保留多少条旅行/活动记录。只影响显示与本机存储，不影响平台数据。">旅行记录条数</span>
+            <Hint
+              className="w-28 shrink-0 text-muted"
+              content="每个账号在详情页保留多少条旅行/活动记录。只影响显示与本机存储，不影响平台数据。"
+            >
+              旅行记录条数
+            </Hint>
             <Input
               type="number"
               min={10}
@@ -367,6 +376,78 @@ function ConfigPane() {
             （兼容旧 config.toml），但不再提供界面入口——浏览器形态没有窗口可关。 */}
       </div>
 
+      {/* 资料库采集的阈值都走这一份配置：改完保存即生效，不另写轮询。 */}
+      <div className="mt-3 border-t border-line pt-3">
+        <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-fg2">
+          资料库采集
+          <Hint
+            className="font-normal text-muted"
+            content="采集只读公开元数据；分页预算与间隔决定一轮多久、覆盖多深，不改变数据源本身的覆盖范围"
+          >
+            数值越界会在保存时按允许范围修正
+          </Hint>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="flex items-center gap-3 text-sm">
+            <Switch
+              checked={draft.catalog.enabled}
+              onCheckedChange={(checked) => patch({ catalog: { ...draft.catalog, enabled: checked } })}
+              label="自动采集"
+              hint="关闭后不再自动采集；手动采集与已有资料不受影响"
+            />
+          </label>
+          {([
+            ['同步间隔', 'sync_interval_min', '分钟', '两轮自动采集之间等多久；调大更省请求，调小更新更勤'],
+            ['全量检查', 'full_check_days', '天', '多久跑一次全量目录（含已完结作品）；日常增量只补近期更新'],
+            ['历史天数', 'history_days', '天', '没填日期时，采集从今天往前覆盖多少天'],
+            ['未来天数', 'future_days', '天', '没填日期时，采集向未来覆盖多少天'],
+            ['每轮分页预算', 'max_pages_per_job', '页', '一轮最多翻多少页；用完后保留游标，下次从断点继续'],
+            ['请求间隔', 'request_gap_ms', '毫秒', '两次请求之间等多久；调大更稳，调小更快但更容易被限流'],
+            ['单源超时', 'source_timeout_secs', '秒', '一个数据源一轮最多跑多久；超时保留已完成的分页'],
+            ['详情刷新', 'detail_interval_hours', '小时', 'Bangumi 等详情源多久补一次；太频繁只会重复请求'],
+            ['重试次数', 'retry_count', '次', '单次请求失败后的重试上限；只重试可安全重放的 GET'],
+            ['重试间隔', 'retry_delay_ms', '毫秒', '每次重试前等多久，按次数递增'],
+          ] as const).map(([label, key, unit, hint]) => (
+            <label key={key} className="flex items-center gap-3 text-sm">
+              <Hint className="w-28 shrink-0 text-muted" content={hint}>{label}</Hint>
+              <Input
+                type="number"
+                min={1}
+                className="w-24"
+                value={draft.catalog[key]}
+                onChange={(event) =>
+                  patch({ catalog: { ...draft.catalog, [key]: numOr(event.target.value, draft.catalog[key]) } })
+                }
+              />
+              <span className="text-xs text-muted">{unit}</span>
+            </label>
+          ))}
+        </div>
+        <label className="mt-2 flex items-center gap-3 text-sm">
+          <Hint
+            className="w-28 shrink-0 text-muted"
+            content="只影响 TVmaze 的国家电视日历；逗号分隔的大写两位地区码"
+          >
+            关注国家
+          </Hint>
+          <Input
+            className="min-w-0 flex-1"
+            value={draft.catalog.countries.join(', ')}
+            onChange={(event) =>
+              patch({
+                catalog: {
+                  ...draft.catalog,
+                  countries: event.target.value
+                    .split(/[,，\s]+/)
+                    .map((code) => code.trim().toUpperCase())
+                    .filter(Boolean),
+                },
+              })
+            }
+          />
+        </label>
+      </div>
+
       {/* CodeBuddy 两个客户端的数据目录：默认装在各软件缺省位置，改了安装/配置目录才填。
           留空 = 用缺省；决定账号详情里「切换 IDE / 切换插件」是否能点、写盘往哪写。 */}
       <div className="mt-3 border-t border-line pt-3">
@@ -374,12 +455,12 @@ function ConfigPane() {
         <div className="grid gap-4 md:grid-cols-2">
           <div>
             <label className="flex items-center gap-4 text-sm">
-              <span
+              <Hint
                 className="w-28 shrink-0 text-muted"
-                title="CodeBuddy IDE 的数据目录（缺省 %APPDATA%\CodeBuddy CN）。改了 user-data-dir / 安装目录才需要填，留空用缺省。"
+                content={'CodeBuddy IDE 的数据目录（缺省 %APPDATA%\\CodeBuddy CN）。改了 user-data-dir / 安装目录才需要填，留空用缺省。'}
               >
                 CodeBuddy IDE
-              </span>
+              </Hint>
               <Input
                 className="min-w-0 flex-1"
                 value={draft.codebuddy.ide_dir}
@@ -392,12 +473,12 @@ function ConfigPane() {
           </div>
           <div>
             <label className="flex items-center gap-4 text-sm">
-              <span
+              <Hint
                 className="w-28 shrink-0 text-muted"
-                title="JetBrains 配置目录（缺省 %APPDATA%\JetBrains，插件与 secret-storage.xml 所在）。改了 idea.config.path 才需要填，留空用缺省。"
+                content={'JetBrains 配置目录（缺省 %APPDATA%\\JetBrains，插件与 secret-storage.xml 所在）。改了 idea.config.path 才需要填，留空用缺省。'}
               >
                 插件（IDEA）
-              </span>
+              </Hint>
               <Input
                 className="min-w-0 flex-1"
                 value={draft.codebuddy.idea_dir}
@@ -503,25 +584,30 @@ function FeaturesPane() {
         },
         ...data.features.map((feature, index) => ({
           key: feature.key,
-          header: <span title={feature.hint}>{feature.label}</span>,
+          header: (
+            <Hint focusable={false} content={feature.hint}>
+              {feature.label}
+            </Hint>
+          ),
           width: 116,
           cell: (row: FeatureRow) => {
             const cell = row.cells[index];
             // 平台本身没有的能力：给原因，不给勾
             if (!cell.available) {
               return (
-                <span className="cursor-help text-xs text-muted" title={cell.note}>
+                <Hint focusable={false} className="cursor-help text-xs text-muted" content={cell.note}>
                   平台不支持
-                </span>
+                </Hint>
               );
             }
             return (
-              <Checkbox
+              <Switch
                 checked={cell.enabled}
                 disabled={!!busy}
-                title={feature.hint}
-                aria-label={`${row.label}：${feature.label}`}
-                onChange={(e) => toggle(row.key, feature.key, e.target.checked)}
+                label={`${row.label}：${feature.label}`}
+                hint={feature.hint}
+                size="sm"
+                onCheckedChange={(next) => toggle(row.key, feature.key, next)}
               />
             );
           },
@@ -532,9 +618,12 @@ function FeaturesPane() {
   return (
     <Section
       title={
-        <span title="控制账号中心显示哪些入口；取消勾选不会删除凭据，也不影响已排好的定时任务。平台不支持的格子只给原因，不给勾。">
+        <Hint
+          focusable={false}
+          content="控制账号中心显示哪些入口；取消勾选不会删除凭据，也不影响已排好的定时任务。平台不支持的格子只给原因，不给勾。"
+        >
           各软件功能
-        </span>
+        </Hint>
       }
     >
       {!data && (
@@ -555,80 +644,44 @@ function FeaturesPane() {
 
 /**
  * 「已知限制」：平台侧的硬约束，本应用改不了的，集中说清楚。
- * 口径与 `app/capability.rs` 的矩阵一致，但这里给的是人话 + 替代做法：
- * 用户在「添加账号」里找不到 Trae 时，第一反应是「是不是坏了」，这里要能直接回答。
+ * 文案真源在后端能力表（`app/capability.rs` 的 LIMITS），与矩阵同一处维护——
+ * 账号中心的行为一变，限制文案跟着变，不会两边对不上。
  */
-const KNOWN_LIMITS: { scope: string; title: string; detail: string; workaround?: string }[] = [
-  {
-    scope: 'Trae',
-    title: '登录态只读：不能添加 / 切换账号',
-    detail:
-      '登录态与设备绑定、加密只读。写回去会把 Trae 客户端登出，所以本应用不提供「添加账号」「切换登录」。',
-    workaround:
-      '在 Trae 客户端换号登录一次，再启动本应用（或点账号中心刷新），扫描会自动入库。旧账号记录会保留，但无法一键切回。',
-  },
-  {
-    scope: 'Trae',
-    title: '新版会话库加密',
-    detail: '新版会话库是 SQLCipher 加密，本应用只能读旧版 state.vscdb，或从插件运行日志解析。',
-    workaround: '需要完整会话时，在 Trae 里导出，或保留旧版数据。',
-  },
-  {
-    scope: 'Qoder',
-    title: '只做扫描、签到与积分查询',
-    detail:
-      '「切换登录」目前只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放；Qoder 账号可以在本应用里看完余额与签到，但不改写它的客户端登录态。',
-    workaround: '需要换号时在 Qoder 客户端里登录一次，再回来点「刷新账号状态」，扫描会自动入库。',
-  },
-  {
-    scope: 'WorkBuddy 国际版',
-    title: '没有签到玩法，也不显示批次到期',
-    detail: '国际版只有积分查询；批次到期接口不提供可靠字段，所以国际版不显示到期日。',
-  },
-  {
-    scope: 'ZCode',
-    title: '额度型平台，不是积分余额',
-    detail: '显示各额度窗口的已用百分比；活动奖励要在账号详情页手动领取。',
-  },
-  {
-    scope: 'ZCode',
-    title: '会话不区分账号，无需恢复对话',
-    detail:
-      'ZCode 的本地会话库换号共用一份，历史会话本来就全部可见；只有 WorkBuddy 需要把会话归属改到当前账号。',
-  },
-  {
-    scope: 'CodeBuddy',
-    title: '账号体系跟随 WorkBuddy',
-    detail:
-      '不单独登录：用 WorkBuddy 国内版档案切换 CodeBuddy IDE 与 IDEA 插件的登录态，不支持国际版账号；「恢复对话」跟着 WorkBuddy 账号走。',
-  },
-  {
-    scope: '通用',
-    title: '「刷新凭据」不会把到期时间往后延',
-    detail:
-      '各平台的 refresh_token 续期没有公开协议，本应用不自己续期。刷新凭据 = 重扫客户端里已经存在的那一份：客户端续过了，到期时间才会变；客户端没登这个账号、或还没续期，刷多少次都是同一个值。客户端票据里没写到期时间时，本应用会改读 token 自带的过期时间（不验签，只用于显示）。',
-    workaround:
-      '到期时间一直不动又快过期：在客户端里重新登录一次该账号，回来点「刷新账号状态」；或直接点「重新授权」。',
-  },
-];
-
 function LimitsPane() {
+  const matrix = useQuery<CapabilityMatrix>({
+    queryKey: ['capabilities'],
+    queryFn: () => queryCmd('platform_capabilities'),
+    staleTime: 60_000,
+  });
+  const limits = matrix.data?.limits ?? [];
   return (
     <Section title="已知限制">
-      <div className="flex flex-col gap-1">
-        {KNOWN_LIMITS.map((item) => (
-          <div
-            key={`${item.scope}-${item.title}`}
-            className="flex flex-wrap items-baseline gap-2 px-1 py-1.5"
-            title={[item.detail, item.workaround && `怎么做：${item.workaround}`]
-              .filter(Boolean)
-              .join('\n')}
-          >
-            <span className="rounded bg-hover px-1.5 text-xs text-fg2">{item.scope}</span>
-            <span className="text-sm">{item.title}</span>
-          </div>
-        ))}
-      </div>
+      {matrix.isLoading ? (
+        <SkeletonBlock rows={6} />
+      ) : limits.length === 0 ? (
+        <StateBlock
+          kind="empty"
+          title="没有读到限制清单"
+          detail="能力表还没取回来，不代表这些限制不存在。"
+          onRetry={() => void matrix.refetch()}
+        />
+      ) : (
+        <div className="flex flex-col gap-1">
+          {limits.map((item) => (
+            <Tooltip
+              key={`${item.scope}-${item.title}`}
+              content={[item.detail, item.workaround && `怎么做：${item.workaround}`]
+                .filter(Boolean)
+                .join('\n')}
+            >
+              <div className="flex flex-wrap items-baseline gap-2 px-1 py-1.5">
+                <span className="rounded bg-hover px-1.5 text-xs text-fg2">{item.scope}</span>
+                <span className="text-sm">{item.title}</span>
+              </div>
+            </Tooltip>
+          ))}
+        </div>
+      )}
     </Section>
   );
 }
@@ -668,9 +721,9 @@ function SelfcheckPane() {
               {report.proxy_enabled ? '系统代理已开启' : '系统代理未开启'}
             </Tag>
             {report.proxy_server && (
-              <span className="font-mono text-muted" title="WinINET ProxyServer">
+              <Hint className="font-mono text-muted" content="WinINET ProxyServer">
                 {report.proxy_server}
-              </span>
+              </Hint>
             )}
             {!report.proxy_enabled && (
               <span className="text-muted">国际版直连必然超时——先开代理再测</span>
@@ -679,9 +732,9 @@ function SelfcheckPane() {
           {report.endpoints.map((endpoint) => (
             <div key={endpoint.url} className="flex flex-wrap items-center gap-2">
               <Tag tone={endpoint.ok ? 'ok' : 'bad'}>{endpoint.ok ? '可达' : '不通'}</Tag>
-              <span className="font-mono" title={endpoint.url}>
+              <Hint className="font-mono" content={endpoint.url}>
                 {endpoint.url.replace('https://', '').replace(/\/$/, '')}
-              </span>
+              </Hint>
               <span className="text-muted">{endpoint.detail}</span>
             </div>
           ))}
@@ -760,24 +813,24 @@ function RuntimePane() {
       {report && (
         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
           <dt className="text-muted">数据目录</dt>
-          <dd className="truncate font-mono" title={report.data_dir}>
-            {report.data_dir}
-          </dd>
+          <Tooltip content={report.data_dir}>
+            <dd className="truncate font-mono">{report.data_dir}</dd>
+          </Tooltip>
           <dt className="text-muted">平台</dt>
           <dd className="flex flex-wrap gap-1">
             {report.platforms.map((platform) => (
-              <span
+              <Hint
                 key={platform.platform}
                 className={
                   platform.failing > 0
                     ? 'rounded bg-bad/15 px-1 text-bad'
                     : 'rounded bg-hover px-1 text-fg2'
                 }
-                title={`最近成功：${fmtTime(platform.last_ok_at)} · 最近失败：${fmtTime(platform.last_fail_at)}`}
+                content={`最近成功：${fmtTime(platform.last_ok_at)} · 最近失败：${fmtTime(platform.last_fail_at)}`}
               >
                 {platform.label} {platform.accounts}
                 {platform.failing > 0 ? ` · 失败 ${platform.failing}` : ''}
-              </span>
+              </Hint>
             ))}
           </dd>
         </dl>
@@ -798,9 +851,9 @@ function RuntimePane() {
             key={entry.name}
             className="flex items-center gap-2 border-b border-line px-1 py-1 text-sm last:border-b-0"
           >
-            <span className="flex-1 truncate" title={entry.path}>
+            <Hint className="flex-1 truncate" content={entry.path}>
               {entry.name}
-            </span>
+            </Hint>
             <span className="tabular-nums text-muted">{fmtSize(entry.size)}</span>
           </div>
         ))}
@@ -827,16 +880,17 @@ function ArchiveEntryPane() {
       title="已归档会话"
       note={archived.isLoading ? '统计中…' : total > 0 ? `已归档 ${total} 条` : undefined}
       actions={
-        <Button
-          size="sm"
-          variant="soft"
-          title="归档只写本地标记、不删文件；可预览、取消归档或彻底删除。自动归档按最后活动时间计算，超过设定天数没动过的会话会被收进来。"
-          onClick={() =>
-            window.dispatchEvent(new CustomEvent('aim:navigate', { detail: 'sessions-archive' }))
-          }
-        >
-          打开已归档会话
-        </Button>
+        <Tooltip content="归档只写本地标记、不删文件；可预览、取消归档或彻底删除。自动归档按最后活动时间计算，超过设定天数没动过的会话会被收进来。">
+          <Button
+            size="sm"
+            variant="soft"
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent('aim:navigate', { detail: 'sessions-archive' }))
+            }
+          >
+            打开已归档会话
+          </Button>
+        </Tooltip>
       }
     />
   );
@@ -856,9 +910,12 @@ function MaintenancePane() {
       {/* 摘要行：批次明细与逐批删除收进对话框，设置页不再被回收站列表撑高 */}
       <Section
         title={
-          <span title="移除平台技能时，原文件副本先进这里，确认没问题再清空。会话删除不进回收站——那条路径不可恢复，删除前会单独确认。">
+          <Hint
+            focusable={false}
+            content="移除平台技能时，原文件副本先进这里，确认没问题再清空。会话删除不进回收站——那条路径不可恢复，删除前会单独确认。"
+          >
             平台技能回收站
-          </span>
+          </Hint>
         }
         note={
           trash.isError
@@ -933,7 +990,7 @@ function MaintenancePane() {
         {(trash.data ?? []).length === 0 && <p className="text-sm text-muted">空的。</p>}
         {(trash.data ?? []).map((batch) => (
           <div key={batch.path} className="flex items-center gap-2 border-b border-line px-1 py-1.5 text-sm last:border-b-0">
-            <span className="flex-1 truncate font-mono text-xs" title={batch.path}>{batch.name}</span>
+            <Hint className="flex-1 truncate font-mono text-xs" content={batch.path}>{batch.name}</Hint>
             <span className="tabular-nums text-muted">{fmtSize(batch.size)}</span>
             <Button
               size="sm"
@@ -1109,20 +1166,24 @@ function ScheduleCard() {
     <BuiltinCard />
     <Section
       title={
-        <span title="同一任务不会叠着跑（上一轮没结束就跳过）；不同任务同时到点时并行，建议错开时刻。规则改完即时生效。猫猫旅行在到站后 5 分钟内自动领取并续派下一趟。">
+        <Hint
+          focusable={false}
+          content="同一任务不会叠着跑（上一轮没结束就跳过）；不同任务同时到点时并行，建议错开时刻。规则改完即时生效。猫猫旅行在到站后 5 分钟内自动领取并续派下一趟。"
+        >
           定时任务
-        </span>
+        </Hint>
       }
       actions={
-        <Button
-          size="sm"
-          loading={busy === 'status-now'}
-          disabled={!!busy}
-          onClick={refreshStatusNow}
-          title="云端校验凭据有效性并校正到期时间（不重扫客户端）"
-        >
-          立即刷新账号状态
-        </Button>
+        <Tooltip content="云端校验凭据有效性并校正到期时间（不重扫客户端）">
+          <Button
+            size="sm"
+            loading={busy === 'status-now'}
+            disabled={!!busy}
+            onClick={refreshStatusNow}
+          >
+            立即刷新账号状态
+          </Button>
+        </Tooltip>
       }
     >
 
@@ -1134,38 +1195,40 @@ function ScheduleCard() {
           key={item.id}
           className="flex flex-wrap items-center gap-2 border-b border-line px-1 py-1.5 text-sm last:border-b-0"
         >
-          <span className="w-48 max-w-full truncate font-medium" title={item.name}>
+          <Hint className="w-48 max-w-full truncate font-medium" content={item.name}>
             {item.name}
-          </span>
+          </Hint>
           <span className="w-28 text-xs text-muted">{ruleText(item)}</span>
           <span className="w-24 text-xs text-muted">上次 {shortTs(item.last_run)}</span>
           {item.next_at && (
-            <span className="text-xs text-accent" title="平台给出的预计到站时刻 + 5 分钟领取冗余">
+            <Hint className="text-xs text-accent" content="平台给出的预计到站时刻 + 5 分钟领取冗余">
               下次领取 ~ {shortTs(item.next_at)}
-            </span>
+            </Hint>
           )}
           <span className="flex-1" />
           <label className="flex cursor-pointer items-center gap-1 text-xs text-fg2">
-            <input
-              type="checkbox"
+            <Switch
               checked={item.enabled}
               disabled={!!busy}
-              onChange={() => toggle(item)}
+              label={`启用 ${item.name}`}
+              size="sm"
+              onCheckedChange={() => toggle(item)}
             />
             启用
           </label>
           <Button size="sm" disabled={!!busy} onClick={() => edit(item)}>
             编辑
           </Button>
-          <Button
-            size="sm"
-            loading={busy === `schedule-run:${item.id}`}
-            disabled={!!busy}
-            onClick={() => runNow(item)}
-            title="按这条任务现在跑一次（记一条手动执行动作）"
-          >
-            立即执行
-          </Button>
+          <Tooltip content="按这条任务现在跑一次（记一条手动执行动作）">
+            <Button
+              size="sm"
+              loading={busy === `schedule-run:${item.id}`}
+              disabled={!!busy}
+              onClick={() => runNow(item)}
+            >
+              立即执行
+            </Button>
+          </Tooltip>
           <Button
             size="sm"
             variant="danger"
@@ -1190,47 +1253,63 @@ function ScheduleCard() {
           placeholder="任务名称（可留空自动命名）"
           onChange={(e) => setName(e.target.value)}
         />
-        <Select aria-label="任务动作" value={action} disabled={!!editing} onChange={(e) => setAction(e.target.value as ScheduleAction)}>
-          <option value="checkin_round">签到轮询</option>
-          <option value="credits_round">积分刷新</option>
-          <option value="status_round">账号状态刷新</option>
-          <option value="travel_round">猫猫旅行</option>
-        </Select>
-        <Select aria-label="执行频率" value={kind} disabled={!!busy} onChange={(e) => setKind(e.target.value as RuleKind)}>
-          <option value="daily">每天</option>
-          <option value="every">每隔</option>
-        </Select>
+        <Picker
+          label="任务动作"
+          value={action}
+          disabled={!!editing}
+          onValueChange={(next) => setAction(next as ScheduleAction)}
+          options={[
+            { value: 'checkin_round', label: '签到轮询' },
+            { value: 'credits_round', label: '积分刷新' },
+            { value: 'status_round', label: '账号状态刷新' },
+            { value: 'catalog_sync', label: '资料库采集' },
+            { value: 'travel_round', label: '猫猫旅行' },
+          ]}
+        />
+        <Picker
+          label="执行频率"
+          value={kind}
+          disabled={!!busy}
+          onValueChange={(next) => setKind(next as RuleKind)}
+          options={[
+            { value: 'daily', label: '每天' },
+            { value: 'every', label: '每隔' },
+          ]}
+        />
         {kind === 'daily' ? (
           // 原生时间控件：产出恒为 HH:mm，后端不再需要挡格式错误
-          <Input
-            className="w-28"
-            type="time"
-            aria-label="触发时刻"
-            value={at}
-            onChange={(e) => setAt(e.target.value)}
-            title="每天触发的时刻"
-          />
+          <Tooltip content="每天触发的时刻">
+            <Input
+              className="w-28"
+              type="time"
+              aria-label="触发时刻"
+              value={at}
+              onChange={(e) => setAt(e.target.value)}
+            />
+          </Tooltip>
         ) : (
           <>
-            <Input
-              className="w-20"
-              type="number"
-              aria-label="间隔数值"
-              min={1}
-              max={unit === 'hour' ? 168 : 10080}
-              value={every}
-              onChange={(e) => setEvery(e.target.value)}
-              title={unit === 'hour' ? '间隔小时数（1–168）' : '间隔分钟数（1–10080）'}
-            />
-            <Select
-              aria-label="间隔单位"
+            <Tooltip content={unit === 'hour' ? '间隔小时数（1–168）' : '间隔分钟数（1–10080）'}>
+              <Input
+                className="w-20"
+                type="number"
+                aria-label="间隔数值"
+                min={1}
+                max={unit === 'hour' ? 168 : 10080}
+                value={every}
+                onChange={(e) => setEvery(e.target.value)}
+              />
+            </Tooltip>
+            <Picker
+              label="间隔单位"
               value={unit}
               disabled={!!busy}
-              onChange={(e) => setUnit(e.target.value as 'minute' | 'hour')}
-            >
-              <option value="minute">分钟</option>
-              <option value="hour">小时</option>
-            </Select>
+              onValueChange={(next) => setUnit(next as 'minute' | 'hour')}
+              options={[
+                { value: 'minute', label: '分钟' },
+                { value: 'hour', label: '小时' },
+              ]}
+            />
           </>
         )}
         <Button size="sm" variant="primary" loading={busy === 'schedule-add'} disabled={!!busy} onClick={add}>
@@ -1279,17 +1358,18 @@ function BuiltinCard() {
     label: string,
     title: string,
   ) => (
-    <Input
-      type="number"
-      min={1}
-      max={1440}
-      className="w-20"
-      aria-label={label}
-      title={title}
-      value={value}
-      disabled={!!busy || !data}
-      onChange={(e) => onChange(numOr(e.target.value, value))}
-    />
+    <Tooltip content={title}>
+      <Input
+        type="number"
+        min={1}
+        max={1440}
+        className="w-20"
+        aria-label={label}
+        value={value}
+        disabled={!!busy || !data}
+        onChange={(e) => onChange(numOr(e.target.value, value))}
+      />
+    </Tooltip>
   );
 
   return (
@@ -1305,9 +1385,9 @@ function BuiltinCard() {
       {data && (
         <div className="flex flex-col gap-2 text-sm">
           <div className="flex flex-wrap items-center gap-3">
-            <span className="w-40 shrink-0 text-muted" title="本机会话索引多久增量扫一遍；改小能更快看到新会话">
+            <Hint className="w-40 shrink-0 text-muted" content="本机会话索引多久增量扫一遍；改小能更快看到新会话">
               会话扫描
-            </span>
+            </Hint>
             <span className="text-xs text-muted">每</span>
             {minuteInput(
               data.sessions.scan_interval_min,
@@ -1319,9 +1399,9 @@ function BuiltinCard() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <span className="w-40 shrink-0 text-muted" title="后台多久扫一次各账号用量；只读本地文件">
+            <Hint className="w-40 shrink-0 text-muted" content="后台多久扫一次各账号用量；只读本地文件">
               用量采集
-            </span>
+            </Hint>
             <span className="text-xs text-muted">每</span>
             {minuteInput(
               data.usage.scan_interval_min,
@@ -1333,16 +1413,16 @@ function BuiltinCard() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <span className="w-40 shrink-0 text-muted" title="开启后按间隔探测可领奖励；领取要过浏览器验证码">
-              ZCode 自动领取
-            </span>
-            <Checkbox
+            <span className="w-40 shrink-0 text-muted">ZCode 自动领取</span>
+            <Switch
               checked={data.activity.zcode_auto_claim}
               disabled={!!busy}
-              onChange={(e) =>
+              label="ZCode 自动领取"
+              hint="开启后按间隔探测可领奖励；领取要过浏览器验证码"
+              onCheckedChange={(next) =>
                 patch((c) => ({
                   ...c,
-                  activity: { ...c.activity, zcode_auto_claim: e.target.checked },
+                  activity: { ...c.activity, zcode_auto_claim: next },
                 }))
               }
             />
@@ -1357,19 +1437,16 @@ function BuiltinCard() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <span
-              className="w-40 shrink-0 text-muted"
-              title="启动时把本地客户端里的新账号捞进账号库；关掉则只从浏览器登录添加"
-            >
-              启动扫描客户端
-            </span>
-            <Checkbox
+            <span className="w-40 shrink-0 text-muted">启动扫描客户端</span>
+            <Switch
               checked={data.accounts.scan_on_startup}
               disabled={!!busy}
-              onChange={(e) =>
+              label="启动扫描客户端"
+              hint="启动时把本地客户端里的新账号捞进账号库；关掉则只从浏览器登录添加"
+              onCheckedChange={(next) =>
                 patch((c) => ({
                   ...c,
-                  accounts: { ...c.accounts, scan_on_startup: e.target.checked },
+                  accounts: { ...c.accounts, scan_on_startup: next },
                 }))
               }
             />
@@ -1402,12 +1479,11 @@ function RefreshPolicyNote() {
 
   return (
     <div className="mt-3 px-3 py-2">
-      <p
-        className="text-xs font-semibold"
-        title="上面的间隔是上限：到点这一轮只查「距上次成功查询已超过平台最小间隔」的账号，没到点的直接跳过——这是正常的限速，不是失败。手动「刷新积分」不受限制。"
-      >
-        各平台的自动刷新节奏
-      </p>
+      <Tooltip content="上面的间隔是上限：到点这一轮只查「距上次成功查询已超过平台最小间隔」的账号，没到点的直接跳过——这是正常的限速，不是失败。手动「刷新积分」不受限制。">
+        <p className="text-xs font-semibold">
+          各平台的自动刷新节奏
+        </p>
+      </Tooltip>
       <ul className="mt-1.5 flex flex-col gap-1 text-xs">
         {slow.map((p) => (
           <li key={p.platform} className="flex flex-wrap gap-x-2">

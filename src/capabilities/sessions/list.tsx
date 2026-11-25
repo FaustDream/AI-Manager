@@ -12,8 +12,8 @@ import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Checkbox, Input, Select, SkeletonRows, StateBlock } from '@/components/ui/form';
-import { Notice, Tag } from '@/components/ui';
+import { Checkbox, Input, SkeletonRows, StateBlock } from '@/components/ui/form';
+import { Hint, Notice, Picker, Tag, Tooltip } from '@/components/ui';
 import { DataTable, LoadMore, type RowActivateEvent } from '@/components/ui/table';
 import { toast } from '@/components/ui/toast';
 import { usePersistedChoice, usePersistedSet } from '@/lib/ui-state';
@@ -526,15 +526,16 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
               {archived ? ' · 归档只写本地标记，取消归档即回到活跃列表' : ''}
             </span>
             {!archived && facetsData && (
-              <button
-                type="button"
-                className="inline-flex cursor-pointer items-center gap-1 rounded-sm text-xs text-accent transition-colors duration-[var(--dur-1)] hover:text-accent-strong"
-                onClick={() => navigateArchive()}
-                title="归档只写本地标记，取消归档可恢复"
-              >
-                已归档（{archiveCount(facetsData)}）
-                <ArrowRight size={12} />
-              </button>
+              <Tooltip content="归档只写本地标记，取消归档可恢复">
+                <button
+                  type="button"
+                  className="inline-flex cursor-pointer items-center gap-1 rounded-sm text-xs text-accent transition-colors duration-[var(--dur-1)] hover:text-accent-strong"
+                  onClick={() => navigateArchive()}
+                >
+                  已归档（{archiveCount(facetsData)}）
+                  <ArrowRight size={12} />
+                </button>
+              </Tooltip>
             )}
             {archived && (
               <button
@@ -555,62 +556,56 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
             <div className="flex flex-wrap items-center gap-3 border-b border-line bg-sunken px-2.5 py-2 text-sm">
               <label className="flex items-center gap-1 text-muted">
                 平台
-                <Select
-                  value={filter.source ?? ''}
-                  onChange={(e) => setFilter((f) => ({ ...f, source: e.target.value || null }))}
-                >
-                  <option value="">全部</option>
-                  {platformOptions.map((s) => (
-                    <option key={s.value} value={s.value}>
-                      {s.label}（{s.count}）
-                    </option>
-                  ))}
-                </Select>
+                <Picker
+                  label="平台"
+                  value={filter.source ?? 'all'}
+                  onValueChange={(next) => setFilter((f) => ({ ...f, source: next === 'all' ? null : next }))}
+                  options={[
+                    { value: 'all', label: '全部' },
+                    ...platformOptions.map((s) => ({ value: s.value, label: `${s.label}（${s.count}）` })),
+                  ]}
+                />
               </label>
               {!archived && (
                 <label className="flex items-center gap-1 text-muted">
                   状态
-                  <Select
-                    value={filter.state ?? ''}
-                    onChange={(e) => setFilter((f) => ({ ...f, state: e.target.value || null }))}
-                  >
-                    <option value="">全部</option>
-                    {(facetsData?.states ?? []).map((s) => (
-                      <option key={s.value} value={s.value}>
-                        {s.label}
-                      </option>
-                    ))}
-                  </Select>
+                  <Picker
+                    label="状态"
+                    value={filter.state ?? 'all'}
+                    onValueChange={(next) => setFilter((f) => ({ ...f, state: next === 'all' ? null : next }))}
+                    options={[
+                      { value: 'all', label: '全部' },
+                      ...(facetsData?.states ?? []).map((s) => ({ value: s.value, label: s.label })),
+                    ]}
+                  />
                 </label>
               )}
               <label className="flex items-center gap-1 text-muted">
                 项目
-                <Select
-                  value={filter.project ?? ''}
-                  onChange={(e) => setFilter((f) => ({ ...f, project: e.target.value || null }))}
-                >
-                  <option value="">全部</option>
-                  {projectOptions.map((p) => (
-                    <option key={p.value} value={p.value}>
-                      {p.label}（{p.count}）
-                    </option>
-                  ))}
-                </Select>
+                <Picker
+                  label="项目"
+                  value={filter.project ?? 'all'}
+                  onValueChange={(next) => setFilter((f) => ({ ...f, project: next === 'all' ? null : next }))}
+                  options={[
+                    { value: 'all', label: '全部' },
+                    ...projectOptions.map((p) => ({ value: p.value, label: `${p.label}（${p.count}）` })),
+                  ]}
+                />
               </label>
               {(facetsData?.tags.length ?? 0) > 0 && (
                 <label className="flex items-center gap-1 text-muted">
                   标签
-                  <Select
-                    value={filter.tags?.[0] ?? ''}
-                    onChange={(e) => setFilter((f) => ({ ...f, tags: e.target.value ? [e.target.value] : [] }))}
-                  >
-                    <option value="">全部</option>
-                    {(facetsData?.tags ?? []).map((t) => (
-                      <option key={t.value} value={t.value}>
-                        {t.label}（{t.count}）
-                      </option>
-                    ))}
-                  </Select>
+                  <Picker
+                    label="标签"
+                    value={filter.tags?.[0] ?? 'all'}
+                    onValueChange={(next) =>
+                      setFilter((f) => ({ ...f, tags: next === 'all' ? [] : [next] }))
+                    }
+                    options={[
+                      { value: 'all', label: '全部' },
+                      ...(facetsData?.tags ?? []).map((t) => ({ value: t.value, label: `${t.label}（${t.count}）` })),
+                    ]}
+                  />
                 </label>
               )}
               <label className="flex items-center gap-1 text-muted">
@@ -658,34 +653,41 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
             <div className="flex flex-wrap items-center gap-3 px-2.5 py-2 text-sm">
               <label className="flex items-center gap-1 text-muted">
                 排序
-                <Select
+                <Picker
+                  label="排序"
                   value={filter.sort ?? 'last_at'}
-                  onChange={(e) => setFilter((f) => ({ ...f, sort: e.target.value as Filter['sort'] }))}
-                >
-                  <option value="last_at">最近时间</option>
-                  <option value="size">占用大小</option>
-                  <option value="msgs">消息数</option>
-                </Select>
+                  onValueChange={(next) => setFilter((f) => ({ ...f, sort: next as Filter['sort'] }))}
+                  options={[
+                    { value: 'last_at', label: '最近时间' },
+                    { value: 'size', label: '占用大小' },
+                    { value: 'msgs', label: '消息数' },
+                  ]}
+                />
               </label>
               <label className="flex items-center gap-1 text-muted">
                 分组
-                <Select value={group} onChange={(e) => setGroup(e.target.value as GroupMode)}>
-                  <option value="none">不分组</option>
-                  <option value="source">按平台</option>
-                  <option value="project">按项目</option>
-                  {!archived && <option value="state">按状态</option>}
-                </Select>
+                <Picker
+                  label="分组"
+                  value={group}
+                  onValueChange={(next) => setGroup(next as GroupMode)}
+                  options={[
+                    { value: 'none', label: '不分组' },
+                    { value: 'source', label: '按平台' },
+                    { value: 'project', label: '按项目' },
+                    ...(archived ? [] : [{ value: 'state', label: '按状态' }]),
+                  ]}
+                />
               </label>
               {!archived && (
-                <label
-                  className="flex items-center gap-1 text-muted"
-                  title="超过这个天数没活动的会话，扫描时自动归档"
-                >
-                  自动归档
-                  <Select
+                <label className="flex items-center gap-1 text-muted">
+                  <Hint content="超过这个天数没活动的会话，扫描时自动归档" focusable={false}>
+                    自动归档
+                  </Hint>
+                  <Picker
+                    label="自动归档"
                     value={String(retention.data ?? 0)}
-                    onChange={(e) => {
-                      const days = Number(e.target.value);
+                    onValueChange={(next) => {
+                      const days = Number(next);
                       // 走 runCmd：写设置属于动作，失败由命令面统一提示并留痕，页面不自拼错误话术
                       void runCmd('session_retention_set', { days }).then((saved) => {
                         if (saved === undefined) return;
@@ -694,13 +696,11 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                         refresh();
                       });
                     }}
-                  >
-                    {RETENTION_CHOICES.map((choice) => (
-                      <option key={choice.days} value={choice.days}>
-                        {choice.label}
-                      </option>
-                    ))}
-                  </Select>
+                    options={RETENTION_CHOICES.map((choice) => ({
+                      value: String(choice.days),
+                      label: choice.label,
+                    }))}
+                  />
                 </label>
               )}
               <span className="flex-1" />
@@ -722,16 +722,17 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
           {/* 未命名治理：只在未命名快筛激活时出现 */}
           {!archived && filter.unnamed && (
             <div className="flex items-center gap-2 text-sm">
-              <Button
-                size="sm"
-                variant="ghost"
-                loading={busy === 'suggest'}
-                disabled={!!busy}
-                onClick={openSuggestTitles}
-                title="取每条会话的第一句提问当标题建议，人工确认后写入本地命名"
-              >
-                为未命名会话生成标题建议
-              </Button>
+              <Tooltip content="取每条会话的第一句提问当标题建议，人工确认后写入本地命名">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  loading={busy === 'suggest'}
+                  disabled={!!busy}
+                  onClick={openSuggestTitles}
+                >
+                  为未命名会话生成标题建议
+                </Button>
+              </Tooltip>
               <span className="text-xs text-muted">建议写入的是本工具的显示名，客户端不受影响。</span>
             </div>
           )}
@@ -739,15 +740,16 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
           {/* 选择操作单独一行：左边说清楚「选了几条」，右边才是动作 */}
           <div className="flex flex-wrap items-center gap-2 text-sm">
             {checked.size > 0 && <span className="text-xs text-muted">已选 {checked.size} 条</span>}
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => void selectAllMatching()}
-              disabled={total === 0 || !!busy}
-              title="按当前筛选选中全部会话（不只是当前页）"
-            >
-              全选{total > 0 ? `（${total}）` : ''}
-            </Button>
+            <Tooltip content="按当前筛选选中全部会话（不只是当前页）">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => void selectAllMatching()}
+                disabled={total === 0 || !!busy}
+              >
+                全选{total > 0 ? `（${total}）` : ''}
+              </Button>
+            </Tooltip>
             {checked.size > 0 && (
               <Button
                 size="sm"
@@ -764,90 +766,98 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
             <span className="flex-1" />
             {archived ? (
               <>
-                <Button
-                  size="sm"
-                  disabled={!hasSel || !!busy}
-                  loading={busy === 'unarchive'}
-                  onClick={() => archiveSelected(false)}
-                  title="取消归档后回到活跃列表"
-                >
-                  取消归档
-                </Button>
-                <Button
-                  size="sm"
-                  variant="danger"
-                  disabled={!hasSel || !!busy}
-                  loading={busy === 'purge'}
-                  onClick={purgeSelected}
-                  title="从客户端真正删除，不可恢复"
-                >
-                  彻底删除
-                </Button>
-              </>
-            ) : (
-              <>
-                {filter.hidden ? (
+                <Tooltip content="取消归档后回到活跃列表">
                   <Button
                     size="sm"
                     disabled={!hasSel || !!busy}
-                    loading={busy === 'hide'}
-                    onClick={() => hideSelected(false)}
-                    title="取消隐藏后回到活跃列表"
+                    loading={busy === 'unarchive'}
+                    onClick={() => archiveSelected(false)}
                   >
-                    取消隐藏
+                    取消归档
                   </Button>
-                ) : (
-                  <>
-                    <Button
-                      size="sm"
-                      disabled={!hasSel || visibleChecked.length === 0 || !!busy}
-                      loading={busy === 'archive'}
-                      onClick={() => archiveSelected(true)}
-                      title="归档后不再出现在活跃列表；可见会话必须先归档才能彻底删除"
-                    >
-                      归档{visibleChecked.length > 0 ? `（${visibleChecked.length}）` : ''}
-                    </Button>
-                    <Button
-                      size="sm"
-                      disabled={!hasSel || !!busy}
-                      loading={busy === 'pin'}
-                      onClick={() => pinSelected(true)}
-                      title="置顶：排在列表最前，不随排序变化"
-                    >
-                      置顶
-                    </Button>
-                    <Button
-                      size="sm"
-                      disabled={!hasSel || !!busy}
-                      loading={busy === 'hide'}
-                      onClick={() => hideSelected(true)}
-                      title="本地隐藏：列表不再出现，可从「已隐藏」chip 找回"
-                    >
-                      隐藏
-                    </Button>
-                  </>
-                )}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!hasSel || !!busy}
-                  loading={busy === 'export'}
-                  onClick={() => exportSelected('markdown')}
-                  title="导出选中会话的正文为 Markdown（输出到数据目录 exports/）"
-                >
-                  导出
-                </Button>
-                {specialChecked.length > 0 && (
+                </Tooltip>
+                <Tooltip content="从客户端真正删除，不可恢复">
                   <Button
                     size="sm"
                     variant="danger"
                     disabled={!hasSel || !!busy}
                     loading={busy === 'purge'}
                     onClick={purgeSelected}
-                    title="特殊状态（已删除 / 云端 / 旧账号 / 孤立）可直接彻底删除"
                   >
-                    彻底删除（{specialChecked.length}）
+                    彻底删除
                   </Button>
+                </Tooltip>
+              </>
+            ) : (
+              <>
+                {filter.hidden ? (
+                  <Tooltip content="取消隐藏后回到活跃列表">
+                    <Button
+                      size="sm"
+                      disabled={!hasSel || !!busy}
+                      loading={busy === 'hide'}
+                      onClick={() => hideSelected(false)}
+                    >
+                      取消隐藏
+                    </Button>
+                  </Tooltip>
+                ) : (
+                  <>
+                    <Tooltip content="归档后不再出现在活跃列表；可见会话必须先归档才能彻底删除">
+                      <Button
+                        size="sm"
+                        disabled={!hasSel || visibleChecked.length === 0 || !!busy}
+                        loading={busy === 'archive'}
+                        onClick={() => archiveSelected(true)}
+                      >
+                        归档{visibleChecked.length > 0 ? `（${visibleChecked.length}）` : ''}
+                      </Button>
+                    </Tooltip>
+                    <Tooltip content="置顶：排在列表最前，不随排序变化">
+                      <Button
+                        size="sm"
+                        disabled={!hasSel || !!busy}
+                        loading={busy === 'pin'}
+                        onClick={() => pinSelected(true)}
+                      >
+                        置顶
+                      </Button>
+                    </Tooltip>
+                    <Tooltip content="本地隐藏：列表不再出现，可从「已隐藏」chip 找回">
+                      <Button
+                        size="sm"
+                        disabled={!hasSel || !!busy}
+                        loading={busy === 'hide'}
+                        onClick={() => hideSelected(true)}
+                      >
+                        隐藏
+                      </Button>
+                    </Tooltip>
+                  </>
+                )}
+                <Tooltip content="导出选中会话的正文为 Markdown（输出到数据目录 exports/）">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!hasSel || !!busy}
+                    loading={busy === 'export'}
+                    onClick={() => exportSelected('markdown')}
+                  >
+                    导出
+                  </Button>
+                </Tooltip>
+                {specialChecked.length > 0 && (
+                  <Tooltip content="特殊状态（已删除 / 云端 / 旧账号 / 孤立）可直接彻底删除">
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      disabled={!hasSel || !!busy}
+                      loading={busy === 'purge'}
+                      onClick={purgeSelected}
+                    >
+                      彻底删除（{specialChecked.length}）
+                    </Button>
+                  </Tooltip>
                 )}
               </>
             )}
@@ -1021,15 +1031,16 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                     {items.find((r) => rowKey(r) === selected)?.title || '（无标题）'}
                   </h3>
                   <CopyAllButton messages={preview.data.messages} />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    title="关闭预览"
-                    aria-label="关闭预览"
-                    onClick={() => setSelected(null)}
-                  >
-                    ×
-                  </Button>
+                  <Tooltip content="关闭预览">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label="关闭预览"
+                      onClick={() => setSelected(null)}
+                    >
+                      ×
+                    </Button>
+                  </Tooltip>
                 </div>
                 {preview.data.truncated && (
                   <Notice className="mb-2">
@@ -1107,20 +1118,21 @@ function FilterChip({
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
-      className={`cursor-pointer rounded-md border px-2.5 py-1 text-sm transition-colors duration-[var(--dur-1)] ${
-        active
-          ? 'border-accent bg-accent font-medium text-on-accent'
-          : 'border-line bg-bg text-fg2 hover:border-line-strong hover:bg-hover hover:text-fg'
-      }`}
-      onClick={onClick}
-      title={title}
-      // 选中态不能只靠底色表达（P2-10）：读屏靠 aria-pressed，视觉上还有字重差
-      aria-pressed={active}
-    >
-      {label}
-    </button>
+    <Tooltip content={title}>
+      <button
+        type="button"
+        className={`cursor-pointer rounded-md border px-2.5 py-1 text-sm transition-colors duration-[var(--dur-1)] ${
+          active
+            ? 'border-accent bg-accent font-medium text-on-accent'
+            : 'border-line bg-bg text-fg2 hover:border-line-strong hover:bg-hover hover:text-fg'
+        }`}
+        onClick={onClick}
+        // 选中态不能只靠底色表达（P2-10）：读屏靠 aria-pressed，视觉上还有字重差
+        aria-pressed={active}
+      >
+        {label}
+      </button>
+    </Tooltip>
   );
 }
 

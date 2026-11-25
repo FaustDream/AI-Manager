@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Grid2X2, List, RotateCcw } from 'lucide-react';
-import { Button, Card, Input, Notice, Section, Select, SkeletonBlock, StateBlock } from '@/components/ui';
+import { Button, Card, Hint, Input, Notice, Picker, Section, SkeletonBlock, StateBlock, Tooltip } from '@/components/ui';
 import { DataTable } from '@/components/ui/table';
 import { errMsg, queryCmd } from '@/lib/cmd';
 import { listen } from '@/lib/events';
@@ -24,10 +24,12 @@ const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 function FacetFilter({ label, value, items, disabled, onChange, region = false }: {
   label: string; value: string; items: CatalogFacetCount[]; disabled: boolean; onChange: (value: string) => void; region?: boolean;
 }) {
-  return <Select aria-label={label} value={value} disabled={disabled} title={disabled ? '这些组合筛选适用于媒体库与发行日历' : label} onChange={(event) => onChange(event.target.value)}>
-    <option value="">全部{label}</option>
-    {items.map((item) => <option key={item.key} value={item.key}>{region ? regionLabel(item.key) : item.label || item.key}（{item.count}）</option>)}
-  </Select>;
+  return <Hint content={disabled ? '这些组合筛选适用于媒体库与发行日历' : label} focusable={false}>
+    <Picker label={label} value={value} disabled={disabled} onValueChange={onChange} options={[
+      { value: '', label: `全部${label}` },
+      ...items.map((item) => ({ value: item.key, label: `${region ? regionLabel(item.key) : item.label || item.key}（${item.count}）` })),
+    ]} />
+  </Hint>;
 }
 
 export function CatalogPage() {
@@ -40,7 +42,7 @@ export function CatalogPage() {
   const [sort, setSort] = useState('newest');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(24);
-  const [layout, setLayout] = useState<'grid' | 'table'>('grid');
+  const [layout, setLayout] = useState<'grid' | 'table'>('table');
   const [mediaKey, setMediaKey] = useState<string | null>(null);
   const isList = ['library', 'daily', 'weekly'].includes(tab);
   const isSchedule = tab === 'daily' || tab === 'weekly';
@@ -89,7 +91,9 @@ export function CatalogPage() {
         <div className="flex flex-wrap gap-1" aria-label="媒体库视图">
           {TABS.map((item) => <Button key={item.id} type="button" size="sm" variant={tab === item.id ? 'soft' : 'ghost'} aria-pressed={tab === item.id} onClick={() => changeTab(item.id)}>{item.label}</Button>)}
         </div>
-        <Input type="search" aria-label="搜索作品名称或别名" placeholder="搜索作品名称、原名、别名" value={search} className="min-w-0 flex-1 sm:min-w-48" title="概览与采集管理不接受作品筛选；输入搜索会转到媒体库" onChange={(event) => { setSearch(event.target.value); setPage(1); if (!isList) changeTab('library'); }} />
+        <Tooltip content="概览与采集管理不接受作品筛选；输入搜索会转到媒体库">
+          <Input type="search" aria-label="搜索作品名称或别名" placeholder="搜索作品名称、原名、别名" value={search} className="min-w-0 flex-1 sm:min-w-48" onChange={(event) => { setSearch(event.target.value); setPage(1); if (!isList) changeTab('library'); }} />
+        </Tooltip>
         {isList && <div className="flex gap-1" aria-label="展示方式">
           <Button type="button" size="sm" variant={layout === 'grid' ? 'soft' : 'ghost'} aria-label="卡片视图" aria-pressed={layout === 'grid'} onClick={() => setLayout('grid')}><Grid2X2 size={13} aria-hidden /></Button>
           <Button type="button" size="sm" variant={layout === 'table' ? 'soft' : 'ghost'} aria-label="紧凑表格" aria-pressed={layout === 'table'} onClick={() => setLayout('table')}><List size={13} aria-hidden /></Button>
@@ -97,26 +101,55 @@ export function CatalogPage() {
       </div>
       <div className="flex flex-col gap-2 p-2">
         <div className="flex flex-wrap gap-1" aria-label="作品类型">
-          <Button type="button" size="sm" variant={!filters.kind ? 'soft' : 'ghost'} disabled={!isList} title={!isList ? '类型筛选适用于媒体库与日历' : undefined} aria-pressed={!filters.kind} onClick={() => changeFilter('kind', '')}>全部类型</Button>
+          <Tooltip content={!isList ? '类型筛选适用于媒体库与日历' : undefined}>
+            <Button type="button" size="sm" variant={!filters.kind ? 'soft' : 'ghost'} disabled={!isList} aria-pressed={!filters.kind} onClick={() => changeFilter('kind', '')}>全部类型</Button>
+          </Tooltip>
           {KIND_ORDER.map((kind) => {
             const facet = facetsQ.data?.kinds.find((item) => item.key === kind);
-            return <Button key={kind} type="button" size="sm" variant={filters.kind === kind ? 'soft' : 'ghost'} disabled={!isList} title={!isList ? '类型筛选适用于媒体库与日历' : facet ? '计数来自当前资料库，不代表来源全量覆盖' : '该类型暂未返回数据库计数'} aria-pressed={filters.kind === kind} onClick={() => changeFilter('kind', kind)}>{kindLabel(kind)}{facet ? `（${facet.count}）` : ''}</Button>;
+            return <Tooltip key={kind} content={!isList ? '类型筛选适用于媒体库与日历' : facet ? '计数来自当前资料库，不代表来源全量覆盖' : '该类型暂未返回数据库计数'}>
+              <Button type="button" size="sm" variant={filters.kind === kind ? 'soft' : 'ghost'} disabled={!isList} aria-pressed={filters.kind === kind} onClick={() => changeFilter('kind', kind)}>{kindLabel(kind)}{facet ? `（${facet.count}）` : ''}</Button>
+            </Tooltip>;
           })}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <FacetFilter label="国家/地区" value={filters.region} items={facetsQ.data?.regions ?? []} disabled={!isList || facetsQ.isLoading} onChange={(value) => changeFilter('region', value)} region />
           <FacetFilter label="题材" value={filters.genre} items={facetsQ.data?.genres ?? []} disabled={!isList || facetsQ.isLoading} onChange={(value) => changeFilter('genre', value)} />
           <FacetFilter label="平台" value={filters.platform} items={facetsQ.data?.platforms ?? []} disabled={!isList || facetsQ.isLoading} onChange={(value) => changeFilter('platform', value)} />
-          <Select aria-label="发行状态" value={filters.status} disabled={!isList} title={!isList ? '状态筛选适用于媒体库与日历' : '作品发行状态，不是观看状态'} onChange={(event) => changeFilter('status', event.target.value)}><option value="">全部发行状态</option>{Object.entries(MEDIA_STATUSES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</Select>
-          <Select aria-label="年份" value={filters.year} disabled={!isList || facetsQ.isLoading} title={!isList ? '年份筛选适用于媒体库与日历' : '年份来自数据库'} onChange={(event) => changeFilter('year', event.target.value)}><option value="">全部年份</option>{(facetsQ.data?.years ?? []).map((year) => <option key={year} value={year}>{year} 年</option>)}</Select>
-          <Select aria-label="用户或观众评分下限，十分制" value={filters.rating} disabled={!isList} title="后端选择一个用户/观众评分换算为十分制；来源见条目。不是专业评论或综合评分" onChange={(event) => changeFilter('rating', event.target.value)}><option value="">用户/观众评分不限</option>{[6, 7, 8, 9].map((rating) => <option key={rating} value={rating}>用户/观众 ≥ {rating} / 10</option>)}</Select>
+          <Hint content={!isList ? '状态筛选适用于媒体库与日历' : '作品发行状态，不是观看状态'} focusable={false}>
+            <Picker label="发行状态" value={filters.status} disabled={!isList} onValueChange={(next) => changeFilter('status', next)} options={[
+              { value: '', label: '全部发行状态' },
+              ...Object.entries(MEDIA_STATUSES).map(([key, label]) => ({ value: key, label })),
+            ]} />
+          </Hint>
+          <Hint content={!isList ? '年份筛选适用于媒体库与日历' : '年份来自数据库'} focusable={false}>
+            <Picker label="年份" value={filters.year} disabled={!isList || facetsQ.isLoading} onValueChange={(next) => changeFilter('year', next)} options={[
+              { value: '', label: '全部年份' },
+              ...(facetsQ.data?.years ?? []).map((year) => ({ value: String(year), label: `${year} 年` })),
+            ]} />
+          </Hint>
+          <Hint content="后端选择一个用户/观众评分换算为十分制；来源见条目。不是专业评论或综合评分" focusable={false}>
+            <Picker label="用户或观众评分下限，十分制" value={filters.rating} disabled={!isList} onValueChange={(next) => changeFilter('rating', next)} options={[
+              { value: '', label: '用户/观众评分不限' },
+              ...[6, 7, 8, 9].map((rating) => ({ value: String(rating), label: `用户/观众 ≥ ${rating} / 10` })),
+            ]} />
+          </Hint>
           {hasFilters && <Button type="button" size="sm" variant="ghost" onClick={resetFilters}><RotateCcw size={12} aria-hidden />清空筛选</Button>}
-          {isList && <Select aria-label="排序" value={sort} className="ml-auto" onChange={(event) => { setSort(event.target.value); setPage(1); }}>{isSchedule && <option value="time">发行时间</option>}<option value="rating">用户/观众评分</option><option value="newest">{isSchedule ? '近期发行优先' : '最新收录'}</option><option value="title">标题</option>{!isSchedule && <option value="year">年份</option>}</Select>}
+          {isList && <Picker label="排序" value={sort} className="ml-auto" onValueChange={(next) => { setSort(next); setPage(1); }} options={[
+            ...(isSchedule ? [{ value: 'time', label: '发行时间' }] : []),
+            { value: 'rating', label: '用户/观众评分' },
+            { value: 'newest', label: isSchedule ? '近期发行优先' : '最新收录' },
+            { value: 'title', label: '标题' },
+            ...(!isSchedule ? [{ value: 'year', label: '年份' }] : []),
+          ]} />}
         </div>
         {isSchedule && <div className="flex flex-wrap items-center gap-2 border-t border-line pt-2">
-          <Button type="button" size="sm" variant="ghost" aria-label={tab === 'weekly' ? '上一周' : '上一天'} disabled={!dateValid} title={!dateValid ? '请先选择有效日期' : undefined} onClick={() => changeDate(shiftISO(date, tab === 'weekly' ? -7 : -1))}><ChevronLeft size={14} aria-hidden /></Button>
+          <Tooltip content={!dateValid ? '请先选择有效日期' : undefined}>
+            <Button type="button" size="sm" variant="ghost" aria-label={tab === 'weekly' ? '上一周' : '上一天'} disabled={!dateValid} onClick={() => changeDate(shiftISO(date, tab === 'weekly' ? -7 : -1))}><ChevronLeft size={14} aria-hidden /></Button>
+          </Tooltip>
           <Input type="date" aria-label={tab === 'weekly' ? '选择周一至周日的任一天' : '每日发行日期'} value={date} invalid={!dateValid} onChange={(event) => changeDate(event.target.value)} />
-          <Button type="button" size="sm" variant="ghost" aria-label={tab === 'weekly' ? '下一周' : '下一天'} disabled={!dateValid} title={!dateValid ? '请先选择有效日期' : undefined} onClick={() => changeDate(shiftISO(date, tab === 'weekly' ? 7 : 1))}><ChevronRight size={14} aria-hidden /></Button>
+          <Tooltip content={!dateValid ? '请先选择有效日期' : undefined}>
+            <Button type="button" size="sm" variant="ghost" aria-label={tab === 'weekly' ? '下一周' : '下一天'} disabled={!dateValid} onClick={() => changeDate(shiftISO(date, tab === 'weekly' ? 7 : 1))}><ChevronRight size={14} aria-hidden /></Button>
+          </Tooltip>
           <Button type="button" size="sm" variant="ghost" onClick={() => changeDate(todayISO())}>{tab === 'weekly' ? '本周' : '今天'}</Button>
           {dateValid && <span className="text-xs tabular-nums text-fg2">{tab === 'weekly' ? `${formatDay(range.start)} — ${formatDay(range.last)}` : formatDay(date)}</span>}
           {tab === 'weekly' && <div className="flex flex-wrap gap-1" aria-label="星期筛选">
@@ -149,9 +182,13 @@ function Pagination({ total, page, pageSize, loading, onPage, onPageSize }: {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   return <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-fg2">
     <span className="mr-auto tabular-nums" role="status">共 {total} 条 · 第 {page} / {pages} 页</span>
-    <Select aria-label="每页条数" value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>{[24, 48, 100].map((size) => <option key={size} value={size}>{size} 条 / 页</option>)}</Select>
-    <Button type="button" size="sm" variant="ghost" disabled={loading || page <= 1} title={page <= 1 ? '已是第一页' : loading ? '正在查询' : undefined} aria-label="上一页" onClick={() => onPage(page - 1)}><ChevronLeft size={13} aria-hidden />上一页</Button>
-    <Button type="button" size="sm" variant="ghost" disabled={loading || page >= pages} title={page >= pages ? '已是最后一页' : loading ? '正在查询' : undefined} aria-label="下一页" onClick={() => onPage(page + 1)}>下一页<ChevronRight size={13} aria-hidden /></Button>
+    <Picker label="每页条数" value={String(pageSize)} onValueChange={(next) => onPageSize(Number(next))} options={[24, 48, 100].map((size) => ({ value: String(size), label: `${size} 条 / 页` }))} />
+    <Tooltip content={page <= 1 ? '已是第一页' : loading ? '正在查询' : undefined}>
+      <Button type="button" size="sm" variant="ghost" disabled={loading || page <= 1} aria-label="上一页" onClick={() => onPage(page - 1)}><ChevronLeft size={13} aria-hidden />上一页</Button>
+    </Tooltip>
+    <Tooltip content={page >= pages ? '已是最后一页' : loading ? '正在查询' : undefined}>
+      <Button type="button" size="sm" variant="ghost" disabled={loading || page >= pages} aria-label="下一页" onClick={() => onPage(page + 1)}>下一页<ChevronRight size={13} aria-hidden /></Button>
+    </Tooltip>
   </div>;
 }
 

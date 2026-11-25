@@ -30,7 +30,7 @@ use crate::app::accounts::credential::Credential;
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::providers::{Provider, Sink};
-use crate::types::{trim_f64, CreditSnapshot};
+use crate::types::{trim_f64, CreditSnapshot, CredentialKind, CredentialShape};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -133,6 +133,18 @@ impl Provider for DoubaoProvider {
         None
     }
 
+    fn credential_shape(&self) -> CredentialShape {
+        CredentialShape {
+            kind: CredentialKind::PastedCookie,
+            label: "粘贴 Cookie".into(),
+            // 一份 Cookie = 一个账号，多号并存互不覆盖
+            multi_account: true,
+            switchable: false,
+            expiry_known: false,
+            note: "登录态由你从浏览器粘贴，本工具不重扫客户端也不写回。一份 Cookie 一个账号；平台不下发到期时间，失效时重新粘贴一次".into(),
+        }
+    }
+
     /// 豆包没有可重扫的登录态：Cookie 存在本工具里，客户端那边读不出来。
     /// 不声明这一条，「刷新凭据」会对豆包报「已是最新」，等于骗人。
     fn scannable(&self) -> bool {
@@ -186,6 +198,8 @@ impl Provider for DoubaoProvider {
             balance: Some(available),
             lots: None,
             quota: None,
+            // 豆包不在本工具签到，没有签到结论可带
+            checked_in: None,
         })
     }
 }

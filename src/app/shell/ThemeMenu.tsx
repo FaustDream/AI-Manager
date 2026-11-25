@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, Monitor, Palette } from 'lucide-react';
 import { cn } from '@/components/ui/button';
+import { Hint } from '@/components/ui/tooltip';
 import { saveTheme, THEME_STYLES, useThemeChoice, type ThemeChoice } from '@/lib/theme';
 
 export function ThemeMenu() {
@@ -43,22 +44,23 @@ export function ThemeMenu() {
 
   return (
     <div className="relative shrink-0" ref={host}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={`视觉风格：${currentName}`}
-        aria-label={`视觉风格：${currentName}，点击切换`}
-        className={cn(
-          'flex cursor-pointer items-center gap-1.5 rounded-md border border-line px-2 py-1 text-sm text-fg2',
-          'transition-colors duration-[var(--dur-1)] hover:bg-hover hover:text-fg',
-          open && 'bg-hover text-fg',
-        )}
-      >
-        <Palette size={14} className="text-accent" />
-        <span className="hidden xl:inline">{currentName}</span>
-      </button>
+      <Hint content={`视觉风格：${currentName}`} focusable={false}>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={`视觉风格：${currentName}，点击切换`}
+          className={cn(
+            'flex cursor-pointer items-center gap-1.5 rounded-md border border-line px-2 py-1 text-sm text-fg2',
+            'transition-colors duration-[var(--dur-1)] hover:bg-hover hover:text-fg',
+            open && 'bg-hover text-fg',
+          )}
+        >
+          <Palette size={14} className="text-accent" />
+          <span className="hidden xl:inline">{currentName}</span>
+        </button>
+      </Hint>
 
       {open && (
         <div

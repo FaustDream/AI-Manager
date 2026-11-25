@@ -1,7 +1,7 @@
 // hub 的展示件：平台选择器（已部署/已存在的平台锁定）、子标签页、来源标签。
 // 从 page.tsx 拆出——纯展示、无业务状态，没有理由和页面状态机挤在一个文件里。
 import { Checkbox } from '@/components/ui/form';
-import { Tag } from '@/components/ui';
+import { Tabs, Tag } from '@/components/ui';
 import type { HubSnapshot } from '@/lib/types';
 
 export function TargetPicker({
@@ -114,26 +114,14 @@ export function SubTabs({
 }) {
   return (
     // 下划线式：与上一行的实心 accent 主标签区分开，一眼看出是「页内子视图」
-    <div role="tablist" className="flex items-center gap-1 border-b border-line">
-      {items.map((it) => {
-        const on = value === it.key;
-        return (
-          <button
-            key={it.key}
-            type="button"
-            role="tab"
-            aria-selected={on}
-            className={`-mb-px cursor-pointer border-b-2 px-2.5 py-1.5 text-xs transition-colors duration-[var(--dur-1)] ${
-              on
-                ? 'border-accent font-medium text-accent'
-                : 'border-transparent text-muted hover:border-line-strong hover:text-fg'
-            }`}
-            onClick={() => onChange(it.key)}
-          >
-            {it.label}
-          </button>
-        );
-      })}
-    </div>
+    <Tabs
+      label="页内子视图"
+      variant="underline"
+      size="sm"
+      value={value}
+      onValueChange={onChange}
+      className="gap-1 border-b border-line"
+      items={items.map((it) => ({ value: it.key, label: it.label }))}
+    />
   );
 }

@@ -4,8 +4,9 @@ import { useEffect, useRef } from 'react';
 import { listen } from '@/lib/events';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/components/ui/toast';
+import { TooltipProvider } from '@/components/ui';
 import { queryCmd } from '@/lib/cmd';
-import type { LoginOutcome, LogLine, RoundResult, SessionScanReport } from '@/lib/types';
+import type { AccountView, LoginOutcome, LogLine, RoundResult, SessionScanReport } from '@/lib/types';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -23,6 +24,17 @@ function EventBridges() {
   const lastScanError = useRef<string | null>(null);
   useEffect(() => {
     const unbinds = [
+      // 逐账号实时更新：批量动作里每做完一个账号，后端推一行的最新视图。
+      // 直接替换缓存里那一行——十几秒的批次里用户能看着行一个个变，
+      // 不必等整批结束。批次末的 credits:round 仍做整体对账。
+      listen<AccountView>('account:updated', (e) => {
+        const row = e.payload;
+        if (!row?.iid) return;
+        qc.setQueryData<AccountView[]>(['accounts'], (rows) =>
+          rows?.map((r) => (r.iid === row.iid ? row : r)),
+        );
+        qc.invalidateQueries({ queryKey: ['detail', row.iid] });
+      }),
       listen<RoundResult>('checkin:round', (e) => {
         qc.setQueryData(['daily'], e.payload);
         qc.invalidateQueries({ queryKey: ['accounts'] });
@@ -118,8 +130,10 @@ function EventBridges() {
 export function AppProviders({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
-      <EventBridges />
-      {children}
+      <TooltipProvider>
+        <EventBridges />
+        {children}
+      </TooltipProvider>
     </QueryClientProvider>
   );
 }

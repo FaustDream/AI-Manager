@@ -1,7 +1,7 @@
 // 会话视图的共享模型：分页大小、行键、状态色、两个列表的列定义。
 // 活跃列表与「已归档会话」独立页共用，避免两处各写一份列定义慢慢漂移。
 import type { Column } from '@/components/ui/table';
-import { Tag } from '@/components/ui';
+import { Hint, Tag, Tooltip } from '@/components/ui';
 import { fmtSize, fmtTime } from '@/lib/format';
 import type { SessionRow } from '@/lib/types';
 import { STATE_LABELS } from './grouping';
@@ -19,36 +19,37 @@ export function TitleMarks({
   return (
     <span className="inline-flex shrink-0 items-center gap-1 align-middle">
       {row.pinned && (
-        <span title="已置顶（排在列表最前）" className="text-accent">
+        <Hint content="已置顶（排在列表最前）" focusable={false} className="text-accent">
           <StarIcon filled />
-        </span>
+        </Hint>
       )}
       {row.renamed && (
-        <span title="本地命名（客户端标题不变，扫描不会覆盖）" className="text-muted">
+        <Hint content="本地命名（客户端标题不变，扫描不会覆盖）" focusable={false} className="text-muted">
           <PencilIcon />
-        </span>
+        </Hint>
       )}
       {onTogglePin && (
-        <button
-          type="button"
-          // 悬停才显形，但**键盘也要能拿到**（P1-9）：`hidden` 会 display:none，
-          // Tab 永远跳过它，等于这功能对键盘用户不存在。sr-only 保留 1px 可聚焦盒
-          // （不占位、也不会误点），聚焦或悬停时还原成正常图标。
-          className={
-            row.pinned
-              ? 'sr-only cursor-pointer text-accent group-hover:not-sr-only group-focus-within:not-sr-only focus-visible:not-sr-only'
-              : 'sr-only cursor-pointer text-muted group-hover:not-sr-only group-focus-within:not-sr-only focus-visible:not-sr-only'
-          }
-          title={row.pinned ? '取消置顶' : '置顶（排在列表最前）'}
-          aria-label={row.pinned ? '取消置顶' : '置顶'}
-          aria-pressed={row.pinned}
-          onClick={(e) => {
-            e.stopPropagation();
-            onTogglePin(row);
-          }}
-        >
-          <StarIcon filled={row.pinned} />
-        </button>
+        <Tooltip content={row.pinned ? '取消置顶' : '置顶（排在列表最前）'}>
+          <button
+            type="button"
+            // 悬停才显形，但**键盘也要能拿到**（P1-9）：`hidden` 会 display:none，
+            // Tab 永远跳过它，等于这功能对键盘用户不存在。sr-only 保留 1px 可聚焦盒
+            // （不占位、也不会误点），聚焦或悬停时还原成正常图标。
+            className={
+              row.pinned
+                ? 'sr-only cursor-pointer text-accent group-hover:not-sr-only group-focus-within:not-sr-only focus-visible:not-sr-only'
+                : 'sr-only cursor-pointer text-muted group-hover:not-sr-only group-focus-within:not-sr-only focus-visible:not-sr-only'
+            }
+            aria-label={row.pinned ? '取消置顶' : '置顶'}
+            aria-pressed={row.pinned}
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePin(row);
+            }}
+          >
+            <StarIcon filled={row.pinned} />
+          </button>
+        </Tooltip>
       )}
     </span>
   );

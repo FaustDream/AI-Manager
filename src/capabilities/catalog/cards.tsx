@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ImageOff } from 'lucide-react';
-import { Card, Tag, cn } from '@/components/ui';
+import { Card, Hint, Tag, cn } from '@/components/ui';
 import type { CatalogMedia, CatalogRelease } from '@/lib/types';
 import { audienceRating, kindLabel, listOrUnknown, regionsLabel, sourceLabel, statusLabel } from './helpers';
 
@@ -37,11 +37,11 @@ export function MediaCard({ media, release, onOpen }: { media: CatalogMedia; rel
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen(media.key); }
     }}>
       <Poster src={media.poster} title={media.title} />
-      <div className="line-clamp-2 text-sm font-medium text-fg" title={media.title}>{media.title}</div>
+      <div className="line-clamp-2 text-sm font-medium text-fg"><Hint content={media.title} focusable={false}>{media.title}</Hint></div>
       <div className="flex flex-wrap gap-1"><Tag>{kindLabel(media.kind)}</Tag><Tag>{statusLabel(media.status)}</Tag></div>
-      <div className="truncate text-xs text-fg2" title={regionsLabel(media.regions)}>{media.year ?? '年份未知'} · {regionsLabel(media.regions)}</div>
-      <div className="truncate text-xs text-muted" title={listOrUnknown(media.platforms)}>{listOrUnknown(media.platforms)}</div>
-      <div className="text-xs text-fg2" title="单个用户/观众评分按原量表换算为十分制；不是多源综合评分">{media.rating !== null ? '用户/观众 ' : ''}{audienceRating(media)}</div>
+      <div className="truncate text-xs text-fg2"><Hint content={regionsLabel(media.regions)} focusable={false}>{media.year ?? '年份未知'} · {regionsLabel(media.regions)}</Hint></div>
+      <div className="truncate text-xs text-muted"><Hint content={listOrUnknown(media.platforms)} focusable={false}>{listOrUnknown(media.platforms)}</Hint></div>
+      <div className="text-xs text-fg2"><Hint content="单个用户/观众评分按原量表换算为十分制；不是多源综合评分" focusable={false}>{media.rating !== null ? '用户/观众 ' : ''}{audienceRating(media)}</Hint></div>
       {release && <div className="border-t border-line pt-2"><ReleaseStamp release={release} /></div>}
     </Card>
   );

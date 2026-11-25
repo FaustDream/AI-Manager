@@ -2,6 +2,7 @@
 // 活跃页与「已归档会话」页共用，避免两套预览慢慢不一致。
 import { useEffect, useMemo, useState } from 'react';
 import { Button, cn } from '@/components/ui/button';
+import { Tooltip } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { fmtTime } from '@/lib/format';
 import type { Message } from '@/lib/types';
@@ -140,12 +141,12 @@ export function CopyAllButton({ messages }: { messages: Message[] }) {
   const [done, setDone] = useState(false);
   const real = messages.filter((m) => m.role !== 'gap');
   return (
-    <Button
-      size="sm"
-      variant="ghost"
-      disabled={real.length === 0}
-      title="复制当前预览解析出的消息（超长会话只含头尾部分）"
-      onClick={async () => {
+    <Tooltip content="复制当前预览解析出的消息（超长会话只含头尾部分）">
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={real.length === 0}
+        onClick={async () => {
         const text = real.map((m) => `${m.role === 'user' ? '用户' : 'AI'}: ${m.text}`).join('\n\n');
         await navigator.clipboard.writeText(text).catch(() => {});
         setDone(true);
@@ -154,6 +155,7 @@ export function CopyAllButton({ messages }: { messages: Message[] }) {
       }}
     >
       {done ? '已复制' : `复制预览（${real.length} 条）`}
-    </Button>
+      </Button>
+    </Tooltip>
   );
 }

@@ -1,6 +1,7 @@
 import { AlertTriangle, Info, OctagonAlert } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from './button';
+import { Hint } from './tooltip';
 
 /**
  * 状态标签。默认软底（淡色填充 + 同色细边），比纯描边更容易在一行密排文字里被扫到。
@@ -51,17 +52,18 @@ export function Tag({
     muted: 'bg-muted',
   };
   return (
-    <span
-      className={cn(
-        'inline-flex max-w-full items-center gap-1 truncate rounded-sm border px-1.5 py-px text-xs leading-5',
-        (variant === 'outline' ? outline : soft)[key],
-        className,
-      )}
-      title={title}
-    >
-      {dot && <span aria-hidden className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dotColor[key])} />}
-      <span className="min-w-0 truncate">{children}</span>
-    </span>
+    <Hint content={title} focusable={false}>
+      <span
+        className={cn(
+          'inline-flex max-w-full items-center gap-1 truncate rounded-sm border px-1.5 py-px text-xs leading-5',
+          (variant === 'outline' ? outline : soft)[key],
+          className,
+        )}
+      >
+        {dot && <span aria-hidden className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dotColor[key])} />}
+        <span className="min-w-0 truncate">{children}</span>
+      </span>
+    </Hint>
   );
 }
 

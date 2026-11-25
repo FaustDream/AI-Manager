@@ -1,4 +1,5 @@
 mod sources;
+mod genres;
 mod ratings;
 pub(crate) mod store;
 pub mod types;

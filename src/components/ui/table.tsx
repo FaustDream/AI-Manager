@@ -2,22 +2,34 @@
 // 页面只回答「每列渲染什么」——加一列 = 加一行定义。
 // 账号中心（capabilities/account-center/columns.ts）是这套范式的蓝本，
 // 这里把它下沉成可复用的表体；账号中心自己的表带拖拽/列宽调整，仍保留原实现。
-import { useMemo, useState } from 'react';
-import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import { ChevronDown, ChevronsUpDown, ChevronUp, LoaderCircle } from 'lucide-react';
-import { cn } from './button';
-import { SkeletonRows, StateBlock } from './form';
-import { nextSort, sortRows, type SortState, type SortValue } from '@/lib/sort';
+import { useMemo, useState } from "react";
+import type {
+  CSSProperties,
+  KeyboardEvent,
+  MouseEvent,
+  ReactNode,
+} from "react";
+import {
+  ChevronDown,
+  ChevronsUpDown,
+  ChevronUp,
+  LoaderCircle,
+} from "lucide-react";
+import { cn } from "./button";
+import { Hint, Tooltip } from "./tooltip";
+import { SkeletonRows, StateBlock } from "./form";
+import { nextSort, sortRows, type SortState, type SortValue } from "@/lib/sort";
 
 /** 行被激活的事件：鼠标点击或键盘 Enter/Space。两者都带 ctrl/meta，多选判断通用。 */
-export type RowActivateEvent = MouseEvent<HTMLTableRowElement> | KeyboardEvent<HTMLTableRowElement>;
+export type RowActivateEvent =
+  MouseEvent<HTMLTableRowElement> | KeyboardEvent<HTMLTableRowElement>;
 
 export interface Column<R> {
   key: string;
   header: ReactNode;
   /** 固定宽度：数字按 px，字符串原样（Tailwind 类或百分比） */
   width?: number | string;
-  align?: 'right';
+  align?: "right";
   /** 单行截断；title 悬停显示全文 */
   truncate?: boolean;
   /**
@@ -66,6 +78,11 @@ export interface DataTableProps<R> {
   selectedKey?: string | null;
   /** 行右键：自定义上下文菜单（原生菜单已被 context-menu.ts 全局拦掉） */
   onRowContextMenu?: (row: R, event: MouseEvent<HTMLTableRowElement>) => void;
+  /**
+   * 整行提示：行可点、但「点了会发生什么」读不出来时用（例如跳到账号中心）。
+   * 触发元素就是 `<tr>` 本身——tbody 里不能再多一层 span。
+   */
+  rowHint?: (row: R) => string | undefined;
   rowClassName?: (row: R) => string;
   stickyHead?: boolean;
   /** 紧凑密度（hub 系列）：px-2 py-1 / px-2 py-1.5；默认 px-2.5 */
@@ -83,14 +100,15 @@ const headCls = (dense?: boolean) =>
   cn(
     // 表头同样单行：表头折行会把整列的基线抬高一截，和表体对不齐。
     // 行高刻意保持紧凑（双密度里的「表格页」一侧）：一屏能多看几行比留白更重要。
-    'whitespace-nowrap border-b border-line-strong text-left text-xs font-semibold text-muted',
-    dense ? 'px-2 py-1' : 'px-2.5 py-1.5',
+    "whitespace-nowrap border-b border-line-strong text-left text-xs font-semibold text-muted",
+    dense ? "px-2 py-1" : "px-2.5 py-1.5",
   );
 
-const cellCls = (dense?: boolean) => cn('border-b border-line', dense ? 'px-2 py-1.5' : 'px-2.5 py-1.5');
+const cellCls = (dense?: boolean) =>
+  cn("border-b border-line", dense ? "px-2 py-1.5" : "px-2.5 py-1.5");
 
 const widthStyle = (w?: number | string): CSSProperties | undefined =>
-  w === undefined ? undefined : { width: typeof w === 'number' ? `${w}px` : w };
+  w === undefined ? undefined : { width: typeof w === "number" ? `${w}px` : w };
 
 /**
  * 游标分页的表尾。会话/日志这类流式列表用「滚动到底自动续页」而不是页码：
@@ -104,7 +122,7 @@ export function LoadMore({
   hasMore,
   loading,
   onMore,
-  doneText = '到底了',
+  doneText = "到底了",
 }: {
   count: number;
   hasMore?: boolean;
@@ -155,6 +173,7 @@ export function DataTable<R>({
   onRowClick,
   selectedKey,
   onRowContextMenu,
+  rowHint,
   rowClassName,
   stickyHead,
   dense,
@@ -165,12 +184,16 @@ export function DataTable<R>({
   onSortChange,
 }: DataTableProps<R>) {
   const total = columns.length + (lead ? 1 : 0) + (trail ? 1 : 0);
-  const [innerSort, setInnerSort] = useState<SortState | null>(defaultSort ?? null);
+  const [innerSort, setInnerSort] = useState<SortState | null>(
+    defaultSort ?? null,
+  );
   // 受控时完全听外部的：页面可能还要把「排序」写进 URL/偏好，这里不抢方向盘
   const activeSort = sort === undefined ? innerSort : sort;
   const view = useMemo(
     () =>
-      sortRows(rows, activeSort, (row, key) => columns.find((col) => col.key === key)?.sortValue?.(row)),
+      sortRows(rows, activeSort, (row, key) =>
+        columns.find((col) => col.key === key)?.sortValue?.(row),
+      ),
     [rows, activeSort, columns],
   );
   const toggleSort = (key: string) => {
@@ -180,12 +203,13 @@ export function DataTable<R>({
   };
 
   return (
-    <table className={cn('w-full border-collapse', className)} style={style}>
+    <table className={cn("w-full border-collapse", className)} style={style}>
       {/* border-collapse 下 th 的 border 不跟着 sticky 走，吸顶那条分隔线用 inset 阴影画 */}
       <thead
         className={cn(
-          'bg-sunken',
-          stickyHead && 'sticky top-0 z-10 [&_th]:shadow-[inset_0_-1px_0_var(--color-line-strong)]',
+          "bg-sunken",
+          stickyHead &&
+            "sticky top-0 z-10 [&_th]:shadow-[inset_0_-1px_0_var(--color-line-strong)]",
         )}
       >
         <tr>
@@ -199,32 +223,51 @@ export function DataTable<R>({
             return (
               <th
                 key={col.key}
-                className={cn(headCls(dense), col.align === 'right' && 'text-right')}
+                className={cn(
+                  headCls(dense),
+                  col.align === "right" && "text-right",
+                )}
                 style={widthStyle(col.width)}
                 aria-sort={
-                  dir ? (dir === 'asc' ? 'ascending' : 'descending') : col.sortValue ? 'none' : undefined
+                  dir
+                    ? dir === "asc"
+                      ? "ascending"
+                      : "descending"
+                    : col.sortValue
+                      ? "none"
+                      : undefined
                 }
               >
                 {col.sortValue ? (
-                  <button
-                    type="button"
-                    onClick={() => toggleSort(col.key)}
-                    className={cn(
-                      'inline-flex cursor-pointer items-center gap-1 rounded-sm transition-colors duration-[var(--dur-1)] hover:text-fg',
-                      dir && 'text-accent',
-                    )}
-                    title="点击排序：升序 → 降序 → 取消"
-                  >
-                    {col.header}
-                    {dir === 'asc' ? (
-                      <ChevronUp size={12} aria-hidden className="shrink-0" />
-                    ) : dir === 'desc' ? (
-                      <ChevronDown size={12} aria-hidden className="shrink-0" />
-                    ) : (
-                      // 未排序也给一枚淡的双向箭头：否则用户看不出这列能点
-                      <ChevronsUpDown size={12} aria-hidden className="shrink-0 opacity-30" />
-                    )}
-                  </button>
+                  <Tooltip content="点击排序：升序 → 降序 → 取消">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort(col.key)}
+                      className={cn(
+                        "inline-flex cursor-pointer items-center gap-1 rounded-sm transition-colors duration-[var(--dur-1)] hover:text-fg",
+                        dir && "text-accent",
+                      )}
+                      aria-label={`${typeof col.header === "string" ? col.header : col.key}：点击排序（升序 → 降序 → 取消）`}
+                    >
+                      {col.header}
+                      {dir === "asc" ? (
+                        <ChevronUp size={12} aria-hidden className="shrink-0" />
+                      ) : dir === "desc" ? (
+                        <ChevronDown
+                          size={12}
+                          aria-hidden
+                          className="shrink-0"
+                        />
+                      ) : (
+                        // 未排序也给一枚淡的双向箭头：否则用户看不出这列能点
+                        <ChevronsUpDown
+                          size={12}
+                          aria-hidden
+                          className="shrink-0 opacity-30"
+                        />
+                      )}
+                    </button>
+                  </Tooltip>
                 ) : (
                   col.header
                 )}
@@ -232,7 +275,10 @@ export function DataTable<R>({
             );
           })}
           {trail && (
-            <th className={cn(headCls(dense), 'text-right')} style={widthStyle(trail.width)}>
+            <th
+              className={cn(headCls(dense), "text-right")}
+              style={widthStyle(trail.width)}
+            >
               {trail.head}
             </th>
           )}
@@ -250,72 +296,95 @@ export function DataTable<R>({
         {view.map((row) => {
           const key = rowKey(row);
           return (
-            <tr
-              key={key}
-              // 悬停底色只给可点行：不可点的行亮一下会诱导用户去点，点了没反应更像坏了
-              className={cn(
-                'transition-colors duration-[var(--dur-1)]',
-                onRowClick && 'cursor-pointer hover:bg-hover/60',
-                rowClassName?.(row),
-              )}
-              // 行可点就必须键盘可达（P1-9）：Tab 要能停上来，role/aria-selected
-              // 让读屏也能报「第几行、选没选」。
-              tabIndex={onRowClick ? 0 : undefined}
-              role={onRowClick ? 'row' : undefined}
-              aria-selected={
-                onRowClick && selectedKey !== undefined ? key === selectedKey : undefined
-              }
-              onClick={onRowClick ? (event) => onRowClick(row, event) : undefined}
-              onKeyDown={
-                onRowClick
-                  ? (event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault(); // Space 默认会滚页
-                        onRowClick(row, event);
-                        return;
+            <Tooltip key={key} content={rowHint?.(row)}>
+              <tr
+                // 悬停底色只给可点行：不可点的行亮一下会诱导用户去点，点了没反应更像坏了
+                className={cn(
+                  "transition-colors duration-[var(--dur-1)]",
+                  onRowClick && "cursor-pointer hover:bg-hover/60",
+                  rowClassName?.(row),
+                )}
+                // 行可点就必须键盘可达（P1-9）：Tab 要能停上来，role/aria-selected
+                // 让读屏也能报「第几行、选没选」。
+                tabIndex={onRowClick ? 0 : undefined}
+                role={onRowClick ? "row" : undefined}
+                aria-selected={
+                  onRowClick && selectedKey !== undefined
+                    ? key === selectedKey
+                    : undefined
+                }
+                onClick={
+                  onRowClick ? (event) => onRowClick(row, event) : undefined
+                }
+                onKeyDown={
+                  onRowClick
+                    ? (event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault(); // Space 默认会滚页
+                          onRowClick(row, event);
+                          return;
+                        }
+                        const step =
+                          event.key === "ArrowDown"
+                            ? 1
+                            : event.key === "ArrowUp"
+                              ? -1
+                              : 0;
+                        if (!step) return;
+                        event.preventDefault();
+                        // 只在同一张表内移动：分组视图有多张表，跨表跳会丢掉分组上下文
+                        const siblings = Array.from(
+                          event.currentTarget.parentElement?.querySelectorAll<HTMLTableRowElement>(
+                            'tr[tabindex="0"]',
+                          ) ?? [],
+                        );
+                        const at = siblings.indexOf(event.currentTarget);
+                        siblings[at + step]?.focus();
                       }
-                      const step =
-                        event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
-                      if (!step) return;
-                      event.preventDefault();
-                      // 只在同一张表内移动：分组视图有多张表，跨表跳会丢掉分组上下文
-                      const siblings = Array.from(
-                        event.currentTarget.parentElement?.querySelectorAll<HTMLTableRowElement>(
-                          'tr[tabindex="0"]',
-                        ) ?? [],
-                      );
-                      const at = siblings.indexOf(event.currentTarget);
-                      siblings[at + step]?.focus();
-                    }
-                  : undefined
-              }
-              onContextMenu={
-                onRowContextMenu ? (event) => onRowContextMenu(row, event) : undefined
-              }
-            >
-              {lead && <td className={cn(cellCls(dense), 'whitespace-nowrap')}>{lead.cell(row)}</td>}
-              {columns.map((col) => (
-                <td
-                  key={col.key}
-                  className={cn(
-                    cellCls(dense),
-                    // 单行是默认：换行会把整行撑高，而同排其他列都单行
-                    !col.wrap && 'whitespace-nowrap',
-                    col.truncate && 'overflow-hidden text-ellipsis',
-                    col.align === 'right' && 'text-right tabular-nums',
-                    col.className,
-                  )}
-                  title={col.title?.(row)}
-                >
-                  {col.cell(row)}
-                </td>
-              ))}
-              {trail && (
-                <td className={cn(cellCls(dense), 'whitespace-nowrap text-right')}>
-                  {trail.cell(row)}
-                </td>
-              )}
-            </tr>
+                    : undefined
+                }
+                onContextMenu={
+                  onRowContextMenu
+                    ? (event) => onRowContextMenu(row, event)
+                    : undefined
+                }
+              >
+                {lead && (
+                  <td className={cn(cellCls(dense), "whitespace-nowrap")}>
+                    {lead.cell(row)}
+                  </td>
+                )}
+                {columns.map((col) => (
+                  <td
+                    key={col.key}
+                    className={cn(
+                      cellCls(dense),
+                      // 单行是默认：换行会把整行撑高，而同排其他列都单行
+                      !col.wrap && "whitespace-nowrap",
+                      col.truncate && "overflow-hidden text-ellipsis",
+                      col.align === "right" && "text-right tabular-nums",
+                      col.className,
+                    )}
+                  >
+                    <Hint
+                      content={col.title?.(row)}
+                      focusable={false}
+                      wide
+                      className="block"
+                    >
+                      {col.cell(row)}
+                    </Hint>
+                  </td>
+                ))}
+                {trail && (
+                  <td
+                    className={cn(cellCls(dense), "whitespace-nowrap text-right")}
+                  >
+                    {trail.cell(row)}
+                  </td>
+                )}
+              </tr>
+            </Tooltip>
           );
         })}
       </tbody>

@@ -23,6 +23,22 @@ pub async fn checkin_credits(
         .await)
 }
 
+/// 「签到 · 积分」：一个入口先刷余额，再对今天还没签的账号签到。
+/// 已签账号只刷积分，不重复提交签到接口。
+pub async fn checkin_refresh(
+    state: &AppState,
+    iids: Vec<String>,
+    trigger: Option<String>,
+) -> std::result::Result<crate::app::checkin::RefreshRoundReport, String> {
+    Ok(state
+        .checkin
+        .refresh_round(
+            &iids,
+            crate::app::checkin::normalize_trigger(trigger.as_deref()),
+        )
+        .await)
+}
+
 /// 详情面板：余额、今日增减、批次、下次可签。只读本地库，不打接口。
 pub async fn checkin_detail(
     state: &AppState,

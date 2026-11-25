@@ -15,9 +15,10 @@ import { Button, cn } from '@/components/ui/button';
 import { confirmAction } from '@/components/ui/confirm';
 import { Dialog } from '@/components/ui/dialog';
 import { Drawer } from '@/components/ui/drawer';
-import { Checkbox, Input, Select, SkeletonBlock, SkeletonRows, StateBlock } from '@/components/ui/form';
+import { Input, SkeletonBlock, StateBlock } from '@/components/ui/form';
+import { DataTable, type Column } from '@/components/ui/table';
 import { toast } from '@/components/ui/toast';
-import { Tag } from '@/components/ui';
+import { Hint, Picker, Switch, Tabs, Tag, Tooltip } from '@/components/ui';
 import { fmtAmount, fmtMs, fmtTime } from '@/lib/format';
 import { takePreset } from '@/lib/nav';
 import { ALERT_SEEN_KEY, newestAlertAt, shouldAlert } from './alerts';
@@ -346,99 +347,83 @@ function LogsPane() {
       {/* 工具栏：视图 / 时间窗 / 筛选 / 计数。放在滚动容器外面——筛选条件不该跟着日志滚走 */}
       <div className="overflow-hidden rounded-md border border-line bg-card shadow-card">
         <div className="flex flex-wrap items-center gap-2 border-b border-line bg-sunken px-2.5 py-2">
-          <div
-            role="tablist"
-            aria-label="日志视图"
-            className="flex items-center gap-0.5 rounded-md border border-line bg-card p-0.5"
-          >
-            <Button
-              size="sm"
-              role="tab"
-              aria-selected={view === 'all'}
-              variant={view === 'all' ? 'primary' : 'ghost'}
-              onClick={() => {
-                setView('all');
+          <Tabs
+            label="日志视图"
+            size="sm"
+            variant="solid"
+            value={view}
+            className="rounded-md border border-line bg-card p-0.5"
+            onValueChange={(next) => {
+              if (next === 'alert') {
+                openAlerts();
+                return;
+              }
+              setView(next as View);
+              if (next === 'all') {
                 setOutcome('');
                 setTrigger('');
                 setSubject('');
-              }}
-            >
-              全部日志
-            </Button>
-            <Button
-              size="sm"
-              role="tab"
-              aria-selected={view === 'alert'}
-              variant={view === 'alert' ? 'primary' : 'ghost'}
-              onClick={openAlerts}
-              title="只显示 warn / error，信息级噪声全部隐藏"
-            >
-              异常 {stats.abnormal}
-            </Button>
-            <Button
-              size="sm"
-              role="tab"
-              aria-selected={view === 'action'}
-              variant={view === 'action' ? 'primary' : 'ghost'}
-              onClick={() => setView('action')}
-            >
-              执行动作
-            </Button>
-            <Button
-              size="sm"
-              role="tab"
-              aria-selected={view === 'stat'}
-              variant={view === 'stat' ? 'primary' : 'ghost'}
-              onClick={() => setView('stat')}
-              title="按「模块 + 动作 + 结果」聚合，回答哪一类在反复出问题"
-            >
-              聚合
-            </Button>
-            <Button
-              size="sm"
-              role="tab"
-              aria-selected={view === 'claims'}
-              variant={view === 'claims' ? 'primary' : 'ghost'}
-              onClick={() => setView('claims')}
-              title="本工具实际领取过的积分（签到 / 活动 / 猫猫旅行）"
-            >
-              最近领取
-            </Button>
-          </div>
+              }
+            }}
+            items={[
+              { value: 'all', label: '全部日志' },
+              {
+                value: 'alert',
+                label: `异常 ${stats.abnormal}`,
+                hint: '只显示 warn / error，信息级噪声全部隐藏',
+              },
+              { value: 'action', label: '执行动作' },
+              {
+                value: 'stat',
+                label: '聚合',
+                hint: '按「模块 + 动作 + 结果」聚合，回答哪一类在反复出问题',
+              },
+              {
+                value: 'claims',
+                label: '最近领取',
+                hint: '本工具实际领取过的积分（签到 / 活动 / 猫猫旅行）',
+              },
+            ]}
+          />
           {view !== 'claims' && (
             <>
               {/* 排障预设（P2-15）：最常问的两句话「今天哪里失败了」「这周有什么异常」
                   以前要手动改视图 + 级别 + 时间窗三处，这里一键到位。 */}
               <span className="flex items-center gap-1">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => applyPreset('today-fail')}
-                  title="全部日志 + 只看 error + 今天"
-                >
-                  今天失败
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => applyPreset('week-alert')}
-                  title="异常视图（warn 及以上）+ 近 7 天"
-                >
-                  近 7 天异常
-                </Button>
+                <Hint content="全部日志 + 只看 error + 今天" focusable={false}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => applyPreset('today-fail')}
+                  >
+                    今天失败
+                  </Button>
+                </Hint>
+                <Hint content="异常视图（warn 及以上）+ 近 7 天" focusable={false}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => applyPreset('week-alert')}
+                  >
+                    近 7 天异常
+                  </Button>
+                </Hint>
               </span>
               {view !== 'alert' && (
-                <Select
-                  value={minLevel ?? ''}
-                  title="只看该级别及以上"
-                  onChange={(e) => setMinLevel((e.target.value || null) as Level | null)}
-                >
-                  <option value="">全部级别</option>
-                  <option value="debug">debug+</option>
-                  <option value="info">info+</option>
-                  <option value="warn">warn+</option>
-                  <option value="error">error</option>
-                </Select>
+                <Hint content="只看该级别及以上" focusable={false}>
+                  <Picker
+                    value={minLevel ?? 'all'}
+                    label="只看该级别及以上"
+                    onValueChange={(next) => setMinLevel((next === 'all' ? null : next) as Level | null)}
+                    options={[
+                      { value: 'all', label: '全部级别' },
+                      { value: 'debug', label: 'debug+' },
+                      { value: 'info', label: 'info+' },
+                      { value: 'warn', label: 'warn+' },
+                      { value: 'error', label: 'error' },
+                    ]}
+                  />
+                </Hint>
               )}
               <Input
                 placeholder="模块"
@@ -452,11 +437,15 @@ function LogsPane() {
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
               />
-              <Select value={String(limit)} onChange={(e) => setLimit(Number(e.target.value) || 300)}>
-                <option value="100">最近 100 行</option>
-                <option value="300">最近 300 行</option>
-                <option value="1000">最近 1000 行</option>
-              </Select>
+              <Picker
+                value={String(limit)}
+                onValueChange={(next) => setLimit(Number(next) || 300)}
+                options={[
+                  { value: '100', label: '最近 100 行' },
+                  { value: '300', label: '最近 300 行' },
+                  { value: '1000', label: '最近 1000 行' },
+                ]}
+              />
               <span className="flex-1" />
               <Button
                 size="sm"
@@ -487,20 +476,21 @@ function LogsPane() {
               >
                 清空
               </Button>
-              <Button
-                size="sm"
-                loading={exporting}
-                title="导出当前筛选结果（时间窗同样生效）"
-                onClick={async () => {
-                  setExporting(true);
-                  // 导出是动作：走 runCmd，失败由命令面统一提示，成功再 toast 路径
-                  const path = await runCmd('log_export', { path: null, filter });
-                  setExporting(false);
-                  if (path !== undefined) toast(path);
-                }}
-              >
-                导出
-              </Button>
+              <Hint content="导出当前筛选结果（时间窗同样生效）" focusable={false}>
+                <Button
+                  size="sm"
+                  loading={exporting}
+                  onClick={async () => {
+                    setExporting(true);
+                    // 导出是动作：走 runCmd，失败由命令面统一提示，成功再 toast 路径
+                    const path = await runCmd('log_export', { path: null, filter });
+                    setExporting(false);
+                    if (path !== undefined) toast(path);
+                  }}
+                >
+                  导出
+                </Button>
+              </Hint>
             </>
           )}
         </div>
@@ -558,29 +548,35 @@ function LogsPane() {
             <span className="flex-1" />
             {view === 'action' && (
               <>
-                <Select
-                  value={outcome}
-                  title="动作结果"
-                  onChange={(e) => setOutcome(e.target.value)}
-                >
-                  <option value="">全部结果</option>
-                  <option value="ok">成功</option>
-                  <option value="skip">跳过</option>
-                  <option value="fail">失败</option>
-                  <option value="retry">待重试</option>
-                  <option value="partial">部分成功</option>
-                </Select>
-                <Select
-                  value={trigger}
-                  title="触发方"
-                  onChange={(e) => setTrigger(e.target.value)}
-                >
-                  <option value="">全部触发</option>
-                  <option value="user">手动</option>
-                  <option value="auto">自动</option>
-                  <option value="schedule">定时</option>
-                  <option value="startup">启动</option>
-                </Select>
+                <Hint content="动作结果" focusable={false}>
+                  <Picker
+                    value={outcome || 'all'}
+                    label="动作结果"
+                    onValueChange={(next) => setOutcome(next === 'all' ? '' : next)}
+                    options={[
+                      { value: 'all', label: '全部结果' },
+                      { value: 'ok', label: '成功' },
+                      { value: 'skip', label: '跳过' },
+                      { value: 'fail', label: '失败' },
+                      { value: 'retry', label: '待重试' },
+                      { value: 'partial', label: '部分成功' },
+                    ]}
+                  />
+                </Hint>
+                <Hint content="触发方" focusable={false}>
+                  <Picker
+                    value={trigger || 'all'}
+                    label="触发方"
+                    onValueChange={(next) => setTrigger(next === 'all' ? '' : next)}
+                    options={[
+                      { value: 'all', label: '全部触发' },
+                      { value: 'user', label: '手动' },
+                      { value: 'auto', label: '自动' },
+                      { value: 'schedule', label: '定时' },
+                      { value: 'startup', label: '启动' },
+                    ]}
+                  />
+                </Hint>
                 <Input
                   placeholder="主体 / 账号"
                   className="w-28"
@@ -601,13 +597,14 @@ function LogsPane() {
                 当前结果 {view === 'stat' ? `${groups.data?.length ?? 0} 类` : `${stats.total} 条`}
               </span>
               {view !== 'alert' && (
-                <button
-                  className="cursor-pointer text-warn hover:underline"
-                  onClick={openAlerts}
-                  title="切到异常视图：只显示 warn / error"
-                >
-                  异常 {stats.abnormal} 次（错误 {errorCount} · 警告 {warnCount}）
-                </button>
+                <Tooltip content="切到异常视图：只显示 warn / error">
+                  <button
+                    className="cursor-pointer text-warn hover:underline"
+                    onClick={openAlerts}
+                  >
+                    异常 {stats.abnormal} 次（错误 {errorCount} · 警告 {warnCount}）
+                  </button>
+                </Tooltip>
               )}
               {view === 'alert' && (
                 <span className="text-warn">
@@ -649,13 +646,14 @@ function LogsPane() {
           <Button size="sm" variant="ghost" onClick={openAlerts}>
             查看异常
           </Button>
-          <button
-            className="cursor-pointer text-muted hover:text-fg"
-            onClick={() => markSeen(newestAlertAt(alertRows))}
-            title="这批已经看过，不再提示"
-          >
-            知道了
-          </button>
+          <Tooltip content="这批已经看过，不再提示">
+            <button
+              className="cursor-pointer text-muted hover:text-fg"
+              onClick={() => markSeen(newestAlertAt(alertRows))}
+            >
+              知道了
+            </button>
+          </Tooltip>
         </div>
       )}
 
@@ -793,6 +791,48 @@ function goAccount(iid: string) {
   window.dispatchEvent(new CustomEvent('aim:navigate', { detail: 'account-center' }));
 }
 
+const claimColumns: Column<RecentClaim>[] = [
+  {
+    key: 'at',
+    header: '时间',
+    width: 160,
+    className: 'tabular-nums text-muted',
+    cell: (row) => fmtTime(row.claimed_at),
+  },
+  {
+    key: 'account',
+    header: '账号',
+    width: 176,
+    truncate: true,
+    cell: (row) => row.name,
+  },
+  {
+    key: 'source',
+    header: '来源',
+    width: 96,
+    cell: (row) => (
+      <Tag tone={row.source === 'travel' ? 'ok' : 'muted'}>
+        {CLAIM_SOURCE[row.source] ?? row.source}
+      </Tag>
+    ),
+  },
+  {
+    key: 'amount',
+    header: '积分',
+    width: 96,
+    align: 'right',
+    cell: (row) => (row.amount === null ? '—' : `+${fmtAmount(row.amount)}`),
+  },
+  {
+    key: 'description',
+    header: '说明',
+    truncate: true,
+    title: (row) => row.description,
+    className: 'max-w-[420px] text-fg2',
+    cell: (row) => row.description,
+  },
+];
+
 /**
  * 最近领取：从仪表盘迁来的「已经发生过的事」。
  * 放在日志页而不是设置页——它回答的是「发生过什么」，与执行动作同源。
@@ -808,62 +848,25 @@ function ClaimsTable({
   error: string | null;
   onRetry: () => void;
 }) {
-  // 骨架行必须在表格里：这个组件整体返回 <tr>，外面得给它一层 table
-  if (loading) {
-    return (
-      <table className="w-full border-collapse">
-        <tbody>
-          <SkeletonRows rows={8} cols={5} />
-        </tbody>
-      </table>
-    );
-  }
   if (error) return <StateBlock kind="error" title="读领取记录失败" detail={error} onRetry={onRetry} />;
-  if (rows.length === 0) {
-    return (
-      <StateBlock
-        kind="empty"
-        title="还没有领取记录"
-        detail="签到成功、领取活动或猫猫旅行领奖后，这里会出现明细。"
-      />
-    );
-  }
   return (
-    <table className="w-full border-collapse text-xs">
-      <thead className="bg-sunken text-left text-muted">
-        <tr>
-          <th className="w-40 px-2.5 py-1.5 font-semibold">时间</th>
-          <th className="w-44 px-2.5 py-1.5 font-semibold">账号</th>
-          <th className="w-24 px-2.5 py-1.5 font-semibold">来源</th>
-          <th className="w-24 px-2.5 py-1.5 text-right font-semibold">积分</th>
-          <th className="px-2.5 py-1.5 font-semibold">说明</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((claim) => (
-          <tr
-            key={`${claim.iid}-${claim.claimed_at}-${claim.description}`}
-            className="cursor-pointer border-t border-line transition-colors duration-[var(--dur-1)] hover:bg-hover"
-            onClick={() => goAccount(claim.iid)}
-            title="跳到账号中心"
-          >
-            <td className="whitespace-nowrap px-2.5 py-1.5 tabular-nums text-muted">{fmtTime(claim.claimed_at)}</td>
-            <td className="truncate px-2.5 py-1.5">{claim.name}</td>
-            <td className="whitespace-nowrap px-2.5 py-1.5">
-              <Tag tone={claim.source === 'travel' ? 'ok' : 'muted'}>
-                {CLAIM_SOURCE[claim.source] ?? claim.source}
-              </Tag>
-            </td>
-            <td className="whitespace-nowrap px-2.5 py-1.5 text-right tabular-nums">
-              {claim.amount === null ? '—' : `+${fmtAmount(claim.amount)}`}
-            </td>
-            <td className="max-w-[420px] truncate px-2.5 py-1.5 text-fg2" title={claim.description}>
-              {claim.description}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <DataTable
+      className="text-xs"
+      columns={claimColumns}
+      rows={rows}
+      rowKey={(row) => `${row.iid}-${row.claimed_at}-${row.description}`}
+      loading={loading}
+      skeletonRows={8}
+      empty={
+        <StateBlock
+          kind="empty"
+          title="还没有领取记录"
+          detail="签到成功、领取活动或猫猫旅行领奖后，这里会出现明细。"
+        />
+      }
+      onRowClick={(row) => goAccount(row.iid)}
+      rowHint={() => '跳到账号中心'}
+    />
   );
 }
 
@@ -997,116 +1000,121 @@ function LogRow({
   const [expanded, setExpanded] = useState(false);
   const open = forceExpanded || expanded;
   return (
-    <div
-      className={cn(
-        'border-b border-line px-2 py-1 text-xs',
-        onActivate && 'cursor-pointer hover:bg-hover/60',
-        line.level === 'error' ? 'bg-bad/5' : line.level === 'warn' ? 'bg-warn/5' : '',
-        active && 'ring-1 ring-accent/60',
-      )}
-      onClick={onActivate}
-      title={onActivate ? '点击查看这一行的上下文' : undefined}
-    >
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono">
-        <span className="text-muted tabular-nums">{shortTs(line.ts)}</span>
-        <span
-          className={cn(
-            'rounded px-1 text-xs font-semibold uppercase',
-            line.level === 'error'
-              ? 'bg-bad/15 text-bad'
-              : line.level === 'warn'
-                ? 'bg-warn/15 text-warn'
-                : 'bg-hover text-muted',
-          )}
-        >
-          {line.level}
-        </span>
-        {/* 合并行：同一句话重复 N 次只留这一条，次数必须显眼，否则会被当成「只发生了一次」 */}
-        {line.repeat != null && line.repeat > 1 && (
-          <span
-            className="rounded bg-accent/15 px-1 text-xs font-semibold tabular-nums text-accent"
-            title={
-              line.last_ts
-                ? `相同内容合并 ${line.repeat} 次，最近一次 ${shortTs(line.last_ts)}`
-                : `相同内容合并 ${line.repeat} 次`
-            }
-          >
-            ×{line.repeat}
-          </span>
-        )}
-        {line.subject && (
-          <span className="font-semibold text-fg" title={line.subject}>
-            {line.subject}
-          </span>
-        )}
-        <span className="text-fg2">{line.action ?? line.module}</span>
-        {line.trigger && (
-          <span className="text-muted">[{TRIGGER_LABEL[line.trigger] ?? line.trigger}]</span>
-        )}
-        {outcome && <span className={cn('font-medium', outcome.className)}>{outcome.text}</span>}
-        {line.ms !== null && line.ms !== undefined && (
-          <span className="text-muted tabular-nums">{fmtMs(line.ms)}</span>
-        )}
-        {line.batch && <span className="text-muted">批次={line.batch}</span>}
-        <span className="ml-auto flex items-center gap-2">
-          {failed && onDetail && (
-            <button
-              className="cursor-pointer font-sans text-xs font-medium text-bad hover:underline"
-              onClick={(event) => {
-                event.stopPropagation();
-                onDetail();
-              }}
-              title="按服务器日志的粒度查看异常详情"
-            >
-              详情
-            </button>
-          )}
-          {onContext && (
-            <button
-              className="cursor-pointer font-sans text-xs text-accent hover:underline"
-              onClick={(event) => {
-                event.stopPropagation();
-                onContext();
-              }}
-              title="查看这一行前后的日志"
-            >
-              上下文
-            </button>
-          )}
-        </span>
-      </div>
+    <Tooltip content={onActivate ? '点击查看这一行的上下文' : undefined}>
       <div
         className={cn(
-          'mt-0.5 whitespace-pre-wrap break-words pl-1',
-          failed ? 'text-fg' : 'text-fg2',
-          long && !open && 'line-clamp-3',
+          'border-b border-line px-2 py-1 text-xs',
+          onActivate && 'cursor-pointer hover:bg-hover/60',
+          line.level === 'error' ? 'bg-bad/5' : line.level === 'warn' ? 'bg-warn/5' : '',
+          active && 'ring-1 ring-accent/60',
         )}
+        onClick={onActivate}
       >
-        {line.message}
-      </div>
-      {long && !forceExpanded && (
-        <button
-          className="mt-0.5 cursor-pointer pl-1 text-xs text-accent hover:underline"
-          onClick={(event) => {
-            event.stopPropagation();
-            setExpanded((v) => !v);
-          }}
-        >
-          {open ? '收起' : `展开全文（${line.message.length} 字）`}
-        </button>
-      )}
-      {(line.step || line.evidence || line.attempts) && (
-        <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 pl-1 text-xs">
-          {line.step && <span className="text-muted">环节={line.step}</span>}
-          {line.evidence && (
-            <span className="break-all text-muted" title={line.evidence}>
-              证据={line.evidence}
-            </span>
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono">
+          <span className="text-muted tabular-nums">{shortTs(line.ts)}</span>
+          <span
+            className={cn(
+              'rounded px-1 text-xs font-semibold uppercase',
+              line.level === 'error'
+                ? 'bg-bad/15 text-bad'
+                : line.level === 'warn'
+                  ? 'bg-warn/15 text-warn'
+                  : 'bg-hover text-muted',
+            )}
+          >
+            {line.level}
+          </span>
+          {/* 合并行：同一句话重复 N 次只留这一条，次数必须显眼，否则会被当成「只发生了一次」 */}
+          {line.repeat != null && line.repeat > 1 && (
+            <Hint
+              content={
+                line.last_ts
+                  ? `相同内容合并 ${line.repeat} 次，最近一次 ${shortTs(line.last_ts)}`
+                  : `相同内容合并 ${line.repeat} 次`
+              }
+              focusable={false}
+            >
+              <span className="rounded bg-accent/15 px-1 text-xs font-semibold tabular-nums text-accent">
+                ×{line.repeat}
+              </span>
+            </Hint>
           )}
-          {line.attempts && <span className="text-muted">重试={line.attempts}</span>}
+          {line.subject && (
+            <Hint content={line.subject} focusable={false}>
+              <span className="font-semibold text-fg">{line.subject}</span>
+            </Hint>
+          )}
+          <span className="text-fg2">{line.action ?? line.module}</span>
+          {line.trigger && (
+            <span className="text-muted">[{TRIGGER_LABEL[line.trigger] ?? line.trigger}]</span>
+          )}
+          {outcome && <span className={cn('font-medium', outcome.className)}>{outcome.text}</span>}
+          {line.ms !== null && line.ms !== undefined && (
+            <span className="text-muted tabular-nums">{fmtMs(line.ms)}</span>
+          )}
+          {line.batch && <span className="text-muted">批次={line.batch}</span>}
+          <span className="ml-auto flex items-center gap-2">
+            {failed && onDetail && (
+              <Tooltip content="按服务器日志的粒度查看异常详情">
+                <button
+                  className="cursor-pointer font-sans text-xs font-medium text-bad hover:underline"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDetail();
+                  }}
+                >
+                  详情
+                </button>
+              </Tooltip>
+            )}
+            {onContext && (
+              <Tooltip content="查看这一行前后的日志">
+                <button
+                  className="cursor-pointer font-sans text-xs text-accent hover:underline"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onContext();
+                  }}
+                >
+                  上下文
+                </button>
+              </Tooltip>
+            )}
+          </span>
         </div>
-      )}
-    </div>
+        <div
+          className={cn(
+            'mt-0.5 whitespace-pre-wrap break-words pl-1',
+            failed ? 'text-fg' : 'text-fg2',
+            long && !open && 'line-clamp-3',
+          )}
+        >
+          {line.message}
+        </div>
+        {long && !forceExpanded && (
+          <button
+            className="mt-0.5 cursor-pointer pl-1 text-xs text-accent hover:underline"
+            onClick={(event) => {
+              event.stopPropagation();
+              setExpanded((v) => !v);
+            }}
+          >
+            {open ? '收起' : `展开全文（${line.message.length} 字）`}
+          </button>
+        )}
+        {(line.step || line.evidence || line.attempts) && (
+          <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 pl-1 text-xs">
+            {line.step && <span className="text-muted">环节={line.step}</span>}
+            {line.evidence && (
+              <Hint content={line.evidence} focusable={false} className="break-all text-muted">
+                证据={line.evidence}
+              </Hint>
+            )}
+            {line.attempts && <span className="text-muted">重试={line.attempts}</span>}
+          </div>
+        )}
+      </div>
+    </Tooltip>
   );
 }
 
@@ -1178,20 +1186,23 @@ function ContextDrawer({
       <div className="flex h-full flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
           <span>上下文行数</span>
-          <Select
-            value={String(span)}
-            onChange={(e) => setSpan(Number(e.target.value) || 20)}
-            title="前后各取多少行"
-          >
-            <option value="10">前后各 10 行</option>
-            <option value="20">前后各 20 行</option>
-            <option value="50">前后各 50 行</option>
-            <option value="100">前后各 100 行</option>
-            <option value="200">前后各 200 行</option>
-          </Select>
-          <label className="flex items-center gap-1">
-            <Checkbox checked={onlyAlert} onChange={(e) => setOnlyAlert(e.target.checked)} />
-            只看异常
+          <Hint content="前后各取多少行" focusable={false}>
+            <Picker
+              value={String(span)}
+              label="前后各取多少行"
+              onValueChange={(next) => setSpan(Number(next) || 20)}
+              options={[
+                { value: '10', label: '前后各 10 行' },
+                { value: '20', label: '前后各 20 行' },
+                { value: '50', label: '前后各 50 行' },
+                { value: '100', label: '前后各 100 行' },
+                { value: '200', label: '前后各 200 行' },
+              ]}
+            />
+          </Hint>
+          <label className="flex items-center gap-1.5">
+            <Switch checked={onlyAlert} onCheckedChange={setOnlyAlert} label="只看异常" size="sm" />
+            <span>只看异常</span>
           </label>
           <span className="flex-1" />
           {query.data && (
@@ -1250,13 +1261,14 @@ function ContextDrawer({
                     {line.subject && <span className="text-fg">{line.subject}</span>}
                     {isAnchor && <Tag tone="accent">锚点</Tag>}
                     {failed && (
-                      <button
-                        className="ml-auto cursor-pointer text-xs text-bad hover:underline"
-                        onClick={() => onOpenDetail(line)}
-                        title="打开异常详情"
-                      >
-                        详情
-                      </button>
+                      <Tooltip content="打开异常详情">
+                        <button
+                          className="ml-auto cursor-pointer text-xs text-bad hover:underline"
+                          onClick={() => onOpenDetail(line)}
+                        >
+                          详情
+                        </button>
+                      </Tooltip>
                     )}
                   </div>
                   <div className="mt-0.5 whitespace-pre-wrap break-words text-fg2">
@@ -1416,6 +1428,75 @@ function DetailDialog({
   );
 }
 
+/** 聚合行没有主键：模块/动作/结果/级别 + 原顺序保证唯一。 */
+type StatRow = { stat: LogStat; key: string };
+
+const statColumns: Column<StatRow>[] = [
+  {
+    key: 'count',
+    header: '次数',
+    width: 64,
+    className: 'font-semibold tabular-nums',
+    cell: (row) => row.stat.occurrences,
+  },
+  {
+    key: 'level',
+    header: '级别',
+    width: 56,
+    cell: (row) => (
+      <span
+        className={cn(
+          'rounded-sm px-1 text-xs font-semibold uppercase',
+          row.stat.level === 'error'
+            ? 'bg-bad/15 text-bad'
+            : row.stat.level === 'warn'
+              ? 'bg-warn/15 text-warn'
+              : 'bg-hover text-muted',
+        )}
+      >
+        {row.stat.level}
+      </span>
+    ),
+  },
+  {
+    key: 'module',
+    header: '模块 / 动作',
+    width: 160,
+    truncate: true,
+    title: (row) => row.stat.action ?? row.stat.module,
+    cell: (row) => (
+      <>
+        {row.stat.action ?? row.stat.module}
+        {row.stat.action && <span className="ml-1 text-muted">{row.stat.module}</span>}
+      </>
+    ),
+  },
+  {
+    key: 'outcome',
+    header: '结果',
+    width: 64,
+    cell: (row) => {
+      const outcome = row.stat.outcome ? OUTCOME[row.stat.outcome] : null;
+      return <span className={outcome?.className ?? 'text-muted'}>{outcome?.text ?? '—'}</span>;
+    },
+  },
+  {
+    key: 'last',
+    header: '最近一次',
+    width: 144,
+    className: 'tabular-nums text-muted',
+    cell: (row) => shortTs(row.stat.last_ts),
+  },
+  {
+    key: 'sample',
+    header: '代表内容',
+    truncate: true,
+    title: (row) => row.stat.sample,
+    className: 'max-w-[420px] text-fg2',
+    cell: (row) => row.stat.sample,
+  },
+];
+
 /**
  * 聚合表：一类日志一行。
  * 次数按合并前的真实发生数算（`×N` 已展开），否则「同一条错 500 次」只会显示 1。
@@ -1433,72 +1514,27 @@ function StatTable({
   onRetry: () => void;
   onPick: (stat: LogStat) => void;
 }) {
-  // 同上：组件整体返回 <tr>，骨架自带一层 table 才画得出来
-  if (loading) {
-    return (
-      <table className="w-full border-collapse">
-        <tbody>
-          <SkeletonRows rows={6} cols={6} />
-        </tbody>
-      </table>
-    );
-  }
   if (error) return <StateBlock kind="error" title="聚合失败" detail={error} onRetry={onRetry} />;
-  if (stats.length === 0) {
-    return <StateBlock kind="empty" title="没有可聚合的日志" detail="换个时间窗或放宽级别筛选。" />;
-  }
   return (
-    <table className="w-full border-collapse text-xs">
-      <thead className="bg-sunken text-left text-muted">
-        <tr>
-          <th className="w-16 px-2.5 py-1.5 font-semibold">次数</th>
-          <th className="w-14 px-2.5 py-1.5 font-semibold">级别</th>
-          <th className="w-40 px-2.5 py-1.5 font-semibold">模块 / 动作</th>
-          <th className="w-16 px-2.5 py-1.5 font-semibold">结果</th>
-          <th className="w-36 px-2.5 py-1.5 font-semibold">最近一次</th>
-          <th className="px-2.5 py-1.5 font-semibold">代表内容</th>
-        </tr>
-      </thead>
-      <tbody>
-        {stats.map((stat, index) => {
-          const outcome = stat.outcome ? OUTCOME[stat.outcome] : null;
-          return (
-            <tr
-              key={`${stat.module}-${stat.action ?? ''}-${stat.outcome ?? ''}-${stat.level}-${index}`}
-              className="cursor-pointer border-t border-line transition-colors duration-[var(--dur-1)] hover:bg-hover"
-              onClick={() => onPick(stat)}
-              title="点击回到明细，并按这一类的模块与动作筛选"
-            >
-              <td className="whitespace-nowrap px-2.5 py-1.5 font-semibold tabular-nums">{stat.occurrences}</td>
-              <td className="whitespace-nowrap px-2.5 py-1.5">
-                <span
-                  className={cn(
-                    'rounded-sm px-1 text-xs font-semibold uppercase',
-                    stat.level === 'error'
-                      ? 'bg-bad/15 text-bad'
-                      : stat.level === 'warn'
-                        ? 'bg-warn/15 text-warn'
-                        : 'bg-hover text-muted',
-                  )}
-                >
-                  {stat.level}
-                </span>
-              </td>
-              <td className="truncate px-2.5 py-1.5" title={stat.action ?? stat.module}>
-                {stat.action ?? stat.module}
-                {stat.action && <span className="ml-1 text-muted">{stat.module}</span>}
-              </td>
-              <td className={cn('whitespace-nowrap py-1', outcome?.className ?? 'text-muted')}>
-                {outcome?.text ?? '—'}
-              </td>
-              <td className="whitespace-nowrap px-2.5 py-1.5 tabular-nums text-muted">{shortTs(stat.last_ts)}</td>
-              <td className="max-w-[420px] truncate px-2.5 py-1.5 text-fg2" title={stat.sample}>
-                {stat.sample}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <DataTable
+      className="text-xs"
+      columns={statColumns}
+      rows={stats.map((stat, index) => ({
+        stat,
+        key: `${stat.module}-${stat.action ?? ''}-${stat.outcome ?? ''}-${stat.level}-${index}`,
+      }))}
+      rowKey={(row) => row.key}
+      loading={loading}
+      skeletonRows={6}
+      empty={
+        <StateBlock
+          kind="empty"
+          title="没有可聚合的日志"
+          detail="换个时间窗或放宽级别筛选。"
+        />
+      }
+      onRowClick={(row) => onPick(row.stat)}
+      rowHint={() => '点击回到明细，并按这一类的模块与动作筛选'}
+    />
   );
 }

@@ -11,6 +11,7 @@
 import { type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
+import { Tooltip } from '@/components/ui';
 import { IconDelete, IconHistory, IconPower, IconSwitch } from '@/components/ui/icons';
 import type { AccountView } from '@/lib/types';
 import { webLoginUsable } from './columns';
@@ -42,24 +43,25 @@ function RowAction({
   danger?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      // 点击区 28×28（总纲 P1-11）：图标仍是 15px，但可点面积够手指与触控板命中。
-      // 只加高不加宽——OPS_WIDTH 由 ACTION_SLOTS 算出，动宽度会牵动整表列宽。
-      className={`flex h-7 w-7 items-center justify-center rounded-sm transition-colors duration-[var(--dur-1)] ${
-        disabled
-          ? 'cursor-default text-muted opacity-40'
-          : danger
-            ? 'cursor-pointer text-bad hover:bg-bad/10'
-            : 'cursor-pointer text-accent hover:bg-accent/10'
-      }`}
-      disabled={disabled}
-      title={title}
-      aria-label={label}
-      onClick={onClick}
-    >
-      {children}
-    </button>
+    <Tooltip content={title}>
+      <button
+        type="button"
+        // 点击区 28×28（总纲 P1-11）：图标仍是 15px，但可点面积够手指与触控板命中。
+        // 只加高不加宽——OPS_WIDTH 由 ACTION_SLOTS 算出，动宽度会牵动整表列宽。
+        className={`flex h-7 w-7 items-center justify-center rounded-sm transition-colors duration-[var(--dur-1)] ${
+          disabled
+            ? 'cursor-default text-muted opacity-40'
+            : danger
+              ? 'cursor-pointer text-bad hover:bg-bad/10'
+              : 'cursor-pointer text-accent hover:bg-accent/10'
+        }`}
+        disabled={disabled}
+        aria-label={label}
+        onClick={onClick}
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }
 

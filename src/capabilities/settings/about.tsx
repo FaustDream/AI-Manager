@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Section } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
-import { Tag } from '@/components/ui';
+import { Hint, Tag } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { CHANGELOG, releaseHighlights } from '@/lib/changelog';
@@ -60,9 +60,11 @@ export function AboutPane() {
                 打开发布页
               </Button>
             )}
-            <Button size="sm" onClick={() => setRecordsOpen(true)} title="逐版本查看改动要点">
-              更新记录
-            </Button>
+            <Hint content="逐版本查看改动要点" focusable={false}>
+              <Button size="sm" onClick={() => setRecordsOpen(true)}>
+                更新记录
+              </Button>
+            </Hint>
             <Button size="sm" variant="soft" onClick={checkUpdate} loading={busy === 'update'}>
               检查更新
             </Button>

@@ -172,3 +172,118 @@ describe('签到列', () => {
     expect(cell.text).toBe('约 11-12 09:30');
   });
 });
+
+// 登录态列：结论由后端按各平台凭据形态算好，这里只验渲染不串味。
+const login = COLUMNS.find((c) => c.key === 'login')!;
+
+const shape = (over: Record<string, unknown> = {}) => ({
+  kind: 'profile_pack',
+  label: '会话档案包',
+  multi_account: true,
+  switchable: true,
+  expiry_known: true,
+  note: '一个账号一份完整会话档案',
+  ...over,
+});
+
+const loginState = (over: Record<string, unknown> = {}) => ({
+  kind: 'current',
+  label: '当前登录',
+  detail: '这就是客户端现在登录的账号',
+  shape: shape(),
+  current: true,
+  switchable: true,
+  expires_at: null,
+  ...over,
+});
+
+describe('登录态列（按平台隔离）', () => {
+  it('直接渲染后端结论，并点明凭据形态与多账号', () => {
+    const cell = login.cell(account({ enabled: true, login: loginState() } as never), {});
+    expect(cell.text).toBe('当前登录');
+    expect(cell.sub).toContain('会话档案包');
+    expect(cell.title).toContain('多账号并存');
+    expect(cell.tone).toBe('ok');
+    expect(cell.icon).toBe('check');
+  });
+
+  it('豆包的粘贴 Cookie 不会被读成可切换的客户端凭据', () => {
+    const cell = login.cell(
+      account({
+        enabled: true,
+        platform: 'doubao',
+        login: loginState({
+          kind: 'unknown_expiry',
+          label: '凭据已保存',
+          current: false,
+          switchable: false,
+          shape: shape({
+            kind: 'pasted_cookie',
+            label: '粘贴 Cookie',
+            switchable: false,
+            expiry_known: false,
+          }),
+        }),
+      } as never),
+      {},
+    );
+    expect(cell.sub).toContain('粘贴 Cookie');
+    expect(cell.sub).not.toContain('会话档案包');
+    expect(cell.title).toContain('不下发凭据到期时间');
+    expect(cell.title).not.toContain('可一键切换');
+  });
+
+  it('Trae 的设备绑定只读态不承诺切换', () => {
+    const cell = login.cell(
+      account({
+        enabled: true,
+        platform: 'trae',
+        login: loginState({
+          kind: 'saved',
+          label: '凭据已保存',
+          current: false,
+          switchable: false,
+          shape: shape({
+            kind: 'device_bound',
+            label: '设备绑定只读',
+            multi_account: false,
+            switchable: false,
+          }),
+        }),
+      } as never),
+      {},
+    );
+    expect(cell.sub).toContain('设备绑定只读');
+    expect(cell.title).not.toContain('多账号并存');
+    expect(cell.title).not.toContain('可一键切换');
+  });
+
+  it('已过期与未保存是两种结论，颜色也不同', () => {
+    const expired = login.cell(
+      account({ enabled: true, login: loginState({ kind: 'expired', label: '2026-11-01 已过期' }) } as never),
+      {},
+    );
+    expect(expired.tone).toBe('bad');
+    expect(expired.icon).toBe('warning');
+    const missing = login.cell(
+      account({ enabled: true, login: loginState({ kind: 'not_saved', label: '未保存凭据' }) } as never),
+      {},
+    );
+    expect(missing.tone).toBe('warn');
+    expect(missing.text).toBe('未保存凭据');
+  });
+
+  it('后端没给登录态时回落旧日期口径，不显示空白', () => {
+    const cell = login.cell(account({ enabled: true, has_secret: true, expires_at: null } as never), {});
+    expect(cell.text).toBe('有效期未知');
+  });
+
+  it('停用叠加层仍然生效，不被新结论盖掉', () => {
+    const cell = login.cell(
+      account({ enabled: false, login: loginState() } as never),
+      {},
+    );
+    expect(cell.sub).toBe('已停用');
+    expect(cell.tone).toBe('muted');
+  });
+});

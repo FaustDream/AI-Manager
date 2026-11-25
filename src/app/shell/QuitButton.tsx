@@ -4,6 +4,7 @@
 import { useState } from 'react';
 import { Power } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Hint } from '@/components/ui/tooltip';
 import { confirmAction } from '@/components/ui/confirm';
 import { runCmd } from '@/lib/cmd';
 
@@ -29,17 +30,18 @@ export function QuitButton() {
 
   return (
     <>
-      <Button
-        size="sm"
-        variant="ghost"
-        title="退出 AI Manager（结束后端进程）"
-        aria-label="退出 AI Manager"
-        loading={busy}
-        disabled={busy}
-        onClick={() => void doQuit()}
-      >
-        <Power size={14} />
-      </Button>
+      <Hint content="退出 AI Manager（结束后端进程）" focusable={false}>
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-label="退出 AI Manager"
+          loading={busy}
+          disabled={busy}
+          onClick={() => void doQuit()}
+        >
+          <Power size={14} />
+        </Button>
+      </Hint>
       {quit && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-bg/95 px-6 text-center backdrop-blur-sm">
           <p className="text-base font-semibold text-fg">AI Manager 已退出</p>

@@ -528,6 +528,10 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             let (iids, trigger) = (arg(v, "iids")?, arg(v, "trigger")?);
             to_json(cmd::checkin::checkin_credits(state, iids, trigger).await)
         }
+        "checkin_refresh" => {
+            let (iids, trigger) = (arg(v, "iids")?, arg(v, "trigger")?);
+            to_json(cmd::checkin::checkin_refresh(state, iids, trigger).await)
+        }
         "checkin_detail" => {
             let iid = arg(v, "iid")?;
             to_json(cmd::checkin::checkin_detail(state, iid).await)
@@ -614,6 +618,41 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
         "dida_task_delete" => {
             let (project_id, task_id) = (arg(v, "project_id")?, arg(v, "task_id")?);
             to_json(cmd::dida::dida_task_delete(state, project_id, task_id).await)
+        }
+        "dida_task_save" => {
+            let input = arg(v, "input")?;
+            to_json(cmd::dida::dida_task_save(state, input).await)
+        }
+        "dida_task_detail" => {
+            let (project_id, task_id) = (arg(v, "project_id")?, arg(v, "task_id")?);
+            to_json(cmd::dida::dida_task_detail(state, project_id, task_id).await)
+        }
+        "dida_tasks_completed" => {
+            let (project_ids, from, to) =
+                (arg(v, "project_ids")?, arg(v, "from")?, arg(v, "to")?);
+            to_json(cmd::dida::dida_tasks_completed(state, project_ids, from, to).await)
+        }
+        "dida_tasks_undone" => to_json(cmd::dida::dida_tasks_undone(state).await),
+        "dida_tasks_complete_many" => {
+            let pairs = arg(v, "pairs")?;
+            to_json(cmd::dida::dida_tasks_complete_many(state, pairs).await)
+        }
+        "dida_tasks_move" => {
+            let (pairs, to_project_id) = (arg(v, "pairs")?, arg(v, "to_project_id")?);
+            to_json(cmd::dida::dida_tasks_move(state, pairs, to_project_id).await)
+        }
+        "dida_task_assign" => {
+            let (project_id, task_id, username) =
+                (arg(v, "project_id")?, arg(v, "task_id")?, arg(v, "username")?);
+            to_json(cmd::dida::dida_task_assign(state, project_id, task_id, username).await)
+        }
+        "dida_task_unassign" => {
+            let (project_id, task_id) = (arg(v, "project_id")?, arg(v, "task_id")?);
+            to_json(cmd::dida::dida_task_unassign(state, project_id, task_id).await)
+        }
+        "dida_project_members" => {
+            let project_id = arg(v, "project_id")?;
+            to_json(cmd::dida::dida_project_members(state, project_id).await)
         }
 
         // ------------------------------------------------------------ catalog

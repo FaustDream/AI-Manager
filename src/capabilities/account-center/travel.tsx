@@ -4,8 +4,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Button, cn } from '@/components/ui/button';
-import { Checkbox, Select, StateBlock } from '@/components/ui/form';
-import { Notice, Tag } from '@/components/ui';
+import { StateBlock } from '@/components/ui/form';
+import { Hint, Notice, Picker, Switch, Tag, Tooltip } from '@/components/ui';
 import { toast } from '@/components/ui/toast';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { fmtAmount, fmtTime } from '@/lib/format';
@@ -153,9 +153,9 @@ export function TravelCard({ account }: { account: AccountView }) {
           {locationName && (
             <div>
               <div className="text-muted">地点</div>
-              <div className="truncate" title={locationName}>
+              <Hint content={locationName} focusable={false} className="block truncate">
                 {locationName}
-              </div>
+              </Hint>
             </div>
           )}
         </div>
@@ -187,46 +187,48 @@ export function TravelCard({ account }: { account: AccountView }) {
           </Button>
         )}
         {canDepart && (
-          <Button
-            size="sm"
-            onClick={depart}
-            loading={busy === 'travel-depart'}
-            disabled={!!busy || status.daily_limit_reached || locations.length === 0}
-            title={locations.length === 0 ? '平台没有返回可去的地点' : undefined}
-          >
-            {state === 'arrived' ? '再次派出' : '派出去旅行'}
-          </Button>
+          <Tooltip content={locations.length === 0 ? '平台没有返回可去的地点' : undefined}>
+            <Button
+              size="sm"
+              onClick={depart}
+              loading={busy === 'travel-depart'}
+              disabled={!!busy || status.daily_limit_reached || locations.length === 0}
+            >
+              {state === 'arrived' ? '再次派出' : '派出去旅行'}
+            </Button>
+          </Tooltip>
         )}
         {locations.length > 0 && (
-          <Select
-            value={selectedLocation === null ? '' : String(selectedLocation)}
-            onChange={(e) => {
-              const value = e.target.value ? Number(e.target.value) : null;
-              setSelectedLocation(value);
-              if (prefs.enabled) void savePrefs(true, value);
-            }}
-            disabled={!!busy}
-            className="max-w-[220px]"
-            title="选择旅行地点；开启自动旅行时这里就是默认地点"
-          >
-            {locations.map((location) => (
-              <option key={location.id} value={location.id}>
-                {location.name}
-                {location.duration_hours_min && location.duration_hours_max
-                  ? `（${location.duration_hours_min}-${location.duration_hours_max}h，+${location.reward_credit_min ?? '?'}-${location.reward_credit_max ?? '?'}）`
-                  : ''}
-              </option>
-            ))}
-          </Select>
+          <Hint content="选择旅行地点；开启自动旅行时这里就是默认地点" focusable={false}>
+            <Picker
+              label="旅行地点"
+              value={selectedLocation === null ? '' : String(selectedLocation)}
+              onValueChange={(next) => {
+                const value = next ? Number(next) : null;
+                setSelectedLocation(value);
+                if (prefs.enabled) void savePrefs(true, value);
+              }}
+              disabled={!!busy}
+              className="max-w-[220px]"
+              options={locations.map((location) => ({
+                value: String(location.id),
+                label: `${location.name}${
+                  location.duration_hours_min && location.duration_hours_max
+                    ? `（${location.duration_hours_min}-${location.duration_hours_max}h，+${location.reward_credit_min ?? '?'}-${location.reward_credit_max ?? '?'}）`
+                    : ''
+                }`,
+              }))}
+            />
+          </Hint>
         )}
-        <label
-          className="flex items-center gap-1.5 text-xs text-fg2"
-          title="开启后，「猫猫旅行」定时任务会按这个地点领取并再派出"
-        >
-          <Checkbox
+        <label className="flex items-center gap-1.5 text-xs text-fg2">
+          <Switch
             checked={prefs.enabled}
+            onCheckedChange={(next) => void savePrefs(next, selectedLocation)}
             disabled={!!busy || locations.length === 0}
-            onChange={(e) => void savePrefs(e.target.checked, selectedLocation)}
+            label="参与自动旅行"
+            hint="开启后，「猫猫旅行」定时任务会按这个地点领取并再派出"
+            size="sm"
           />
           参与自动旅行
         </label>
@@ -252,9 +254,13 @@ export function TravelCard({ account }: { account: AccountView }) {
                 >
                   {event.kind === 'depart' ? '派出' : event.kind === 'arrive' ? '回来' : '领到'}
                 </span>
-                <span className="min-w-0 truncate text-fg2" title={event.location}>
+                <Hint
+                  content={event.location}
+                  focusable={false}
+                  className="min-w-0 truncate text-fg2"
+                >
                   {event.location || '—'}
-                </span>
+                </Hint>
                 {event.amount !== null && (
                   <span className="tabular-nums text-ok">+{fmtAmount(event.amount)}</span>
                 )}

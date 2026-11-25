@@ -14,7 +14,7 @@ use crate::app::accounts::credential::Credential;
 use crate::app::accounts::{is_intl_account, AccountIdentity};
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::Http;
-use crate::types::{ActionResult, CreditSnapshot, StatusResult};
+use crate::types::{ActionResult, CreditSnapshot, CredentialShape, StatusResult};
 use async_trait::async_trait;
 
 pub mod codebuddy;
@@ -76,6 +76,13 @@ pub trait Provider: Send + Sync {
     fn scan(&self, sink: &mut Sink<'_>) -> Result<usize>;
     /// 客户端**当前**登录的 account_id；读不到返回 None（客户端没装/没登录）。
     fn current_id(&self) -> Option<String>;
+
+    /// 本平台凭据的形态与口径。**静态声明，不做 I/O**，必填。
+    ///
+    /// 各平台的登录态不是一回事（档案包 / 粘贴 Cookie / 设备绑定只读 / 短期令牌），
+    /// 由各家自己回答，`accounts::login_state` 据此算结论，界面只渲染。
+    /// 不给默认实现：新平台必须显式想清楚自己的凭据是什么，别继承一个错的口径。
+    fn credential_shape(&self) -> CredentialShape;
 
     fn keep_local_credential(&self, local: &Credential, scanned: &Credential, now: i64) -> bool {
         crate::app::accounts::scan::keeps_local(local.expires_ms(), scanned.expires_ms(), now)

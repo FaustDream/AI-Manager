@@ -11,6 +11,7 @@
 // 按 dashboard-design 技能：瓦片只留数字与 delta 徽章（口径进 tooltip）；
 // 占比用排名列表 + 行底 3px 份额条，不用环形图（七个切片读不出差异）。
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import { Hint, Tooltip } from '@/components/ui';
 import { Card } from '@/components/ui/card';
 import { StateBlock } from '@/components/ui/form';
 import { queryCmd } from '@/lib/cmd';
@@ -154,22 +155,25 @@ function RankedAppUsage({ byApp, totalTokens }: { byApp: UsageSlice[]; totalToke
   return (
     <div>
       {rows.map((row) => (
-        <button
+        <Tooltip
           key={row.platform}
-          title={`${appLabel(row.platform)} · ${fmtTokensExact(row.tokens)} Token · ${row.calls} 次调用 · 积分 ${
+          content={`${appLabel(row.platform)} · ${fmtTokensExact(row.tokens)} Token · ${row.calls} 次调用 · 积分 ${
             row.credit > 0 ? fmtAmount(row.credit) : '—'
           }`}
-          className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
         >
-          <ShareBar pct={(row.tokens / max) * 100} />
-          <span className="relative min-w-0 flex-1 truncate">{appLabel(row.platform)}</span>
-          <span className="relative tabular-nums" title={fmtTokensExact(row.tokens)}>
-            {fmtTokens(row.tokens)}
-          </span>
-          <span className="relative w-10 text-right text-xs tabular-nums text-muted">
-            {shareText(totalTokens === 0 ? 0 : (row.tokens / totalTokens) * 100)}
-          </span>
-        </button>
+          <button
+            className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
+          >
+            <ShareBar pct={(row.tokens / max) * 100} />
+            <span className="relative min-w-0 flex-1 truncate">{appLabel(row.platform)}</span>
+            <Hint className="relative tabular-nums" content={fmtTokensExact(row.tokens)} focusable={false}>
+              {fmtTokens(row.tokens)}
+            </Hint>
+            <span className="relative w-10 text-right text-xs tabular-nums text-muted">
+              {shareText(totalTokens === 0 ? 0 : (row.tokens / totalTokens) * 100)}
+            </span>
+          </button>
+        </Tooltip>
       ))}
     </div>
   );
@@ -182,22 +186,25 @@ function RankedModelUsage({ byModel, totalTokens }: { byModel: UsageModel[]; tot
   return (
     <div>
       {rows.map((row) => (
-        <div
+        <Tooltip
           key={row.model}
-          title={`${row.model} · ${fmtTokensExact(row.tokens)} Token · ${row.calls} 次调用`}
-          className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
+          content={`${row.model} · ${fmtTokensExact(row.tokens)} Token · ${row.calls} 次调用`}
         >
-          <ShareBar pct={(row.tokens / max) * 100} />
-          <span className="relative min-w-0 flex-1 truncate" title={row.model}>
-            {row.model}
-          </span>
-          <span className="relative tabular-nums" title={fmtTokensExact(row.tokens)}>
-            {fmtTokens(row.tokens)}
-          </span>
-          <span className="relative w-10 text-right text-xs tabular-nums text-muted">
-            {shareText(totalTokens === 0 ? 0 : (row.tokens / totalTokens) * 100)}
-          </span>
-        </div>
+          <div
+            className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
+          >
+            <ShareBar pct={(row.tokens / max) * 100} />
+            <Hint className="relative min-w-0 flex-1 truncate" content={row.model} focusable={false}>
+              {row.model}
+            </Hint>
+            <Hint className="relative tabular-nums" content={fmtTokensExact(row.tokens)} focusable={false}>
+              {fmtTokens(row.tokens)}
+            </Hint>
+            <span className="relative w-10 text-right text-xs tabular-nums text-muted">
+              {shareText(totalTokens === 0 ? 0 : (row.tokens / totalTokens) * 100)}
+            </span>
+          </div>
+        </Tooltip>
       ))}
     </div>
   );

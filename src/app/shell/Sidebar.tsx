@@ -13,6 +13,7 @@
 // 不引入拖拽库：列表最多十几项，自实现比引一个包更容易控制样式与手感。
 import type { Capability } from '@/app/router';
 import { cn } from '@/components/ui/button';
+import { Tooltip } from '@/components/ui/tooltip';
 import { reorderIds } from '@/lib/ui-state';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { navIcon } from './nav-icons';
@@ -250,49 +251,52 @@ export function Sidebar({
                     {collapsed ? <span className="h-1.5 w-1.5 rounded-full bg-accent" /> : '松手放到这里'}
                   </div>
                 ) : (
-                  <button
-                    type="button"
-                    onPointerDown={(e) => startDrag(e, cap.manifest.id)}
-                    onClick={() => {
-                      if (draggedRef.current) {
-                        draggedRef.current = false;
-                        return;
-                      }
-                      onGo(cap.manifest.id);
-                    }}
-                    aria-current={on ? 'page' : undefined}
-                    // 图标轨道里没有可见文字，可读名字必须显式给（title 只是兜底）
-                    aria-label={cap.manifest.title}
-                    title={
+                  <Tooltip
+                    content={
                       collapsed
                         ? `${cap.manifest.title}（快捷键 ${at}，可拖动排序）${cap.manifest.note ? ` — ${cap.manifest.note}` : ''}`
                         : `${cap.manifest.note ?? cap.manifest.title}（快捷键 ${at}，可拖动排序）`
                     }
-                    className={cn(
-                      'group relative flex w-full items-center gap-2.5 rounded-md py-2 text-sm',
-                      dragging ? 'cursor-grabbing' : 'cursor-pointer',
-                      'transition-colors duration-[var(--dur-1)]',
-                      collapsed ? 'justify-center px-0' : 'px-2.5',
-                      on
-                        ? 'bg-accent-soft font-medium text-fg'
-                        : 'text-fg2 hover:bg-hover hover:text-fg',
-                    )}
                   >
-                    {on && (
-                      <span
-                        aria-hidden
-                        className="nav-marker absolute top-1/2 left-0 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-accent"
-                      />
-                    )}
-                    <Icon
-                      size={16}
+                    <button
+                      type="button"
+                      onPointerDown={(e) => startDrag(e, cap.manifest.id)}
+                      onClick={() => {
+                        if (draggedRef.current) {
+                          draggedRef.current = false;
+                          return;
+                        }
+                        onGo(cap.manifest.id);
+                      }}
+                      aria-current={on ? 'page' : undefined}
+                      // 图标轨道里没有可见文字，可读名字必须显式给
+                      aria-label={cap.manifest.title}
                       className={cn(
-                        'shrink-0 transition-colors duration-[var(--dur-1)]',
-                        on ? 'text-accent' : 'text-muted group-hover:text-fg2',
+                        'group relative flex w-full items-center gap-2.5 rounded-md py-2 text-sm',
+                        dragging ? 'cursor-grabbing' : 'cursor-pointer',
+                        'transition-colors duration-[var(--dur-1)]',
+                        collapsed ? 'justify-center px-0' : 'px-2.5',
+                        on
+                          ? 'bg-accent-soft font-medium text-fg'
+                          : 'text-fg2 hover:bg-hover hover:text-fg',
                       )}
-                    />
-                    {!collapsed && <span className="min-w-0 truncate">{cap.manifest.title}</span>}
-                  </button>
+                    >
+                      {on && (
+                        <span
+                          aria-hidden
+                          className="nav-marker absolute top-1/2 left-0 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-accent"
+                        />
+                      )}
+                      <Icon
+                        size={16}
+                        className={cn(
+                          'shrink-0 transition-colors duration-[var(--dur-1)]',
+                          on ? 'text-accent' : 'text-muted group-hover:text-fg2',
+                        )}
+                      />
+                      {!collapsed && <span className="min-w-0 truncate">{cap.manifest.title}</span>}
+                    </button>
+                  </Tooltip>
                 )}
               </li>
             );
@@ -302,18 +306,19 @@ export function Sidebar({
 
       {/* 页脚只留折叠开关：图标即可自解释，文字说明不再占位 */}
       <div className="border-t border-line px-2 py-2">
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
-          title={collapsed ? '展开侧边栏' : '收起为图标轨道'}
-          className={cn(
-            'flex w-full cursor-pointer items-center justify-center rounded-md px-2 py-1.5 text-xs text-muted',
-            'transition-colors duration-[var(--dur-1)] hover:bg-hover hover:text-fg',
-          )}
-        >
-          {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-        </button>
+        <Tooltip content={collapsed ? '展开侧边栏' : '收起为图标轨道'}>
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+            className={cn(
+              'flex w-full cursor-pointer items-center justify-center rounded-md px-2 py-1.5 text-xs text-muted',
+              'transition-colors duration-[var(--dur-1)] hover:bg-hover hover:text-fg',
+            )}
+          >
+            {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+          </button>
+        </Tooltip>
       </div>
     </aside>
   );

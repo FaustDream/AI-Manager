@@ -11,6 +11,7 @@ import type { CreditFlowPoint, CreditPlatformFlow } from '@/lib/types';
 import { fmtAmount, fmtDelta } from '@/lib/format';
 import { CreditFlowChart } from './credit-flow';
 import { ShareBar, shareText } from '@/capabilities/overview/metric';
+import { Tooltip } from '@/components/ui';
 
 interface Row extends CreditPlatformFlow {
   earned: number;
@@ -118,16 +119,18 @@ export function CreditPlatformSplit({
           const current = active?.platform === row.platform;
           const share = totalSpent === 0 ? 0 : (row.spent / totalSpent) * 100;
           return (
-            <button
+            <Tooltip
               key={row.platform}
-              title={`${row.label} · ${row.accounts} 个账号 · 到账 +${fmtAmount(row.earned)} · 消耗 ${
+              content={`${row.label} · ${row.accounts} 个账号 · 到账 +${fmtAmount(row.earned)} · 消耗 ${
                 row.spent > 0 ? `-${fmtAmount(row.spent)}` : '—'
               } · 期末余额 ${fmtAmount(row.balance)}${totalSpent > 0 ? ` · 消耗占比 ${shareText(share)}` : ''}`}
-              onClick={() => toggle(row)}
-              className={`group relative flex h-12 w-full items-center gap-3 rounded-[10px] px-3 pb-1.5 text-left text-sm ${
-                current ? 'bg-accent/[.06] ring-1 ring-inset ring-accent/20' : 'hover:bg-hover/60'
-              } ${row.points.length > 0 ? 'cursor-pointer' : 'cursor-default'}`}
             >
+              <button
+                onClick={() => toggle(row)}
+                className={`group relative flex h-12 w-full items-center gap-3 rounded-[10px] px-3 pb-1.5 text-left text-sm ${
+                  current ? 'bg-accent/[.06] ring-1 ring-inset ring-accent/20' : 'hover:bg-hover/60'
+                } ${row.points.length > 0 ? 'cursor-pointer' : 'cursor-default'}`}
+              >
               {totalSpent > 0 && row.spent > 0 && (
                 <ShareBar
                   tone="bad"
@@ -150,7 +153,8 @@ export function CreditPlatformSplit({
               <span className="relative w-10 text-right text-xs tabular-nums text-muted">
                 {totalSpent > 0 ? shareText(share) : '—'}
               </span>
-            </button>
+              </button>
+            </Tooltip>
           );
         })}
       </div>

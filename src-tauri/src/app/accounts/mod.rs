@@ -12,6 +12,7 @@ pub mod cookie;
 pub mod credential;
 pub mod credential_refresh;
 pub mod login;
+pub mod login_state;
 pub mod profile;
 pub mod refresh;
 pub mod repo;
@@ -53,6 +54,31 @@ pub use credential_refresh::{
     RefreshCredentialsReport,
 };
 pub use refresh::{refresh_all, refresh_status, RefreshReport};
+
+/// 推送**一行**账号的最新视图。批量动作里每完成一个账号就发一次，
+/// 界面据此逐行更新，不必等整批结束才看到变化。
+///
+/// 口径与 `account_list` 完全一致（hydrate → 脱敏 → 登录态装饰），
+/// 否则实时推来的行和随后整表重取的行会闪一下不一样的值。
+/// 事件是刷新提示不是可靠队列：读不到账号就静默跳过，不影响主流程。
+pub async fn emit_account(db: Arc<Db>, iid: &str) {
+    let wanted = iid.to_string();
+    let read_db = db.clone();
+    let row = blocking(move || {
+        let mut rows = repo::list(&read_db)?;
+        crate::app::checkin::store::hydrate(&read_db, &mut rows, &crate::app::clock::SystemClock);
+        Ok::<_, AppError>(rows.into_iter().find(|row| row.iid == wanted))
+    })
+    .await;
+    let Ok(Ok(Some(mut row))) = row else {
+        return;
+    };
+    row.name = row.display_name();
+    if login_state::decorate_one(db, &mut row).await.is_err() {
+        return;
+    }
+    crate::app::events::emit("account:updated", &row);
+}
 pub use scan::{scan_all, scan_platform, ScanReport};
 pub use switch::{current_iids, is_current, switch, switch_codebuddy, SwitchResult};
 pub use view::{AccountIdentity, AccountTable, AccountView};

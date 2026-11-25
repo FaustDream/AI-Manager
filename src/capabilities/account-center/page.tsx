@@ -6,14 +6,14 @@ import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronsUpDown, ChevronUp } from 'lucide-react';
 import { errKind, errText } from '@/lib/ipc';
-import { Input, Select, SkeletonRows, StateBlock } from '@/components/ui/form';
+import { Input, SkeletonRows, StateBlock } from '@/components/ui/form';
+import { Hint, Picker, Tooltip } from '@/components/ui';
 import { Button, cn } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import { ICONS } from '@/components/ui/icons';
 import { fmtMs } from '@/lib/format';
 import { matchesQuery, nextSort, sortRows, type SortState, type SortValue } from '@/lib/sort';
 import {
-  FEATURE_CHECKIN,
   FEATURE_RESTORE,
   FEATURE_SWITCH,
   featurePlatform,
@@ -44,11 +44,13 @@ function CellView({
   // 图标由列定义给名字，这里才取组件——列定义是纯数据，不碰 JSX
   const Icon = cell.icon ? ICONS[cell.icon] : null;
   return (
-    <span
-      title={cell.title}
-      className={
-        cell.tone === 'ok' ? 'text-ok' : cell.tone === 'warn' ? 'text-warn' : cell.tone === 'bad' ? 'text-bad' : cell.tone === 'muted' ? 'text-muted' : ''
-      }
+    <Hint
+      content={cell.title}
+      wide
+      className={cn(
+        'block',
+        cell.tone === 'ok' ? 'text-ok' : cell.tone === 'warn' ? 'text-warn' : cell.tone === 'bad' ? 'text-bad' : cell.tone === 'muted' ? 'text-muted' : '',
+      )}
     >
       <span className="flex min-w-0 items-center gap-1 leading-tight">
         {Icon && <Icon size={13} className="shrink-0" />}
@@ -57,7 +59,7 @@ function CellView({
           <button
             type="button"
             onClick={onOpen}
-            title={cell.title ? `打开账号详情 · ${cell.title}` : `打开「${cell.text}」的详情`}
+            aria-label={`打开「${cell.text}」的账号详情`}
             className="min-w-0 cursor-pointer truncate text-left underline underline-offset-2 transition-colors duration-[var(--dur-1)] hover:text-accent"
           >
             {cell.text}
@@ -66,21 +68,22 @@ function CellView({
           cell.text && <span className="truncate">{cell.text}</span>
         )}
         {badge && (
-          <span
-            className={cn(
-              'shrink-0 rounded-full border px-1.5 py-0.5 text-xs leading-none',
-              badge.tone === 'muted'
-                ? 'border-line bg-card text-muted'
-                : 'border-ok/40 bg-ok/10 text-ok',
-            )}
-            title={badge.title}
-          >
-            {badge.text}
-          </span>
+          <Hint content={badge.title}>
+            <span
+              className={cn(
+                'shrink-0 rounded-full border px-1.5 py-0.5 text-xs leading-none',
+                badge.tone === 'muted'
+                  ? 'border-line bg-card text-muted'
+                  : 'border-ok/40 bg-ok/10 text-ok',
+              )}
+            >
+              {badge.text}
+            </span>
+          </Hint>
         )}
       </span>
       {cell.sub && <span className="block truncate text-xs leading-tight text-muted">{cell.sub}</span>}
-    </span>
+    </Hint>
   );
 }
 
@@ -315,24 +318,23 @@ export default function AccountCenterPage() {
     return () => ro.disconnect();
   }, []);
 
-  const refreshCredits = () =>
-    runBusy('credits', async () => {
-      const iids = rows.filter((r) => r.has_secret && r.enabled).map((r) => r.iid);
+  // 「签到 · 积分」：一个入口走完两件事。后端先刷余额（ima 这类平台的签到结论
+  // 也在这一发里落地），再对今天还没签的账号签到；已签的只刷积分，不重复提交。
+  const refreshAndCheckin = () =>
+    runBusy('round', async () => {
+      const iids = visible.filter((r) => r.has_secret && r.enabled).map((r) => r.iid);
       if (iids.length === 0) {
-        toast('没有可刷新的账号（先添加账号）');
+        toast('当前筛选下没有可刷新的账号（先添加账号）');
         return;
       }
-      const started = performance.now();
-      const out = await runCmd('checkin_credits', { iids });
+      const report = await runCmd('checkin_refresh', { iids });
+      if (report === undefined) return;
 
-      if (out === undefined) return;
       // 只有后端标了 error 才算失败：成功但没拿到数值不能标红。
       // 运行时状态，下次刷新成功自动消失，不进库。
       const errors: Record<string, string> = {};
-      for (const [iid, snapshot] of out) {
-        if (snapshot.error) {
-          errors[iid] = snapshot.error;
-        }
+      for (const row of report.credits) {
+        if (row.snapshot.error) errors[row.iid] = row.snapshot.error;
       }
       setQueryErrors(errors);
       // 等列表与详情真正重取完再报「完成」：否则 toast 说刷新完了，屏幕还是旧值
@@ -340,17 +342,26 @@ export default function AccountCenterPage() {
         qc.invalidateQueries({ queryKey: ['accounts'] }),
         qc.invalidateQueries({ queryKey: ['detail'] }),
       ]);
-      const failed = Object.keys(errors).length;
-      const elapsed = fmtMs(Math.round(performance.now() - started));
+      const creditFailed = Object.keys(errors).length;
+      const parts = [
+        report.signed > 0 ? `新签 ${report.signed}` : '',
+        report.already > 0 ? `已签 ${report.already}` : '',
+        report.not_applicable > 0 ? `无签到 ${report.not_applicable}` : '',
+        report.deferred > 0 ? `延后 ${report.deferred}` : '',
+        report.checkin_failed > 0 ? `签到失败 ${report.checkin_failed}` : '',
+        creditFailed > 0 ? `积分失败 ${creditFailed}` : '',
+      ].filter(Boolean);
+      const head = `签到 · 积分完成：${report.total} 个账号 · ${parts.join(' · ') || '无需处理'} · ${fmtMs(report.ms)}`;
       toast(
-        failed === 0
-          ? `刷新完成：${out.length} 个账号全部成功 · ${elapsed}`
-          : `刷新完成：${out.length} 个账号，${failed} 个查询失败（原因见列表红字与日志）· ${elapsed}`,
+        creditFailed === 0 && report.checkin_failed === 0
+          ? head
+          : `${head}
+失败原因见列表红字与「日志 → 执行动作」`,
       );
     });
 
-  // 批量刷新账号：重扫客户端，把每个账号的最新凭据、到期时间写回本地库，
-  // 并同步「当前登录 / 可切换」标记。余额不在这一步查（那是「积分」按钮）。
+  // 批量刷新凭据：重扫客户端，把每个账号的最新凭据、到期时间写回本地库，
+  // 并同步登录态。余额不在这一步查（那是「签到 · 积分」按钮）。
   // 不管是否过期都会刷——平台侧的有效期可能已经被客户端续过。
   const batchRefreshCredentials = () =>
     runBusy('refresh-credentials', async () => {
@@ -368,7 +379,7 @@ export default function AccountCenterPage() {
         report.unsupported > 0 ? `不支持 ${report.unsupported}` : '',
         report.failed > 0 ? `失败 ${report.failed}` : '',
       ].filter(Boolean);
-      const head = `刷新完成：${report.total} 个账号 · ${parts.join(' · ') || '无需处理'} · ${fmtMs(report.ms)}`;
+      const head = `刷新凭据完成：${report.total} 个账号 · ${parts.join(' · ') || '无需处理'} · ${fmtMs(report.ms)}`;
       toast(
         report.errors.length === 0
           ? head
@@ -376,7 +387,7 @@ export default function AccountCenterPage() {
               report.errors.length > 2 ? `\n…另 ${report.errors.length - 2} 条见日志` : ''
             }`,
       );
-      // 重扫也会更新「当前登录」与可切换范围：一起重取，别等下一次进页面
+      // 重扫也会更新登录态与可切换范围：一起重取，别等下一次进页面
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['accounts'] }),
         qc.invalidateQueries({ queryKey: ['detail'] }),
@@ -384,46 +395,6 @@ export default function AccountCenterPage() {
         qc.invalidateQueries({ queryKey: ['switchable'] }),
         qc.invalidateQueries({ queryKey: ['codebuddy-targets'] }),
       ]);
-    });
-
-  const batchCheckin = () =>
-    runBusy('checkin', async () => {
-      // 与「刷新」同一口径：只处理当前筛选出来的账号（按钮说的是「列表里」）
-      const iids = visible
-        .filter(
-          (r) =>
-            r.requires_checkin &&
-            r.has_secret &&
-            r.enabled &&
-            r.checked_in !== true &&
-            // 设置里关掉某个软件的签到入口后，批量签到也不再带上它
-            features.on(featurePlatform(r.platform, r.iid), FEATURE_CHECKIN),
-        )
-        .map((r) => r.iid);
-      if (iids.length === 0) {
-        toast('没有需要签到的账号');
-        return;
-      }
-      const started = performance.now();
-      const round = await runCmd('checkin_batch', { iids });
-
-      if (round === undefined) return;
-      // 签到会改余额与今日标记：列表与详情必须一起重取
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ['accounts'] }),
-        qc.invalidateQueries({ queryKey: ['detail'] }),
-      ]);
-      const elapsed = fmtMs(Math.round(performance.now() - started));
-      const parts = [
-        round.success > 0 ? `成功 ${round.success}` : '',
-        round.already > 0 ? `已签 ${round.already}` : '',
-        round.failed > 0 ? `失败 ${round.failed}` : '',
-        round.skipped > 0 ? `跳过 ${round.skipped}` : '',
-      ].filter(Boolean);
-      toast(
-        `批量签到完成：${parts.join(' · ') || '无需处理'} · ${elapsed}` +
-          (round.failed > 0 ? '\n失败详情见「日志 → 执行动作」' : ''),
-      );
     });
 
   // 添加账号的整条链路（关客户端 → 备份登录态 → 打开登录页 → 扫描）都在弹窗里，
@@ -522,9 +493,8 @@ export default function AccountCenterPage() {
         <AccountToolbar
           busy={busy}
           onAdd={() => setAddOpen(true)}
-          onRefresh={refreshCredits}
+          onRefreshAndCheckin={refreshAndCheckin}
           onRefreshCredentials={batchRefreshCredentials}
-          onCheckin={batchCheckin}
         />
 
         </div>
@@ -538,30 +508,28 @@ export default function AccountCenterPage() {
             placeholder="搜索昵称 / UID / 平台 / 备注"
             onChange={(e) => setQuery(e.target.value)}
           />
-          <Select
+          <Picker
             className="w-36"
             value={platformFilter}
-            aria-label="按平台筛选"
-            onChange={(e) => setPlatformFilter(e.target.value)}
-          >
-            <option value="all">全部平台</option>
-            {platforms.map(([key, label]) => (
-              <option key={key} value={key}>
-                {label}
-              </option>
-            ))}
-          </Select>
-          <Select
+            label="按平台筛选"
+            onValueChange={setPlatformFilter}
+            options={[
+              { value: 'all', label: '全部平台' },
+              ...platforms.map(([key, label]) => ({ value: key, label })),
+            ]}
+          />
+          <Picker
             className="w-32"
             value={stateFilter}
-            aria-label="按状态筛选"
-            onChange={(e) => setStateFilter(e.target.value as typeof stateFilter)}
-          >
-            <option value="all">全部状态</option>
-            <option value="expired">已过期</option>
-            <option value="expiring">7 天内到期</option>
-            <option value="unchecked">今日未签</option>
-          </Select>
+            label="按状态筛选"
+            onValueChange={(v) => setStateFilter(v as typeof stateFilter)}
+            options={[
+              { value: 'all', label: '全部状态' },
+              { value: 'expired', label: '已过期' },
+              { value: 'expiring', label: '7 天内到期' },
+              { value: 'unchecked', label: '今日未签' },
+            ]}
+          />
           {filtering && (
             <Button
               size="sm"
@@ -576,9 +544,11 @@ export default function AccountCenterPage() {
             </Button>
           )}
           <span className="flex-1" />
-          <span className="text-xs text-muted tabular-nums" title="当前显示 / 全部账号">
-            {visible.length} / {rows.length}
-          </span>
+          <Hint content="当前显示 / 全部账号" focusable={false}>
+            <span className="text-xs text-muted tabular-nums">
+              {visible.length} / {rows.length}
+            </span>
+          </Hint>
         </div>
       </div>
 
@@ -597,17 +567,20 @@ export default function AccountCenterPage() {
                 key={col.key}
                 className="relative select-none overflow-hidden whitespace-nowrap border-b border-line-strong px-2.5 py-1.5 text-left text-xs font-semibold text-muted"
                 style={{ width: widthOf(col.key, col.width) }}
-                title={col.headerTitle}
                 aria-sort={dir ? (dir === 'asc' ? 'ascending' : 'descending') : sortable ? 'none' : undefined}
               >
                 {sortable ? (
+                  <Tooltip
+                    wide
+                    content={[col.headerTitle, '点击排序：升序 → 降序 → 取消'].filter(Boolean).join('\n')}
+                  >
                   <button
                     type="button"
                     className={cn(
                       'inline-flex cursor-pointer items-center gap-1 rounded-sm transition-colors duration-[var(--dur-1)] hover:text-fg',
                       dir && 'text-accent',
                     )}
-                    title="点击排序：升序 → 降序 → 取消"
+                    aria-label={`${col.header}：点击排序（升序 → 降序 → 取消）`}
                     onClick={() => setSort((current) => nextSort(current, col.key))}
                   >
                     {col.header}
@@ -619,8 +592,11 @@ export default function AccountCenterPage() {
                       <ChevronsUpDown size={12} aria-hidden className="shrink-0 opacity-30" />
                     )}
                   </button>
+                  </Tooltip>
                 ) : (
-                  col.header
+                  <Hint content={col.headerTitle} wide focusable={false}>
+                    {col.header}
+                  </Hint>
                 )}
                 <span
                   className="absolute bottom-0 right-0 top-0 w-[7px] cursor-col-resize hover:bg-accent/35"

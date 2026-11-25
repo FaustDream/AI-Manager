@@ -52,14 +52,13 @@ fn main() {
         state.activity.clone(),
         state.hub.clone(),
     );
-    background::spawn_scheduler(db.clone(), checkin.clone(), activity);
+    background::spawn_scheduler(db.clone(), checkin.clone(), activity, state.catalog.clone());
     background::spawn_startup_scan(db.clone());
     background::spawn_hub_auto_sync(db.clone(), hub);
     background::spawn_zcode_auto_claim(checkin);
     background::spawn_source_bridges();
     background::spawn_usage_scan(db.clone());
     background::spawn_session_scan(state.sessions.clone());
-    background::spawn_catalog_sync(state.catalog.clone());
     background::spawn_model_api(db);
 
     log::action(

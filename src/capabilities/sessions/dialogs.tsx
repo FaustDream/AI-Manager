@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Checkbox, Input } from '@/components/ui/form';
+import { Hint } from '@/components/ui';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { toast } from '@/components/ui/toast';
 
@@ -287,9 +288,13 @@ export function SuggestTitlesDialog({
                 setItems((prev) => prev.map((i, i2) => (i2 === index ? { ...i, checked: !i.checked } : i)))
               }
             />
-            <span className="w-40 min-w-0 shrink-0 truncate text-xs text-muted" title={item.current}>
+            <Hint
+              content={item.current}
+              focusable={false}
+              className="w-40 min-w-0 shrink-0 truncate text-xs text-muted"
+            >
               {item.current || '（无标题）'}
-            </span>
+            </Hint>
             <Input
               className="min-w-0 flex-1 text-sm"
               value={item.suggestion}

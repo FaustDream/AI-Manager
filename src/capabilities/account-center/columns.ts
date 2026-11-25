@@ -123,10 +123,56 @@ const decorateHealth = (a: AccountView, cell: Cell): Cell => {
 };
 
 /**
- * 登录态：只回答「凭据哪天到期」。
- * 剩余天数不给——同一个信息说两遍反而要人算，日期本身就是结论。
+ * 登录态：结论由后端按**各平台自己声明的凭据形态**算好（`a.login`），这里只渲染。
+ *
+ * 为什么不再自己拼日期：WorkBuddy 是可切换的档案包、豆包是粘贴的 Cookie、
+ * Trae 是设备绑定只读、ima 只存 refresh token、ZCode 的令牌没有 exp——
+ * 压成一个日期列读起来全一样，用户分不清哪个号能切、哪个号只是网页登录。
+ * `login` 为空（诊断/导出路径没装饰）时回落旧日期渲染，不猜。
  */
 const loginCell = (a: AccountView): Cell => {
+  const state = a.login;
+  if (!state) return legacyLoginCell(a);
+  // 第二行只放凭据形态——它是区分各平台的那一条信息，窄窗口下也不会被截断。
+  // 到期日不挤在这里：窄窗口表格会把列压到 90px，日期首当其冲被省略号吃掉。
+  // 日期该出现的地方是它本身就是结论的时候（已过期 / 3 天内到期，主行自带），
+  // 其余情况进 tooltip，鼠标悬停读得到完整四位年份。
+  return decorateHealth(a, {
+    text: state.label,
+    sub: state.shape.label,
+    tone: LOGIN_TONE[state.kind],
+    icon: LOGIN_ICON[state.kind],
+    title: [
+      state.detail,
+      state.shape.multi_account ? '一份凭据一个账号，多账号并存互不覆盖' : '',
+      state.expires_at ? `凭据到期：${fmtFullDay(state.expires_at)}` : '',
+      state.switchable ? '可一键切换到客户端' : '',
+      state.shape.expiry_known ? '' : '这个平台不下发凭据到期时间',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  });
+};
+
+const LOGIN_TONE: Record<string, Cell['tone']> = {
+  current: 'ok',
+  saved: undefined,
+  expiring_soon: 'warn',
+  expired: 'bad',
+  unknown_expiry: 'muted',
+  not_saved: 'warn',
+  failed: 'bad',
+};
+
+const LOGIN_ICON: Record<string, IconName> = {
+  current: 'check',
+  expired: 'warning',
+  not_saved: 'warning',
+  failed: 'warning',
+};
+
+/** 回落：后端没给登录态时（诊断/导出路径）仍按老口径显示到期日。 */
+const legacyLoginCell = (a: AccountView): Cell => {
   if (!a.has_secret) {
     return decorateHealth(a, {
       text: '未保存',
@@ -264,12 +310,12 @@ const checkinCell = (
       title: '下次自动签到时间',
     };
   // 「待查询」= 平台没给出今天的签到结论（活动未开放 / 这次查询失败），不是「没签」。
-  // 点「刷新积分」会顺带重查一次状态，查到已签就自动变成已签。
+  // 点「签到 · 积分」会重查一次；ima 这类算力与签到同源的平台，刷积分就会带回结论。
   return {
     text: '',
     tone: 'muted',
     icon: 'loading',
-    title: '平台没有返回今天的签到状态：可能活动未开放，或这次查询失败。点「刷新积分」或「签到」重试一次',
+    title: '平台没有返回今天的签到状态：可能活动未开放，或这次查询失败。点「签到 · 积分」重试一次',
   };
 };
 
@@ -287,12 +333,13 @@ export const COLUMNS: ColumnDefEx[] = [
   },
   {
     key: 'login',
-    header: '凭据到期',
-    // 口径速查（附录 A）：凭据 = 登录授权。这一列最容易被读成「有没有登录」，
-    // 而它只说到期日——切换登录靠的是本机凭据文件，不是这个日期。
-    headerTitle: '登录授权的剩余有效期，与「当前登录」无关；也不是积分到期',
-    width: 150,
-    min: 110,
+    header: '登录态',
+    // 口径速查：这一列答「这个号现在是什么登录状态」，第二行说清凭据形态。
+    // 各平台的凭据不是一回事，结论由后端按平台算，界面不自己拼日期。
+    headerTitle:
+      '按平台各自的凭据形态给出的登录结论（当前登录 / 可切换 / 已过期 / 未保存…）；第二行是凭据形态与到期日，与积分到期无关',
+    width: 176,
+    min: 130,
     cell: loginCell,
   },
   {

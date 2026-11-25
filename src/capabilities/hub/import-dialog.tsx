@@ -2,10 +2,10 @@
 // 从 page.tsx 拆出（主页面过长）；交互与行为不变。
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { Tag } from '@/components/ui';
+import { Picker, Tag } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
-import { Checkbox, Select, StateBlock } from '@/components/ui/form';
+import { Checkbox, StateBlock } from '@/components/ui/form';
 import { runCmd } from '@/lib/cmd';
 import { toast } from '@/components/ui/toast';
 import type { HubSnapshot } from '@/lib/types';
@@ -97,17 +97,18 @@ export function ImportDialog({
       <div className="flex flex-col gap-3 text-sm">
         <label className="flex items-center gap-2">
           来源软件
-          <Select value={source} onChange={(e) => switchTarget(e.target.value)}>
-            {targets.map((t) => {
+          <Picker
+            value={source}
+            label="来源软件"
+            onValueChange={switchTarget}
+            options={targets.map((t) => {
               const count = t.installed.filter((s) => !s.in_library).length;
-              return (
-                <option key={t.key} value={t.key}>
-                  {t.label}
-                  {count > 0 ? `（${count} 个可导入）` : '（无可导入）'}
-                </option>
-              );
+              return {
+                value: t.key,
+                label: `${t.label}${count > 0 ? `（${count} 个可导入）` : '（无可导入）'}`,
+              };
             })}
-          </Select>
+          />
         </label>
 
         {skills.length === 0 ? (

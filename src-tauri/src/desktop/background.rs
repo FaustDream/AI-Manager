@@ -20,6 +20,7 @@ pub fn spawn_scheduler(
     db: Arc<Db>,
     service: Arc<crate::app::checkin::Service>,
     activity: Arc<crate::app::activity::Service>,
+    catalog: Arc<crate::app::catalog::Service>,
 ) {
     use std::collections::HashSet;
     use std::sync::Mutex;
@@ -69,6 +70,7 @@ pub fn spawn_scheduler(
                 }
                 let service = service.clone();
                 let activity = activity.clone();
+                let catalog = catalog.clone();
                 let running = running.clone();
                 let db = db.clone();
                 let id = item.id.clone();
@@ -80,7 +82,9 @@ pub fn spawn_scheduler(
                     })
                     .await;
                     match fresh {
-                        Ok(Ok(Some(item))) => run_schedule(&db, &service, &activity, &item).await,
+                        Ok(Ok(Some(item))) => {
+                            run_schedule(&db, &service, &activity, &catalog, &item).await
+                        }
                         Ok(Ok(None)) => {}
                         Ok(Err(e)) | Err(e) => log::fail(
                             "schedule",
@@ -132,6 +136,7 @@ pub(crate) async fn execute_schedule(
     db: &Arc<Db>,
     service: &Arc<crate::app::checkin::Service>,
     activity: &Arc<crate::app::activity::Service>,
+    catalog: &Arc<crate::app::catalog::Service>,
     item: &crate::app::schedule::Schedule,
 ) -> ScheduleOutcome {
     use crate::app::events;
@@ -213,6 +218,50 @@ pub(crate) async fn execute_schedule(
                 },
             }
         }
+        CatalogSync => {
+            if !crate::app::config::get().catalog.enabled {
+                return ScheduleOutcome {
+                    ok: true,
+                    detail: "资料库采集已停用".into(),
+                    changed: false,
+                    next_wake_ms: None,
+                };
+            }
+            match catalog.auto_sync().await {
+                Ok(report) => {
+                    let failed = report
+                        .sources
+                        .iter()
+                        .filter(|source| source.enabled && source.status == "failed")
+                        .count();
+                    ScheduleOutcome {
+                        ok: failed == 0,
+                        detail: format!(
+                            "新增 {}、更新 {}、更新记录 {}{}",
+                            report.added,
+                            report.updated,
+                            report.releases,
+                            if failed > 0 {
+                                format!("；{failed} 个来源失败，详见采集管理")
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        changed: report.added > 0
+                            || report.updated > 0
+                            || report.releases > 0
+                            || failed > 0,
+                        next_wake_ms: None,
+                    }
+                }
+                Err(e) => ScheduleOutcome {
+                    ok: false,
+                    detail: e.message.clone(),
+                    changed: true,
+                    next_wake_ms: None,
+                },
+            }
+        }
     }
 }
 
@@ -221,10 +270,11 @@ async fn run_schedule(
     db: &Arc<Db>,
     service: &Arc<crate::app::checkin::Service>,
     activity: &Arc<crate::app::activity::Service>,
+    catalog: &Arc<crate::app::catalog::Service>,
     item: &crate::app::schedule::Schedule,
 ) {
     let started = std::time::Instant::now();
-    let outcome = execute_schedule(db, service, activity, item).await;
+    let outcome = execute_schedule(db, service, activity, catalog, item).await;
     // 猫猫旅行：把下一跳定在「到站 + 5 分钟」。写失败不影响这轮结论，
     // 只是退回用户配的间隔（下下跳仍会再查一次状态）。
     if item.action == crate::app::schedule::ScheduleAction::TravelRound {
@@ -326,28 +376,6 @@ pub fn spawn_session_scan(service: Arc<crate::app::sessions::Service>) {
 /// 本地用量采集：启动 15 秒后跑一次，之后按 `usage.scan_interval_min`（缺省 30 分钟）一轮。
 ///
 /// 只读客户端落盘文件，慢一点没关系；失败只记日志，不影响任何业务。
-pub fn spawn_catalog_sync(service: Arc<crate::app::catalog::Service>) {
-    crate::app::runtime::runtime().spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-        loop {
-            let config = crate::app::config::get().catalog;
-            if config.enabled {
-                let started = std::time::Instant::now();
-                match service.auto_sync().await {
-                    Ok(report) => log::action(
-                        "catalog_refresh", "schedule",
-                        !report.sources.iter().any(|s| s.enabled && s.status == "failed"),
-                        started.elapsed().as_millis() as u64,
-                        format!("全球资料库：新增 {}、更新 {}、更新记录 {}；分页与错误详见数据源", report.added, report.updated, report.releases),
-                    ),
-                    Err(e) => log::fail("catalog", "catalog_refresh", "定时资料采集未完成", e.evidence()),
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(config.sync_interval_min.clamp(1, 10080) * 60)).await;
-        }
-    });
-}
-
 pub fn spawn_usage_scan(db: Arc<Db>) {
     crate::app::runtime::runtime().spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;

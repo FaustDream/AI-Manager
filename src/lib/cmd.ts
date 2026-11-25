@@ -42,6 +42,8 @@ import type {
   DeployReport,
   DidaState,
   DidaTask,
+  DidaTaskInput,
+  DidaMember,
   Facets,
   Filter,
   HubSnapshot,
@@ -64,6 +66,7 @@ import type {
   RestoreOutcome,
   RewardCredits,
   RecentClaim,
+  RefreshRoundReport,
   RoundResult,
   ScanReport,
   SessionScanReport,
@@ -164,6 +167,7 @@ export interface CmdArgs {
   activity_daily_status: { iid: string };
   activity_pref_set: { iid: string; enabled: boolean; location: number | null };
   checkin_credits: { iids: string[]; trigger?: 'auto' | 'user' };
+  checkin_refresh: { iids: string[]; trigger?: 'auto' | 'user' };
   checkin_detail: { iid: string };
   checkin_run: { iid: string };
   checkin_batch: { iids: string[] };
@@ -195,6 +199,15 @@ export interface CmdArgs {
   };
   dida_task_complete: { project_id: string; task_id: string };
   dida_task_delete: { project_id: string; task_id: string };
+  dida_task_save: { input: DidaTaskInput };
+  dida_task_detail: { project_id: string; task_id: string };
+  dida_tasks_completed: { project_ids: string[]; from: string; to: string };
+  dida_tasks_undone: void;
+  dida_tasks_complete_many: { pairs: [string, string][] };
+  dida_tasks_move: { pairs: [string, string][]; to_project_id: string };
+  dida_task_assign: { project_id: string; task_id: string; username: string };
+  dida_task_unassign: { project_id: string; task_id: string };
+  dida_project_members: { project_id: string };
   catalog_status: void;
   catalog_refresh: { request: CatalogSyncRequest };
   catalog_library: { query: CatalogQuery };
@@ -330,6 +343,7 @@ export interface CmdReturn {
   activity_daily_status: DailyActive;
   activity_pref_set: TravelPrefs;
   checkin_credits: [string, CreditSnapshot][];
+  checkin_refresh: RefreshRoundReport;
   checkin_detail: AccountDetail;
   checkin_run: ActionResult;
   checkin_batch: RoundResult;
@@ -346,6 +360,15 @@ export interface CmdReturn {
   dida_task_update: DidaTask;
   dida_task_complete: void;
   dida_task_delete: void;
+  dida_task_save: DidaTask;
+  dida_task_detail: DidaTask;
+  dida_tasks_completed: DidaTask[];
+  dida_tasks_undone: DidaTask[];
+  dida_tasks_complete_many: number;
+  dida_tasks_move: number;
+  dida_task_assign: void;
+  dida_task_unassign: void;
+  dida_project_members: DidaMember[];
   catalog_status: CatalogSourceStatus[];
   catalog_refresh: CatalogRefreshReport;
   catalog_library: CatalogPage;
@@ -525,6 +548,7 @@ const CMD_LABELS: Record<string, string> = {
   activity_daily_status: '读取每日活跃',
   activity_pref_set: '保存旅行配置',
   checkin_credits: '刷新积分',
+  checkin_refresh: '签到 · 积分',
   checkin_detail: '读取账号详情',
   checkin_run: '签到',
   checkin_batch: '批量签到',
@@ -561,6 +585,15 @@ const CMD_LABELS: Record<string, string> = {
   dida_task_update: '更新滴答清单任务',
   dida_task_complete: '完成滴答清单任务',
   dida_task_delete: '删除滴答清单任务',
+  dida_task_save: '保存滴答清单任务',
+  dida_task_detail: '读取任务详情',
+  dida_tasks_completed: '读取已完成任务',
+  dida_tasks_undone: '读取全部未完成任务',
+  dida_tasks_complete_many: '批量完成任务',
+  dida_tasks_move: '移动任务',
+  dida_task_assign: '指派负责人',
+  dida_task_unassign: '取消指派',
+  dida_project_members: '读取清单成员',
   catalog_status: '读取剧集来源状态',
   catalog_refresh: '刷新剧集更新',
   catalog_library: '检索全球作品资料',
@@ -641,6 +674,11 @@ const KEY_ACTIONS = new Set<string>([
   'dida_task_update',
   'dida_task_complete',
   'dida_task_delete',
+  'dida_task_save',
+  'dida_tasks_complete_many',
+  'dida_tasks_move',
+  'dida_task_assign',
+  'dida_task_unassign',
   'catalog_refresh',
   'catalog_source_set',
   'catalog_retry',

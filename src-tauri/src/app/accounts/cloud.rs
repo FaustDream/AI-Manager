@@ -83,6 +83,7 @@ mod tests {
             balance: Some(1.0),
             lots: None,
             quota: None,
+            checked_in: None,
         }
     }
 

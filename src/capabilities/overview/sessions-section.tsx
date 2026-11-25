@@ -3,6 +3,7 @@
 // 不含已归档）；`total` / `archived` / `unnamed` 是存量口径，换区间不变。
 // 遵循仪表盘既定口味：瓦片只留数字、解释进 tooltip；排名列表 + 行底 3px 份额条。
 import { useQuery } from '@tanstack/react-query';
+import { Hint, Tooltip } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { StateBlock } from '@/components/ui/form';
@@ -117,19 +118,22 @@ function RankedSources({
   return (
     <div>
       {bySource.map((row) => (
-        <button
+        <Tooltip
           key={row.source_key}
-          title={`${row.label} · ${row.count} 条会话（点击去会话页按来源筛选）`}
-          className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
-          onClick={() => navigate('sessions', { source: row.source_key })}
+          content={`${row.label} · ${row.count} 条会话（点击去会话页按来源筛选）`}
         >
-          <ShareBar pct={(row.count / max) * 100} />
-          <span className="relative min-w-0 flex-1 truncate">{row.label}</span>
-          <span className="relative tabular-nums">{row.count}</span>
-          <span className="relative w-10 text-right text-xs tabular-nums text-muted">
-            {shareText(total === 0 ? 0 : (row.count / total) * 100)}
-          </span>
-        </button>
+          <button
+            className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
+            onClick={() => navigate('sessions', { source: row.source_key })}
+          >
+            <ShareBar pct={(row.count / max) * 100} />
+            <span className="relative min-w-0 flex-1 truncate">{row.label}</span>
+            <span className="relative tabular-nums">{row.count}</span>
+            <span className="relative w-10 text-right text-xs tabular-nums text-muted">
+              {shareText(total === 0 ? 0 : (row.count / total) * 100)}
+            </span>
+          </button>
+        </Tooltip>
       ))}
     </div>
   );
@@ -147,20 +151,20 @@ function RankedProjects({
   return (
     <div>
       {byProject.map((row) => (
-        <div
-          key={row.project}
-          title={`${row.project} · ${row.count} 条会话`}
-          className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
-        >
-          <ShareBar pct={(row.count / max) * 100} />
-          <span className="relative min-w-0 flex-1 truncate" title={row.project}>
-            {row.project}
-          </span>
-          <span className="relative tabular-nums">{row.count}</span>
-          <span className="relative w-10 text-right text-xs tabular-nums text-muted">
-            {shareText(total === 0 ? 0 : (row.count / total) * 100)}
-          </span>
-        </div>
+        <Tooltip key={row.project} content={`${row.project} · ${row.count} 条会话`}>
+          <div
+            className="group relative flex h-11 w-full items-center gap-3 rounded-md px-3 pb-1.5 text-left text-sm text-fg transition-colors duration-[var(--dur-1)] hover:bg-hover"
+          >
+            <ShareBar pct={(row.count / max) * 100} />
+            <Hint className="relative min-w-0 flex-1 truncate" content={row.project} focusable={false}>
+              {row.project}
+            </Hint>
+            <span className="relative tabular-nums">{row.count}</span>
+            <span className="relative w-10 text-right text-xs tabular-nums text-muted">
+              {shareText(total === 0 ? 0 : (row.count / total) * 100)}
+            </span>
+          </div>
+        </Tooltip>
       ))}
     </div>
   );

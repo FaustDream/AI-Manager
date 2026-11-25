@@ -242,7 +242,7 @@ fn literal_multilingual_search_and_combined_filters_paginate_on_server() {
             search: Some("声優日本語".into()),
             kind: Some("anime".into()),
             region: Some("JP".into()),
-            genre: Some("Drama".into()),
+            genre: Some("剧情".into()),
             platform: Some("bilibili".into()),
             status: Some("airing".into()),
             year: Some(2026),

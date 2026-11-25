@@ -124,6 +124,55 @@ fn throttled(min_minutes: u64, last_ok_at: Option<i64>, now_ms: i64) -> bool {
     }
 }
 
+/// 「签到 · 积分」里单个账号的签到归属。五类互斥，加起来等于总数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckinSlot {
+    Signed,
+    Already,
+    NotApplicable,
+    Deferred,
+    Failed,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 一个账号的积分查询结果。用具名结构而不是元组：ts-rs 对元组里的类型不生成 import。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountCredit {
+    pub iid: String,
+    pub snapshot: CreditSnapshot,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+/// 「签到 · 积分」一轮的统计。
+///
+/// 积分失败明细不在这里——逐账号在 `credits` 的 `error` 字段里，界面按行显示。
+/// `signed + already + not_applicable + deferred + checkin_failed` 恒等于 `total`。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RefreshRoundReport {
+    /// 逐账号的余额结果，顺序 = 完成顺序
+    pub credits: Vec<AccountCredit>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub total: usize,
+    /// 本次真的提交并签成功
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub signed: usize,
+    /// 今日已签（本地标记或平台结论），**没有重复提交**
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub already: usize,
+    /// 平台没有签到玩法，或用户在设置里关掉了这个软件的签到
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub not_applicable: usize,
+    /// 本轮积分查询失败，签到留到下一轮（不拿坏凭据去撞签到接口）
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub deferred: usize,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub checkin_failed: usize,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub ms: u64,
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 /// 一轮轮询的统计。界面只拿它拼一句提示文案。
@@ -423,11 +472,25 @@ impl Service {
             )
         };
         self.persist(iid, &result, quota).await;
-        // 平台的签到结论要落到本地：本工具没签过（用户在官方客户端签的）时，
-        // 不补标记列表会一直停在「待查询」，每轮轮询还会再问一次接口；
-        // 平台明确说没签也要记下来，否则早上打开每个账号都只显示「待查询」。
-        // 只认接口明确给的 true/false——None 是「没查到」，别猜。
-        match result.checked_in {
+        self.apply_checkin_verdict(iid, result.checked_in, cooldown)
+            .await;
+        if requires && result.next_at.is_none() {
+            self.fallback_next_at(iid, cooldown).await;
+        }
+        let _ = view;
+        Ok(result)
+    }
+
+    /// 把平台给出的签到结论落到本地去重表。**唯一的落地实现**，状态查询与积分查询共用。
+    ///
+    /// 本工具没签过（用户在官方客户端签的）时，不补标记列表会一直停在「待查询」，
+    /// 每轮轮询还会再问一次接口；平台明确说没签也要记下来，否则早上打开每个账号
+    /// 都只显示「待查询」。只认接口明确给的 true/false——None 是「没观察到」，别猜。
+    ///
+    /// 冷却为 0 的平台按自然日去重，平台说「没签」不足以推翻本地已落地的当日标记
+    /// （可能是时区口径差），所以只在有冷却小时数时才校正。
+    async fn apply_checkin_verdict(&self, iid: &str, verdict: Option<bool>, cooldown: u32) {
+        match verdict {
             Some(true) => {
                 if let Err(e) = self.mark_today(iid).await {
                     log_write_failure("写入去重标记失败", &platform_scope(iid), e);
@@ -453,11 +516,6 @@ impl Service {
             }
             None => {}
         }
-        if requires && result.next_at.is_none() {
-            self.fallback_next_at(iid, cooldown).await;
-        }
-        let _ = view;
-        Ok(result)
     }
 
     /// 额度窗口转成有序表：CreditView 按 BTreeMap 存，界面显示顺序才稳定。
@@ -470,6 +528,9 @@ impl Service {
     }
 
     /// 只查积分（高频刷新走这条）。
+    ///
+    /// 平台若在这一发里**顺带**给出了签到结论（`CreditSnapshot::checked_in`），
+    /// 一并落到本地去重表——不多打任何接口。接口分离的平台留 `None`，行为不变。
     pub async fn credits(&self, iid: &str) -> Result<CreditSnapshot> {
         let (_, cred) = self.load(iid).await?;
         let provider = Self::provider_of(iid)?;
@@ -480,7 +541,174 @@ impl Service {
         let quota = Self::quota_map(&snapshot);
         self.note_view(iid, quota, snapshot.lots.clone(), snapshot.balance)
             .await;
+        self.apply_checkin_verdict(iid, snapshot.checked_in, provider.cooldown_hours())
+            .await;
         Ok(snapshot)
+    }
+
+    /// 「签到 · 积分」：一个按钮走完两件事——先刷平台余额，再对**今天还没签**的账号签到。
+    ///
+    /// 为什么合并：两件事对同一批账号、同一份凭据、同一个并发预算，分成两个按钮
+    /// 用户得记住先点哪个，而且刷完积分再点签到会把同一批凭据再读一遍。
+    ///
+    /// 已签不重复触发的判据有三层，缺一不可：
+    ///   1. 本地 `daily_marks`（权威，本工具签过的记在这）；
+    ///   2. 平台在积分那一发顺带给的结论（ima 这种同源平台，零新增请求）；
+    ///   3. `checkin_traced` 内部的 marked/reserved 二次幂等 + provider 自己的状态检查。
+    ///
+    /// 积分查询失败的账号本轮不签：拿一份读不出来的凭据去撞签到接口，
+    /// 只会多一次风控样本，留到下一轮更划算。
+    pub async fn refresh_round(&self, iids: &[String], trigger: &str) -> RefreshRoundReport {
+        let accounts = self.accounts().await.unwrap_or_default();
+        let live: std::collections::HashMap<&str, &crate::app::accounts::AccountView> = accounts
+            .iter()
+            .filter(|a| a.enabled && a.has_secret)
+            .map(|a| (a.iid.as_str(), a))
+            .collect();
+        let wanted: Vec<String> = iids
+            .iter()
+            .filter(|iid| live.contains_key(iid.as_str()))
+            .cloned()
+            .collect();
+        let total = wanted.len();
+        let batch_id = batch_id();
+        let started = std::time::Instant::now();
+        let names = self.account_names().await;
+        let (max_concurrent, gap_ms) = self.checkin_limits().await;
+        let mut report = RefreshRoundReport {
+            total,
+            ..Default::default()
+        };
+        if total == 0 {
+            return report;
+        }
+        progress::start("checkin_refresh", &batch_id, total);
+
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, iid) in wanted.iter().enumerate() {
+            let service = self.clone();
+            let permit = semaphore.clone();
+            let batch = batch_id.clone();
+            let iid = iid.clone();
+            let name = names.get(iid.as_str()).cloned();
+            let requires = live
+                .get(iid.as_str())
+                .map(|a| a.requires_checkin)
+                .unwrap_or(false);
+            tasks.spawn(async move {
+                let _permit = permit.acquire_owned().await.ok();
+                let account_started = std::time::Instant::now();
+                // ① 积分（ima 这类平台的签到结论也在这一发里落地）
+                let snapshot = match service.refresh_snapshot(&iid).await {
+                    Ok(snapshot) => {
+                        service.health_ok(&iid).await;
+                        snapshot
+                    }
+                    Err(e) => {
+                        service.health_fail(&iid, e.kind).await;
+                        let subject = name.clone().unwrap_or_else(|| platform_scope(&iid));
+                        log::item(
+                            Item::new("签到 · 积分", &subject, Outcome::of_error(e.kind))
+                                .step("查询积分")
+                                .evidence(e.evidence())
+                                .batch(&batch)
+                                .ms(account_started.elapsed().as_millis() as u64),
+                        );
+                        CreditSnapshot {
+                            summary: e.message.clone(),
+                            error: Some(e.message),
+                            balance: None,
+                            lots: None,
+                            quota: None,
+                            checked_in: None,
+                        }
+                    }
+                };
+
+                // ② 签到：只在「有玩法 + 开关开 + 今天没签 + 这一发凭据是好的」时提交
+                let feature_on = crate::app::features::enabled(
+                    crate::app::features::platform_of_iid(&iid),
+                    crate::app::features::CHECKIN,
+                );
+                let verdict = if !requires || !feature_on {
+                    CheckinSlot::NotApplicable
+                } else if snapshot.error.is_some() {
+                    CheckinSlot::Deferred
+                } else if snapshot.checked_in == Some(true) || service.marked_today(&iid).await {
+                    CheckinSlot::Already
+                } else {
+                    match service.checkin_traced(&iid, Some(&batch)).await.1 {
+                        Ok(result) if result.ok && !result.already => CheckinSlot::Signed,
+                        Ok(result) if result.ok => CheckinSlot::Already,
+                        Ok(_) => CheckinSlot::Failed,
+                        Err(_) => CheckinSlot::Failed,
+                    }
+                };
+                // 一行做完就推一行，界面不必等整批
+                crate::app::accounts::emit_account(service.db.clone(), &iid).await;
+                (iid, snapshot, verdict)
+            });
+            if gap_ms > 0 && index + 1 < wanted.len() {
+                tokio::time::sleep(std::time::Duration::from_millis(gap_ms)).await;
+            }
+        }
+
+        while let Some(joined) = tasks.join_next().await {
+            match joined {
+                Ok((iid, snapshot, verdict)) => {
+                    match verdict {
+                        CheckinSlot::Signed => report.signed += 1,
+                        CheckinSlot::Already => report.already += 1,
+                        CheckinSlot::NotApplicable => report.not_applicable += 1,
+                        CheckinSlot::Deferred => report.deferred += 1,
+                        CheckinSlot::Failed => report.checkin_failed += 1,
+                    }
+                    let tag = if snapshot.error.is_some() || verdict == CheckinSlot::Failed {
+                        "fail"
+                    } else if verdict == CheckinSlot::Signed {
+                        "ok"
+                    } else {
+                        "skip"
+                    };
+                    progress::tick("checkin_refresh", &batch_id, tag);
+                    report.credits.push(AccountCredit { iid, snapshot });
+                }
+                Err(_) => {
+                    report.checkin_failed += 1;
+                    progress::tick("checkin_refresh", &batch_id, "fail");
+                }
+            }
+        }
+        progress::end("checkin_refresh", &batch_id);
+        report.ms = started.elapsed().as_millis() as u64;
+
+        let credit_failed = report
+            .credits
+            .iter()
+            .filter(|row| row.snapshot.error.is_some())
+            .count();
+        log::action(
+            "checkin_refresh",
+            trigger,
+            credit_failed == 0 && report.checkin_failed == 0,
+            report.ms,
+            format!(
+                "批次 {batch_id} 结束 | 总计={total} | 新签={} | 已签={} | 无签到={} | 延后={} | 签到失败={}{}",
+                report.signed,
+                report.already,
+                report.not_applicable,
+                report.deferred,
+                report.checkin_failed,
+                if credit_failed > 0 {
+                    format!(" | 积分失败={credit_failed}")
+                } else {
+                    String::new()
+                }
+            ),
+        );
+        crate::app::events::emit("credits:round", serde_json::json!({ "trigger": trigger }));
+        report
     }
 
     /// 批量刷积分：并发 3（与状态查询同口径），单账号失败不拖垮整批。
@@ -534,6 +762,8 @@ impl Service {
                             balance: None,
                             lots: None,
                             quota: None,
+                            // 查询失败 = 没观察到，不能替平台下结论
+                            checked_in: None,
                         }
                     }
                 };
@@ -655,12 +885,13 @@ impl Service {
             .unwrap_or_default()
     }
 
-    /// 「刷新积分」实际打的那一发：只查积分接口，不再顺带查签到状态。
+    /// 「刷新积分」实际打的那一发：只查积分接口，**不为了签到状态额外打任何端点**。
     ///
     /// 旧实现为了让「用户在官方客户端签过」的账号能显示已签，每次积分刷新都先打
     /// 一次签到状态接口——5 分钟一轮、十几个账号，等于把状态端点也变成了脚本样本。
-    /// 现在签到状态只由本地 `daily_marks` 回答；官方客户端签过的账号，下一次签到
-    /// 提交会由平台返回「已签」，服务层再落本地标记。
+    /// 现在按平台隔离：接口分离的平台（Trae / Qoder / WorkBuddy）签到结论只由本地
+    /// `daily_marks` 与真实签到回答；而像 ima 这样算力与签到本来就由同一发活动面板
+    /// 回答的平台，结论顺带带回来（`CreditSnapshot::checked_in`），零新增请求。
     async fn refresh_snapshot(&self, iid: &str) -> Result<CreditSnapshot> {
         self.credits(iid).await
     }

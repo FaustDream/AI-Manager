@@ -22,6 +22,8 @@ const KV_KEY: &str = "schedules";
 const STATUS_SEEDED_KV: &str = "schedule.status_daily_seeded";
 /// 默认「积分刷新」任务只删一次的标记：删过之后用户再自己加就不再动。
 const CREDITS_SEED_REMOVED_KV: &str = "schedule.credits_seed_removed";
+/// 资料库采集任务只补一次的标记：老用户升级后也要有，删掉后不再自动补回。
+const CATALOG_SEEDED_KV: &str = "schedule.catalog_seeded";
 // kv 的单次写入原子，但读改写不是；偏好联动与调度标记必须串行，避免互相覆盖。
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 static CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
@@ -49,6 +51,8 @@ pub enum ScheduleAction {
     TravelRound,
     /// 账号状态刷新：云端校验凭据有效性 + 校正到期时间（不重扫入库）
     StatusRound,
+    /// 资料库采集：按来源分页拉公开元数据（不绑账号）
+    CatalogSync,
 }
 
 impl ScheduleAction {
@@ -58,6 +62,7 @@ impl ScheduleAction {
             Self::CreditsRound => "积分刷新",
             Self::TravelRound => "猫猫旅行",
             Self::StatusRound => "账号状态刷新",
+            Self::CatalogSync => "资料库采集",
         }
     }
 }
@@ -295,6 +300,7 @@ impl ScheduleAction {
             Self::CreditsRound => "credits",
             Self::TravelRound => "travel",
             Self::StatusRound => "status",
+            Self::CatalogSync => "catalog",
         }
     }
 }
@@ -350,6 +356,15 @@ fn load(db: &Db, now: DateTime<Local>) -> Result<Vec<Schedule>> {
             dirty = true;
         }
     }
+    // 资料库采集从后台自写循环改为一条普通定时任务：规则、执行记录与「立即执行」
+    // 都与其他任务同源；只补一次，用户删掉后不再自动出现。
+    if db.kv_get(CATALOG_SEEDED_KV)?.is_none() {
+        let _ = db.kv_set(CATALOG_SEEDED_KV, "1");
+        if !list.iter().any(|s| s.action == ScheduleAction::CatalogSync) {
+            list.push(catalog_task());
+            dirty = true;
+        }
+    }
     let prefs = travel_store::all(db);
     if prefs.values().any(|p| p.enabled) {
         for account in crate::app::accounts::repo::list(db)? {
@@ -402,8 +417,32 @@ fn status_task() -> Schedule {
     }
 }
 
-fn travel_task(iid: &str, name: &str, now: DateTime<Local>) -> Schedule {
+/// 资料库采集：间隔沿用配置里的初始值，之后由用户在这条任务上改。
+fn catalog_task() -> Schedule {
+    let minutes = crate::app::config::get()
+        .catalog
+        .sync_interval_min
+        .clamp(30, 10_080) as u32;
     Schedule {
+        id: "catalog-sync".into(),
+        name: "资料库采集".into(),
+        action: ScheduleAction::CatalogSync,
+        account_iid: None,
+        kind: RuleKind::Every,
+        at: None,
+        hours: minutes.is_multiple_of(60).then_some(minutes / 60),
+        minutes: Some(minutes),
+        enabled: true,
+        last_run: None,
+        next_at: None,
+        // 锚点回拨一个间隔：首次读取就到期，保留原先「启动后先跑一轮」的行为。
+        created_at: Some(
+            (Local::now() - Duration::minutes(i64::from(minutes))).to_rfc3339(),
+        ),
+    }
+}
+
+fn travel_task(iid: &str, name: &str, now: DateTime<Local>) -> Schedule {    Schedule {
         id: format!("travel-account:{iid}"),
         name: format!("猫猫旅行 · {name}"),
         action: ScheduleAction::TravelRound,
@@ -467,6 +506,7 @@ fn seed() -> Vec<Schedule> {
             next_at: None,
         },
         status_task(),
+        catalog_task(),
     ]
 }
 
@@ -1292,15 +1332,18 @@ mod tests {
     fn store_roundtrip_and_seed() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Db::open_at(&dir.path().join("app.db")).unwrap();
-        // 第一次读：写入默认种子（每日签到 + 每日状态刷新），不再默认刷积分
+        // 第一次读：写入默认种子（每日签到 + 每日状态刷新 + 资料库采集），不再默认刷积分
         let seeded = list(&db).unwrap();
-        assert_eq!(seeded.len(), 2);
+        assert_eq!(seeded.len(), 3);
         assert!(seeded
             .iter()
             .any(|s| s.action == ScheduleAction::CheckinRound));
         assert!(seeded
             .iter()
             .any(|s| s.action == ScheduleAction::StatusRound));
+        assert!(seeded
+            .iter()
+            .any(|s| s.action == ScheduleAction::CatalogSync));
         assert!(!seeded
             .iter()
             .any(|s| s.action == ScheduleAction::CreditsRound));
@@ -1308,14 +1351,37 @@ mod tests {
         let mut added = daily("21:15");
         added.id = String::new();
         let saved = save(&db, added).unwrap();
-        assert_eq!(list(&db).unwrap().len(), 3);
+        assert_eq!(list(&db).unwrap().len(), 4);
 
         let marked = mark_ran(&db, &saved.id).unwrap().unwrap();
         assert!(marked.last_run.is_some(), "跑过要留痕");
 
         delete(&db, &saved.id).unwrap();
-        assert_eq!(list(&db).unwrap().len(), 2);
+        assert_eq!(list(&db).unwrap().len(), 3);
         assert!(delete(&db, "nope").is_err());
+    }
+
+    /// 资料库采集从后台循环迁到定时任务：老配置补一次，删掉后不再回来。
+    #[test]
+    fn catalog_task_is_backfilled_once_for_existing_configs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        save_all(&db, &[daily("08:30")]).unwrap();
+
+        let upgraded = list(&db).unwrap();
+        let catalog: Vec<_> = upgraded
+            .iter()
+            .filter(|s| s.action == ScheduleAction::CatalogSync)
+            .collect();
+        assert_eq!(catalog.len(), 1, "老配置要补上资料库采集");
+        assert_eq!(catalog[0].id, "catalog-sync");
+        assert!(catalog[0].enabled);
+
+        delete(&db, &catalog[0].id).unwrap();
+        assert!(!list(&db)
+            .unwrap()
+            .iter()
+            .any(|s| s.action == ScheduleAction::CatalogSync));
     }
 
     /// 老用户升级：只补一次「每日状态刷新」，删掉后不该每次启动又回来。

@@ -18,7 +18,9 @@ use crate::app::clock::{Clock, SystemClock};
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::{Http, HttpRequest};
 use crate::app::{fsx, process, secret};
-use crate::types::{trim_f64, ActionResult, CreditLot, CreditSnapshot, StatusResult};
+use crate::types::{
+    trim_f64, ActionResult, CreditLot, CreditSnapshot, CredentialKind, CredentialShape, StatusResult,
+};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key};
 use async_trait::async_trait;
@@ -392,6 +394,21 @@ impl Provider for QoderProvider {
             .map(str::to_string)
     }
 
+    fn credential_shape(&self) -> CredentialShape {
+        CredentialShape {
+            kind: CredentialKind::ClientToken,
+            label: "客户端令牌".into(),
+            multi_account: false,
+            // 写回 auth.v1.dat 能换号，但能力表未对 Qoder 开放切换（会话侧无法同步）
+            switchable: false,
+            expiry_known: true,
+            note: format!(
+                "{} 读本机客户端的加密令牌文件，平台下发到期时间；一个客户端只保留一个当前登录，历史账号留在本工具账号库里",
+                self.label()
+            ),
+        }
+    }
+
     // ------------------------------------------------------------ P3：签到与积分
 
     async fn status(&self, cred: &Credential, http: &dyn Http) -> Result<StatusResult> {
@@ -447,6 +464,8 @@ impl Provider for QoderProvider {
             balance,
             lots: Some(lots),
             quota: None,
+            // 签到结论在 campaigns 上，这一发没看到就不填（见 CreditSnapshot::checked_in）
+            checked_in: None,
         })
     }
 

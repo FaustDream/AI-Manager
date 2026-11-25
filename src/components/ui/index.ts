@@ -16,5 +16,13 @@ export {
   StateBlock,
   Textarea,
 } from './form';
+export { Hint, Tooltip, TooltipProvider } from './tooltip';
+export { Switch } from './switch';
+export { Picker } from './picker';
+export type { PickerOption } from './picker';
+export { ContextMenu, DropdownMenu } from './menu';
+export type { MenuEntry } from './menu';
+export { Tabs } from './tabs';
+export type { TabItem } from './tabs';
 export { LoadMore } from './table';
 export { toast, ToastHost, useToasts } from './toast';
