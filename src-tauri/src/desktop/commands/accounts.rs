@@ -94,6 +94,19 @@ pub async fn account_scan(
         .map_err(err_text)
 }
 
+/// 只扫描一个平台。ima 这类只存在于本机客户端的平台不该顺带读其他客户端，
+/// 否则一个「扫描客户端」会把六家客户端全拉起来，错误也会混在一起。
+pub async fn account_scan_platform(
+    state: &AppState,
+    platform: String,
+) -> std::result::Result<crate::app::accounts::ScanReport, String> {
+    let db = state.db.clone();
+    crate::app::runtime::blocking(move || crate::app::accounts::scan_platform(&db, &platform))
+        .await
+        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+        .map_err(err_text)
+}
+
 /// 用 Cookie 添加账号（豆包这类「没有可借用登录流程」的平台）。
 ///
 /// 返回新账号的 iid：同一份 Cookie 重复添加会落回同一行，界面按 iid 就能判重。
@@ -527,6 +540,17 @@ pub async fn account_add_prepare(
         ),
     );
     Ok(outcome)
+}
+
+pub async fn account_add_finish(
+    state: &AppState,
+    platform: String,
+) -> std::result::Result<crate::app::accounts::ScanReport, String> {
+    let db = state.db.clone();
+    crate::app::runtime::blocking(move || crate::app::accounts::add::finish(&db, &platform))
+        .await
+        .map_err(|e| err_text(AppError::new(ErrorKind::Io, e.to_string())))?
+        .map_err(err_text)
 }
 
 /// 只打开客户端（不动登录态）：自动启动失败时的手动兜底。

@@ -5,6 +5,10 @@
 type Listener = (e: { payload: unknown }) => void;
 
 const listeners = new Map<string, Set<Listener>>();
+// 每个事件名对应挂在 EventSource 上的那**一个**原生监听。退订到 0 时必须凭它
+// removeEventListener——否则反复挂载/卸载（如开关弹窗）会把原生监听越叠越多，
+// 同一条事件触发多次，放大所有副作用（重复 toast、重复刷新）。
+const nativeHandlers = new Map<string, EventListener>();
 let source: EventSource | null = null;
 
 function ensureSource(): void {
@@ -35,13 +39,23 @@ export async function listen<T>(
   const listener = handler as Listener;
   set.add(listener);
   listeners.set(event, set);
-  if (set.size === 1) {
-    source!.addEventListener(event, (e) => dispatch(event, (e as MessageEvent).data));
+  // 原生监听按事件名去重：存下同一个引用，退订到 0 时才能精确摘掉它
+  if (!nativeHandlers.has(event)) {
+    const native: EventListener = (e) => dispatch(event, (e as MessageEvent).data);
+    nativeHandlers.set(event, native);
+    source!.addEventListener(event, native);
   }
   return () => {
     const current = listeners.get(event);
     if (!current) return;
     current.delete(listener);
-    if (current.size === 0) listeners.delete(event);
+    if (current.size === 0) {
+      listeners.delete(event);
+      const native = nativeHandlers.get(event);
+      if (native) {
+        source?.removeEventListener(event, native);
+        nativeHandlers.delete(event);
+      }
+    }
   };
 }

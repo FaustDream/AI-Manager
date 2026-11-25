@@ -1,0 +1,209 @@
+mod bilibili;
+mod iqiyi;
+mod netflix;
+mod tencent;
+mod youku;
+mod global;
+mod supplemental;
+
+use crate::app::catalog::types::{IngestionBatch, MediaDraft};
+use crate::app::error::{AppError, ErrorKind, Result};
+use crate::app::net::{Http, HttpRequest, HttpResponse};
+use chrono::NaiveDate;
+use serde_json::Value;
+use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
+
+pub struct SourceSpec {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub implemented: bool,
+    pub requires_key: bool,
+    pub default_enabled: bool,
+    pub coverage: &'static str,
+    pub license_note: &'static str,
+}
+
+pub const SOURCES: &[SourceSpec] = &[
+    SourceSpec { id: "tvmaze", label: "TVmaze", implemented: true, requires_key: false, default_enabled: true, coverage: "指定国家电视台每日节目 + 全球网络平台日历；非全部平台全集。保留节目当地日期与时区。", license_note: "公开 API，CC BY-SA；使用须署名 TVmaze，按其条款分享。" },
+    SourceSpec { id: "anilist", label: "AniList", implemented: true, requires_key: false, default_enabled: true, coverage: "动漫实际播出时间（完整分页）及连载漫画元数据；漫画无章节发布日期时不进入日历。", license_note: "公开 GraphQL，遵守 AniList API 条款；禁止大规模备份/商业竞争用途。" },
+    SourceSpec { id: "mangadex", label: "MangaDex", implemented: true, requires_key: false, default_enabled: true, coverage: "公开漫画目录及站内章节发布时间；属于译本/发行发布时间，不代表原作官方更新。默认排除成人分类。", license_note: "只读取公开元数据，不获取图片页、扫描内容或播放资源；遵守 API 限流与分页上限。" },
+    SourceSpec { id: "bangumi", label: "Bangumi", implemented: true, requires_key: false, default_enabled: true, coverage: "当前动漫周历与公开作品资料；固定星期不能确认单集日期，不据此虚构更新记录。", license_note: "公开 API，仅元数据；署名 Bangumi，遵守服务条款。" },
+    SourceSpec { id: "simkl", label: "SIMKL", implemented: true, requires_key: false, default_enabled: true, coverage: "公开动漫/电影/电视日历快照（含 MAL/TMDb/IMDb ID）；电影记为首映、电视带季集号，保留原始时区偏移。需授权的 API 端点不采集。", license_note: "公开日历资料，署名 SIMKL；不绕过需要 API key 的端点。" },
+    SourceSpec { id: "kitsu", label: "Kitsu", implemented: true, requires_key: false, default_enabled: false, coverage: "当前动漫/漫画元数据，按 next 完整分页；无单集日期时不进入日历。", license_note: "公开 JSON:API；只读取作品资料，遵守 Kitsu 服务条款。" },
+    SourceSpec { id: "tmdb", label: "TMDb", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按发现接口分页采集指定首播日期范围的影视元数据；发现接口不保证所有单集播出日。", license_note: "需要个人 API Read Access Token；署名 TMDb，非商业用途须遵守条款，商业另行授权。" },
+    SourceSpec { id: "bilibili", label: "哔哩哔哩", implemented: true, requires_key: false, default_enabled: true, coverage: "公开番剧/国创/综艺/影视时间线前后7日；没有平台全量索引，保留每一集。", license_note: "现有公开接口，只读节目元数据；不获取播放线路。" },
+    SourceSpec { id: "tencent", label: "腾讯视频", implemented: true, requires_key: false, default_enabled: false, coverage: "公开移动首页节目卡片，非全量目录；首播日期不能当作更新日期。", license_note: "现有公开页面，只读节目资料；页面改版可能无法采集。" },
+    SourceSpec { id: "iqiyi", label: "爱奇艺", implemented: true, requires_key: false, default_enabled: false, coverage: "公开频道资料第一页（接口为推荐模块，无可靠全量分页契约）；不得冒充完整日历。", license_note: "现有公开频道资料；推荐页不作为全量数据源。" },
+    SourceSpec { id: "youku", label: "优酷", implemented: true, requires_key: false, default_enabled: false, coverage: "公开电视频道卡片，非全量；无确认集数日期，不进入更新日历。", license_note: "现有公开页面，只读资料；不获取播放线路。" },
+    SourceSpec { id: "omdb", label: "OMDb / IMDb / Rotten Tomatoes", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按库内IMDb ID逐项获取原始评分；覆盖取决于OMDb授权，不推测观众好评率或评分人数。",  license_note: "需要 OMDb API key，评分字段取决于账户与授权；不抓取评价网站。" },
+    SourceSpec { id: "tvdb", label: "TheTVDB", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：需要 API v4 授权/订阅。", license_note: "需要遵守 TheTVDB 许可，不能借用他人 key。" },
+    SourceSpec { id: "trakt", label: "Trakt", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：需要注册应用 client ID；当前无授权。", license_note: "遵守 Trakt API 授权及速率限制。" },
+    SourceSpec { id: "jikan", label: "Jikan / MyAnimeList", implemented: false, requires_key: false, default_enabled: false, coverage: "未接入：开发机实测 api.jikan.moe 持续超时（网络不可达）。MAL 评分改走官方 API（见 MyAnimeList 源），MAL ID 已由 AniList/SIMKL 关联。", license_note: "Jikan 非官方只读 API；不冒用 MyAnimeList 授权。" },
+    SourceSpec { id: "mal", label: "MyAnimeList 官方", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按库内 MAL ID 逐项取动漫/漫画 mean 评分、排名与评分人数；覆盖取决于已关联 MAL ID 的作品。", license_note: "需要 MAL 官方 API 客户端 ID（免费申请）；遵守 MyAnimeList API 条款，不抓取受限页面。" },
+    SourceSpec { id: "douban", label: "豆瓣", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：没有可验证的公开批量评分接口或授权，不爬取受限页面。", license_note: "须获得合法数据访问授权；不虚构评分/好评率。" },
+    SourceSpec { id: "netflix", label: "奈飞", implemented: false, requires_key: false, default_enabled: false, coverage: netflix::NOTE, license_note: "Netflix 不提供公开更新列表接口；其原创剧集由 TVmaze 网络日历覆盖。" },
+];
+
+pub fn spec(id: &str) -> Result<&'static SourceSpec> {
+    SOURCES.iter().find(|s| s.id == id).ok_or_else(|| AppError::new(ErrorKind::Invalid, "未知资料库数据源"))
+}
+
+#[derive(Clone)]
+pub struct AdapterContext {
+    pub http: Arc<dyn Http>,
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+    pub mode: String,
+    pub cursor: Option<String>,
+    pub max_pages: u32,
+    pub countries: Vec<String>,
+    pub token: Option<String>,
+}
+
+pub async fn fetch(source: &str, ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<()> {
+    match source {
+        "tvmaze" => global::tvmaze(ctx, tx).await,
+        "anilist" => global::anilist(ctx, tx).await,
+        "mangadex" => global::mangadex(ctx, tx).await,
+        "bangumi" => supplemental::bangumi(ctx, tx).await,
+        "simkl" => supplemental::simkl(ctx, tx).await,
+        "kitsu" => supplemental::kitsu(ctx, tx).await,
+        "tmdb" => supplemental::tmdb(ctx, tx).await,
+        "bilibili" | "tencent" | "iqiyi" | "youku" => {
+            let drafts = match source {
+                "bilibili" => bilibili::fetch(ctx.http).await?,
+                "tencent" => tencent::fetch(ctx.http).await?,
+                "iqiyi" => iqiyi::fetch(ctx.http).await?,
+                _ => youku::fetch(ctx.http).await?,
+            };
+            let items = drafts.into_iter().map(legacy_draft).collect();
+            publish(&tx, IngestionBatch { items, page: 1, complete: true, http_status: Some(200), ..Default::default() }).await
+        }
+        _ => Err(AppError::new(ErrorKind::Invalid, "该数据源尚未接入")),
+    }
+}
+
+pub async fn publish(tx: &Sender<IngestionBatch>, batch: IngestionBatch) -> Result<()> {
+    tx.send(batch).await.map_err(|_| AppError::new(ErrorKind::Io, "采集任务已停止"))
+}
+
+pub async fn json(http: &Arc<dyn Http>, req: HttpRequest) -> Result<Value> {
+    let config = crate::app::config::get().catalog;
+    let retries = config.retry_count.min(5);
+    for attempt in 0..=retries {
+        let result = http.send(req.clone()).await;
+        let mut rate_limited = false;
+        match result {
+            Ok(resp) if resp.is_ok() => return resp.json(),
+            Ok(resp) if (resp.status == 429 || resp.status >= 500) && attempt < retries => {
+                rate_limited = resp.status == 429;
+            }
+            Ok(resp) => return Err(AppError::new(ErrorKind::Provider, format!("数据源返回 HTTP {}", resp.status))),
+            Err(_) if attempt < retries => {},
+            Err(err) => return Err(err),
+        }
+        // 429 是分钟级配额窗口，短间隔重试只会继续撞墙；用更长的退避等待配额恢复。
+        let delay = if rate_limited {
+            (20_000u64.saturating_mul(u64::from(attempt + 1))).min(60_000)
+        } else {
+            config.retry_delay_ms.saturating_mul(u64::from(attempt + 1)).min(60_000)
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
+    unreachable!()
+}
+
+pub async fn pace() {
+    tokio::time::sleep(std::time::Duration::from_millis(crate::app::config::get().catalog.request_gap_ms)).await;
+}
+
+pub fn text(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => non_empty(Some(s)),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+pub fn strip_html(value: &str) -> String {
+    let mut out = String::new();
+    let mut tag = false;
+    for ch in value.chars() {
+        match ch {
+            '<' => tag = true,
+            '>' => { tag = false; out.push(' '); },
+            _ if !tag => out.push(ch),
+            _ => {},
+        }
+    }
+    out.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Draft {
+    pub platform: &'static str,
+    pub native_id: String,
+    pub kind: &'static str,
+    pub title: String,
+    pub update_note: Option<String>,
+    pub year: Option<i32>,
+    pub air_date: Option<String>,
+    pub finished: bool,
+    pub url: Option<String>,
+    pub episode_id: Option<String>,
+    pub local_time: Option<String>,
+    pub poster: Option<String>,
+}
+
+impl Draft {
+    pub fn key(&self) -> String { format!("{}:{}", self.platform, self.native_id) }
+}
+
+fn legacy_draft(d: Draft) -> MediaDraft {
+    use crate::app::catalog::types::{CatalogMedia, CatalogRelease};
+    let mut out = MediaDraft {
+        source: d.platform.into(), external_id: d.native_id,
+        media: CatalogMedia {
+            title: d.title, kind: d.kind.into(), regions: Vec::new(),
+            platforms: vec![spec(d.platform).map(|s| s.label.to_string()).unwrap_or_default()],
+            status: if d.finished { "completed" } else { "unknown" }.into(),
+            year: d.year, premiered: if d.platform != "bilibili" { d.air_date.clone() } else { None },
+            poster: d.poster, source_url: d.url.clone(), ..Default::default()
+        }, ..Default::default()
+    };
+    if d.platform == "bilibili" {
+        if let (Some(date), Some(id)) = (d.air_date, d.episode_id) {
+            out.releases.push(CatalogRelease {
+                source: d.platform.into(), external_id: id, date, local_time: d.local_time,
+                timezone: Some("Asia/Shanghai".into()), episode: d.update_note,
+                platform: Some("哔哩哔哩".into()), release_kind: "episode".into(), url: d.url,
+                ..Default::default()
+            });
+        }
+        // B站同时分发海外作品，不能从发行平台推断制作国家。
+        out.media.regions.clear();
+    }
+    out
+}
+
+pub const DESKTOP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+pub const MOBILE_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
+pub fn check(resp: HttpResponse, label: &str) -> Result<HttpResponse> {
+    if resp.is_ok() { return Ok(resp); }
+    Err(AppError::new(ErrorKind::Provider, format!("{label}返回 HTTP {}", resp.status)))
+}
+
+pub fn normalize_date(text: &str, fallback_year: i32) -> Option<String> {
+    let parts: Vec<&str> = text.trim().split('-').collect();
+    let (year, month, day) = match parts.as_slice() {
+        [y, m, d] => (y.parse().ok()?, m.parse().ok()?, d.parse().ok()?),
+        [m, d] => (fallback_year, m.parse().ok()?, d.parse().ok()?),
+        _ => return None,
+    };
+    Some(NaiveDate::from_ymd_opt(year, month, day)?.format("%Y-%m-%d").to_string())
+}
+pub fn year_of(date: Option<&str>) -> Option<i32> { date.and_then(|d| d.get(..4)).and_then(|y| y.parse().ok()) }
+pub fn is_finished(note: &str) -> bool { let n = note.trim(); !n.is_empty() && (n.starts_with('全') || n.contains("集全")) }
+pub fn non_empty(value: Option<&str>) -> Option<String> { value.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string) }

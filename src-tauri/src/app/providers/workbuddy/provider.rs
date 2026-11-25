@@ -47,8 +47,8 @@ impl Provider for WorkBuddyProvider {
             let Some(uid) = data.pointer("/account/uid").and_then(|v| v.as_str()) else {
                 continue;
             };
-            if uid.is_empty() || !seen.insert(uid.to_string()) {
-                continue; // 同一账号的多份备份只取最新的一份（已按 mtime 倒序）
+            if uid.is_empty() || seen.contains(uid) {
+                continue;
             }
             let auth = data.get("auth").cloned().unwrap_or_default();
             let token =
@@ -56,6 +56,7 @@ impl Provider for WorkBuddyProvider {
             if token.is_empty() {
                 continue;
             }
+            seen.insert(uid.to_string());
             let name = open_field(data.pointer("/account/nickname").unwrap_or(&Value::Null))
                 .ok()
                 .filter(|s| !s.is_empty())
@@ -88,6 +89,15 @@ impl Provider for WorkBuddyProvider {
                 cred.put("domain", domain.clone());
             }
             cred.put("edition", json!(self.edition()));
+            cred.put(
+                "ticket_is_current",
+                json!(path.file_name().and_then(|n| n.to_str()) == Some(self.file_name())),
+            );
+            if let Ok(modified) = path.metadata().and_then(|m| m.modified()) {
+                if let Ok(age) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    cred.put("credential_updated_at", json!(age.as_millis() as i64));
+                }
+            }
             // 账号自己的 UA：以后平台按客户端版本区分接口时，不用再改常量重扫
             cred.put("ua", json!(USER_AGENT));
             // 票据原文（含 sessionState）整份存进密文：切换时按字节写回，这是契约 8a 的由来
@@ -129,6 +139,68 @@ impl Provider for WorkBuddyProvider {
         } else {
             uid
         })
+    }
+
+    fn keep_local_credential(&self, local: &Credential, scanned: &Credential, now: i64) -> bool {
+        if scanned
+            .meta_json("ticket_is_current")
+            .and_then(Value::as_bool)
+            == Some(false)
+        {
+            return true;
+        }
+        if scanned.expires_ms().is_some_and(|ms| ms <= now)
+            && local.expires_ms().is_none_or(|ms| ms > now)
+        {
+            return true;
+        }
+        if local.token == scanned.token && local.refresh() == scanned.refresh() {
+            return false;
+        }
+        let updated_at = |cred: &Credential| {
+            cred.meta_json("credential_updated_at")
+                .and_then(Value::as_i64)
+        };
+        if let (Some(local_time), Some(scanned_time)) = (updated_at(local), updated_at(scanned)) {
+            return scanned_time <= local_time;
+        }
+        if local.expires_ms().is_none() && scanned.expires_ms().is_none() {
+            return true;
+        }
+        crate::app::accounts::scan::keeps_local(local.expires_ms(), scanned.expires_ms(), now)
+    }
+
+    fn save_login_profile(&self) -> Result<()> {
+        if crate::app::process::process_running(self.process_names()) {
+            return Err(AppError::new(
+                ErrorKind::ClientRunning,
+                "请先关闭 WorkBuddy 客户端再保存登录态档案",
+            ));
+        }
+        let uid = self.current_uid().ok_or_else(|| {
+            AppError::new(
+                ErrorKind::SessionStateMissing,
+                "客户端尚未完成登录，请登录后重试",
+            )
+        })?;
+        let raw = std::fs::read(self.live_ticket().ok_or_else(|| {
+            AppError::new(ErrorKind::SessionStateMissing, "没有找到客户端登录票据")
+        })?)?;
+        let ticket: Value = serde_json::from_slice(&raw)?;
+        if open_field(ticket.pointer("/auth/accessToken").unwrap_or(&Value::Null))?.is_empty() {
+            return Err(AppError::new(
+                ErrorKind::SessionStateMissing,
+                "客户端尚未取得登录凭据，请完成登录后重试",
+            ));
+        }
+        self.save_current_as_pack(&uid)?;
+        if !self.pack_ready(&uid) {
+            return Err(AppError::new(
+                ErrorKind::SessionStateMissing,
+                "客户端登录态还未完整写入，请在客户端完成登录后重试",
+            ));
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------ P3：签到与积分

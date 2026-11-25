@@ -344,6 +344,7 @@ async fn wait_workbuddy(db: &Db, platform: &str, ticket: &str) -> Result<LoginOu
     meta.insert("ua".into(), json!(WB_UA));
     meta.insert("refresh_token".into(), json!(refresh.clone()));
     meta.insert("account_info".into(), who);
+    meta.insert("credential_updated_at".into(), json!(now_ms()));
     let credential = Credential {
         token: access,
         refresh_token: refresh,
@@ -1048,10 +1049,13 @@ pub(crate) fn save(
     expires_at: Option<i64>,
     nickname: &str,
 ) -> Result<LoginOutcome> {
+    let mut identity = identity;
+    identity.expires_at = expires_at.or(identity.expires_at);
     let iid = identity.iid.clone();
     let existed = repo::identity(db, &iid)?.is_some();
-    repo::upsert_identity(db, &identity, now_ms())?;
-    repo::set_secret(db, &iid, &credential.to_bytes()?, expires_at)?;
+    repo::save_scanned(db, &identity, &credential.to_bytes()?, now_ms(), |_, _| {
+        false
+    })?;
     // 重新授权 = 换了一套新凭据，旧的失败标记没有意义了；留着会让详情页
     // 一直显示「最近一次查询失败」，用户以为重新授权没生效
     if let Err(e) = repo::clear_health_fail(db, &iid) {

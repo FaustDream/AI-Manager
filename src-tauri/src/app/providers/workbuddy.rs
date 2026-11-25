@@ -102,6 +102,39 @@ mod tests {
     }
 
     #[test]
+    fn login_profile_is_ready_and_restoring_it_keeps_the_ticket_time() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = provider(dir.path()).with_processes(&[]);
+        std::fs::create_dir_all(dir.path().join("auth")).unwrap();
+        std::fs::create_dir_all(dir.path().join("client/app/session")).unwrap();
+        let live = p.live_ticket().unwrap();
+        let original = ticket("u1", "new-token", "账号");
+        std::fs::write(&live, &original).unwrap();
+        let issued = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&live)
+            .unwrap()
+            .set_modified(issued)
+            .unwrap();
+        p.save_login_profile().unwrap();
+        assert!(p.pack_ready("u1"));
+        assert_eq!(
+            p.pack_dir("u1")
+                .join("auth.info")
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap(),
+            issued
+        );
+        std::fs::write(&live, ticket("other", "old", "旧账号")).unwrap();
+        p.restore_pack("u1").unwrap();
+        assert_eq!(std::fs::read(&live).unwrap(), original);
+        assert_eq!(live.metadata().unwrap().modified().unwrap(), issued);
+    }
+
+    #[test]
     fn encrypted_field_roundtrip() {
         let field = seal("17679130626");
         assert_eq!(open_field(&field).unwrap(), "17679130626");

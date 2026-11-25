@@ -296,8 +296,8 @@ function LogsPane() {
     if (!Number.isFinite(at) || at <= seenRef.current) return;
     seenRef.current = at;
     setSeenAt(at);
-    // 写失败只影响下次启动的起点，本会话仍以内存里的水位为准
-    void queryCmd('settings_set', { key: ALERT_SEEN_KEY, value: at }).catch(() => {});
+    // 写失败只影响下次启动的起点，本会话仍以内存里的水位为准；走 runCmd 统一留痕，静默错误
+    void runCmd('settings_set', { key: ALERT_SEEN_KEY, value: at }, { onError: () => {} });
   }, []);
 
   /** 切到异常视图即视为「这批看过了」：返回列表后不再重复提示。 */
@@ -493,13 +493,10 @@ function LogsPane() {
                 title="导出当前筛选结果（时间窗同样生效）"
                 onClick={async () => {
                   setExporting(true);
-                  try {
-                    toast(await queryCmd('log_export', { path: null, filter }));
-                  } catch (e) {
-                    toast(errText(e));
-                  } finally {
-                    setExporting(false);
-                  }
+                  // 导出是动作：走 runCmd，失败由命令面统一提示，成功再 toast 路径
+                  const path = await runCmd('log_export', { path: null, filter });
+                  setExporting(false);
+                  if (path !== undefined) toast(path);
                 }}
               >
                 导出

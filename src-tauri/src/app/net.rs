@@ -39,6 +39,8 @@ impl HttpResponse {
 pub enum Method {
     Get,
     Post,
+    Put,
+    Delete,
 }
 
 /// 一次请求。`url` 含查询串（MockHttp 就按完整 url 记调用）。
@@ -63,6 +65,24 @@ impl HttpRequest {
     pub fn post(url: impl Into<String>) -> Self {
         Self {
             method: Method::Post,
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
+
+    pub fn put(url: impl Into<String>) -> Self {
+        Self {
+            method: Method::Put,
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
+
+    pub fn delete(url: impl Into<String>) -> Self {
+        Self {
+            method: Method::Delete,
             url: url.into(),
             headers: Vec::new(),
             body: None,
@@ -227,6 +247,8 @@ impl RealHttp {
         let mut builder = match req.method {
             Method::Get => self.client.get(&req.url),
             Method::Post => self.client.post(&req.url),
+            Method::Put => self.client.put(&req.url),
+            Method::Delete => self.client.delete(&req.url),
         };
         for (key, value) in &req.headers {
             builder = builder.header(key, value);
@@ -303,6 +325,8 @@ pub struct MockHttp {
     // type_complexity：测试夹具的私有字段，抽 type 出来反而是噪音
     #[allow(clippy::type_complexity)]
     headers: Mutex<Vec<(String, Vec<(String, String)>)>>,
+    /// 请求体同样要能断言：任务创建这类接口的契约全在 body 字段上
+    bodies: Mutex<Vec<(String, Option<String>)>>,
 }
 
 impl MockHttp {
@@ -311,6 +335,7 @@ impl MockHttp {
             routes: Mutex::new(HashMap::new()),
             calls: Mutex::new(Vec::new()),
             headers: Mutex::new(Vec::new()),
+            bodies: Mutex::new(Vec::new()),
         }
     }
 
@@ -347,6 +372,16 @@ impl MockHttp {
             .count()
     }
 
+    /// 某个 URL 最近一次请求的 body。
+    pub fn last_body(&self, url: &str) -> Option<String> {
+        let guard = self.bodies.lock().unwrap();
+        guard
+            .iter()
+            .rev()
+            .find(|(u, _)| u == url)
+            .and_then(|(_, body)| body.clone())
+    }
+
     /// 某个 URL 最近一次请求带的头（大小写不敏感查找）。
     pub fn last_header(&self, url: &str, key: &str) -> Option<String> {
         let guard = self.headers.lock().unwrap();
@@ -376,6 +411,10 @@ impl Http for MockHttp {
             .lock()
             .unwrap()
             .push((req.url.clone(), req.headers.clone()));
+        self.bodies
+            .lock()
+            .unwrap()
+            .push((req.url.clone(), req.body.clone()));
         respond(&self.routes, &req.url)
     }
 }

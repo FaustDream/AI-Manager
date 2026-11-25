@@ -9,6 +9,16 @@ import { call, errKind, errText } from './ipc';
 import type {
   AppConfig,
   CapabilityMatrix,
+  CatalogFacets,
+  CatalogQuery,
+  CatalogPage,
+  CatalogReleasePage,
+  CatalogDetail,
+  CatalogOverview,
+  CatalogJob,
+  CatalogSyncRequest,
+  CatalogRefreshReport,
+  CatalogSourceStatus,
   FeatureMatrix,
   SelfcheckReport,
   AccountDetail,
@@ -30,6 +40,8 @@ import type {
   CreditSnapshot,
   DailyActive,
   DeployReport,
+  DidaState,
+  DidaTask,
   Facets,
   Filter,
   HubSnapshot,
@@ -82,6 +94,7 @@ export interface CmdArgs {
   account_reorder: { iids: string[] };
   account_delete: { iid: string };
   account_scan: void;
+  account_scan_platform: { platform: string };
   account_add_cookie: { platform: string; cookie: string; name: string };
   doubao_browser_list: void;
   doubao_browser_login_start: { browser_id?: string | null };
@@ -100,6 +113,7 @@ export interface CmdArgs {
   account_current: void;
   account_switchable: void;
   account_add_prepare: { platform: string };
+  account_add_finish: { platform: string };
   account_open_client: { platform: string };
   open_external: { url: string };
   open_private_browser: { url: string };
@@ -138,6 +152,7 @@ export interface CmdArgs {
   session_rename: { key: string; title: string | null };
   session_hide: { keys: string[]; on: boolean };
   session_tag_set: { key: string; tags: string[] };
+  session_tags_of: { key: string };
   session_export: { keys: string[]; format: 'markdown' | 'json' };
   session_open_body: { key: string };
   session_open_client: { key: string };
@@ -157,6 +172,39 @@ export interface CmdArgs {
   credit_trend: { iid?: string | null; from?: string | null; to?: string | null };
   credit_claims_recent: { limit?: number | null };
   credit_flow: { from?: string | null; to?: string | null };
+  dida_state: void;
+  dida_token_set: { token: string };
+  dida_token_clear: void;
+  dida_task_create: {
+    title: string;
+    project_id: string;
+    content?: string | null;
+    due_date?: string | null;
+    priority?: number | null;
+    is_all_day?: boolean | null;
+  };
+  dida_tasks: { project_id: string };
+  dida_task_update: {
+    task_id: string;
+    project_id: string;
+    title: string;
+    content?: string | null;
+    due_date?: string | null;
+    priority?: number | null;
+    is_all_day?: boolean | null;
+  };
+  dida_task_complete: { project_id: string; task_id: string };
+  dida_task_delete: { project_id: string; task_id: string };
+  catalog_status: void;
+  catalog_refresh: { request: CatalogSyncRequest };
+  catalog_library: { query: CatalogQuery };
+  catalog_releases: { query: CatalogQuery };
+  catalog_detail: { key: string };
+  catalog_overview: void;
+  catalog_jobs: void;
+  catalog_source_set: { source: string; enabled: boolean; token?: string | null; clear_key?: boolean };
+  catalog_retry: { id: string };
+  catalog_facets: void;
   system_health: void;
   platform_capabilities: void;
   platform_features: void;
@@ -169,6 +217,7 @@ export interface CmdArgs {
   config_snapshot_clear: void;
   config_get: void;
   config_set: { config: AppConfig };
+  config_reset_builtin: void;
   network_selfcheck: void;
   zcode_claim_plans: { iid: string };
   zcode_claim_run: { iid: string; planId: string };
@@ -211,6 +260,7 @@ export interface CmdReturn {
   account_reorder: void;
   account_delete: boolean;
   account_scan: ScanReport;
+  account_scan_platform: ScanReport;
   account_add_cookie: string;
   doubao_browser_list: BrowserInfo[];
   doubao_browser_login_start: BrowserLoginStatus;
@@ -229,6 +279,7 @@ export interface CmdReturn {
   account_current: string[];
   account_switchable: string[];
   account_add_prepare: AddOutcome;
+  account_add_finish: ScanReport;
   account_open_client: boolean;
   open_external: void;
   open_private_browser: string;
@@ -267,6 +318,7 @@ export interface CmdReturn {
   session_rename: void;
   session_hide: number;
   session_tag_set: number;
+  session_tags_of: string[];
   session_export: ExportReport;
   session_open_body: boolean;
   session_open_client: boolean;
@@ -286,6 +338,24 @@ export interface CmdReturn {
   credit_trend: TrendPoint[];
   credit_claims_recent: RecentClaim[];
   credit_flow: CreditFlowReport;
+  dida_state: DidaState;
+  dida_token_set: DidaState;
+  dida_token_clear: DidaState;
+  dida_task_create: DidaTask;
+  dida_tasks: DidaTask[];
+  dida_task_update: DidaTask;
+  dida_task_complete: void;
+  dida_task_delete: void;
+  catalog_status: CatalogSourceStatus[];
+  catalog_refresh: CatalogRefreshReport;
+  catalog_library: CatalogPage;
+  catalog_releases: CatalogReleasePage;
+  catalog_detail: CatalogDetail | null;
+  catalog_overview: CatalogOverview;
+  catalog_jobs: CatalogJob[];
+  catalog_source_set: CatalogSourceStatus[];
+  catalog_retry: CatalogRefreshReport;
+  catalog_facets: CatalogFacets;
   system_health: HealthReport;
   platform_capabilities: CapabilityMatrix;
   platform_features: FeatureMatrix;
@@ -298,6 +368,7 @@ export interface CmdReturn {
   config_snapshot_clear: void;
   config_get: AppConfig;
   config_set: void;
+  config_reset_builtin: AppConfig;
   network_selfcheck: SelfcheckReport;
   zcode_claim_plans: ClaimPlan[];
   zcode_claim_run: ClaimOutcome;
@@ -358,7 +429,7 @@ const KIND_HINT: Record<string, string> = {
 const NET_WORDS = /超时|timeout|timed out|连接|connect|dns|代理|proxy|network| unreachable/i;
 function ioHint(message: string): string {
   return NET_WORDS.test(message)
-    ? '若浏览器能上网而这里超时，多半是系统代理没开：设置 → 诊断与记录 → 运行自检，或按系统「Internet 选项」启用代理'
+    ? '若浏览器能上网而这里超时，多半是系统代理没开：设置 → 关于 → 网络自检，或按系统「Internet 选项」启用代理'
     : '本机读写失败：检查磁盘空间、目录权限与杀毒软件的实时扫描后重试';
 }
 
@@ -387,6 +458,7 @@ const CMD_LABELS: Record<string, string> = {
   account_reorder: '调整账号顺序',
   account_delete: '删除账号',
   account_scan: '扫描账号',
+  account_scan_platform: '扫描指定平台账号',
   account_add_cookie: '用 Cookie 添加账号',
   doubao_browser_list: '探测可用浏览器',
   doubao_browser_login_start: '豆包浏览器登录',
@@ -403,6 +475,7 @@ const CMD_LABELS: Record<string, string> = {
   account_uid: '复制账号 UID',
   account_current: '读取当前登录',
   account_add_prepare: '打开客户端登录页',
+  account_add_finish: '保存客户端登录并刷新凭据',
   account_open_client: '打开客户端',
   open_external: '打开外部链接',
   open_private_browser: '打开登录页（无痕）',
@@ -440,6 +513,7 @@ const CMD_LABELS: Record<string, string> = {
   session_rename: '重命名会话',
   session_hide: '隐藏会话',
   session_tag_set: '设置会话标签',
+  session_tags_of: '读取会话标签',
   session_export: '导出会话正文',
   session_open_body: '打开会话正文目录',
   session_open_client: '打开会话所属客户端',
@@ -473,11 +547,30 @@ const CMD_LABELS: Record<string, string> = {
   config_snapshot_restore: '回滚配置',
   config_snapshot_clear: '清空配置历史',
   config_get: '读取应用配置',
+  config_reset_builtin: '恢复内置任务默认值',
   network_selfcheck: '网络与档案自检',
   config_set: '保存应用配置',
   credit_trend: '读取积分趋势',
   credit_claims_recent: '读取最近领取',
   credit_flow: '读取积分收支',
+  dida_state: '读取滴答清单状态',
+  dida_token_set: '保存滴答清单口令',
+  dida_token_clear: '清除滴答清单口令',
+  dida_task_create: '写入滴答清单任务',
+  dida_tasks: '读取滴答清单任务',
+  dida_task_update: '更新滴答清单任务',
+  dida_task_complete: '完成滴答清单任务',
+  dida_task_delete: '删除滴答清单任务',
+  catalog_status: '读取剧集来源状态',
+  catalog_refresh: '刷新剧集更新',
+  catalog_library: '检索全球作品资料',
+  catalog_releases: '读取已确认更新日历',
+  catalog_detail: '读取作品详情与评分来源',
+  catalog_overview: '读取资料库概览',
+  catalog_jobs: '读取采集任务',
+  catalog_source_set: '配置资料库数据源',
+  catalog_retry: '重试资料库采集任务',
+  catalog_facets: '读取剧集筛选值',
   log_export: '导出日志',
   log_clear: '清空日志',
   log_level: '调整日志级别',
@@ -501,6 +594,7 @@ const CMD_LABELS: Record<string, string> = {
 const KEY_ACTIONS = new Set<string>([
   'app_quit',
   'account_scan',
+  'account_scan_platform',
   'account_add_cookie',
   'doubao_browser_login_start',
   'doubao_browser_login_cancel',
@@ -510,6 +604,7 @@ const KEY_ACTIONS = new Set<string>([
   'account_set_note',
   'config_snapshot_clear',
   'config_set',
+  'config_reset_builtin',
   'network_selfcheck',
   'account_delete',
   'account_switch',
@@ -517,6 +612,7 @@ const KEY_ACTIONS = new Set<string>([
   'account_restore_sessions',
   'account_reorder',
   'account_add_prepare',
+  'account_add_finish',
   'session_scan',
   'session_purge',
   'session_archive',
@@ -539,6 +635,15 @@ const KEY_ACTIONS = new Set<string>([
   'hub_mcp_claim',
   'settings_set',
   'model_api_regenerate_key',
+  'dida_token_set',
+  'dida_token_clear',
+  'dida_task_create',
+  'dida_task_update',
+  'dida_task_complete',
+  'dida_task_delete',
+  'catalog_refresh',
+  'catalog_source_set',
+  'catalog_retry',
   'model_api_set_port',
   'model_api_start',
   'model_api_stop',

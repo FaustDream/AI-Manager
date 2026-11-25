@@ -21,6 +21,79 @@ export function parseFlag(raw: string | null, fallback: boolean): boolean {
   return raw === '1' || raw === 'true';
 }
 
+/** JSON 字符串数组 → 顺序表；缺失或损坏时给空数组（= 使用默认顺序）。 */
+export function parseOrder(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return [];
+    return value.filter((item): item is string => typeof item === 'string');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 套用保存的顺序：认识的按存档排，不认识的（新上线的菜单）保持原有相对次序追加在末尾，
+ * 存档里已消失的 id 自然被忽略——增删菜单都不需要迁移存档。
+ */
+export function orderItems<T>(
+  items: readonly T[],
+  key: (item: T) => string,
+  order: readonly string[],
+): T[] {
+  const rank = new Map<string, number>();
+  order.forEach((id, index) => {
+    if (!rank.has(id)) rank.set(id, index);
+  });
+  return items
+    .map((item, index) => ({
+      item,
+      rank: rank.get(key(item)) ?? Number.MAX_SAFE_INTEGER,
+      index,
+    }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((entry) => entry.item);
+}
+
+/**
+ * 拖动落点：语义 = **移除源项之后**的插入位置（before=false 表示插到目标项之后）。
+ * 源项与目标相同或目标不在列表里时返回 null，调用方据此不写盘。
+ */
+export function reorderIds(
+  ids: readonly string[],
+  id: string,
+  target: string,
+  before: boolean,
+): string[] | null {
+  if (id === target) return null;
+  const next = ids.filter((item) => item !== id);
+  const at = next.indexOf(target);
+  if (at < 0) return null;
+  next.splice(before ? at : at + 1, 0, id);
+  return next;
+}
+
+/**
+ * 菜单顺序（能力 id 的序列）：纯显示偏好，落 localStorage。
+ * 页面/菜单清单本身仍由能力注册表决定，这里只记「谁在前」。
+ */
+export function usePersistedOrder(key: string): [string[], (next: string[]) => void] {
+  const [value, setValue] = useState(() => parseOrder(store()?.getItem(PREFIX + key) ?? null));
+  const update = useCallback(
+    (next: string[]) => {
+      setValue(next);
+      try {
+        store()?.setItem(PREFIX + key, JSON.stringify(next));
+      } catch {
+        /* 写不进去就只在本次会话生效 */
+      }
+    },
+    [key],
+  );
+  return [value, update];
+}
+
 /** JSON 数组 → Set；缺失或损坏时给空集，绝不抛错打断渲染。 */
 export function parseSet(raw: string | null): Set<string> {
   if (!raw) return new Set();
@@ -160,6 +233,62 @@ export function saveFontChoice(choice: FontChoice): void {
 export type NavLayout = 'sidebar' | 'topbar' | 'rail';
 export const NAV_LAYOUTS: readonly NavLayout[] = ['sidebar', 'topbar', 'rail'];
 export const NAV_KEY = 'nav';
+/** 菜单顺序的存取键：存能力 id 序列，与布局偏好同属纯显示状态。 */
+export const NAV_ORDER_KEY = 'nav.order';
+/** 页面开关的存取键：存被关掉的能力 id（缺省 = 全开）。 */
+export const NAV_HIDDEN_KEY = 'nav.hidden';
+
+/**
+ * 页面开关的纯函数：`enabled = false` 记进隐藏集合，`true` 移除。
+ * 返回新集合，调用方据此写盘——原集合保持不变，避免快照引用被就地改掉。
+ */
+export function withPageEnabled(
+  hidden: ReadonlySet<string>,
+  id: string,
+  enabled: boolean,
+): Set<string> {
+  const next = new Set(hidden);
+  if (enabled) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+/**
+ * 页面开关在 Shell 与设置页共用同一份值：设置页一勾，侧栏立刻少一项。
+ * 存「关掉的 id」而不是「打开的 id」——新上线的页面缺省就是开，不需要迁移存档。
+ */
+const disabledPages: { value: Set<string> | null; subs: Set<() => void> } = {
+  value: null,
+  subs: new Set(),
+};
+
+function disabledSlot(): Set<string> {
+  disabledPages.value ??= parseSet(store()?.getItem(PREFIX + NAV_HIDDEN_KEY) ?? null);
+  return disabledPages.value;
+}
+
+export function usePageToggles(): [Set<string>, (id: string, enabled: boolean) => void] {
+  const value = useSyncExternalStore(
+    (cb) => {
+      disabledPages.subs.add(cb);
+      return () => disabledPages.subs.delete(cb);
+    },
+    disabledSlot,
+  );
+  const setEnabled = useCallback((id: string, enabled: boolean) => {
+    const current = disabledSlot();
+    if (current.has(id) !== enabled) return; // 状态没变：不重渲染、不写盘
+    const next = withPageEnabled(current, id, enabled);
+    disabledPages.value = next;
+    try {
+      store()?.setItem(PREFIX + NAV_HIDDEN_KEY, JSON.stringify([...next]));
+    } catch {
+      /* 写不进去就只在本次会话生效 */
+    }
+    for (const cb of disabledPages.subs) cb();
+  }, []);
+  return [value, setEnabled];
+}
 
 /**
  * 启动画面的配色提示。风格真源是后端 kv，首屏那一刻还取不到，

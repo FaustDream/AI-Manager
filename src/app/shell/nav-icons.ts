@@ -2,7 +2,9 @@
 // 全部来自 lucide-react（ISC 许可，免费图标库），不与其他图标集混用风格。
 import {
   Blocks,
+  Clapperboard,
   LayoutDashboard,
+  ListTodo,
   MessagesSquare,
   Network,
   ScrollText,
@@ -17,6 +19,8 @@ const MAP: Record<string, ComponentType<{ size?: number; className?: string }>> 
   sessions: MessagesSquare,
   hub: Blocks,
   'model-api': Network,
+  dida: ListTodo,
+  catalog: Clapperboard,
   logs: ScrollText,
   settings: Settings,
 };

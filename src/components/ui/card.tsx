@@ -42,7 +42,8 @@ export function Section({
   /** 标题右侧的口径说明（区间、单位、更新时间），小字不抢标题 */
   note?: ReactNode;
   actions?: ReactNode;
-  children: ReactNode;
+  /** 只做摘要、内容全在标题栏与按钮里的区块可以不传 children，避免留一块空白内边距。 */
+  children?: ReactNode;
   className?: string;
   bodyClassName?: string;
   /** 内容自带边界（表格、图表、列表）时去掉内边距，避免双圈留白 */
@@ -55,13 +56,20 @@ export function Section({
         className,
       )}
     >
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-5 py-3">
+      <header
+        className={cn(
+          'flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3',
+          children != null && 'border-b border-line',
+        )}
+      >
         <h2 className="text-lg font-semibold tracking-tight text-fg">{title}</h2>
         {note && <span className="text-xs text-muted">{note}</span>}
         <span className="flex-1" />
         {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
       </header>
-      <div className={cn(flush ? '' : 'p-5', bodyClassName)}>{children}</div>
+      {children != null && (
+        <div className={cn(flush ? '' : 'p-5', bodyClassName)}>{children}</div>
+      )}
     </section>
   );
 }

@@ -3,6 +3,7 @@
 //! **凭据边界**：`secret_blob` 只有在 `secret_of(iid)` 时才会解密，而且一次只解一个。
 //! 列表、状态、导出等路径都拿不到明文 token——`AccountView` 里也没有这个字段。
 
+use super::credential::Credential;
 use super::view::{AccountIdentity, AccountView};
 use crate::app::db::Db;
 use crate::app::error::{AppError, ErrorKind, Result};
@@ -189,9 +190,16 @@ pub fn identity(db: &Db, iid: &str) -> Result<Option<AccountIdentity>> {
 
 /// 写入身份字段。已存在则更新身份，**不动任何异步展示字段**（那些本来也不入库）。
 pub fn upsert_identity(db: &Db, identity: &AccountIdentity, now_ms: i64) -> Result<()> {
-    db.write(|conn| {
-        conn.execute(
-            "INSERT INTO accounts
+    db.write(|conn| upsert_identity_on(conn, identity, now_ms))
+}
+
+fn upsert_identity_on(
+    conn: &rusqlite::Connection,
+    identity: &AccountIdentity,
+    now_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO accounts
                 (iid, platform, platform_label, account_id, name, expires_at, source,
                  requires_checkin, meta_keys, secret_blob, sort_order, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '[]', NULL,
@@ -207,19 +215,53 @@ pub fn upsert_identity(db: &Db, identity: &AccountIdentity, now_ms: i64) -> Resu
                  source           = COALESCE(NULLIF(excluded.source, ''), accounts.source),
                  requires_checkin = excluded.requires_checkin,
                  updated_at       = excluded.updated_at",
-            rusqlite::params![
-                identity.iid,
-                identity.platform,
-                identity.platform_label,
-                identity.account_id,
-                identity.name,
-                identity.expires_at,
-                identity.source,
-                identity.requires_checkin as i64,
-                now_ms,
-            ],
-        )?;
-        Ok(())
+        rusqlite::params![
+            identity.iid,
+            identity.platform,
+            identity.platform_label,
+            identity.account_id,
+            identity.name,
+            identity.expires_at,
+            identity.source,
+            identity.requires_checkin as i64,
+            now_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn save_scanned(
+    db: &Db,
+    identity: &AccountIdentity,
+    plain: &[u8],
+    now: i64,
+    keep_local: impl FnOnce(&Credential, &Credential) -> bool,
+) -> Result<bool> {
+    let candidate = Credential::parse(plain)?;
+    // 比较与写入同持一把锁，防止启动扫描覆盖比较期间刚完成的授权。
+    db.write(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let local = secret_on(&tx, &identity.iid)?
+            .map(|bytes| Credential::parse(&bytes))
+            .transpose()?;
+        let retained = local
+            .as_ref()
+            .is_some_and(|cred| keep_local(cred, &candidate));
+        let mut identity = identity.clone();
+        if retained {
+            identity.expires_at = local.as_ref().and_then(Credential::expires_ms);
+            identity.source.clear();
+        }
+        upsert_identity_on(&tx, &identity, now)?;
+        if !retained {
+            let blob = secret::protect(plain)?;
+            tx.execute(
+                "UPDATE accounts SET secret_blob = ?2 WHERE iid = ?1",
+                rusqlite::params![identity.iid, blob],
+            )?;
+        }
+        tx.commit()?;
+        Ok(retained)
     })
 }
 
@@ -301,17 +343,18 @@ pub fn set_secret(db: &Db, iid: &str, plain: &[u8], expires_at: Option<i64>) -> 
 
 /// **唯一**的凭据出口：一次只解一个账号。
 pub fn secret_of(db: &Db, iid: &str) -> Result<Option<Vec<u8>>> {
-    let blob = db.read(|conn| {
-        let blob: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT secret_blob FROM accounts WHERE iid = ?1",
-                [iid],
-                |r| r.get(0),
-            )
-            .optional()?
-            .flatten();
-        Ok(blob)
-    })?;
+    db.read(|conn| secret_on(conn, iid))
+}
+
+fn secret_on(conn: &rusqlite::Connection, iid: &str) -> Result<Option<Vec<u8>>> {
+    let blob: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT secret_blob FROM accounts WHERE iid = ?1",
+            [iid],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
     match blob {
         Some(blob) => Ok(Some(secret::unprotect(&blob)?)),
         None => Ok(None),

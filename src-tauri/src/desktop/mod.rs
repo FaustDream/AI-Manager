@@ -21,6 +21,10 @@ pub struct AppState {
     pub checkin: Arc<crate::app::checkin::Service>,
     /// 猫猫旅行编排（WorkBuddy 国内版）
     pub activity: Arc<crate::app::activity::Service>,
+    /// 滴答清单：口令与任务写入（Dida365 国内版）
+    pub dida: Arc<crate::app::dida::Service>,
+    /// 动漫/影视更新库：本地缓存 + 周/年/完结聚合
+    pub catalog: Arc<crate::app::catalog::Service>,
     /// 会话索引。只读写 app.db，客户端库由扫描任务自己碰
     pub sessions: Arc<crate::app::sessions::Service>,
     /// 技能与 MCP：只写配置文件，每次写前备份
@@ -105,7 +109,9 @@ pub fn init_state(
         http.clone(),
         Arc::new(crate::app::clock::SystemClock),
     ));
-    let activity = Arc::new(crate::app::activity::Service::new(db.clone(), http));
+    let activity = Arc::new(crate::app::activity::Service::new(db.clone(), http.clone()));
+    let dida = Arc::new(crate::app::dida::Service::new(db.clone(), http.clone()));
+    let catalog = Arc::new(crate::app::catalog::Service::new(db.clone(), http));
 
     let sessions = Arc::new(crate::app::sessions::Service::new(
         db.clone(),
@@ -116,6 +122,8 @@ pub fn init_state(
         db,
         checkin,
         activity,
+        dida,
+        catalog,
         sessions,
         hub: Arc::new(crate::app::hub::Hub::system()),
         _instance: instance,

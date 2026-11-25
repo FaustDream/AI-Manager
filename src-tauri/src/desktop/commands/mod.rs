@@ -10,7 +10,9 @@ pub(crate) use crate::desktop::background::execute_schedule;
 
 pub mod accounts;
 pub mod activity;
+pub mod catalog;
 pub mod checkin;
+pub mod dida;
 pub mod hub;
 pub mod logs;
 pub mod maintenance;

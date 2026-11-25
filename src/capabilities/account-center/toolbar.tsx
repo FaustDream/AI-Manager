@@ -17,10 +17,11 @@ import { Dialog } from '@/components/ui/dialog';
 import { Input, Select, Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { errText } from '@/lib/ipc';
-import { anyFeatureOn, FEATURE_CHECKIN, usePlatformFeatures } from '@/lib/features';
+import { anyFeatureOn, featurePlatform, FEATURE_CHECKIN, usePlatformFeatures } from '@/lib/features';
 import { useProgress } from '@/lib/progress';
 import type { BatchProgress } from '@/lib/progress';
 import type { AccountView, AddOutcome, BrowserLoginStatus, LoginOutcome } from '@/lib/types';
+import { webLoginUsable } from './columns';
 
 /**
  * 可添加的平台：**固定一份名单**，一家产品一个入口，顺序 = 下拉框顺序。
@@ -36,6 +37,7 @@ const PLATFORMS: { key: string; label: string }[] = [
   { key: 'qoder_intl', label: 'Qoder 国际版' },
   { key: 'zcode', label: 'ZCode 智谱' },
   { key: 'doubao', label: '豆包' },
+  { key: 'ima', label: 'ima' },
 ];
 
 
@@ -77,7 +79,7 @@ export function AccountToolbar({
     <div className="flex flex-wrap items-center gap-1.5">
       {/* 主按钮给「添加账号」：这是页面唯一的正经工作流。
           账号同步已改为启动时后台自动扫描，这里不再放手动「扫描客户端」按钮。 */}
-      <Button variant="primary" onClick={onAdd} disabled={!!busy} title="浏览器登录或粘贴 Cookie，登录后自动入库">
+      <Button variant="primary" onClick={onAdd} disabled={!!busy} title="客户端登录、网页登录或粘贴 Cookie，登录后保存账号">
         <IconAdd size={14} />
         添加账号
       </Button>
@@ -143,7 +145,16 @@ function batchText(verb: string, p: BatchProgress | null): string {
  *  「粘贴 Cookie」是第四条路（`cookie`），它没有链接可等，整块换成表单。
  *  豆包额外有「浏览器登录」：`doubao` = 二选一入口，`browser` = 独立窗口登录进行中。
  *  没有「选平台」这一态：打开就是链接页（或 Cookie 表单 / 豆包入口），换平台自动切换。 */
-type Stage = 'working' | 'waiting' | 'ready' | 'failed' | 'cookie' | 'doubao' | 'browser';
+type Stage =
+  | 'working'
+  | 'waiting'
+  | 'ready'
+  | 'failed'
+  | 'cookie'
+  | 'doubao'
+  | 'browser'
+  | 'ima'
+  | 'client-choice';
 
 // 弹窗视觉约束（refactoring-ui brief）：
 //   分级：平台下拉 = 上下文；登录链接 = 待办对象；「在浏览器打开」= 唯一主操作，
@@ -154,17 +165,24 @@ type Stage = 'working' | 'waiting' | 'ready' | 'failed' | 'cookie' | 'doubao' | 
 export function AddAccountDialog({
   open,
   counts,
+  initialPlatform = 'workbuddy',
+  reauthTarget,
   onClose,
   onScanned,
 }: {
   open: boolean;
   /** 各平台已有账号数（`workbuddy_intl` 与 `workbuddy` 分开算） */
   counts: Record<string, number>;
+  initialPlatform?: string;
+  reauthTarget?: AccountView;
   onClose: () => void;
   /** 登录/扫描完成后由调用方刷新账号列表 */
   onScanned: () => void;
 }) {
-  const [platform, setPlatform] = useState('workbuddy');
+  const [platform, setPlatform] = useState(initialPlatform);
+  const [viaClient, setViaClient] = useState(false);
+  const requestRef = useRef(0);
+  const isWorkBuddy = platform === 'workbuddy' || platform === 'workbuddy_intl';
   const [stage, setStage] = useState<Stage>('working');
   const [outcome, setOutcome] = useState<AddOutcome | null>(null);
   const [loginUrl, setLoginUrl] = useState('');
@@ -180,7 +198,23 @@ export function AddAccountDialog({
   const openedRef = useRef(false);
 
   // 打开弹窗、或换平台，就立刻要一条新的登录链接——用户不需要再点一次「登录」
-  const loadLink = useCallback(async () => {
+  const loadLink = useCallback(async (web = false) => {
+    const request = ++requestRef.current;
+    setError('');
+    setLoginUrl('');
+    if ((platform === 'workbuddy' || platform === 'workbuddy_intl') && !web) {
+      setStage('client-choice');
+      return;
+    }
+    setViaClient(false);
+    // ima 没有网页登录可借：只说明「登录客户端后扫描」，不进入切号流程
+    if (platform === 'ima') {
+      setStage('ima');
+      setError('');
+      setLoginUrl('');
+      setBrowserStatus(null);
+      return;
+    }
     // 豆包没有可回调的授权码：给一个「浏览器登录 / 粘贴 Cookie」二选一入口
     if (COOKIE_PLATFORMS.has(platform)) {
       setStage('doubao');
@@ -195,6 +229,7 @@ export function AddAccountDialog({
     openedRef.current = false; // 换了平台就是新一条链接，归因从零开始算
     try {
       const info = await queryCmd('account_login_start', { platform });
+      if (request !== requestRef.current) return;
       setLoginUrl(info.url);
       setOutcome({
         platform,
@@ -205,6 +240,7 @@ export function AddAccountDialog({
       });
       setStage('waiting');
     } catch (e) {
+      if (request !== requestRef.current) return;
       setError(errText(e));
       setStage('failed');
     }
@@ -215,17 +251,22 @@ export function AddAccountDialog({
     setScanning(false);
     setOutcome(null);
     void loadLink();
+    return () => { requestRef.current += 1; };
   }, [open, loadLink]);
 
   /** 兜底：借客户端登录（关客户端 → 备份登录态 → 重新打开停在登录页）。 */
   const startViaClient = async () => {
+    const request = ++requestRef.current;
+    setViaClient(true);
     setStage('working');
     setError('');
     try {
       const result = await queryCmd('account_add_prepare', { platform });
+      if (request !== requestRef.current) return;
       setOutcome(result);
       setStage('ready');
     } catch (e) {
+      if (request !== requestRef.current) return;
       setError(errText(e));
       setStage('failed');
     }
@@ -233,11 +274,14 @@ export function AddAccountDialog({
 
   // 浏览器登录是后台任务：登录完成后端推 account:login，弹窗据此收尾
   useEffect(() => {
-    if (stage !== 'waiting') return;
+    if (!open || stage !== 'waiting') return;
     let alive = true;
     const un = listen<LoginOutcome>('account:login', (e) => {
       if (!alive) return;
       if (e.payload.ok) {
+        if (reauthTarget && e.payload.iid !== reauthTarget.iid) {
+          toast(`这次登录的不是「${reauthTarget.name}」，已作为其他账号保存`);
+        }
         onScanned();
         onClose();
       } else {
@@ -258,18 +302,38 @@ export function AddAccountDialog({
       alive = false;
       void un.then((fn) => fn()).catch(() => {});
     };
-  }, [stage, onScanned, onClose]);
+  }, [open, stage, onScanned, onClose, reauthTarget]);
 
   const scanNow = async () => {
+    const request = ++requestRef.current;
     setScanning(true);
     try {
-      const report = await runCmd('account_scan');
-      if (report === undefined) return;
-      toast(`扫描完成：${report.scanned} 个账号（新增 ${report.added}）`);
+      setError('');
+      const report = platform === 'ima'
+        ? await runCmd('account_scan_platform', { platform }, { onError: (e) => setError(errText(e)) })
+        : await runCmd('account_add_finish', { platform }, { onError: (e) => setError(errText(e)) });
+      if (request !== requestRef.current || report === undefined) return;
+      if (report.errors.length > 0) {
+        toast(report.errors.join('；'));
+        return;
+      }
+      if (report.scanned === 0) {
+        setError(`没有在 ${platformOf(platform).label} 客户端找到登录态，请先登录后重试`);
+        return;
+      }
+      if (reauthTarget) {
+        const current = await queryCmd('account_current');
+        if (request !== requestRef.current) return;
+        toast(current.includes(reauthTarget.iid)
+          ? `已保存「${reauthTarget.name}」的客户端登录与凭据`
+          : `这次客户端登录的不是「${reauthTarget.name}」，已保存当前登录账号`);
+      } else {
+        toast(`扫描完成：${report.scanned} 个账号（新增 ${report.added}）`);
+      }
       onScanned();
       onClose();
     } finally {
-      setScanning(false);
+      if (request === requestRef.current) setScanning(false);
     }
   };
 
@@ -354,7 +418,18 @@ export function AddAccountDialog({
       alive = false;
       void un.then((fn) => fn()).catch(() => {});
     };
-  }, [stage, onScanned, onClose]);
+  }, [open, stage, onScanned, onClose]);
+
+  /** ima：只拉起客户端，仍停在说明态，登录完成后由用户点「扫描客户端」。 */
+  const openImaClient = async () => {
+    const focused = await runCmd('account_open_client', { platform: 'ima' });
+    if (focused === undefined) return;
+    toast(
+      focused
+        ? 'ima 客户端已打开，登录完成后点「扫描客户端」'
+        : '已尝试打开 ima 客户端，窗口可能在托盘；登录完成后点「扫描客户端」',
+    );
+  };
 
   const openManually = async () => {
     
@@ -382,10 +457,24 @@ export function AddAccountDialog({
   return (
     <Dialog
       open={open}
-      title={`添加账号 · ${picked.label}`}
+      title={reauthTarget ? `重新授权 · ${reauthTarget.name}` : `添加账号 · ${picked.label}`}
       onClose={onClose}
       footer={
-        stage === 'cookie' ? (
+        stage === 'client-choice' ? (
+          <Button variant="ghost" onClick={onClose}>关闭</Button>
+        ) : stage === 'ima' ? (
+          <>
+            <Button variant="ghost" onClick={onClose}>
+              关闭
+            </Button>
+            <Button variant="ghost" onClick={() => void openImaClient()}>
+              打开客户端
+            </Button>
+            <Button variant="primary" onClick={scanNow} loading={scanning}>
+              扫描客户端
+            </Button>
+          </>
+        ) : stage === 'cookie' ? (
           <>
             <Button variant="ghost" onClick={onClose}>
               取消
@@ -409,13 +498,13 @@ export function AddAccountDialog({
           </Button>
         ) : stage === 'failed' ? (
           <>
-            <Button variant="ghost" onClick={startViaClient}>
-              改用客户端登录
+            <Button variant="ghost" onClick={() => isWorkBuddy ? void loadLink(viaClient) : void startViaClient()}>
+              {isWorkBuddy && viaClient ? '改用网页登录' : '改用客户端登录'}
             </Button>
             <Button variant="ghost" onClick={onClose}>
               关闭
             </Button>
-            <Button variant="primary" onClick={() => void loadLink()}>
+            <Button variant="primary" onClick={() => viaClient ? void startViaClient() : void loadLink(true)}>
               重试
             </Button>
           </>
@@ -427,15 +516,18 @@ export function AddAccountDialog({
             <Button variant="ghost" onClick={onClose}>
               关闭
             </Button>
+            {isWorkBuddy && (
+              <Button variant="ghost" onClick={() => void loadLink(true)} disabled={scanning}>改用网页登录</Button>
+            )}
             <Button variant="primary" onClick={scanNow} loading={scanning}>
-              我已登录，扫描客户端
+              我已登录，刷新凭据
             </Button>
           </>
         ) : (
-          // 等待态的主操作在正文里（打开网页），页脚只留一个退出口
-          <Button variant="ghost" onClick={onClose}>
-            取消
-          </Button>
+          <>
+            {isWorkBuddy && stage === 'waiting' && <Button variant="ghost" onClick={() => void loadLink()}>改用客户端登录</Button>}
+            <Button variant="ghost" onClick={onClose}>取消</Button>
+          </>
         )
       }
     >
@@ -444,6 +536,7 @@ export function AddAccountDialog({
           <span className="text-xs text-muted">平台</span>
           <Select
             value={platform}
+            disabled={!!reauthTarget || stage === 'working' || scanning}
             onChange={(e) => setPlatform(e.target.value)}
             className="max-w-none"
           >
@@ -458,6 +551,30 @@ export function AddAccountDialog({
             })}
           </Select>
         </label>
+
+        {stage === 'client-choice' && (
+          <div className="flex flex-col gap-3">
+            <p className="text-xs leading-relaxed text-muted">
+              客户端登录后可切换账号；网页登录仅用于{webLoginUsable({ requires_checkin: platform === 'workbuddy' })}，不切换客户端。
+            </p>
+            <Button variant="primary" onClick={() => void startViaClient()}>启动客户端重新登录</Button>
+            <p className="text-xs leading-relaxed text-muted">会关闭并重启对应客户端，先保存当前账号档案，再打开登录页。</p>
+            <Button onClick={() => void loadLink(true)}>网页登录（仅查询与活动）</Button>
+          </div>
+        )}
+
+        {stage === 'ima' && (
+          <div className="flex flex-col gap-3">
+            <p className="text-xs leading-relaxed text-muted">
+              ima 的登录态只保存在本机客户端，本工具不提供网页登录。请安装并登录 ima
+              客户端后点「扫描客户端」；如果提示 Cookie 库被占用，请完全退出 ima
+              客户端后重试。
+            </p>
+            <p className="text-xs leading-relaxed text-muted">
+              本工具对 ima 只做签到与算力查询，不切换登录。
+            </p>
+          </div>
+        )}
 
         {stage === 'cookie' && (
           <div className="flex flex-col gap-3">
@@ -548,12 +665,15 @@ export function AddAccountDialog({
         {stage === 'working' && (
           <p className="flex items-center gap-2 text-xs text-muted">
             <Spinner />
-            正在生成 {picked.label} 的登录链接…
+            {viaClient ? `正在保存原账号并启动 ${picked.label} 登录页…` : `正在生成 ${picked.label} 的登录链接…`}
           </p>
         )}
 
         {stage === 'waiting' && (
-          <LoginLink url={loginUrl} onOpened={() => (openedRef.current = true)} />
+          <div className="flex flex-col gap-3">
+            {isWorkBuddy && <p className="text-xs text-muted">网页登录可用于{webLoginUsable({ requires_checkin: platform === 'workbuddy' })}，不会切换客户端账号。</p>}
+            <LoginLink url={loginUrl} onOpened={() => (openedRef.current = true)} />
+          </div>
         )}
 
         {stage === 'failed' && (
@@ -571,7 +691,9 @@ export function AddAccountDialog({
               </li>
             )}
             <li>1. 在客户端窗口里用要添加的账号登录。</li>
-            <li>2. 登录完成后回到这里点「我已登录，扫描客户端」。</li>
+            <li>2. 登录完成后回到这里点「我已登录，刷新凭据」。</li>
+            <li className="text-xs text-muted">会短暂关闭客户端，保存新登录态档案并刷新凭据，然后重新打开。</li>
+            {error && <li className="whitespace-pre-wrap text-bad">{error}</li>}
             <li className="text-xs text-muted">
               想切回原来的账号，随时可以在账号列表上点「切换登录」。
             </li>
@@ -704,7 +826,26 @@ function LoginLink({
  * 登录成功后凭据由后端自动保存；这里必须把「登进来的到底是不是这个账号」说清楚——
  * 登成别的号会新增一行，不提示的话用户会以为原账号已经修好了。
  */
-export function ReauthDialog({
+export function ReauthDialog(props: {
+  target: AccountView | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  if (props.target?.platform === 'workbuddy') {
+    return <AddAccountDialog
+      key={props.target.iid}
+      open
+      counts={{}}
+      initialPlatform={featurePlatform(props.target.platform, props.target.iid)}
+      reauthTarget={props.target}
+      onClose={props.onClose}
+      onScanned={props.onDone}
+    />;
+  }
+  return <BrowserReauthDialog {...props} />;
+}
+
+function BrowserReauthDialog({
   target,
   onClose,
   onDone,

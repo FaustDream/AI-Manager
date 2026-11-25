@@ -59,6 +59,7 @@ fn main() {
     background::spawn_source_bridges();
     background::spawn_usage_scan(db.clone());
     background::spawn_session_scan(state.sessions.clone());
+    background::spawn_catalog_sync(state.catalog.clone());
     background::spawn_model_api(db);
 
     log::action(

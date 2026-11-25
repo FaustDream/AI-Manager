@@ -277,6 +277,7 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             let config = arg(v, "config")?;
             to_json(cmd::settings::config_set(config))
         }
+        "config_reset_builtin" => to_json(cmd::settings::config_reset_builtin()),
         "network_selfcheck" => to_json(cmd::settings::network_selfcheck().await),
         "log_level" => {
             let level = arg(v, "level")?;
@@ -306,6 +307,10 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             to_json(cmd::accounts::account_delete(state, iid).await)
         }
         "account_scan" => to_json(cmd::accounts::account_scan(state).await),
+        "account_scan_platform" => {
+            let platform = arg(v, "platform")?;
+            to_json(cmd::accounts::account_scan_platform(state, platform).await)
+        }
         // 豆包浏览器登录四件套：已登记在分发表里。
         "doubao_browser_list" => to_json(cmd::accounts::doubao_browser_list().await),
         "doubao_browser_login_start" => {
@@ -361,6 +366,10 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             to_json(cmd::accounts::account_uid(state, iid).await)
         }
         "account_current" => to_json(cmd::accounts::account_current().await),
+        "account_add_finish" => {
+            let platform = arg(v, "platform")?;
+            to_json(cmd::accounts::account_add_finish(state, platform).await)
+        }
         "account_add_prepare" => {
             let platform = arg(v, "platform")?;
             to_json(cmd::accounts::account_add_prepare(platform).await)
@@ -466,6 +475,10 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             let (key, tags) = (arg(v, "key")?, arg(v, "tags")?);
             to_json(cmd::sessions::session_tag_set(state, key, tags).await)
         }
+        "session_tags_of" => {
+            let key = arg(v, "key")?;
+            to_json(cmd::sessions::session_tags_of(state, key).await)
+        }
         "session_export" => {
             let (keys, format) = (arg(v, "keys")?, arg(v, "format")?);
             to_json(cmd::sessions::session_export(state, keys, format).await)
@@ -550,6 +563,89 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             to_json(cmd::checkin::credit_flow(state, from, to).await)
         }
 
+        // ------------------------------------------------------------ dida
+        "dida_state" => to_json(Ok(cmd::dida::dida_state(state).await)),
+        "dida_token_set" => {
+            let token = arg(v, "token")?;
+            to_json(cmd::dida::dida_token_set(state, token).await)
+        }
+        "dida_token_clear" => to_json(cmd::dida::dida_token_clear(state).await),
+        "dida_task_create" => {
+            let (title, project_id, content, due_date, priority, is_all_day) = (
+                arg(v, "title")?,
+                arg(v, "project_id")?,
+                arg(v, "content")?,
+                arg(v, "due_date")?,
+                arg(v, "priority")?,
+                arg(v, "is_all_day")?,
+            );
+            to_json(
+                cmd::dida::dida_task_create(
+                    state, title, project_id, content, due_date, priority, is_all_day,
+                )
+                .await,
+            )
+        }
+        "dida_tasks" => {
+            let project_id = arg(v, "project_id")?;
+            to_json(cmd::dida::dida_tasks(state, project_id).await)
+        }
+        "dida_task_update" => {
+            let (task_id, project_id, title, content, due_date, priority, is_all_day) = (
+                arg(v, "task_id")?,
+                arg(v, "project_id")?,
+                arg(v, "title")?,
+                arg(v, "content")?,
+                arg(v, "due_date")?,
+                arg(v, "priority")?,
+                arg(v, "is_all_day")?,
+            );
+            to_json(
+                cmd::dida::dida_task_update(
+                    state, task_id, project_id, title, content, due_date, priority, is_all_day,
+                )
+                .await,
+            )
+        }
+        "dida_task_complete" => {
+            let (project_id, task_id) = (arg(v, "project_id")?, arg(v, "task_id")?);
+            to_json(cmd::dida::dida_task_complete(state, project_id, task_id).await)
+        }
+        "dida_task_delete" => {
+            let (project_id, task_id) = (arg(v, "project_id")?, arg(v, "task_id")?);
+            to_json(cmd::dida::dida_task_delete(state, project_id, task_id).await)
+        }
+
+        // ------------------------------------------------------------ catalog
+        "catalog_status" => to_json(cmd::catalog::catalog_status(state).await),
+        "catalog_refresh" => {
+            let request = arg(v, "request")?;
+            to_json(cmd::catalog::catalog_refresh(state, request).await)
+        }
+        "catalog_library" => {
+            let query = arg(v, "query")?;
+            to_json(cmd::catalog::catalog_library(state, query).await)
+        }
+        "catalog_releases" => {
+            let query = arg(v, "query")?;
+            to_json(cmd::catalog::catalog_releases(state, query).await)
+        }
+        "catalog_detail" => {
+            let key = arg(v, "key")?;
+            to_json(cmd::catalog::catalog_detail(state, key).await)
+        }
+        "catalog_overview" => to_json(cmd::catalog::catalog_overview(state).await),
+        "catalog_jobs" => to_json(cmd::catalog::catalog_jobs(state).await),
+        "catalog_source_set" => {
+            let (source, enabled, token, clear_key) = (arg(v, "source")?, arg(v, "enabled")?, arg(v, "token")?, arg(v, "clear_key")?);
+            to_json(cmd::catalog::catalog_source_set(state, source, enabled, token, clear_key).await)
+        }
+        "catalog_retry" => {
+            let id = arg(v, "id")?;
+            to_json(cmd::catalog::catalog_retry(state, id).await)
+        }
+        "catalog_facets" => to_json(cmd::catalog::catalog_facets(state).await),
+
         // ------------------------------------------------------------ schedule
         "schedule_list" => to_json(cmd::schedule::schedule_list(state).await),
         "schedule_save" => {
@@ -630,8 +726,8 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
         }
 
         // ------------------------------------------------------------ maintenance
-        "maintenance_space" => to_json(Ok(cmd::maintenance::maintenance_space().await)),
-        "maintenance_trash" => to_json(Ok(cmd::maintenance::maintenance_trash().await)),
+        "maintenance_space" => to_json(cmd::maintenance::maintenance_space().await),
+        "maintenance_trash" => to_json(cmd::maintenance::maintenance_trash().await),
         "maintenance_purge_trash" => {
             let tag = arg(v, "tag")?;
             to_json(cmd::maintenance::maintenance_purge_trash(tag).await)

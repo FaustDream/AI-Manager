@@ -22,6 +22,8 @@ pub struct SpaceEntry {
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SpaceReport {
+    /// 实际统计的目录：设置页直接显示它，排查「换了个启动方式数据就变了」时一眼能看出来
+    pub root: String,
     pub entries: Vec<SpaceEntry>,
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub total: i64,
@@ -71,7 +73,11 @@ fn space_in(root: &Path) -> SpaceReport {
         }
     }
     entries.sort_by_key(|e| std::cmp::Reverse(e.size));
-    SpaceReport { entries, total }
+    SpaceReport {
+        root: root.display().to_string(),
+        entries,
+        total,
+    }
 }
 
 /// 回收站里的批次：所有 `data/trash/**/<目录名>` 的一级子目录。

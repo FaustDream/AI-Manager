@@ -4,18 +4,22 @@ use super::*;
 use crate::app::error::ErrorKind;
 
 /// 数据目录占用。
-pub async fn maintenance_space() -> crate::app::maintenance::SpaceReport {
-    // 递归遍历整个 data/（含会话正文），主线程上跑会卡住界面
+pub async fn maintenance_space(
+) -> std::result::Result<crate::app::maintenance::SpaceReport, String> {
+    // 递归遍历整个 data/（含会话正文），主线程上跑会卡住界面。
+    // 遍历本身不会失败，但后台任务崩溃（blocking 的 join 错误）必须如实报出：
+    // 早先的 unwrap_or_default() 会把它压成「0 占用」的假空报告，用户看不出出错。
     crate::app::runtime::blocking(crate::app::maintenance::space)
         .await
-        .unwrap_or_default()
+        .map_err(err_text)
 }
 
 /// 回收站批次（平台技能移除时落下的副本）。
-pub async fn maintenance_trash() -> Vec<crate::app::maintenance::SpaceEntry> {
+pub async fn maintenance_trash(
+) -> std::result::Result<Vec<crate::app::maintenance::SpaceEntry>, String> {
     crate::app::runtime::blocking(crate::app::maintenance::trash_batches)
         .await
-        .unwrap_or_default()
+        .map_err(err_text)
 }
 
 /// 清空回收站：`tag=None` 全清。返回释放的字节数。

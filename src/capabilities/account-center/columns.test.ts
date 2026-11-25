@@ -1,7 +1,7 @@
 // 积分列：一次查询失败不该把库里已有的余额整格抹成「查询失败」。
 import { describe, expect, it } from 'vitest';
 import type { AccountView } from '@/lib/types';
-import { COLUMNS } from './columns';
+import { COLUMNS, webLoginUsable } from './columns';
 
 const credit = COLUMNS.find((c) => c.key === 'credit')!;
 const checkin = COLUMNS.find((c) => c.key === 'checkin')!;
@@ -14,6 +14,18 @@ const account = (over: Partial<AccountView> = {}) =>
     quota: {},
     ...over,
   }) as unknown as AccountView;
+
+describe('WorkBuddy 网页登录用途', () => {
+  it('国内版保留签到与旅行，不承诺模型接口', () => {
+    const text = webLoginUsable({ requires_checkin: true });
+    expect(text).toContain('签到');
+    expect(text).toContain('猫猫旅行');
+    expect(text).not.toContain('模型接口');
+  });
+  it('国际版仅显示积分与云端校验', () => {
+    expect(webLoginUsable({ requires_checkin: false })).toBe('积分余额与云端校验');
+  });
+});
 
 describe('积分 / 配额列', () => {
   it('本次查询失败时仍显示库里已有的余额，并把原因留在 title', () => {
@@ -28,6 +40,12 @@ describe('积分 / 配额列', () => {
   it('没有失败时正常显示余额（整数不带小数、带分保留两位）', () => {
     expect(credit.cell(account(), {}).text).toBe('60');
     expect(credit.cell(account({ balance: 60.5 }), {}).text).toBe('60.5');
+  });
+
+  it('ima 的余额单位是「算力」，不沿用「积分」', () => {
+    const cell = credit.cell(account({ iid: 'ima:u1', platform: 'ima' }), {});
+    expect(cell.title).toContain('可用算力');
+    expect(cell.title).not.toContain('积分');
   });
 
   it('额度型账号查询失败时仍显示剩余百分比', () => {

@@ -34,7 +34,7 @@ pub fn for_account(db: &Db, roots: &Roots, iid: &str) -> Result<RestoreOutcome> 
     if platform != "workbuddy" {
         return Err(AppError::new(
             ErrorKind::Unsupported,
-            "只有 WorkBuddy 有本机会话库；Qoder / ZCode / Trae 不涉及会话恢复",
+            "只有 WorkBuddy 的会话库带账号归属；其他平台的会话不按账号隔离，无需恢复",
         ));
     }
     if !crate::app::accounts::switch::is_current(db, iid)? {

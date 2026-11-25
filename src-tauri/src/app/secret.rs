@@ -138,11 +138,14 @@ pub fn chromium_key(local_state: &std::path::Path) -> Result<aes_gcm::Key<aes_gc
     Ok(*aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&key))
 }
 
-/// 解开 Chromium 的 `v10` 信封：`"v10"` + 12 字节 nonce + 密文。
+/// 解开 Chromium 的 `v10` / `v11` 信封：3 字节前缀 + 12 字节 nonce + 密文。
+///
+/// v11 与 v10 的差别只在标记字节（部分客户端为了绕开按前缀识别 v10 的工具而改的），
+/// AES-GCM 的密钥、nonce 长度与密文布局完全一致，所以同一条解密路径即可。
 pub fn chromium_open(key: &aes_gcm::Key<aes_gcm::Aes256Gcm>, blob: &[u8]) -> Result<Vec<u8>> {
     use aes_gcm::aead::{Aead, KeyInit};
-    if blob.len() < 15 || &blob[..3] != b"v10" {
-        return Err(AppError::new(ErrorKind::Crypto, "不是 v10 信封"));
+    if blob.len() < 15 || !matches!(&blob[..3], b"v10" | b"v11") {
+        return Err(AppError::new(ErrorKind::Crypto, "不是 v10/v11 信封"));
     }
     let cipher = aes_gcm::Aes256Gcm::new(key);
     let nonce = aes_gcm::Nonce::from_slice(&blob[3..15]);
@@ -217,9 +220,19 @@ mod tests {
     }
 
     #[test]
+    fn chromium_accepts_v11_envelope() {
+        let key = aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&[9u8; 32]).to_owned();
+        let mut blob = chromium_seal(&key, b"cookie-value").unwrap();
+        // 同一套密钥与布局，只把标记改成 v11
+        blob[..3].copy_from_slice(b"v11");
+        assert_eq!(chromium_open(&key, &blob).unwrap(), b"cookie-value");
+    }
+
+    #[test]
     fn chromium_wrong_envelope_prefix_is_rejected() {
         let key = aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&[0u8; 32]).to_owned();
         assert!(chromium_open(&key, b"v11-whatever").is_err());
         assert!(chromium_open(&key, b"v10short").is_err());
+        assert!(chromium_open(&key, b"v20-whatever").is_err());
     }
 }

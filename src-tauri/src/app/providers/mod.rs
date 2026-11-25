@@ -20,6 +20,7 @@ use async_trait::async_trait;
 pub mod codebuddy;
 pub mod doubao;
 pub mod hints;
+pub mod ima;
 pub mod qoder;
 pub mod trae;
 pub mod workbuddy;
@@ -27,6 +28,7 @@ pub mod zclaim;
 pub mod zcode;
 
 pub use doubao::DoubaoProvider;
+pub use ima::ImaProvider;
 pub use qoder::QoderProvider;
 pub use trae::TraeProvider;
 pub use workbuddy::WorkBuddyProvider;
@@ -74,6 +76,14 @@ pub trait Provider: Send + Sync {
     fn scan(&self, sink: &mut Sink<'_>) -> Result<usize>;
     /// 客户端**当前**登录的 account_id；读不到返回 None（客户端没装/没登录）。
     fn current_id(&self) -> Option<String>;
+
+    fn keep_local_credential(&self, local: &Credential, scanned: &Credential, now: i64) -> bool {
+        crate::app::accounts::scan::keeps_local(local.expires_ms(), scanned.expires_ms(), now)
+    }
+
+    fn save_login_profile(&self) -> Result<()> {
+        Ok(())
+    }
 
     /// 有没有可重扫的**本地登录态**。
     ///
@@ -246,6 +256,7 @@ fn make(client_key: &str) -> Option<Box<dyn Provider>> {
         // 豆包没有可读的本地登录态：账号靠「粘贴 Cookie」添加（accounts::cookie），
         // 扫描恒为 0。列在这里是为了让「刷新积分」能找到实现（豆包不签到）。
         "doubao" => Some(Box::new(DoubaoProvider::new())),
+        "ima" => Some(Box::new(ImaProvider::new())),
         _ => None,
     }
 }
@@ -260,6 +271,7 @@ pub fn all() -> Vec<Box<dyn Provider>> {
         "zcode",
         "trae",
         "doubao",
+        "ima",
     ]
     .iter()
     .filter_map(|key| make(key))

@@ -8,4 +8,8 @@ travel_events_limit: number,
 /**
  * ZCode 活动自动领取（领取要开浏览器过验证码，缺省关）
  */
-zcode_auto_claim: boolean, };
+zcode_auto_claim: boolean, 
+/**
+ * ZCode 活动自动领取的探测间隔分钟
+ */
+zcode_claim_min: number, };

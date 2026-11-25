@@ -18,7 +18,8 @@ src-tauri/.cargo/
 .trae/
 .zcode/
 tools/
-
+.qoder/
+.qoder-cn/
 packaging/nsis/*.exe
 
 # 临时与系统垃圾

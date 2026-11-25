@@ -180,8 +180,18 @@ const REFRESH_NOTE: &str = "每次重扫客户端写回最新凭据与有效期�
 const SWITCH_SCOPE_NOTE: &str =
     "切换登录只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放；本平台只做扫描、签到与积分查询";
 
-/// 会话恢复只对 WorkBuddy 有意义：只有它有本地会话库。
-const RESTORE_SCOPE_NOTE: &str = "只有 WorkBuddy 有本机会话库，其他平台的会话在云端";
+/// ima 的计量单位是「算力」，不能套用其他平台的「积分」口径。
+const SWITCH_IMA_NOTE: &str =
+    "切换登录只对 WorkBuddy（含 CodeBuddy 系）与 ZCode 开放；ima 只做扫描、签到与算力查询";
+
+/// 会话恢复改的是「会话归属」：只有 WorkBuddy 的本地会话库带账号字段。
+/// Qoder / ZCode 虽然也有本地库，但库不区分账号；豆包 / ima / Trae 的会话在云端。
+const RESTORE_SCOPE_NOTE: &str =
+    "只有 WorkBuddy 的本地会话库带账号归属；本平台没有可改写归属的本地会话库";
+
+/// ZCode 有本地会话库，但换号共用一份库：历史会话本来就全部可见，没有需要改写的归属。
+const ZCODE_RESTORE_NOTE: &str =
+    "ZCode 的会话库不区分账号（换号共用一份库），历史会话换号后仍然全部可见，无需恢复";
 
 /// CodeBuddy 系两个客户端（IDE / IDEA 插件）共用同一个写入来源：
 /// 只有 WorkBuddy 国内版账号的档案能写进去。其他平台在这一列必须写清「不支持」。
@@ -284,7 +294,7 @@ const PLATFORMS: &[PlatformDef] = &[
             no("非 WorkBuddy 平台"),
             part(REFRESH_NOTE),
             full(""),
-            no(RESTORE_SCOPE_NOTE),
+            no(ZCODE_RESTORE_NOTE),
             full(""),
             no(CB_SCOPE_NOTE),
             no(CB_SCOPE_NOTE),
@@ -331,6 +341,26 @@ const PLATFORMS: &[PlatformDef] = &[
             no(CB_SCOPE_NOTE),
             no(CB_SCOPE_NOTE),
             part("先问积分接口校验凭据；令牌续期只能在客户端里完成，过期需重新登录"),
+        ],
+    },
+    PlatformDef {
+        key: "ima",
+        label: "ima",
+        cells: &[
+            no("登录态只在 ima 客户端里，本应用不提供浏览器授权"),
+            full(""),
+            no(SWITCH_IMA_NOTE),
+            full(""),
+            full("显示签到累计的算力余额；平台只回累计值，没有发放批次"),
+            no("按算力计，没有额度窗口"),
+            no("非 WorkBuddy 平台"),
+            part("每次重扫客户端写回最新 refresh token；refresh token 失效只能打开 ima 客户端重新登录"),
+            no("会话在云端，本地没有可读的会话库"),
+            no(RESTORE_SCOPE_NOTE),
+            no("ima 客户端没有可写的技能与 MCP 配置"),
+            no(CB_SCOPE_NOTE),
+            no(CB_SCOPE_NOTE),
+            part("先刷新访问令牌再查签到活动校验凭据；访问令牌约 2 小时有效，由本地 refresh token 续期，续期失败需重新登录"),
         ],
     },
     PlatformDef {
@@ -447,7 +477,7 @@ mod tests {
             let (state, _) = support_of(key, "switch").expect("缺 switch 格");
             assert_eq!(state, Support::Full, "{key} 应支持切换");
         }
-        for key in ["qoder", "qoder_intl", "trae", "doubao"] {
+        for key in ["qoder", "qoder_intl", "trae", "doubao", "ima"] {
             let (state, note) = support_of(key, "switch").expect("缺 switch 格");
             assert_eq!(state, Support::None, "{key} 不该再宣称能切换");
             assert!(!note.is_empty(), "{key} 的切换限制要写清原因");

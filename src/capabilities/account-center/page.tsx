@@ -20,7 +20,7 @@ import {
   usePlatformFeatures,
 } from '@/lib/features';
 import type { AccountView } from '@/lib/types';
-import { COLUMNS, type Cell } from './columns';
+import { COLUMNS, WEB_LOGIN_SOURCE, webLoginUsable, type Cell } from './columns';
 import { AccountDetailDialog } from './detail';
 import { OPS_WIDTH, RestoreDialog, RowActions, SwitchDialog } from './actions';
 import { AddAccountDialog, AccountToolbar } from './toolbar';
@@ -28,7 +28,19 @@ import { moveBy, useRowDrag } from './use-row-drag';
 
 /// 每次进入账号中心补刷一轮余额：积分查询的唯一自动触发点。
 
-function CellView({ cell, badge }: { cell: Cell; badge?: string }) {
+/** 昵称旁的徽章，两种互斥：这行是客户端当前登录的号 / 这行只有网页登录的凭据 */
+type Badge = { text: string; tone: 'ok' | 'muted'; title: string };
+
+function CellView({
+  cell,
+  badge,
+  onOpen,
+}: {
+  cell: Cell;
+  badge?: Badge;
+  /** 给了就渲染成链接样式的可点文本（目前只有昵称列）：整行不再承担打开详情的职责 */
+  onOpen?: () => void;
+}) {
   // 图标由列定义给名字，这里才取组件——列定义是纯数据，不碰 JSX
   const Icon = cell.icon ? ICONS[cell.icon] : null;
   return (
@@ -40,13 +52,30 @@ function CellView({ cell, badge }: { cell: Cell; badge?: string }) {
     >
       <span className="flex min-w-0 items-center gap-1 leading-tight">
         {Icon && <Icon size={13} className="shrink-0" />}
-        {cell.text && <span className="truncate">{cell.text}</span>}
+        {cell.text && onOpen ? (
+          // 经典超链接样式：默认带下划线 + 手型光标，明确这是唯一可点开详情的入口
+          <button
+            type="button"
+            onClick={onOpen}
+            title={cell.title ? `打开账号详情 · ${cell.title}` : `打开「${cell.text}」的详情`}
+            className="min-w-0 cursor-pointer truncate text-left underline underline-offset-2 transition-colors duration-[var(--dur-1)] hover:text-accent"
+          >
+            {cell.text}
+          </button>
+        ) : (
+          cell.text && <span className="truncate">{cell.text}</span>
+        )}
         {badge && (
           <span
-            className="shrink-0 rounded-full border border-ok/40 bg-ok/10 px-1.5 py-0.5 text-xs leading-none text-ok"
-            title="客户端此刻登录的就是这个账号"
+            className={cn(
+              'shrink-0 rounded-full border px-1.5 py-0.5 text-xs leading-none',
+              badge.tone === 'muted'
+                ? 'border-line bg-card text-muted'
+                : 'border-ok/40 bg-ok/10 text-ok',
+            )}
+            title={badge.title}
           >
-            {badge}
+            {badge.text}
           </span>
         )}
       </span>
@@ -194,7 +223,8 @@ export default function AccountCenterPage() {
   }, []);
   const saveWidths = (next: Record<string, number>) => {
     setWidths(next);
-    queryCmd('settings_set', { key: 'ui.columns', value: next }).catch(() => {});
+    // 列宽是纯显示偏好，写失败静默即可；走 runCmd 统一入口，不自拼 catch
+    void runCmd('settings_set', { key: 'ui.columns', value: next }, { onError: () => {} });
   };
 
   // ---- 列宽拖拽 ----
@@ -655,6 +685,20 @@ export default function AccountCenterPage() {
           )}
           {visible.map((row) => {
             const isCurrent = currentSet.has(row.iid);
+            const canSwitch = features.on(featurePlatform(row.platform, row.iid), FEATURE_SWITCH);
+            const canSwitchAccount = switchableSet.has(row.iid);
+            // 「仅网页登录」= 这个平台本来能切，但本机没有可写回的登录态。当前登录优先：
+            // 客户端此刻就登着这个号时，再挂「仅网页登录」会自相矛盾。
+            const nameBadge: Badge | undefined = isCurrent
+              ? { text: '当前登录', tone: 'ok', title: '客户端此刻登录的就是这个账号' }
+              : row.platform === 'workbuddy' && current.isSuccess && switchable.isSuccess && canSwitch && !canSwitchAccount && row.source === WEB_LOGIN_SOURCE
+                ? {
+                    text: '仅网页登录',
+                    tone: 'muted',
+                    title: `凭据来自网页登录：${webLoginUsable(row)}照常可用，` +
+                      '只有「切换客户端登录态」做不了。要能切，需在客户端里登录一次这个账号',
+                  }
+                : undefined;
             const isDragging = dragging === row.iid;
             const dropBefore = dropAt?.iid === row.iid && dropAt.before;
             const dropAfter = dropAt?.iid === row.iid && !dropAt.before;
@@ -662,20 +706,9 @@ export default function AccountCenterPage() {
               <tr
                 key={row.iid}
                 data-iid={row.iid}
-                onClick={() => setSelected(row.iid)}
-                // 账号表是自有实现（带拖拽/列宽），键盘可达性在这里自己补：
-                // 与 DataTable 同一套约定——Tab 停在行上，Enter 打开详情。
-                tabIndex={0}
-                role="row"
-                aria-selected={selected === row.iid}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    setSelected(row.iid);
-                  }
-                }}
+                // 详情只由昵称链接触发：整行点击会把「选文字 / 看某一列」也当成打开弹窗
                 className={cn(
-                  'cursor-pointer transition-colors duration-[var(--dur-1)]',
+                  'transition-colors duration-[var(--dur-1)]',
                   // 底色只表示「正在看哪一行」：详情面板在表格下方，这是唯一能对上号的线索。
                   // 「客户端当前登录」由昵称旁的徽章表达，不再和选中态抢同一块颜色。
                   selected === row.iid ? 'bg-accent/15 hover:bg-accent/20' : 'hover:bg-hover',
@@ -723,8 +756,10 @@ export default function AccountCenterPage() {
                   >
                     <CellView
                       cell={col.cell(row, queryErrors, features.on)}
-                      // 昵称旁的「当前登录」：这一行就是客户端此刻登着的号
-                      badge={col.key === 'name' && isCurrent ? '当前登录' : undefined}
+                      // 昵称旁的徽章：「当前登录」或「仅网页登录」
+                      badge={col.key === 'name' ? nameBadge : undefined}
+                      // 只有昵称是打开详情的入口；其余列保持纯展示
+                      onOpen={col.key === 'name' ? () => setSelected(row.iid) : undefined}
                     />
                   </td>
                 ))}
@@ -736,13 +771,12 @@ export default function AccountCenterPage() {
                         }`
                       : ''
                   }`}
-                  onClick={(e) => e.stopPropagation()}
                 >
                   <RowActions
                     row={row}
                     isCurrent={isCurrent}
-                    switchable={switchableSet.has(row.iid)}
-                    canSwitch={features.on(featurePlatform(row.platform, row.iid), FEATURE_SWITCH)}
+                    switchable={canSwitchAccount}
+                    canSwitch={canSwitch}
                     canRestore={features.on(featurePlatform(row.platform, row.iid), FEATURE_RESTORE)}
                     busy={!!busy}
                     onSwitch={() => setSwitchTarget(row)}
@@ -758,7 +792,7 @@ export default function AccountCenterPage() {
       </table>
       </div>
 
-      {/* 点行即开详情弹窗：概览 / 积分批次 / 领取记录 / 旅行分标签页，不再在表下铺长面板 */}
+      {/* 点昵称即开详情弹窗：概览 / 积分批次 / 领取记录 / 旅行分标签页，不再在表下铺长面板 */}
       {selectedRow && (
         <AccountDetailDialog
           key={selectedRow.iid}

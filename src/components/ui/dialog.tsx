@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { cn } from './button';
 import { useModal } from './use-modal';
@@ -34,7 +35,9 @@ export function Dialog({
 }) {
   const { panel, visible, closing } = useModal(open, onClose);
   if (!visible) return null;
-  return (
+  // 挂到 body：页面容器带页面切换动画（transform），会把它变成 fixed 的包含块，
+  // 弹窗就按内容区居中而不是视口居中，滚动时还会跟着页面走。
+  return createPortal(
     <div
       className={cn(
         'fixed inset-0 z-40 flex items-center justify-center bg-scrim p-6',
@@ -85,6 +88,7 @@ export function Dialog({
           </footer>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

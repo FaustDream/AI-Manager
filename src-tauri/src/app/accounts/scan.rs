@@ -53,11 +53,10 @@ fn scan_providers(db: &Db, providers: Vec<Box<dyn providers::Provider>>) -> Resu
 
     for provider in providers {
         let label = provider.label();
-        let platform = provider.platform();
         let mut added = 0usize;
         let count = provider.scan(&mut |scanned| {
             let is_new = !known.contains(&scanned.identity.iid);
-            persist(db, scanned, platform)?;
+            persist(db, scanned, provider.as_ref())?;
             if is_new {
                 added += 1;
             }
@@ -117,14 +116,11 @@ fn cleanup_legacy_zcode_rows(db: &Db) {
     }
 }
 
-fn persist(db: &Db, mut scanned: ScannedAccount, user_platform: &str) -> Result<()> {
-    let AccountIdentity {
-        ref iid,
-        ref platform,
-        ..
-    } = scanned.identity;
+fn persist(db: &Db, scanned: ScannedAccount, provider: &dyn providers::Provider) -> Result<()> {
+    let AccountIdentity { ref platform, .. } = scanned.identity;
     debug_assert_eq!(
-        platform, user_platform,
+        platform,
+        provider.platform(),
         "Provider 的 platform 必须与身份一致"
     );
     let now = now_ms();
@@ -132,34 +128,23 @@ fn persist(db: &Db, mut scanned: ScannedAccount, user_platform: &str) -> Result<
     // 客户端文件不一定是最新的一份：应用内「重新授权」只写本地库，客户端可能还停在
     // 更早的旧登录态（甚至就是授权前那份已过期的）。重扫若无条件覆盖，用户刚授权的
     // 凭据会被打回旧值——表现就是「授权白做了、到期一直显示已过期」。
-    let local_expiry = repo::secret_of(db, iid)
-        .ok()
-        .flatten()
-        .and_then(|bytes| Credential::parse(&bytes).ok())
-        .and_then(|cred| cred.expires_ms());
-    if keeps_local(local_expiry, scanned.identity.expires_at, now) {
-        // 只更新身份字段（昵称 / 来源），凭据与到期时间保持本地那份
-        scanned.identity.expires_at = local_expiry;
-        repo::upsert_identity(db, &scanned.identity, now)?;
-        // Info 而不是 Warn：这是「按策略保留」，不是异常。打在 Warn 上会让每次启动扫描
-        // 都刷出一排红字，把真正需要处理的过期 / 401 淹掉。
+    let retained = repo::save_scanned(
+        db,
+        &scanned.identity,
+        &scanned.secret,
+        now,
+        |local, candidate| provider.keep_local_credential(local, candidate, now),
+    )?;
+    if retained {
         crate::app::log::log(
             crate::app::log::Level::Info,
             "accounts",
             format!(
-                "{}：客户端登录态不比本地更新，保留本地凭据（本地到期 {}）",
-                scanned.identity.name,
-                local_expiry.map_or_else(
-                    || "未知".to_string(),
-                    crate::app::accounts::credential::iso_from_ms
-                )
+                "{}：客户端登录态不比本地更新，保留本地凭据与来源",
+                scanned.identity.name
             ),
         );
-        return Ok(());
     }
-
-    repo::upsert_identity(db, &scanned.identity, now)?;
-    repo::set_secret(db, iid, &scanned.secret, scanned.identity.expires_at)?;
     // scanned 在这里释放：凭据明文不跨账号留存
     Ok(())
 }
@@ -173,7 +158,7 @@ fn persist(db: &Db, mut scanned: ScannedAccount, user_platform: &str) -> Result<
 ///   - 两份都有效 → 明显更晚才换（1 小时内视为同一份，避免来回抖）；
 ///   - 客户端没给有效期 → 本地有效就留着，别把已知的有效期换成「未知」；
 ///   - 两边都没有效期 → 以客户端为准（ZCode 就是这种，token 只有客户端会续）。
-fn keeps_local(local: Option<i64>, scanned: Option<i64>, now: i64) -> bool {
+pub(crate) fn keeps_local(local: Option<i64>, scanned: Option<i64>, now: i64) -> bool {
     const EXPIRY_ROLLBACK_SLACK_MS: i64 = 3600 * 1000;
     if local.is_some_and(|ms| ms <= now) {
         return false;
@@ -191,6 +176,14 @@ fn keeps_local(local: Option<i64>, scanned: Option<i64>, now: i64) -> bool {
 mod tests {
     use super::*;
     use crate::app::accounts::credential::{iso_from_ms, Credential};
+
+    fn persist(db: &Db, scanned: ScannedAccount, platform: &str) -> Result<()> {
+        super::persist(
+            db,
+            scanned,
+            providers::for_platform(platform).unwrap().as_ref(),
+        )
+    }
 
     fn fake(iid: &str, secret: &str) -> ScannedAccount {
         let (platform, account_id) = iid.split_once(':').unwrap();
@@ -374,6 +367,72 @@ mod tests {
         persist(&db, fake("zcode:u1", "renewed"), "zcode").unwrap();
         let cred = Credential::parse(&repo::secret_of(&db, "zcode:u1").unwrap().unwrap()).unwrap();
         assert_eq!(cred.token, "renewed");
+    }
+
+    fn workbuddy_copy(token: &str, updated_at: i64, current: bool) -> ScannedAccount {
+        let mut scanned = fake("workbuddy:u1", token);
+        scanned.identity.source = if current {
+            "workbuddy-desktop.info".into()
+        } else {
+            "workbuddy-desktop.info.backup".into()
+        };
+        let mut cred = Credential::parse(&scanned.secret).unwrap();
+        cred.put("credential_updated_at", serde_json::json!(updated_at));
+        cred.put("ticket_is_current", serde_json::json!(current));
+        scanned.secret = cred.to_bytes().unwrap();
+        scanned
+    }
+
+    #[test]
+    fn workbuddy_backup_never_replaces_the_new_client_login() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        persist(&db, workbuddy_copy("client-new", 2000, true), "workbuddy").unwrap();
+        persist(&db, workbuddy_copy("backup-old", 3000, false), "workbuddy").unwrap();
+        let cred =
+            Credential::parse(&repo::secret_of(&db, "workbuddy:u1").unwrap().unwrap()).unwrap();
+        assert_eq!(cred.token, "client-new");
+        assert_eq!(
+            repo::identity(&db, "workbuddy:u1").unwrap().unwrap().source,
+            "workbuddy-desktop.info"
+        );
+    }
+
+    #[test]
+    fn stale_workbuddy_scan_preserves_web_credential_and_its_source() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let mut web = workbuddy_copy("web-new", 2000, true);
+        web.identity.source = "浏览器登录".into();
+        persist(&db, web, "workbuddy").unwrap();
+        persist(&db, workbuddy_copy("client-old", 1000, true), "workbuddy").unwrap();
+        let cred =
+            Credential::parse(&repo::secret_of(&db, "workbuddy:u1").unwrap().unwrap()).unwrap();
+        assert_eq!(cred.token, "web-new");
+        assert_eq!(
+            repo::identity(&db, "workbuddy:u1").unwrap().unwrap().source,
+            "浏览器登录"
+        );
+    }
+
+    #[test]
+    fn newer_workbuddy_client_login_updates_even_with_a_shorter_expiry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        let now = now_ms();
+        let mut old = workbuddy_copy("old", 1000, true);
+        let mut new = workbuddy_copy("new", 2000, true);
+        for (scanned, expiry) in [(&mut old, now + 20 * 86400000), (&mut new, now + 86400000)] {
+            let mut cred = Credential::parse(&scanned.secret).unwrap();
+            cred.expires_at = iso_from_ms(expiry);
+            scanned.identity.expires_at = cred.expires_ms();
+            scanned.secret = cred.to_bytes().unwrap();
+        }
+        persist(&db, old, "workbuddy").unwrap();
+        persist(&db, new, "workbuddy").unwrap();
+        let cred =
+            Credential::parse(&repo::secret_of(&db, "workbuddy:u1").unwrap().unwrap()).unwrap();
+        assert_eq!(cred.token, "new");
     }
 
     /// 真实机验证：`cargo test --lib scan_all_real -- --ignored --nocapture`

@@ -205,6 +205,26 @@ pub fn tags_set(db: &Db, key: &str, tags: &[String]) -> Result<usize> {
     Ok(clean.len())
 }
 
+/// 读取一个会话当前挂的标签（按写入顺序）。编辑弹窗打开时用：保存是全量替换，
+/// 不先取回已有标签就会把它们清空。
+pub fn tags_of(db: &Db, key: &str) -> Result<Vec<String>> {
+    let target = preview::parse_key(key)?;
+    db.read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT tag FROM session_tag
+             WHERE source_key = ?1 AND session_id = ?2
+             ORDER BY rowid",
+        )?;
+        let tags = stmt
+            .query_map(
+                rusqlite::params![target.source_key, target.session_id],
+                |r| r.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(tags)
+    })
+}
+
 /// 两个标记都空、也没有置顶与改名的行没有存在意义。
 /// 归档 / 取消隐藏 / 取消置顶 / 恢复原标题共用；标签在独立表里，不参与判断。
 fn prune_empty(conn: &rusqlite::Connection, source_key: &str, session_id: &str) {
@@ -405,6 +425,11 @@ mod tests {
 
         let tags = vec!["工作".into(), " 工作 ".into(), String::new(), "重要".into()];
         assert_eq!(tags_set(&db, &key, &tags).unwrap(), 2, "去空、去重");
+        // tags_of 读回刚写的两个、按写入顺序：编辑弹窗靠它回填，避免全量替换清空已有标签
+        assert_eq!(
+            tags_of(&db, &key).unwrap(),
+            vec!["工作".to_string(), "重要".to_string()]
+        );
         let count: i64 = db
             .read(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM session_tag", [], |r| r.get(0))?))
             .unwrap();
@@ -414,5 +439,8 @@ mod tests {
             .read(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM session_tag", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(count, 0, "全量替换：传空数组即清空");
+        assert!(tags_of(&db, &key).unwrap().is_empty(), "清空后读回空");
+        // 没挂过标签的会话读回空数组，而不是报错
+        assert!(tags_of(&db, "qoder|qoder_cn||nope").unwrap().is_empty());
     }
 }

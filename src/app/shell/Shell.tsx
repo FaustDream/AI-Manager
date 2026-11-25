@@ -32,8 +32,12 @@ import { loadFont, loadTheme } from '@/lib/theme';
 import {
   NAV_LAYOUTS,
   NAV_KEY,
+  NAV_ORDER_KEY,
+  orderItems,
+  usePageToggles,
   usePersistedChoice,
   usePersistedFlag,
+  usePersistedOrder,
   type NavLayout,
 } from '@/lib/ui-state';
 import { Suspense } from 'react';
@@ -54,8 +58,25 @@ const PAGE_Y = 6;
 
 export function Shell() {
   const caps = useMemo(() => capabilities(), []);
-  // 导航只展示非 hidden 的能力；hidden 的仍可被 aim:navigate 打开
-  const navCaps = useMemo(() => caps.filter((cap) => !cap.manifest.hidden), [caps]);
+  // 菜单顺序由侧边栏拖拽决定，落 localStorage；存档里没有的能力（新上线）补在末尾。
+  // 排序后的清单同时供侧栏、顶部标签、快捷键编号与命令面板使用，避免四处各排一套。
+  const [navOrder, setNavOrder] = usePersistedOrder(NAV_ORDER_KEY);
+  // 页面开关：用户在设置里关掉的页面不占导航位置；alwaysOn（设置页）永不隐藏。
+  const [hiddenPages] = usePageToggles();
+  // 导航只展示非 hidden 且未被关掉的能力；hidden 的仍可被 aim:navigate 打开
+  const navCaps = useMemo(
+    () =>
+      orderItems(
+        caps.filter(
+          (cap) =>
+            !cap.manifest.hidden &&
+            (cap.manifest.alwaysOn || !hiddenPages.has(cap.manifest.id)),
+        ),
+        (cap) => cap.manifest.id,
+        navOrder,
+      ),
+    [caps, navOrder, hiddenPages],
+  );
   const [active, setActive] = useState(navCaps[0]?.manifest.id ?? '');
   // 内容区跟随 `view`：它在 chunk 到位之后才更新，所以等待期间屏幕上一直是旧页面。
   // `active` 留在同步更新里，点哪个哪个立刻高亮——点完没反应比白屏还慌。
@@ -170,11 +191,18 @@ export function Shell() {
   useEffect(() => {
     const onNavigate = (event: Event) => {
       const id = (event as CustomEvent<string>).detail;
-      if (caps.some((cap) => cap.manifest.id === id)) go(id);
+      const cap = caps.find((item) => item.manifest.id === id);
+      if (!cap) return;
+      // 已关闭的页面不让跨页跳进去：跳进去也没有导航入口能再出来（设置页除外）
+      if (!cap.manifest.alwaysOn && hiddenPages.has(id)) {
+        toast('该功能已在设置中关闭，先到「设置 → 功能开关」打开');
+        return;
+      }
+      go(id);
     };
     window.addEventListener('aim:navigate', onNavigate);
     return () => window.removeEventListener('aim:navigate', onNavigate);
-  }, [caps, go]);
+  }, [caps, go, hiddenPages]);
 
   const current = caps.find((c) => c.manifest.id === view) ?? caps[0];
 
@@ -258,16 +286,6 @@ export function Shell() {
         hint: '会调用平台接口',
         run: async () => {
           if ((await runCmd('daily_run_now')) !== undefined) toast('已开始跑一轮每日轮询');
-        },
-      },
-      {
-        id: 'act:bundle',
-        title: '导出诊断包',
-        group: '动作',
-        hint: '日志 + 脱敏状态',
-        run: async () => {
-          const path = await runCmd('diagnose_bundle');
-          if (path !== undefined) toast(`诊断包已导出：${path}`);
         },
       },
       {
@@ -376,6 +394,7 @@ export function Shell() {
             collapsed={collapsed}
             onGo={go}
             onToggle={toggleNav}
+            onReorder={setNavOrder}
           />
         )}
         <div className="flex min-w-0 flex-1 flex-col">

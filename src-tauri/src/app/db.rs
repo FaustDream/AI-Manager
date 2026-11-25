@@ -9,7 +9,7 @@ use crate::app::paths;
 use rusqlite::Connection;
 use std::sync::Mutex;
 
-pub(crate) const SCHEMA_VERSION: u32 = 5;
+pub(crate) const SCHEMA_VERSION: u32 = 6;
 
 pub struct Db {
     write: Mutex<Connection>,
@@ -201,8 +201,31 @@ impl Db {
                      digest     TEXT NOT NULL DEFAULT '',
                      updated_at INTEGER NOT NULL,
                      PRIMARY KEY (kind, name)
-                 );",
+                 );
+                 -- 动漫/影视更新库：只缓存归一化后的条目，源原始响应不落库。
+                 -- favorite 是用户态，因此 upsert 时必须单独保留，不能被刷新覆盖。
+                 CREATE TABLE IF NOT EXISTS catalog_items (
+                     key         TEXT PRIMARY KEY,
+                     platform    TEXT NOT NULL,
+                     kind        TEXT NOT NULL,
+                     title       TEXT NOT NULL,
+                     update_note TEXT,
+                     year        INTEGER,
+                     air_date    TEXT,
+                     finished    INTEGER NOT NULL DEFAULT 0,
+                     url         TEXT,
+                     first_seen  TEXT NOT NULL,
+                     updated_at  TEXT NOT NULL,
+                     favorite    INTEGER NOT NULL DEFAULT 0
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_catalog_platform
+                     ON catalog_items(platform);
+                 CREATE INDEX IF NOT EXISTS idx_catalog_year
+                     ON catalog_items(year);
+                 CREATE INDEX IF NOT EXISTS idx_catalog_air_date
+                     ON catalog_items(air_date);",
             )?;
+            crate::app::catalog::store::bootstrap(conn)?;
             // execute_batch 不支持 ?1 占位符，首行只能单独插
             let count: i64 =
                 conn.query_row("SELECT COUNT(*) FROM schema_meta", [], |r| r.get(0))?;
@@ -237,6 +260,9 @@ impl Db {
                 }
                 if stored < 5 {
                     Self::migrate_v4_to_v5(conn)?;
+                }
+                if stored < 6 {
+                    conn.execute("UPDATE schema_meta SET version = 6", [])?;
                 }
             }
             Ok(())

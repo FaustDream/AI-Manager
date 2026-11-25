@@ -110,6 +110,11 @@ const PLATFORMS: &[PlatformDef] = &[
         label: "豆包",
         capability: "doubao",
     },
+    PlatformDef {
+        key: "ima",
+        label: "ima",
+        capability: "ima",
+    },
 ];
 
 // ------------------------------------------------------------------ 给界面的形状
@@ -259,6 +264,8 @@ mod tests {
         // 平台做不到的，默认必须是关——默认开等于给用户一个必然失败的按钮
         assert!(!resolve(&empty, "qoder", SWITCH));
         assert!(!resolve(&empty, "doubao", CHECKIN));
+        assert!(resolve(&empty, "ima", CHECKIN));
+        assert!(!resolve(&empty, "ima", SWITCH));
         assert!(!resolve(&empty, "zcode", RESTORE));
         assert!(!resolve(&empty, "workbuddy_intl", TRAVEL));
     }

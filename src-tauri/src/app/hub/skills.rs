@@ -492,7 +492,26 @@ pub fn deploy(hub: &Hub, name: &str, keys: &[TargetKey], overwrite: bool) -> Res
                 );
                 continue;
             }
-            // 覆盖前先挪走旧副本：直接被占用时删不掉，复制会写一半
+            // 覆盖前先把旧副本备份进回收站（与 remove 同口径）：万一库里那份不对、
+            // 或用户手改过平台副本，直接删掉就再无退路。备份失败就不覆盖——
+            // 绝在没有退路的情况下删用户的东西。
+            let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+            let saved = crate::app::paths::data_dir()
+                .join("trash")
+                .join(format!("platform-skills-{}", targets::key_name(*key)))
+                .join(&stamp)
+                .join(name);
+            if copy_tree(&dest, &saved).is_err() {
+                report.push(
+                    false,
+                    targets::key_name(*key),
+                    "旧副本备份到回收站失败，未覆盖",
+                    &dest,
+                    false,
+                );
+                continue;
+            }
+            // 备份成功后再挪走旧副本：直接被占用时删不掉，复制会写一半
             if crate::app::fsx::remove_path(&dest).is_err() {
                 report.push(
                     false,
@@ -843,6 +862,47 @@ mod tests {
         assert!(std::fs::read_to_string(dest.join("SKILL.md"))
             .unwrap()
             .contains("v1"));
+    }
+
+    /// 覆盖部署必须先把平台上的旧副本备份进回收站：用户手改的版本不能无退路地被盖掉。
+    #[test]
+    fn overwrite_deploy_backs_up_old_copy_to_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        // 回收站落在全局 data_dir：测试注入到临时目录，绝不碰真实数据（红线 2）
+        crate::app::paths::set_data_dir_for_test(dir.path());
+        let hub = hub(dir.path());
+        seed_skill(&hub, "pdf-reader", "v1");
+        deploy(&hub, "pdf-reader", &[TargetKey::QoderCn], false).unwrap();
+
+        // 用户在平台侧手改这份副本
+        let dest = hub.skill_dir(TargetKey::QoderCn).join("pdf-reader");
+        std::fs::write(dest.join("SKILL.md"), "用户手改的内容").unwrap();
+
+        // 强制覆盖：平台副本被刷回库版本
+        let forced = deploy(&hub, "pdf-reader", &[TargetKey::QoderCn], true).unwrap();
+        assert_eq!(forced.done(), 1);
+        assert!(std::fs::read_to_string(dest.join("SKILL.md"))
+            .unwrap()
+            .contains("v1"));
+
+        // 用户手改的旧副本原样躺在回收站里，可捞回
+        let trash = crate::app::paths::data_dir()
+            .join("trash")
+            .join("platform-skills-qoder_cn");
+        let batches: Vec<_> = std::fs::read_dir(&trash)
+            .expect("覆盖前应留下回收站批次")
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert!(!batches.is_empty(), "覆盖前应有一个回收站批次");
+        let backed_up = batches.iter().any(|batch| {
+            let file = batch.join("pdf-reader").join("SKILL.md");
+            file.is_file()
+                && std::fs::read_to_string(&file)
+                    .map(|t| t.contains("用户手改的内容"))
+                    .unwrap_or(false)
+        });
+        assert!(backed_up, "用户手改的旧副本应原样备份在回收站里");
     }
 
     #[test]

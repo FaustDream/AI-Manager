@@ -253,6 +253,14 @@ pub async fn session_tag_set(
     Ok(count)
 }
 
+/// 读取一个会话当前的标签（编辑弹窗打开时用）。
+pub async fn session_tags_of(
+    state: &AppState,
+    key: String,
+) -> std::result::Result<Vec<String>, String> {
+    state.sessions.tags_of(key).await.map_err(err_text)
+}
+
 // ------------------------------------------------------------ 导出 / 打开 / 建议 / 统计
 
 /// 导出会话正文到 `data/exports/`（markdown / json），返回报告。

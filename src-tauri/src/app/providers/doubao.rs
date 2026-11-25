@@ -15,8 +15,13 @@
 //!     面板只回累计额度与今日发放额，没有批次也没有到期时间。这里**不推算**：
 //!     推算出来的日期会被当成平台数据，比空着更容易误导。
 //!
-//! 唯一在用的接口（口径与 dsh-checkin-all 的 `lib/providers/doubao.js`（MIT）一致）：
-//!   POST /alice/ug/campaign/v3/detail/        活动面板（累计额度 + 今日发放）
+//! 在用的两个只读接口：
+//!   POST /alice/ug/campaign/v3/detail/                     活动面板（累计获得 + 今日发放）
+//!   POST /alice/commerce/sale/subscription/quota/summary/  额度汇总（`quota_remaining_amount`）
+//!
+//! 活动面板只有「累计获得」，不能当余额展示；额度汇总直接返回
+//! `quota_remaining_amount`，这才是可用余额。该字段缺失就报错，
+//! 不再用累计获得或 total - used 推算。
 //!
 //! 工作版（豆包工作）与飞书企业账号的面板里没有 `daily_signin` 任务，额度口径也可能
 //! 不同。缺任务不算错误——额度照读，只是没有「今日发放」这一项。
@@ -30,6 +35,10 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 const DETAIL_URL: &str = "https://www.doubao.com/alice/ug/campaign/v3/detail/";
+/// 额度汇总：活动面板只给累计获得，这里才有扣减后的可用额度
+const QUOTA_SUMMARY_URL: &str =
+    "https://www.doubao.com/alice/commerce/sale/subscription/quota/summary/";
+const PRODUCT_LINE: &str = "membership";
 /// 活动组：面板查询要带，否则服务端不知道问的是哪个活动
 const CAMPAIGN_GROUP: &str = "pc_incentive_task_mvp_v3";
 /// Cookie 失效（真的登录过期）
@@ -40,6 +49,8 @@ const NO_ACTIVITY: i64 = 710010702;
 const CLIENT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) DoubaoDesktop/2.32.6 Chrome/147.0.7727.149 Safari/537.36";
 const REFERER: &str = "https://www.doubao.com/pc/agent-explore";
+/// 额度汇总网页端从聊天页发起，Referer 跟着页面走，减少风控误判
+const CHAT_REFERER: &str = "https://www.doubao.com/chat/";
 
 #[derive(Default)]
 pub struct DoubaoProvider;
@@ -50,13 +61,28 @@ impl DoubaoProvider {
     }
 
     fn post(&self, cred: &Credential, base: &str, body: &str) -> Result<HttpRequest> {
-        let cookie = cookie_of(cred)?;
         let seed = seed_of(cred);
-        let mut req = HttpRequest::post(api_url(base, &seed))
+        self.post_url(cred, api_url(base, &seed), body)
+    }
+
+    /// 同 `post`，但调用方已经拼好完整 URL（额度汇总的参数与活动面板不同）。
+    fn post_url(&self, cred: &Credential, url: String, body: &str) -> Result<HttpRequest> {
+        self.post_url_with_referer(cred, url, body, REFERER)
+    }
+
+    fn post_url_with_referer(
+        &self,
+        cred: &Credential,
+        url: String,
+        body: &str,
+        referer: &str,
+    ) -> Result<HttpRequest> {
+        let cookie = cookie_of(cred)?;
+        let mut req = HttpRequest::post(url)
             .header("Cookie", cookie)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/plain, */*")
-            .header("Referer", REFERER)
+            .header("Referer", referer)
             .header("Origin", "https://www.doubao.com")
             .header("User-Agent", CLIENT_UA);
         req.body = Some(body.to_string());
@@ -67,6 +93,20 @@ impl DoubaoProvider {
     async fn detail(&self, cred: &Credential, http: &dyn Http) -> Result<Value> {
         let body = json!({ "campaign_group_code": CAMPAIGN_GROUP }).to_string();
         let resp = http.send(self.post(cred, DETAIL_URL, &body)?).await?;
+        let value = resp.json()?;
+        check_code(&value)?;
+        Ok(value.get("data").cloned().unwrap_or_else(|| json!({})))
+    }
+
+    /// 额度汇总：只读平台直接给的 `quota_remaining_amount`。
+    /// 缺失或请求失败都由 `credits` 报错，不再退回累计口径。
+    async fn quota_summary(&self, cred: &Credential, http: &dyn Http) -> Result<Value> {
+        let body = json!({ "product_line": PRODUCT_LINE }).to_string();
+        let seed = seed_of(cred);
+        let url = quota_summary_url(QUOTA_SUMMARY_URL, &seed);
+        let resp = http
+            .send(self.post_url_with_referer(cred, url, &body, CHAT_REFERER)?)
+            .await?;
         let value = resp.json()?;
         check_code(&value)?;
         Ok(value.get("data").cloned().unwrap_or_else(|| json!({})))
@@ -126,13 +166,24 @@ impl Provider for DoubaoProvider {
     }
 
     async fn credits(&self, cred: &Credential, http: &dyn Http) -> Result<CreditSnapshot> {
-        let data = self.detail(cred, http).await?;
-        let panel = parse_panel(&data);
+        // 余额只认额度汇总的 quota_remaining_amount；拿不到就报错，
+        // 不再退回累计获得（累计值不是可用余额，会把用户引到错误数字上）。
+        let data = self.quota_summary(cred, http).await?;
+        let Some(available) = parse_available_quota(&data) else {
+            return Err(AppError::new(
+                ErrorKind::Provider,
+                "豆包额度汇总没有返回 quota_remaining_amount，无法确定可用额度",
+            ));
+        };
+        // 活动面板只用来补充「累计获得 / 今日发放」，失败不影响余额。
+        let summary = match self.detail(cred, http).await.ok() {
+            Some(data) => parse_panel(&data).summary_with_available(available),
+            None => format!("可用体验额度 {}", trim_f64(available)),
+        };
         Ok(CreditSnapshot {
-            summary: panel.summary(),
+            summary,
             error: None,
-            balance: panel.total,
-            // 平台不给批次：到期日空着，界面显示「平台未提供」，不编造
+            balance: Some(available),
             lots: None,
             quota: None,
         })
@@ -154,19 +205,14 @@ struct Panel {
 }
 
 impl Panel {
-    fn summary(&self) -> String {
-        let mut text = String::new();
-        if let Some(total) = self.total {
-            text.push_str(&format!("累计体验额度 {}", trim_f64(total)));
+    /// 拿到可用额度后，summary 先说可用值；累计值只作为对照，避免和余额混淆。
+    fn summary_with_available(&self, available: f64) -> String {
+        let mut text = format!("可用体验额度 {}", trim_f64(available));
+        if let Some(total) = self.total.filter(|total| *total > available) {
+            text.push_str(&format!(" · 累计获得 {}", trim_f64(total)));
         }
         if let Some(today) = self.today.filter(|v| *v > 0.0) {
-            if !text.is_empty() {
-                text.push_str(" · ");
-            }
-            text.push_str(&format!("今日 +{}", trim_f64(today)));
-        }
-        if text.is_empty() {
-            text.push_str("豆包暂无额度数据");
+            text.push_str(&format!(" · 今日 +{}", trim_f64(today)));
         }
         text
     }
@@ -190,6 +236,39 @@ fn parse_panel(data: &Value) -> Panel {
         today: signin
             .and_then(|checkin| checkin.pointer("/reward/reward_amount"))
             .and_then(as_f64),
+    }
+}
+
+/// 从额度汇总里取平台直接给的可用额度。
+///
+/// 只认 `quota_remaining_amount`，不拿累计获得或 total - used 推算：
+/// 该字段缺失时返回 None，由调用方报错，避免把总额当余额。
+fn parse_available_quota(data: &Value) -> Option<f64> {
+    for path in [
+        "/quota_remaining_amount",
+        "/quota_summary/quota_remaining_amount",
+        "/quota_balance/quota_remaining_amount",
+        "/incentive_quota_section/quota_remaining_amount",
+    ] {
+        if let Some(remaining) = data.pointer(path).and_then(as_f64) {
+            return Some(remaining.max(0.0));
+        }
+    }
+    // 已知路径都没有时再递归找一次：字段名足够独特，不依赖具体包一层还是两层
+    find_number(data, "quota_remaining_amount").map(|remaining| remaining.max(0.0))
+}
+
+/// 在任意层级找第一个数字字段。只在已知路径都落空时兜底使用。
+fn find_number(value: &Value, key: &str) -> Option<f64> {
+    match value {
+        Value::Object(map) => {
+            if let Some(found) = map.get(key).and_then(as_f64) {
+                return Some(found);
+            }
+            map.values().find_map(|item| find_number(item, key))
+        }
+        Value::Array(items) => items.iter().find_map(|item| find_number(item, key)),
+        _ => None,
     }
 }
 
@@ -287,6 +366,61 @@ pub(crate) fn device_ids(seed: &str) -> (String, String) {
     (web_id, tea_uuid)
 }
 
+/// 额度汇总接口的网页端参数要求 19 位数字设备标识（`device_id` 与 `web_id`
+/// 不同，`tea_uuid` 与 `web_id` 相同）。活动面板用的是另一组短标识，
+/// 这里单独派生，避免改动已经工作的活动面板请求。
+fn quota_ids(seed: &str) -> (String, String, String) {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in format!("doubao-quota:{seed}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let mut next = || {
+        hash ^= hash << 13;
+        hash ^= hash >> 7;
+        hash ^= hash << 17;
+        format!("77{:017}", hash % 100_000_000_000_000_000)
+    };
+    let device_id = next();
+    let web_id = next();
+    (device_id, web_id.clone(), web_id)
+}
+
+/// 网页端额度汇总要带一个 tab UUID；按账号种子派生，稳定且账号间不同。
+fn tab_id(seed: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in format!("doubao-tab:{seed}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let hex = format!("{hash:016x}{:016x}", hash.rotate_left(21));
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+/// 额度汇总的参数与活动面板不同：网页端用 browser，带 os/region，
+/// device_id 不能为空。设备标识仍按账号种子派生，不同账号不共用一套。
+///
+/// 不复制浏览器 URL 里的 msToken/a_bogus：那是某个账号当次会话的签名，
+/// 不能跨账号复用；这里只带账号自己的 Cookie 和派生设备标识。
+fn quota_summary_url(base: &str, seed: &str) -> String {
+    let (device_id, web_id, tea_uuid) = quota_ids(seed);
+    let tab = tab_id(seed);
+    format!(
+        "{base}?version_code=20800&language=zh&device_platform=web&doubao_device_platform=web\
+         &aid=497858&os=windows&real_aid=497858&pkg_type=release_version\
+         &device_id={device_id}&pc_version=3.47.0&doubao_pc_version=3.47.0\
+         &web_id={web_id}&tea_uuid={tea_uuid}&region=CN&sys_region=CN\
+         &samantha_web=1&web_platform=browser&use-olympus-account=1&web_tab_id={tab}"
+    )
+}
+
 /// 请求 URL 上那串「豆包电脑版网页」参数。缺了它们接口会当成可疑来源。
 fn api_url(base: &str, seed: &str) -> String {
     let (web_id, tea_uuid) = device_ids(seed);
@@ -303,9 +437,15 @@ fn as_i64(value: &Value) -> Option<i64> {
 }
 
 fn as_f64(value: &Value) -> Option<f64> {
-    value
-        .as_f64()
-        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+    value.as_f64().or_else(|| {
+        // 平台会把余额格式化成 "1,450" 这样的千分位字符串，直接 parse 会失败
+        let text = value.as_str()?.trim();
+        let cleaned: String = text
+            .chars()
+            .filter(|ch| !ch.is_whitespace() && *ch != ',')
+            .collect();
+        cleaned.parse().ok()
+    })
 }
 
 #[cfg(test)]
@@ -334,8 +474,6 @@ mod tests {
         let panel = parse_panel(&panel_json());
         assert_eq!(panel.total, Some(1400.0));
         assert_eq!(panel.today, Some(200.0));
-        assert!(panel.summary().contains("累计体验额度 1400"));
-        assert!(panel.summary().contains("今日 +200"));
     }
 
     #[test]
@@ -348,15 +486,64 @@ mod tests {
         let panel = parse_panel(&data);
         assert_eq!(panel.total, Some(900.0));
         assert_eq!(panel.today, None);
-        assert!(panel.summary().contains("累计体验额度 900"));
-        assert!(!panel.summary().contains("今日"), "{}", panel.summary());
     }
 
     #[test]
-    fn panel_without_progress_says_no_data() {
+    fn panel_without_progress_has_no_total() {
         let panel = parse_panel(&json!({ "tasks": [] }));
         assert_eq!(panel.total, None);
-        assert_eq!(panel.summary(), "豆包暂无额度数据");
+    }
+
+    fn quota_summary_json() -> Value {
+        json!({ "quota_remaining_amount": "600" })
+    }
+
+    #[test]
+    fn available_quota_reads_remaining_field() {
+        assert_eq!(
+            parse_available_quota(&json!({ "quota_remaining_amount": 500 })),
+            Some(500.0)
+        );
+        // 字符串数字也要认；平台实际返回的是带千分位的 "1,450"
+        assert_eq!(
+            parse_available_quota(&json!({ "quota_remaining_amount": "600" })),
+            Some(600.0)
+        );
+        assert_eq!(
+            parse_available_quota(&json!({ "quota_remaining_amount": "1,450" })),
+            Some(1450.0)
+        );
+        // 字段被包一层时也要能找到
+        assert_eq!(
+            parse_available_quota(&json!({
+                "quota_summary": { "quota_remaining_amount": 700 }
+            })),
+            Some(700.0)
+        );
+        // 未知层级时的递归兜底
+        assert_eq!(
+            parse_available_quota(&json!({
+                "outer": { "inner": { "quota_remaining_amount": 800 } }
+            })),
+            Some(800.0)
+        );
+    }
+
+    #[test]
+    fn available_quota_clamps_at_zero() {
+        assert_eq!(
+            parse_available_quota(&json!({ "quota_remaining_amount": -5 })),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn available_quota_missing_field_is_none() {
+        assert_eq!(parse_available_quota(&json!({})), None);
+        assert_eq!(
+            parse_available_quota(&json!({ "incentive_quota_section": {} })),
+            None
+        );
     }
 
     #[test]
@@ -424,6 +611,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn quota_summary_url_carries_browser_markers_and_account_ids() {
+        let url = quota_summary_url(QUOTA_SUMMARY_URL, "db1234567890");
+        for marker in [
+            "web_platform=browser",
+            "os=windows",
+            "region=CN",
+            "sys_region=CN",
+            "pc_version=3.47.0",
+            "device_id=",
+            "web_tab_id=",
+        ] {
+            assert!(url.contains(marker), "缺参数 {marker}：{url}");
+        }
+        // 设备标识按账号派生：不同账号不能共用同一组参数
+        assert_ne!(url, quota_summary_url(QUOTA_SUMMARY_URL, "db0987654321"));
+        let (device_id, web_id, tea_uuid) = quota_ids("db1234567890");
+        assert_eq!(device_id.len(), 19);
+        assert_eq!(web_id.len(), 19);
+        assert_eq!(tea_uuid, web_id);
+        assert_ne!(device_id, web_id);
+        let tab = tab_id("db1234567890");
+        assert_eq!(tab.len(), 36);
+        assert_eq!(tab.matches('-').count(), 4);
+    }
+
     // ---- 以下是带假 HTTP 的链路测试：解析、错误码、幂等、请求头 ----
 
     use crate::app::net::MockHttp;
@@ -443,6 +656,10 @@ mod tests {
         api_url(DETAIL_URL, SEED)
     }
 
+    fn summary_url() -> String {
+        quota_summary_url(QUOTA_SUMMARY_URL, SEED)
+    }
+
     #[tokio::test]
     async fn doubao_never_checks_in() {
         // 领取接口会被风控：豆包必须对签到说「不支持」，界面与定时轮询据此排除它
@@ -455,32 +672,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credits_reads_total_and_sends_cookie() {
+    async fn credits_errors_without_remaining_amount() {
+        // 汇总返回成功但没有可用额度字段：宁可报错，也不能退回累计获得
+        let http = MockHttp::new();
+        http.on(
+            &summary_url(),
+            200,
+            &json!({ "code": 0, "data": {} }).to_string(),
+        );
+        let err = DoubaoProvider::new()
+            .credits(&cred(), &http)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Provider);
+        assert!(
+            err.message.contains("quota_remaining_amount"),
+            "{}",
+            err.message
+        );
+        assert_eq!(http.call_count(&detail_url()), 0, "不应退回活动面板");
+    }
+
+    #[tokio::test]
+    async fn credits_uses_available_quota_from_summary() {
         let http = MockHttp::new();
         http.on(
             &detail_url(),
             200,
             &json!({ "code": 0, "data": panel_json() }).to_string(),
         );
+        http.on(
+            &summary_url(),
+            200,
+            &json!({ "code": 0, "data": quota_summary_json() }).to_string(),
+        );
         let snapshot = DoubaoProvider::new().credits(&cred(), &http).await.unwrap();
-        assert_eq!(snapshot.balance, Some(1400.0));
-        assert!(snapshot.lots.is_none(), "平台不给批次，别编造到期日");
+        // 余额必须取自汇总的 600，累计 1400 只作为摘要里的对照
+        assert_eq!(snapshot.balance, Some(600.0));
         assert!(
-            snapshot.summary.contains("累计体验额度 1400"),
+            snapshot.summary.contains("可用体验额度 600"),
             "{}",
             snapshot.summary
         );
-        // Cookie 必须原样带上，否则服务端只会回「登录已过期」
-        let cookie = http
-            .last_header(&detail_url(), "Cookie")
-            .expect("没带 Cookie 头");
-        assert_eq!(cookie, "sessionid=test; uid=1");
+        assert!(
+            snapshot.summary.contains("累计获得 1400"),
+            "{}",
+            snapshot.summary
+        );
+        assert!(
+            snapshot.summary.contains("今日 +200"),
+            "{}",
+            snapshot.summary
+        );
+        // 两个只读接口都要带上同一份 Cookie，汇总请求的 Referer 跟聊天页一致
+        assert_eq!(
+            http.last_header(&summary_url(), "Cookie").as_deref(),
+            Some("sessionid=test; uid=1")
+        );
+        assert_eq!(
+            http.last_header(&summary_url(), "Referer").as_deref(),
+            Some(CHAT_REFERER)
+        );
     }
 
     #[tokio::test]
     async fn credits_still_work_for_accounts_without_signin_task() {
-        // 工作版账号没有「签到任务」就报错的话，连余额都查不到
+        // 工作版账号没有「签到任务」：余额仍取自额度汇总，只是没有「今日发放」
         let http = MockHttp::new();
+        http.on(
+            &summary_url(),
+            200,
+            &json!({ "code": 0, "data": { "quota_remaining_amount": "900" } }).to_string(),
+        );
         http.on(
             &detail_url(),
             200,
@@ -492,14 +755,16 @@ mod tests {
         );
         let snapshot = DoubaoProvider::new().credits(&cred(), &http).await.unwrap();
         assert_eq!(snapshot.balance, Some(900.0));
+        assert!(snapshot.summary.contains("可用体验额度 900"));
+        assert!(!snapshot.summary.contains("今日"), "{}", snapshot.summary);
     }
 
     #[tokio::test]
     async fn expired_cookie_maps_to_auth_expired() {
         let http = MockHttp::new();
-        // 真实接口对无效 Cookie 的返回（已用假 Cookie 实测）
+        // 余额主路径是额度汇总，鉴权错误必须在这一层就映射出来
         http.on(
-            &detail_url(),
+            &summary_url(),
             200,
             r#"{"data":null,"code":710012001,"msg":"登录已过期，请重新登录","message":"login invalid"}"#,
         );

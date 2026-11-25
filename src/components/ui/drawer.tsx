@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { cn } from './button';
 import { useModal } from './use-modal';
@@ -28,7 +29,8 @@ export function Drawer({
 }) {
   const { panel, visible, closing } = useModal(open, onClose);
   if (!visible) return null;
-  return (
+  // 同 Dialog：避开页面动画容器的 transform 包含块
+  return createPortal(
     <div
       className={cn(
         'fixed inset-0 z-40 flex justify-end bg-scrim',
@@ -72,6 +74,7 @@ export function Drawer({
           </footer>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

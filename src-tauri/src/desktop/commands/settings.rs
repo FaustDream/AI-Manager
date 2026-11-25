@@ -44,6 +44,21 @@ pub fn config_set(config: crate::app::config::AppConfig) -> std::result::Result<
     Ok(())
 }
 
+/// 内置任务恢复默认：只重置代码里固定的后台循环参数（会话扫描、用量采集、
+/// ZCode 自动领取、启动扫描），用户自己建的定时任务一律不动。
+pub fn config_reset_builtin() -> std::result::Result<crate::app::config::AppConfig, String> {
+    let mut config = crate::app::config::get();
+    let defaults = crate::app::config::AppConfig::default();
+    config.usage = defaults.usage;
+    config.sessions = defaults.sessions;
+    config.activity.zcode_auto_claim = defaults.activity.zcode_auto_claim;
+    config.activity.zcode_claim_min = defaults.activity.zcode_claim_min;
+    config.accounts.scan_on_startup = defaults.accounts.scan_on_startup;
+    crate::app::config::store(config.clone()).map_err(err_text)?;
+    log::action("config_reset_builtin", "user", true, 0, "内置任务已恢复默认");
+    Ok(config)
+}
+
 /// 网络与档案自检：设置页「网络自检」按钮。探测走应用自己的 HTTP 层（含系统代理）。
 pub async fn network_selfcheck(
 ) -> std::result::Result<crate::app::selfcheck::SelfcheckReport, String> {

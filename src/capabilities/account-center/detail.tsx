@@ -41,10 +41,11 @@ import {
 } from '@/lib/features';
 import { TravelCard } from './travel';
 import { ReauthDialog } from './toolbar';
+import { creditUnit } from './credit-unit';
 import { DataTable, type Column } from '@/components/ui/table';
 
 const claimSources: Record<string, string> = { checkin: '签到', activity: '活动', travel: '猫猫旅行' };
-const claimColumns: Column<CreditClaim>[] = [
+const claimColumns = (unit: string): Column<CreditClaim>[] => [
   {
     key: 'date',
     header: '日期',
@@ -64,7 +65,7 @@ const claimColumns: Column<CreditClaim>[] = [
   },
   {
     key: 'amount',
-    header: '积分',
+    header: unit,
     width: 100,
     align: 'right',
     sortValue: (row) => row.amount,
@@ -418,9 +419,10 @@ export function AccountDetailDialog({
   const showTravel = travelOn && account.has_secret;
 
   const claims = d?.claims ?? [];
+  const unit = creditUnit(account.platform);
   const tabs: { key: DetailTab; label: string }[] = [
     { key: 'overview', label: '概览' },
-    { key: 'lots', label: `积分批次（${lots.length}）` },
+    { key: 'lots', label: `${unit}批次（${lots.length}）` },
     { key: 'claims', label: `领取记录（${claims.length}）` },
     ...(showTravel ? [{ key: 'travel' as const, label: '猫猫旅行' }] : []),
   ];
@@ -553,7 +555,13 @@ export function AccountDetailDialog({
                   strong
                 />
                 <Stat
-                  label={quota.length > 0 ? '积分 / 配额' : isDoubao ? '累计体验额度' : '积分余额'}
+                  label={
+                    quota.length > 0
+                      ? '积分 / 配额'
+                      : isDoubao
+                        ? '累计体验额度'
+                        : `${unit}余额`
+                  }
                   value={
                     quotaLeft !== null && (d?.balance ?? account.balance) === null
                       ? `剩 ${Math.round(quotaLeft)}%`
@@ -853,7 +861,7 @@ export function AccountDetailDialog({
               </div>
               <div className="max-h-[56vh] overflow-auto">
                 <DataTable
-                  columns={claimColumns}
+                  columns={claimColumns(unit)}
                   rows={claims}
                   rowKey={(row) => row.event_key}
                   loading={detail.isLoading}

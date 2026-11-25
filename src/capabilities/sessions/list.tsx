@@ -11,7 +11,6 @@ import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight } from 'lucide-react';
-import { errText } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Input, Select, SkeletonRows, StateBlock } from '@/components/ui/form';
 import { Notice, Tag } from '@/components/ui';
@@ -687,13 +686,13 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
                     value={String(retention.data ?? 0)}
                     onChange={(e) => {
                       const days = Number(e.target.value);
-                      void queryCmd('session_retention_set', { days })
-                        .then((saved) => {
-                          qc.setQueryData(['retention'], saved);
-                          toast(saved === 0 ? '已关闭自动归档' : `超过 ${saved} 天没动的会话会自动归档`);
-                          refresh();
-                        })
-                        .catch((e) => toast(errText(e)));
+                      // 走 runCmd：写设置属于动作，失败由命令面统一提示并留痕，页面不自拼错误话术
+                      void runCmd('session_retention_set', { days }).then((saved) => {
+                        if (saved === undefined) return;
+                        qc.setQueryData(['retention'], saved);
+                        toast(saved === 0 ? '已关闭自动归档' : `超过 ${saved} 天没动的会话会自动归档`);
+                        refresh();
+                      });
                     }}
                   >
                     {RETENTION_CHOICES.map((choice) => (
@@ -1077,7 +1076,6 @@ export function SessionListPage({ mode }: { mode: SessionsMode }) {
       {tagsTarget && (
         <TagsDialog
           keyId={rowKey(tagsTarget)}
-          current={tagsFromFacets(facets.data, tagsTarget)}
           allTags={(facets.data?.tags ?? []).map((t) => t.value)}
           onClose={() => setTagsTarget(null)}
           onDone={refresh}
@@ -1183,12 +1181,6 @@ function EmptyState({
 /** 归档总数：facets.archived（全部已归档行，与设置页入口同口径）。 */
 function archiveCount(facets: Facets): number {
   return facets.archived;
-}
-
-/** 某会话当前挂的标签：facets 只给聚合数，单会话的标签取列表行——
- *  行上没有，就退化为空（编辑弹窗里再点一次就是全量替换，无副作用）。 */
-function tagsFromFacets(_facets: Facets | undefined, _row: SessionRow): string[] {
-  return [];
 }
 
 function navigateArchive() {

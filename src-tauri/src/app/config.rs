@@ -14,6 +14,44 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CatalogConfig {
+    pub enabled: bool,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub sync_interval_min: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub detail_interval_hours: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub full_check_days: u64,
+    pub history_days: u32,
+    pub future_days: u32,
+    pub max_pages_per_job: u32,
+    pub retry_count: u32,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub retry_delay_ms: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub request_gap_ms: u64,
+    pub countries: Vec<String>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub source_timeout_secs: u64,
+}
+
+impl Default for CatalogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true, sync_interval_min: 180, detail_interval_hours: 24,
+            full_check_days: 7, history_days: 7, future_days: 7,
+            max_pages_per_job: 128, retry_count: 2, retry_delay_ms: 1500,
+            request_gap_ms: 700, source_timeout_secs: 600,
+            countries: ["CN", "JP", "KR", "US", "GB", "TH", "HK", "TW", "FR", "DE", "ES", "IT", "AU", "CA"]
+                .into_iter().map(str::to_string).collect(),
+        }
+    }
+}
+
 /// 平台功能开关的用户覆盖：`[features.<平台键>] <功能键> = false`。
 ///
 /// 只存用户改过的那几格——没写的一律跟随 `app::capability` 的能力表（能做就显示）。
@@ -66,6 +104,21 @@ pub struct ActivityConfig {
     pub travel_events_limit: usize,
     /// ZCode 活动自动领取（领取要开浏览器过验证码，缺省关）
     pub zcode_auto_claim: bool,
+    /// ZCode 活动自动领取的探测间隔分钟
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub zcode_claim_min: u64,
+}
+
+/// 本机会话索引的扫描节奏。放在配置而不是写死 5 分钟：
+/// 客户端会话多、磁盘慢的机器可以调大，想更快看到新会话可以调小。
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionsConfig {
+    /// 会话索引增量扫描的间隔分钟
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub scan_interval_min: u64,
 }
 
 /// 点主窗口关闭按钮时的行为。存配置文件而不是 kv：它是运行行为，
@@ -129,7 +182,11 @@ pub struct AppConfig {
     #[serde(default)]
     pub network: NetworkConfig,
     #[serde(default)]
+    pub catalog: CatalogConfig,
+    #[serde(default)]
     pub usage: UsageConfig,
+    #[serde(default)]
+    pub sessions: SessionsConfig,
     #[serde(default)]
     pub activity: ActivityConfig,
     #[serde(default)]
@@ -176,11 +233,19 @@ impl Default for UsageConfig {
         }
     }
 }
+impl Default for SessionsConfig {
+    fn default() -> Self {
+        Self {
+            scan_interval_min: 5,
+        }
+    }
+}
 impl Default for ActivityConfig {
     fn default() -> Self {
         Self {
             travel_events_limit: 50,
             zcode_auto_claim: false,
+            zcode_claim_min: 15,
         }
     }
 }
@@ -219,15 +284,35 @@ timeout_secs = 15
 # 只读 GET 失败后的重试次数（POST 永不重试）
 get_retry = 1
 
+[catalog]
+enabled = true
+sync_interval_min = 180
+detail_interval_hours = 24
+full_check_days = 7
+history_days = 7
+future_days = 7
+max_pages_per_job = 128
+retry_count = 2
+retry_delay_ms = 1500
+request_gap_ms = 700
+countries = ["CN", "JP", "KR", "US", "GB", "TH", "HK", "TW", "FR", "DE", "ES", "IT", "AU", "CA"]
+source_timeout_secs = 600
+
 [usage]
 # 用量自动采集的间隔分钟
 scan_interval_min = 30
+
+[sessions]
+# 本机会话索引增量扫描的间隔分钟
+scan_interval_min = 5
 
 [activity]
 # 每个账号保留的本机旅行记录条数
 travel_events_limit = 50
 # ZCode 活动自动领取（要开浏览器过验证码，缺省关）
 zcode_auto_claim = false
+# ZCode 自动领取的探测间隔分钟
+zcode_claim_min = 15
 
 [accounts]
 # 启动时扫描本地客户端登录态并入库。

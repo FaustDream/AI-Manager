@@ -14,11 +14,19 @@
 import type { AccountView } from '@/lib/types';
 import type { IconName } from '@/components/ui/icons';
 import { daysUntil, fmtAmount, fmtFullDay, fmtTime } from '@/lib/format';
+import { creditUnit } from './credit-unit';
 import {
   FEATURE_CHECKIN,
   featurePlatform,
   type FeatureOn,
 } from '@/lib/features';
+
+export const WEB_LOGIN_SOURCE = '浏览器登录';
+
+export const webLoginUsable = (a: Pick<AccountView, 'requires_checkin'>): string =>
+  a.requires_checkin
+    ? '签到、积分余额、猫猫旅行与云端校验'
+    : '积分余额与云端校验';
 
 export type Cell = {
   /** 主行文字。空串 = 只画图标：状态已由图标表达，文字只在 title 里留一份 */
@@ -153,6 +161,7 @@ const loginCell = (a: AccountView): Cell => {
 const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
   const error = errors[a.iid];
   const balance = fmtAmount(a.balance);
+  const unit = creditUnit(a.platform);
   const quota = Object.entries(a.quota ?? {});
   // 豆包回的是平台口径的**累计**体验额度（不是剩余可用），title 里必须说清，
   // 否则「1800」会被当成还能用 1800。
@@ -161,7 +170,7 @@ const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
       ? '豆包平台口径的累计体验额度（含已消耗），不是剩余可用；官方规则：赠送额度自发放起 30 天有效'
       : a.balance === null
         ? '还没查到余额，点「刷新积分」'
-        : '平台实时返回的可用积分 / 额度余额';
+        : `平台实时返回的可用${unit} / 额度余额`;
 
   let cell: Cell;
   if (quota.length === 0) {
@@ -176,7 +185,7 @@ const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
       text: a.balance === null ? `剩 ${Math.round(left)}%` : `${balance} · 剩 ${Math.round(left)}%`,
       tone: left <= 10 ? 'bad' : left <= 30 ? 'warn' : 'muted',
       title: [
-        a.balance === null ? '额度型账号，没有积分余额' : `积分余额 ${balance}`,
+        a.balance === null ? `额度型账号，没有${unit}余额` : `${unit}余额 ${balance}`,
         ...quota.map(([key, value]) => `${key}：已用 ${value.toFixed(0)}%，剩 ${Math.max(0, 100 - value).toFixed(0)}%`),
         `最紧的是「${name}」`,
       ].join('\n'),

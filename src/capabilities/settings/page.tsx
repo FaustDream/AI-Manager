@@ -3,8 +3,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { confirmAction } from '@/components/ui/confirm';
 import { queryCmd, runCmd, useBusy } from '@/lib/cmd';
-import { useEffect, useState } from 'react';
-import { CalendarClock, Check, CircleDot, Minus, SlidersHorizontal, Stethoscope, Wrench, type LucideIcon } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { CalendarClock, Info, SlidersHorizontal, Wrench, type LucideIcon } from 'lucide-react';
+import { capabilities } from '@/app/router';
+import { usePageToggles } from '@/lib/ui-state';
 
 import { fmtSize, fmtTime } from '@/lib/format';
 import { numOr } from '@/lib/num';
@@ -25,12 +27,11 @@ import {
   requestNotifyPermission,
   type NotifyPermission,
 } from '@/lib/notify';
-import { HistoryPane } from './history';
+import { AboutPane } from './about';
 import { AppearancePane } from './appearance';
 import type {
   AppConfig,
   CapabilityMatrix,
-  CapabilityRow,
   FeatureMatrix,
   FeatureRow,
   HealthReport,
@@ -40,13 +41,12 @@ import type {
   SelfcheckReport,
   SpaceEntry,
   SpaceReport,
-  Support,
 } from '@/lib/types';
 
 // 设置页分四个标签页，按「要不要动手」排序：需要用户操作的放前面，只需查看的放后面。
-//   常规 / 定时任务 / 维护 = 动手改设置、管任务、清回收站；
-//   诊断与记录 = 平台能力矩阵、网络自检、历史，以查看为主。
-type TabKey = 'general' | 'schedule' | 'maintenance' | 'diagnostics';
+//   常规 / 自动任务 / 维护 = 改设置、管任务、清回收站；
+//   关于 = 网络自检、已知限制、版本更新，从排障到查看逐层收尾。
+type TabKey = 'general' | 'schedule' | 'maintenance' | 'about';
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<TabKey>('general');
@@ -56,9 +56,10 @@ export default function SettingsPage() {
       {tab === 'general' && (
         <>
           <AppearancePane />
+          <PageSwitchPane />
           <GeneralPane />
-          <ConfigPane />
           <FeaturesPane />
+          <ConfigPane />
         </>
       )}
       {tab === 'schedule' && <ScheduleCard />}
@@ -69,12 +70,12 @@ export default function SettingsPage() {
           <MaintenancePane />
         </>
       )}
-      {tab === 'diagnostics' && (
+      {tab === 'about' && (
         <>
-          <LimitsPane />
-          <CapabilityPane />
+          {/* 顺序固定为 网络自检 → 已知限制 → 关于与更新：先排障，再看约束，最后才是版本 */}
           <SelfcheckPane />
-          <HistoryPane />
+          <LimitsPane />
+          <AboutPane />
         </>
       )}
     </div>
@@ -84,9 +85,9 @@ export default function SettingsPage() {
 function TabBar({ tab, onChange }: { tab: TabKey; onChange: (t: TabKey) => void }) {
   const tabs: { key: TabKey; label: string; icon: LucideIcon }[] = [
     { key: 'general', label: '常规', icon: SlidersHorizontal },
-    { key: 'schedule', label: '定时任务', icon: CalendarClock },
+    { key: 'schedule', label: '自动任务', icon: CalendarClock },
     { key: 'maintenance', label: '维护', icon: Wrench },
-    { key: 'diagnostics', label: '诊断与记录', icon: Stethoscope },
+    { key: 'about', label: '关于', icon: Info },
   ];
   return (
     <div
@@ -145,7 +146,6 @@ function GeneralPane() {
   return (
     <Section
       title="通用"
-      note="桌面通知与快捷键"
       actions={version && <span className="text-xs text-muted">当前版本 v{version}</span>}
     >
       <div className="flex flex-col gap-4">
@@ -200,6 +200,7 @@ function GeneralPane() {
               <button
                 type="button"
                 className="cursor-pointer text-accent underline-offset-2 hover:underline"
+                title="授权后立即验证能不能真弹出来"
                 onClick={() => {
                   const sent = notifyTest();
                   if (!notifyOn) {
@@ -215,48 +216,46 @@ function GeneralPane() {
               >
                 发一条测试通知
               </button>
-              <span className="pl-2 text-muted">授权后立即验证能不能真弹出来</span>
             </p>
           )}
         </div>
 
-        <p className="border-t border-line pt-4 text-xs leading-5 text-muted">
-          浏览器形态：启动用 start.cmd，退出用右上角电源按钮。签到节奏、网络与采集间隔等运行配置在下方「配置」区统一管理。
-          <br />
-          本工具不提供「开机自启」——没有桌面壳，就没有「登录后自动拉起」这件事。需要开机就跑，把
-          start.cmd 的快捷方式放进「启动」文件夹即可。后端启动后会一直跑（关掉页面也不退），随时重新打开
-          http://127.0.0.1:5274 就能接着用。
-        </p>
-
-        {/* 快捷键就地可查（P1-12）：命令面板以前是「知道的人才知道」的隐藏能力 */}
-        <div className="border-t border-line pt-4">
-          <h3 className="text-xs font-semibold text-fg2">快捷键</h3>
-          <ul className="mt-2 grid gap-x-6 gap-y-1 text-xs text-muted md:grid-cols-2">
-            <li>
-              <Kbd>Ctrl</Kbd> + <Kbd>K</Kbd> 搜索页面 / 动作 / 会话（顶栏「搜索」同效）
-            </li>
-            <li>
-              <Kbd>1</Kbd>…<Kbd>7</Kbd> 直达对应能力页（输入框内不触发）
-            </li>
-            <li>
-              <Kbd>↑</Kbd> <Kbd>↓</Kbd> 在列表 / 表格行之间移动，<Kbd>Enter</Kbd> 打开
-            </li>
-            <li>
-              <Kbd>Esc</Kbd> 关闭弹窗与面板，焦点回到原处
-            </li>
-          </ul>
-        </div>
       </div>
     </Section>
   );
 }
 
-/** 键帽：只用于快捷键说明，不做成可点元素。 */
-function Kbd({ children }: { children: string }) {
+/**
+ * 「功能开关」：一级页面在这里统一开关，清单来自能力注册表——新加的同级页面
+ * 自动出现在这里，不用再改一份名单。只影响导航入口与跨页跳转，不删数据、
+ * 不卸载能力；`alwaysOn`（设置页）不提供关闭项。
+ */
+function PageSwitchPane() {
+  const [hidden, setEnabled] = usePageToggles();
+  const pages = useMemo(
+    () => capabilities().filter((cap) => !cap.manifest.hidden && !cap.manifest.alwaysOn),
+    [],
+  );
+
   return (
-    <kbd className="rounded-sm border border-line bg-bg px-1 font-sans text-xs text-fg2">
-      {children}
-    </kbd>
+    <Section title="功能开关">
+      <div className="grid gap-x-8 gap-y-2 md:grid-cols-2">
+        {pages.map((cap) => (
+          <label
+            key={cap.manifest.id}
+            className="flex min-w-0 cursor-pointer items-center gap-3 text-sm"
+            title={cap.manifest.note}
+          >
+            <Checkbox
+              checked={!hidden.has(cap.manifest.id)}
+              onChange={(e) => setEnabled(cap.manifest.id, e.target.checked)}
+            />
+            <span className="truncate font-medium">{cap.manifest.title}</span>
+            <span className="shrink-0 text-xs text-muted">{cap.manifest.group}</span>
+          </label>
+        ))}
+      </div>
+    </Section>
   );
 }
 
@@ -281,7 +280,14 @@ function ConfigPane() {
   const patch = (change: Partial<AppConfig>) => setDraft({ ...draft, ...change });
 
   return (
-    <Section title="配置" note="data\config.toml · 手改文件后重启生效">
+    <Section
+      title="配置"
+      note={
+        <span title="并发实际执行收敛到 1-6，间隔上限 60 秒，越界值保存时按此修正">
+          data\config.toml
+        </span>
+      }
+    >
       <div className="grid gap-4 md:grid-cols-2">
         <div>
           <label className="flex items-center gap-4 text-sm">
@@ -342,21 +348,7 @@ function ConfigPane() {
             </Select>
           </label>
         </div>
-        <div>
-          <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted" title="后台多久扫一次各账号用量。调小数据更新更快、请求更多；调大更省，但仪表盘数字会更旧。">用量采集间隔</span>
-            <Select
-              value={String(draft.usage.scan_interval_min)}
-              onChange={(e) => patch({ usage: { ...draft.usage, scan_interval_min: numOr(e.target.value, 30) } })}
-            >
-              {[10, 15, 30, 60, 120].map((n) => (
-                <option key={n} value={n}>
-                  {n} 分钟
-                </option>
-              ))}
-            </Select>
-          </label>
-        </div>
+        {/* 用量采集、ZCode 领取、启动扫描属于后台循环，统一放到「自动任务 → 内置任务」里改 */}
         <div>
           <label className="flex items-center gap-4 text-sm">
             <span className="w-28 shrink-0 text-muted" title="每个账号在详情页保留多少条旅行/活动记录。只影响显示与本机存储，不影响平台数据。">旅行记录条数</span>
@@ -369,35 +361,6 @@ function ConfigPane() {
               onChange={(e) => patch({ activity: { ...draft.activity, travel_events_limit: numOr(e.target.value, 50) } })}
             />
             <span className="text-xs text-muted">每账号保留（10-500）</span>
-          </label>
-        </div>
-        <div className="flex items-center">
-          <label className="flex items-center gap-4 text-sm">
-            <span className="w-28 shrink-0 text-muted" title="开启后每 15 分钟探测一轮可领奖励并尝试领取。领取要过浏览器验证码，失败会记进日志；关掉则只在详情页手动领。">ZCode 自动领取</span>
-            <Checkbox
-              checked={draft.activity.zcode_auto_claim}
-              onChange={(e) => patch({ activity: { ...draft.activity, zcode_auto_claim: e.target.checked } })}
-            />
-            <span className="text-xs text-muted">每 15 分钟探测一轮，领取要过浏览器验证码</span>
-          </label>
-        </div>
-        <div className="flex items-center">
-          <label className="flex items-center gap-4 text-sm">
-            <span
-              className="w-28 shrink-0 text-muted"
-              title="开：启动时顺手扫一遍本地客户端，把新账号捞进账号库。关：账号只从浏览器登录添加，不再读本地客户端的登录态；已入库的账号、切换、云端校验都不受影响。"
-            >
-              启动扫描客户端
-            </span>
-            <Checkbox
-              checked={draft.accounts.scan_on_startup}
-              onChange={(e) => patch({ accounts: { ...draft.accounts, scan_on_startup: e.target.checked } })}
-            />
-            <span className="text-xs text-muted">
-              {draft.accounts.scan_on_startup
-                ? '启动时把本地客户端里的新账号捞进账号库'
-                : '只从浏览器登录添加账号，不读本地登录态'}
-            </span>
           </label>
         </div>
         {/* 桌面时代的「关闭按钮 / 自启最小化」已随托盘退役：字段仍在配置里
@@ -455,11 +418,18 @@ function ConfigPane() {
           disabled={busy === 'config'}
           onClick={() =>
             runBusy('config', async () => {
-              // config_set 是整份覆盖：功能开关在下一张卡片里即时保存，
-              // 这里必须取后端最新值带上，否则这个草稿会把刚勾的开关写回去。
-              // 取不到就退回草稿里的旧值——不能因为一次读取失败把保存整块打断。
+              // config_set 是整份覆盖：功能开关、内置任务都在别的卡片里即时保存，
+              // 这里以最新配置为底，只覆盖本卡片真正编辑的字段，避免把别处的改动静默写回。
+              // 取不到就退回草稿——不能因为一次读取失败把保存整块打断。
               const latest = await queryCmd('config_get').catch(() => null);
-              const merged = { ...draft, features: latest?.features ?? draft.features };
+              const base = latest ?? draft;
+              const merged = {
+                ...base,
+                checkin: draft.checkin,
+                network: draft.network,
+                codebuddy: draft.codebuddy,
+                activity: { ...base.activity, travel_events_limit: draft.activity.travel_events_limit },
+              };
               if ((await runCmd('config_set', { config: merged })) === undefined) return;
               toast('配置已保存并生效（同时写入 data/config.toml）');
               await Promise.all([
@@ -474,8 +444,6 @@ function ConfigPane() {
         <Button size="sm" variant="ghost" disabled={busy === 'config'} onClick={() => void queryCmd('config_get').then(setDraft)}>
           还原
         </Button>
-        <span className="flex-1" />
-        <span className="text-xs text-muted">并发实际执行收敛到 1-6，间隔上限 60 秒，越界值保存时按此修正</span>
       </div>
     </Section>
   );
@@ -562,15 +530,13 @@ function FeaturesPane() {
     : [];
 
   return (
-    <Section title="各软件功能" note="勾选即时生效 · 写入 [features.*]">
-      <p className="mb-2 text-xs leading-relaxed text-muted">
-        决定账号中心显示哪些入口：签到、切换账号、
-        <span className="text-fg2">切换 IDE / 切换插件</span>
-        、恢复对话、猫猫旅行。取消勾选只是把入口收起来，不会删掉凭据，也不会停掉已经排好的定时任务。
-        <span className="text-fg2">「平台不支持」是平台本身的限制</span>
-        （登录态设备绑定、没有本机会话库、CodeBuddy 系没有国际版授权域等），
-        不是本应用没做——原因悬停可见。
-      </p>
+    <Section
+      title={
+        <span title="控制账号中心显示哪些入口；取消勾选不会删除凭据，也不影响已排好的定时任务。平台不支持的格子只给原因，不给勾。">
+          各软件功能
+        </span>
+      }
+    >
       {!data && (
         <table className="w-full border-collapse">
           <tbody>
@@ -625,6 +591,12 @@ const KNOWN_LIMITS: { scope: string; title: string; detail: string; workaround?:
     detail: '显示各额度窗口的已用百分比；活动奖励要在账号详情页手动领取。',
   },
   {
+    scope: 'ZCode',
+    title: '会话不区分账号，无需恢复对话',
+    detail:
+      'ZCode 的本地会话库换号共用一份，历史会话本来就全部可见；只有 WorkBuddy 需要把会话归属改到当前账号。',
+  },
+  {
     scope: 'CodeBuddy',
     title: '账号体系跟随 WorkBuddy',
     detail:
@@ -642,125 +614,21 @@ const KNOWN_LIMITS: { scope: string; title: string; detail: string; workaround?:
 
 function LimitsPane() {
   return (
-    <Section title="已知限制" note="平台侧约束，本应用无法绕过">
-      <p className="mb-3 text-xs text-muted">
-        下面这些是平台本身的硬限制（登录态设备绑定、接口不提供、加密格式等），不是本应用没做。
-        遇到对应情况时，按「怎么做」处理即可。
-      </p>
-      <div className="flex flex-col gap-2">
+    <Section title="已知限制">
+      <div className="flex flex-col gap-1">
         {KNOWN_LIMITS.map((item) => (
-          <div key={`${item.scope}-${item.title}`} className="px-3 py-2">
-            <div className="flex flex-wrap items-baseline gap-2">
-              <span className="rounded bg-hover px-1.5 text-xs text-fg2">{item.scope}</span>
-              <span className="text-sm font-medium">{item.title}</span>
-            </div>
-            <p className="mt-1 text-xs text-muted">{item.detail}</p>
-            {item.workaround && (
-              <p className="mt-1 text-xs">
-                <span className="text-muted">怎么做：</span>
-                {item.workaround}
-              </p>
-            )}
+          <div
+            key={`${item.scope}-${item.title}`}
+            className="flex flex-wrap items-baseline gap-2 px-1 py-1.5"
+            title={[item.detail, item.workaround && `怎么做：${item.workaround}`]
+              .filter(Boolean)
+              .join('\n')}
+          >
+            <span className="rounded bg-hover px-1.5 text-xs text-fg2">{item.scope}</span>
+            <span className="text-sm">{item.title}</span>
           </div>
         ))}
       </div>
-    </Section>
-  );
-}
-
-/**
- * 「平台能力」：一张矩阵说清哪家能做什么、哪家做不了、为什么。
- *
- * 数据来自后端 `app/capability.rs` 的唯一真源表——前端不判断平台，
- * 只把 state 渲染成符号。这样「平台限制」和「本应用还没做」不会再被混为一谈。
- */
-const SUPPORT_MARK: Record<Support, { Icon: LucideIcon; cls: string; label: string }> = {
-  full: { Icon: Check, cls: 'text-ok', label: '支持' },
-  partial: { Icon: CircleDot, cls: 'text-warn', label: '部分支持' },
-  none: { Icon: Minus, cls: 'text-muted', label: '不支持' },
-};
-
-function CapabilityPane() {
-  const matrix = useQuery<CapabilityMatrix>({
-    queryKey: ['capabilities'],
-    queryFn: () => queryCmd('platform_capabilities'),
-    // 静态表：一次进程生命周期内不会变，没必要反复拉
-    staleTime: Infinity,
-  });
-  const data = matrix.data;
-
-  const columns: Column<CapabilityRow>[] = data
-    ? [
-        {
-          key: 'platform',
-          header: '平台',
-          width: 150,
-          cell: (row) => <span className="whitespace-nowrap font-medium">{row.label}</span>,
-        },
-        ...data.features.map((feature, index) => ({
-          key: feature.key,
-          header: <span title={feature.hint}>{feature.label}</span>,
-          width: 82,
-          cell: (row: CapabilityRow) => {
-            const cell = row.cells[index];
-            const meta = SUPPORT_MARK[cell.state];
-            const Icon = meta.Icon;
-            return (
-              <span
-                className={`inline-flex cursor-help ${meta.cls}`}
-                title={cell.note || `${meta.label}：${feature.hint}`}
-                aria-label={meta.label}
-              >
-                <Icon size={14} />
-              </span>
-            );
-          },
-        })),
-      ]
-    : [];
-
-  return (
-    <Section
-      title="平台能力"
-      actions={
-        <span className="flex items-center gap-3 text-xs text-muted">
-          <span className="inline-flex items-center gap-1 text-ok">
-            <Check size={13} />
-            支持
-          </span>
-          <span className="inline-flex items-center gap-1 text-warn">
-            <CircleDot size={13} />
-            部分支持
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <Minus size={13} />
-            不支持
-          </span>
-        </span>
-      }
-    >
-      <p className="mb-2 text-xs text-muted">
-        悬停任意格子看具体限制。「不支持」是平台本身的约束（登录态设备绑定、没有签到玩法等），
-        不是本应用没做——需要去客户端操作的那几项，格子里会写清走哪条路。
-      </p>
-      {!data && (
-        <table className="w-full border-collapse">
-          <tbody>
-            <SkeletonRows rows={5} cols={6} />
-          </tbody>
-        </table>
-      )}
-      {data && (
-        <div className="overflow-x-auto">
-          <DataTable
-            dense
-            columns={columns}
-            rows={data.platforms}
-            rowKey={(row) => row.key}
-            empty={null}
-          />
-        </div>
-      )}
     </Section>
   );
 }
@@ -777,7 +645,6 @@ function SelfcheckPane() {
   return (
     <Section
       title="网络自检"
-      note="国际版链路排障"
       actions={
         <Button size="sm" variant="soft" loading={busy === 'selfcheck'} disabled={busy === 'selfcheck'} onClick={() =>
           runBusy('selfcheck', async () => {
@@ -791,7 +658,7 @@ function SelfcheckPane() {
     >
       {!report && (
         <p className="text-xs text-muted">
-          国际版账号报「网络错误」时先跑这里：一次看清新系代理是否开启、三个国际端点是否可达、登录态档案是否完整。
+          国际版账号报「网络错误」时先跑这里：确认系统代理、三个国际端点与登录档案。
         </p>
       )}
       {report && (
@@ -860,6 +727,7 @@ function RuntimePane() {
     queryFn: () => queryCmd('maintenance_space'),
   });
   const report = health.data;
+  const failed = health.isError || space.isError;
 
   return (
     <Section
@@ -871,6 +739,23 @@ function RuntimePane() {
         </Button>
       }
     >
+      {/* 读失败必须显示原因：这里以前只画骨架/空列表，接口一报错就整块空白，看着像没数据 */}
+      {failed && (
+        <p className="text-xs text-bad">
+          读取失败：
+          {String((health.error ?? space.error)?.message ?? '未知错误')}
+          <button
+            type="button"
+            className="ml-2 cursor-pointer underline underline-offset-2"
+            onClick={() => {
+              void health.refetch();
+              void space.refetch();
+            }}
+          >
+            重试
+          </button>
+        </p>
+      )}
 
       {report && (
         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
@@ -899,7 +784,15 @@ function RuntimePane() {
       )}
 
       <div className="mt-2 border-t border-line pt-1">
+        {space.data && (
+          <p className="py-1 text-xs text-muted">
+            数据目录：<span className="font-mono text-fg2">{space.data.root}</span>
+          </p>
+        )}
         {space.isLoading && <SkeletonBlock rows={3} />}
+        {space.data && space.data.entries.length === 0 && (
+          <p className="py-1 text-xs text-muted">数据目录还没有可统计的内容。</p>
+        )}
         {(space.data?.entries ?? []).map((entry) => (
           <div
             key={entry.name}
@@ -932,11 +825,12 @@ function ArchiveEntryPane() {
   return (
     <Section
       title="已归档会话"
-      note={archived.isLoading ? '统计中…' : total > 0 ? `已归档 ${total} 条` : '还没有归档的会话'}
+      note={archived.isLoading ? '统计中…' : total > 0 ? `已归档 ${total} 条` : undefined}
       actions={
         <Button
           size="sm"
           variant="soft"
+          title="归档只写本地标记、不删文件；可预览、取消归档或彻底删除。自动归档按最后活动时间计算，超过设定天数没动过的会话会被收进来。"
           onClick={() =>
             window.dispatchEvent(new CustomEvent('aim:navigate', { detail: 'sessions-archive' }))
           }
@@ -944,12 +838,7 @@ function ArchiveEntryPane() {
           打开已归档会话
         </Button>
       }
-    >
-      <p className="mt-1 text-xs text-muted">
-        归档只写本地标记、不删文件；在独立页里可以预览、取消归档或彻底删除，支持一键全选与 Ctrl 多选。
-        自动归档按「最后活动时间」算（不是创建时间）：超过设定天数没动过、且还出现在会话列表里的，会被收进来。
-      </p>
-    </Section>
+    />
   );
 }
 
@@ -966,11 +855,17 @@ function MaintenancePane() {
     <div className="flex min-w-0 flex-col gap-5">
       {/* 摘要行：批次明细与逐批删除收进对话框，设置页不再被回收站列表撑高 */}
       <Section
-        title="平台技能回收站"
+        title={
+          <span title="移除平台技能时，原文件副本先进这里，确认没问题再清空。会话删除不进回收站——那条路径不可恢复，删除前会单独确认。">
+            平台技能回收站
+          </span>
+        }
         note={
-          (trash.data ?? []).length > 0
-            ? `${(trash.data ?? []).length} 个批次 · 共 ${fmtSize((trash.data ?? []).reduce((sum, batch) => sum + batch.size, 0))}`
-            : '空的'
+          trash.isError
+            ? '读取失败'
+            : (trash.data ?? []).length > 0
+              ? `${(trash.data ?? []).length} 个批次 · 共 ${fmtSize((trash.data ?? []).reduce((sum, batch) => sum + batch.size, 0))}`
+              : '空的'
         }
         actions={
           (trash.data ?? []).length > 0 && (
@@ -999,11 +894,7 @@ function MaintenancePane() {
             </>
           )
         }
-      >
-        <p className="text-xs leading-5 text-muted">
-          移除平台技能时，原文件副本先进这里，确认没问题再清空。会话删除不进回收站——那条路径不可恢复，删除前会单独确认。
-        </p>
-      </Section>
+      />
 
       <Dialog
         open={trashOpen}
@@ -1214,8 +1105,14 @@ function ScheduleCard() {
     });
 
   return (
+    <>
+    <BuiltinCard />
     <Section
-      title="定时任务"
+      title={
+        <span title="同一任务不会叠着跑（上一轮没结束就跳过）；不同任务同时到点时并行，建议错开时刻。规则改完即时生效。猫猫旅行在到站后 5 分钟内自动领取并续派下一趟。">
+          定时任务
+        </span>
+      }
       actions={
         <Button
           size="sm"
@@ -1228,40 +1125,6 @@ function ScheduleCard() {
         </Button>
       }
     >
-
-      {/* 冲突语义（P2-5）：口径取自 desktop/background.rs::spawn_scheduler 的真实行为，
-          不是「应该会排队」的想象——同 id 靠 running 集合跳过，不同 id 各自 spawn。 */}
-      <p className="mb-2 text-xs leading-relaxed text-muted">
-        同一条任务不会叠着跑：上一轮还没结束，这次到点就<span className="text-fg2">跳过</span>（不排队、也不补跑）。
-        不同任务同时到点会<span className="text-fg2">并行</span>执行——两条都打同一个平台更容易被限流，建议把时刻错开。
-        规则改完即时生效；后端刚启动的头 20 秒不判点。
-      </p>
-
-      <p className="mb-2 text-xs leading-relaxed text-muted">
-        「账号状态刷新」每天跑一次就够：先用已保存的凭据问一次平台（能通即为有效），
-        把还能续的有效期写回；平台明确拒绝的标成「需重新授权」，到期再登录一次。
-        它<span className="text-fg2">不重扫本地客户端</span>，账号库不会被后台改写。
-      </p>
-
-      {/* 猫猫旅行的功能说明：这条链路和「按间隔跑一轮」不一样，不写清楚用户会以为
-          要一个账号配一条任务、也不知道积分是什么时候领的 */}
-      <div className="mb-2 px-1">
-        <p className="text-xs font-semibold">猫猫旅行怎么跑</p>
-        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-relaxed text-muted">
-          <li>
-            一条「猫猫旅行」任务就能覆盖<span className="text-fg2">多个账号</span>
-            ：全局任务会逐个处理所有在账号详情里打开「自动旅行」的账号，也可以给单个账号单独建一条。
-          </li>
-          <li>
-            平台会返回本趟旅行的时长与预计回来时刻。本应用在
-            <span className="text-fg2">到站后 5 分钟内领取</span>
-            积分（早于这个窗口去查只会看到「旅行中」），领完按规则再派下一趟。
-          </li>
-          <li>
-            今日上限、某个账号失败都不影响其它账号；失败的那一个会在「日志 → 执行动作」里单独记一条。
-          </li>
-        </ul>
-      </div>
 
       {list.isLoading && <SkeletonBlock rows={3} />}
       {(list.data ?? []).length === 0 && <p className="text-sm text-muted">还没有定时任务。</p>}
@@ -1376,6 +1239,147 @@ function ScheduleCard() {
         {editing && <Button size="sm" variant="ghost" disabled={!!busy} onClick={resetForm}>取消</Button>}
       </div>
     </Section>
+    </>
+  );
+}
+
+/**
+ * 内置任务：代码里固定的后台循环。以前这些节奏写死在后台，只能改文件，
+ * 现在摊到界面上：每一项即时写回 config.toml，下一轮就按新值走。
+ */
+function BuiltinCard() {
+  const qc = useQueryClient();
+  const { busy, run } = useBusy();
+  const cfg = useQuery<AppConfig>({
+    queryKey: ['config'],
+    queryFn: () => queryCmd('config_get'),
+  });
+  const data = cfg.data;
+
+  // 单项即时保存：先拿最新配置再改一个字段，避免把别处刚保存的值覆盖掉
+  const patch = (mutate: (config: AppConfig) => AppConfig) =>
+    run('builtin', async () => {
+      const latest = await queryCmd('config_get');
+      if ((await runCmd('config_set', { config: mutate(latest) })) === undefined) return;
+      toast('已生效');
+      await qc.invalidateQueries({ queryKey: ['config'] });
+    });
+
+  const reset = () =>
+    run('builtin-reset', async () => {
+      const next = await runCmd('config_reset_builtin');
+      if (next === undefined) return;
+      toast('内置任务已恢复默认');
+      qc.setQueryData(['config'], next);
+    });
+
+  const minuteInput = (
+    value: number,
+    onChange: (n: number) => void,
+    label: string,
+    title: string,
+  ) => (
+    <Input
+      type="number"
+      min={1}
+      max={1440}
+      className="w-20"
+      aria-label={label}
+      title={title}
+      value={value}
+      disabled={!!busy || !data}
+      onChange={(e) => onChange(numOr(e.target.value, value))}
+    />
+  );
+
+  return (
+    <Section
+      title="内置任务"
+      actions={
+        <Button size="sm" variant="soft" loading={busy === 'builtin-reset'} disabled={!!busy} onClick={reset}>
+          恢复默认
+        </Button>
+      }
+    >
+      {!data && <SkeletonBlock rows={3} />}
+      {data && (
+        <div className="flex flex-col gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="w-40 shrink-0 text-muted" title="本机会话索引多久增量扫一遍；改小能更快看到新会话">
+              会话扫描
+            </span>
+            <span className="text-xs text-muted">每</span>
+            {minuteInput(
+              data.sessions.scan_interval_min,
+              (n) => patch((c) => ({ ...c, sessions: { ...c.sessions, scan_interval_min: n } })),
+              '会话扫描间隔',
+              '1-1440 分钟',
+            )}
+            <span className="text-xs text-muted">分钟</span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="w-40 shrink-0 text-muted" title="后台多久扫一次各账号用量；只读本地文件">
+              用量采集
+            </span>
+            <span className="text-xs text-muted">每</span>
+            {minuteInput(
+              data.usage.scan_interval_min,
+              (n) => patch((c) => ({ ...c, usage: { ...c.usage, scan_interval_min: n } })),
+              '用量采集间隔',
+              '1-1440 分钟',
+            )}
+            <span className="text-xs text-muted">分钟</span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="w-40 shrink-0 text-muted" title="开启后按间隔探测可领奖励；领取要过浏览器验证码">
+              ZCode 自动领取
+            </span>
+            <Checkbox
+              checked={data.activity.zcode_auto_claim}
+              disabled={!!busy}
+              onChange={(e) =>
+                patch((c) => ({
+                  ...c,
+                  activity: { ...c.activity, zcode_auto_claim: e.target.checked },
+                }))
+              }
+            />
+            <span className="text-xs text-muted">每</span>
+            {minuteInput(
+              data.activity.zcode_claim_min,
+              (n) => patch((c) => ({ ...c, activity: { ...c.activity, zcode_claim_min: n } })),
+              'ZCode 领取间隔',
+              '1-1440 分钟',
+            )}
+            <span className="text-xs text-muted">分钟探测一轮</span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <span
+              className="w-40 shrink-0 text-muted"
+              title="启动时把本地客户端里的新账号捞进账号库；关掉则只从浏览器登录添加"
+            >
+              启动扫描客户端
+            </span>
+            <Checkbox
+              checked={data.accounts.scan_on_startup}
+              disabled={!!busy}
+              onChange={(e) =>
+                patch((c) => ({
+                  ...c,
+                  accounts: { ...c.accounts, scan_on_startup: e.target.checked },
+                }))
+              }
+            />
+            <span className="text-xs text-muted">
+              {data.accounts.scan_on_startup ? '启动时扫描本地登录态' : '只从浏览器登录添加'}
+            </span>
+          </div>
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -1398,11 +1402,11 @@ function RefreshPolicyNote() {
 
   return (
     <div className="mt-3 px-3 py-2">
-      <p className="text-xs font-semibold">各平台的自动刷新节奏</p>
-      <p className="mt-1 text-xs leading-relaxed text-muted">
-        上面的间隔是<span className="font-medium text-fg2">上限</span>
-        ：到点这一轮只查「距上次成功查询已超过平台最小间隔」的账号，没到点的直接跳过——这是正常的限速，不是失败。
-        手动「刷新积分」不受限制，随时可以查最新数字。
+      <p
+        className="text-xs font-semibold"
+        title="上面的间隔是上限：到点这一轮只查「距上次成功查询已超过平台最小间隔」的账号，没到点的直接跳过——这是正常的限速，不是失败。手动「刷新积分」不受限制。"
+      >
+        各平台的自动刷新节奏
       </p>
       <ul className="mt-1.5 flex flex-col gap-1 text-xs">
         {slow.map((p) => (

@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { IconDelete, IconHistory, IconPower, IconSwitch } from '@/components/ui/icons';
 import type { AccountView } from '@/lib/types';
+import { webLoginUsable } from './columns';
 
 /** 四个槽位的固定宽度（px）：切换 / 恢复对话 / 启停 / 删除。
  *  「当前登录」不再占槽位——它由行背景表达，文字标签是重复信息。 */
@@ -198,15 +199,29 @@ export function SwitchDialog({
               <p>切换完成后会自动把该平台所有账号的历史会话关联到新账号，不需要再点「恢复对话」。</p>
             )}
           </>
-        ) : (
+        ) : target?.platform === 'workbuddy' ? (
           <>
             <p className="whitespace-pre-wrap text-fg">
               「{target?.name}」没有客户端登录态档案，因此切不过去。
             </p>
             <p className="rounded-md border border-line bg-card px-2 py-1.5">
               档案里装的是客户端那次登录签发的会话与票据，网页登录造不出来。
-              在 WorkBuddy 客户端里登录一次这个账号（账号中心 → 添加账号 → 选 WorkBuddy →
-              「改用客户端登录」），档案会在那次流程里保存，之后就能一键来回切。
+              在对应版本的 WorkBuddy 客户端里登录一次这个账号（添加账号 → 选 WorkBuddy →
+              「启动客户端重新登录」），登录后点「我已登录，刷新凭据」保存档案，之后就能一键切换。
+            </p>
+            <p>
+              网页登录的凭据不是白登的：{target && webLoginUsable(target)}照常可用，
+              做不了的只有「切换客户端登录态」这一件。
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="whitespace-pre-wrap text-fg">
+              「{target?.name}」没有保存客户端凭据包，因此切不过去。
+            </p>
+            <p className="rounded-md border border-line bg-card px-2 py-1.5">
+              这个平台的切换是把整份客户端凭据包写回去。在账号详情里对它点「重新授权」
+              走一次浏览器登录，凭据包会随授权一起保存，之后就能切。
             </p>
           </>
         )}

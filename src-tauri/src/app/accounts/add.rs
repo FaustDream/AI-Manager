@@ -147,6 +147,31 @@ pub fn prepare(platform: &str) -> Result<AddOutcome> {
     ))
 }
 
+pub fn finish(db: &crate::app::db::Db, platform: &str) -> Result<super::ScanReport> {
+    if !supported(platform) {
+        return Err(AppError::new(
+            ErrorKind::Unsupported,
+            "这个平台不支持客户端登录流程",
+        ));
+    }
+    let provider = crate::app::providers::for_platform(platform)
+        .ok_or_else(|| AppError::new(ErrorKind::Unsupported, "不是已知平台"))?;
+    if provider.current_id().is_none() {
+        return Err(AppError::new(
+            ErrorKind::SessionStateMissing,
+            "客户端尚未完成登录，请登录后再刷新凭据",
+        ));
+    }
+    close_client(platform)?;
+    let result = provider
+        .save_login_profile()
+        .and_then(|_| super::scan::scan_platform(db, platform));
+    let reopened = open_client(platform);
+    let report = result?;
+    reopened?;
+    Ok(report)
+}
+
 /// 只打开客户端，不动任何登录态（自动启动失败时的手动兜底）。
 /// 返回窗口是否到了前台——没到就说明它在托盘里。
 pub fn open_client(platform: &str) -> Result<bool> {
@@ -285,6 +310,8 @@ pub fn process_names(platform: &str) -> &'static [&'static str] {
         "qoder" => &["Qoder CN.exe"],
         "qoder_intl" => &["Qoder.exe"],
         "zcode" => &["ZCode.exe", "zcode.exe"],
+        // ima 只支持「打开客户端 → 登录 → 扫描」；不参与退出登录式的添加流程
+        "ima" => &["ima.copilot.exe"],
         _ => &[],
     }
 }
@@ -376,6 +403,14 @@ fn candidates(platform: &str) -> Vec<PathBuf> {
             push(pf.as_ref().map(|p| p.join("ZCode").join("ZCode.exe")));
             push(programs.as_ref().map(|p| p.join("ZCode").join("ZCode.exe")));
             push(local.as_ref().map(|p| p.join("ZCode").join("ZCode.exe")));
+        }
+        "ima" => {
+            // 实测安装位：%LOCALAPPDATA%\ima.copilot\Application\ima.copilot.exe
+            push(local.as_ref().map(|p| {
+                p.join("ima.copilot")
+                    .join("Application")
+                    .join("ima.copilot.exe")
+            }));
         }
         _ => {}
     }
@@ -500,6 +535,16 @@ mod tests {
                     .any(|n| n.starts_with("CodeBuddy")),
                 "关 WorkBuddy 不能顺手杀掉 CodeBuddy IDE"
             );
+        }
+    }
+
+    #[test]
+    fn ima_opens_the_client_but_stays_out_of_the_relogin_flow() {
+        // ima 的退出登录语义不适用于本工具：只给「打开客户端 + 扫描」
+        assert!(!supported("ima"));
+        assert_eq!(process_names("ima"), &["ima.copilot.exe"]);
+        if std::env::var("LOCALAPPDATA").is_ok() {
+            assert!(!candidates("ima").is_empty(), "ima 缺安装位置候选");
         }
     }
 

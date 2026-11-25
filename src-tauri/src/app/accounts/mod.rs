@@ -53,7 +53,7 @@ pub use credential_refresh::{
     RefreshCredentialsReport,
 };
 pub use refresh::{refresh_all, refresh_status, RefreshReport};
-pub use scan::{scan_all, ScanReport};
+pub use scan::{scan_all, scan_platform, ScanReport};
 pub use switch::{current_iids, is_current, switch, switch_codebuddy, SwitchResult};
 pub use view::{AccountIdentity, AccountTable, AccountView};
 

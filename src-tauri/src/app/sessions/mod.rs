@@ -388,6 +388,12 @@ impl Service {
         blocking(move || marks::tags_set(&db, &key, &tags)).await?
     }
 
+    /// 读取一个会话当前的标签（编辑弹窗打开时用，避免全量替换清空已有标签）。
+    pub async fn tags_of(&self, key: String) -> Result<Vec<String>> {
+        let db = self.db.clone();
+        blocking(move || marks::tags_of(&db, &key)).await?
+    }
+
     /// 导出会话正文到 `data/exports/`，返回报告（路径在界面 toast 里）。
     pub async fn export(&self, keys: Vec<String>, format: &str) -> Result<ExportReport> {
         let roots = self.roots.clone();

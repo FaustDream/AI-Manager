@@ -14,6 +14,30 @@ import type { HealthReport, LoginOutcome, RoundResult } from './types';
 
 const KEY = 'aim:notify';
 
+// localStorage 在隐私模式或被策略禁用时，访问它乃至 getItem/setItem 都可能抛异常。
+// 通知开关只是浏览器侧偏好，读写失败一律降级成「本次会话不持久化」，绝不打断主流程。
+function readKey(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function writeKey(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* 隐私模式：只在本次会话生效 */
+  }
+}
+function dropKey(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* 同上 */
+  }
+}
+
 export type NotifyPermission = 'granted' | 'denied' | 'default' | 'unsupported';
 
 export function notifySupported(): boolean {
@@ -30,7 +54,7 @@ export function notifyPermission(): NotifyPermission {
 export function notifyEnabled(): boolean {
   return (
     notifySupported() &&
-    localStorage.getItem(KEY) === '1' &&
+    readKey(KEY) === '1' &&
     Notification.permission === 'granted'
   );
 }
@@ -52,15 +76,15 @@ export async function requestNotifyPermission(): Promise<NotifyPermission> {
 export async function enableNotify(): Promise<boolean> {
   const permission = await requestNotifyPermission();
   if (permission !== 'granted') {
-    localStorage.removeItem(KEY);
+    dropKey(KEY);
     return false;
   }
-  localStorage.setItem(KEY, '1');
+  writeKey(KEY, '1');
   return true;
 }
 
 export function disableNotify(): void {
-  localStorage.removeItem(KEY);
+  dropKey(KEY);
 }
 
 /** 发一条系统通知。tag 相同的互相替换，不叠一堆。未启用时静默跳过。 */
@@ -103,8 +127,8 @@ export function notifyTest(): boolean {
 function expiringAlertDue(): boolean {
   const today = new Date().toISOString().slice(0, 10);
   const key = 'aim:notify-expiring';
-  if (localStorage.getItem(key) === today) return false;
-  localStorage.setItem(key, today);
+  if (readKey(key) === today) return false;
+  writeKey(key, today);
   return true;
 }
 

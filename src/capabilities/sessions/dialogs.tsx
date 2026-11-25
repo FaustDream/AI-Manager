@@ -1,10 +1,10 @@
 // 会话的三个编辑弹窗：本地改名（锁定）、标签编辑、未命名会话批量治理。
 // 都只写本地标记（marks / session_tag），客户端与扫描无感。
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Checkbox, Input } from '@/components/ui/form';
-import { runCmd } from '@/lib/cmd';
+import { queryCmd, runCmd } from '@/lib/cmd';
 import { toast } from '@/components/ui/toast';
 
 /** 本地改名。空标题 = 恢复客户端原标题（按钮文案随之变化）。 */
@@ -77,34 +77,51 @@ export function RenameDialog({
   );
 }
 
-/** 标签编辑：现有标签点选、新标签回车添加，保存=全量替换。 */
+/** 标签编辑：打开时取回这条会话的真实标签（保存是全量替换，不取回就会清空已有标签）。 */
 export function TagsDialog({
   keyId,
-  current,
   allTags,
   onClose,
   onDone,
 }: {
   keyId: string;
-  current: string[];
   allTags: string[];
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [draft, setDraft] = useState<string[]>(current);
+  // null = 还在读；读失败时保持 null 并置 loadErr，绝不拿空标签去全量替换
+  const [draft, setDraft] = useState<string[] | null>(null);
+  const [loadErr, setLoadErr] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    let alive = true;
+    queryCmd('session_tags_of', { key: keyId })
+      .then((tags) => {
+        if (alive) setDraft(tags);
+      })
+      .catch(() => {
+        if (alive) setLoadErr(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [keyId]);
+
   const toggle = (tag: string) =>
-    setDraft((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
+    setDraft((prev) =>
+      prev === null ? prev : prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+    );
 
   const addFromInput = () => {
     const tag = input.trim();
-    if (tag && !draft.includes(tag)) setDraft((prev) => [...prev, tag]);
+    if (tag) setDraft((prev) => (prev === null || prev.includes(tag) ? prev : [...prev, tag]));
     setInput('');
   };
 
   const submit = async () => {
+    if (draft === null) return;
     setBusy(true);
     const ok = (await runCmd('session_tag_set', { key: keyId, tags: draft })) !== undefined;
     setBusy(false);
@@ -125,45 +142,54 @@ export function TagsDialog({
           <Button size="sm" variant="ghost" disabled={busy} onClick={onClose}>
             取消
           </Button>
-          <Button size="sm" disabled={busy} onClick={submit}>
+          {/* 标签没读回来之前不许保存：否则会用空集全量替换、清空已有标签 */}
+          <Button size="sm" disabled={busy || draft === null} onClick={submit}>
             保存
           </Button>
         </>
       }
       onClose={onClose}
     >
-      <div className="flex flex-col gap-3">
-        {(draft.length > 0 || allTags.length > 0) && (
-          <div className="flex flex-wrap gap-1.5">
-            {draft
-              .filter((tag) => !allTags.includes(tag))
-              .map((tag) => (
-                <Chip key={tag} label={tag} active onClick={() => toggle(tag)} />
+      {loadErr ? (
+        <p className="text-xs text-bad">
+          读取这条会话的现有标签失败。为避免误清空，暂不能保存——请关闭后重试。
+        </p>
+      ) : draft === null ? (
+        <p className="text-xs text-muted">正在读取现有标签…</p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {(draft.length > 0 || allTags.length > 0) && (
+            <div className="flex flex-wrap gap-1.5">
+              {draft
+                .filter((tag) => !allTags.includes(tag))
+                .map((tag) => (
+                  <Chip key={tag} label={tag} active onClick={() => toggle(tag)} />
+                ))}
+              {allTags.map((tag) => (
+                <Chip key={tag} label={tag} active={draft.includes(tag)} onClick={() => toggle(tag)} />
               ))}
-            {allTags.map((tag) => (
-              <Chip key={tag} label={tag} active={draft.includes(tag)} onClick={() => toggle(tag)} />
-            ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Input
+              autoFocus
+              className="flex-1"
+              value={input}
+              placeholder="输入标签，回车添加…"
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addFromInput();
+                }
+              }}
+            />
+            <Button size="sm" variant="ghost" disabled={!input.trim()} onClick={addFromInput}>
+              添加
+            </Button>
           </div>
-        )}
-        <div className="flex items-center gap-2">
-          <Input
-            autoFocus
-            className="flex-1"
-            value={input}
-            placeholder="输入标签，回车添加…"
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                addFromInput();
-              }
-            }}
-          />
-          <Button size="sm" variant="ghost" disabled={!input.trim()} onClick={addFromInput}>
-            添加
-          </Button>
         </div>
-      </div>
+      )}
     </Dialog>
   );
 }

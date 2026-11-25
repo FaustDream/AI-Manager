@@ -254,13 +254,14 @@ async fn run_schedule(
     }
 }
 
-/// ZCode 活动自动领取（开关 kv `zcode_auto_claim` **默认关**）：
-/// 每 15 分钟探测一轮，找到可领的就领第一个——领取会开浏览器过验证码，
-/// 所以必须是用户主动打开的开关。
+/// ZCode 活动自动领取（开关 `activity.zcode_auto_claim` **默认关**）：
+/// 按配置的间隔（缺省 15 分钟）探测一轮，找到可领的就领第一个——领取会开浏览器
+/// 过验证码，所以必须是用户主动打开的开关。间隔每轮重读配置，设置里改完下一轮生效。
 pub fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>) {
     crate::app::runtime::runtime().spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+            let interval_min = crate::app::config::get().activity.zcode_claim_min.max(1);
+            tokio::time::sleep(std::time::Duration::from_secs(interval_min * 60)).await;
             let enabled = crate::app::config::get().activity.zcode_auto_claim;
             if !enabled {
                 continue;
@@ -280,11 +281,10 @@ pub fn spawn_zcode_auto_claim(service: Arc<crate::app::checkin::Service>) {
     });
 }
 
-/// 会话索引增量扫描：启动 8 秒后一次，之后每 5 分钟一次。
+/// 会话索引增量扫描：启动 8 秒后一次，之后按 `sessions.scan_interval_min`（缺省 5 分钟）一轮。
 ///
 /// 不引文件监听：客户端写 WAL 时一次会话会产生大量事件，反而把扫描频率放大；
-/// 5 分钟轮询 + 手动刷新已经能覆盖「外部新增/删除后列表更新」，
-/// 且不新增 `notify` 依赖。
+/// 轮询 + 手动刷新已经能覆盖「外部新增/删除后列表更新」，且不新增 `notify` 依赖。
 pub fn spawn_session_scan(service: Arc<crate::app::sessions::Service>) {
     crate::app::runtime::runtime().spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(8)).await;
@@ -317,14 +317,37 @@ pub fn spawn_session_scan(service: Arc<crate::app::sessions::Service>) {
                 ),
                 Err(e) => log::fail("sessions", "session_fts", "正文索引失败", e.evidence()),
             }
-            tokio::time::sleep(std::time::Duration::from_secs(5 * 60)).await;
+            let interval_min = crate::app::config::get().sessions.scan_interval_min.max(1);
+            tokio::time::sleep(std::time::Duration::from_secs(interval_min * 60)).await;
         }
     });
 }
 
-/// 本地用量采集：启动 15 秒后跑一次，之后每 30 分钟增量扫一遍。
+/// 本地用量采集：启动 15 秒后跑一次，之后按 `usage.scan_interval_min`（缺省 30 分钟）一轮。
 ///
 /// 只读客户端落盘文件，慢一点没关系；失败只记日志，不影响任何业务。
+pub fn spawn_catalog_sync(service: Arc<crate::app::catalog::Service>) {
+    crate::app::runtime::runtime().spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        loop {
+            let config = crate::app::config::get().catalog;
+            if config.enabled {
+                let started = std::time::Instant::now();
+                match service.auto_sync().await {
+                    Ok(report) => log::action(
+                        "catalog_refresh", "schedule",
+                        !report.sources.iter().any(|s| s.enabled && s.status == "failed"),
+                        started.elapsed().as_millis() as u64,
+                        format!("全球资料库：新增 {}、更新 {}、更新记录 {}；分页与错误详见数据源", report.added, report.updated, report.releases),
+                    ),
+                    Err(e) => log::fail("catalog", "catalog_refresh", "定时资料采集未完成", e.evidence()),
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(config.sync_interval_min.clamp(1, 10080) * 60)).await;
+        }
+    });
+}
+
 pub fn spawn_usage_scan(db: Arc<Db>) {
     crate::app::runtime::runtime().spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;

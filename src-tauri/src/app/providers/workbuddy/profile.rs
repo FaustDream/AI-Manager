@@ -153,6 +153,17 @@ impl WorkBuddyProvider {
 
     /// 把**当前**客户端登录态存成 uid 的档案（添加账号前调用，避免退出登录后档案丢失）。
     pub fn save_current_as_pack(&self, uid: &str) -> Result<PathBuf> {
+        if self.current_uid().as_deref() != Some(uid)
+            || !self
+                .data_root
+                .as_ref()
+                .is_some_and(|root| root.join("app/session").is_dir())
+        {
+            return Err(AppError::new(
+                ErrorKind::SessionStateMissing,
+                "客户端尚未完整写入登录态，原有档案保持不变，请完成登录后重试",
+            ));
+        }
         self.save_pack(uid)
     }
 
@@ -222,6 +233,11 @@ impl WorkBuddyProvider {
             if read_ticket_uid(ticket).as_deref() == Some(uid) {
                 std::fs::create_dir_all(tmp)?;
                 std::fs::copy(ticket, tmp.join("auth.info"))?;
+                // 复制档案不是重新签发凭据，不能把旧票据的写入时间变成现在。
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(tmp.join("auth.info"))?
+                    .set_modified(ticket.metadata()?.modified()?)?;
                 has_auth = true;
             }
         }
@@ -263,6 +279,10 @@ impl WorkBuddyProvider {
         if let Some(ticket) = ticket {
             let bytes = std::fs::read(src.join("auth.info"))?;
             fsx::write_atomic(&ticket, &bytes)?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&ticket)?
+                .set_modified(src.join("auth.info").metadata()?.modified()?)?;
         }
         Ok(())
     }
@@ -296,8 +316,8 @@ pub fn switch_to(
             format!(
                 "本机没有 {name} 完整的登录态档案，无法切换。档案（客户端会话 + 服务端签发的\
                  票据）只能来自客户端登录，网页登录的账号切不了。请在客户端里登录一次该账号\
-                 （账号中心 → 添加账号 → 选 WorkBuddy → 登录失败时的「改用客户端登录」），\
-                 档案会在那次流程里保存，之后切换就不需要重新登录。"
+                 （添加账号 → 选 WorkBuddy →「启动客户端重新登录」），登录后点\
+                 「我已登录，刷新凭据」保存档案，之后切换就不需要重新登录。"
             ),
         ));
     }
@@ -319,21 +339,28 @@ pub fn switch_to(
     let current = provider.current_uid();
     let mut notes = Vec::new();
     if let Some(current) = current.as_ref().filter(|c| *c != uid) {
+        // 存档是「切过去还能切回来」的唯一依据：存不下当前账号就**不切**。
+        // 继续切会用目标档案覆盖当前登录态，而当前账号没留下任何副本——用户切过去
+        // 就回不来了。宁可这次切换失败（客户端保持原状、一个字节没写），也不能把
+        // 旧账号弄丢。稳定性优先于「无论如何都切过去」。
         match provider.save_pack(current) {
             Ok(_) => notes.push("已存档当前账号的登录态，随时可以切回来".to_string()),
-            // 存档失败不阻断切换：目标档案是完整的，用户的诉求是「切到目标账号」。
-            // 但它是**部分失败**，必须按 Warn 落日志——若跟着切换的成功一起记成
-            // info，事后翻日志只会看到「切换成功」，看不出旧账号已经存不回来了。
             Err(e) => {
                 crate::app::log::log(
                     crate::app::log::Level::Warn,
                     "providers",
                     format!(
-                        "切换前存档当前账号 {current} 失败（切换继续）：{}",
+                        "切换前存档当前账号 {current} 失败，已中止切换：{}",
                         e.message
                     ),
                 );
-                notes.push(format!("存档当前账号失败（切换继续）：{}", e.message));
+                return Err(AppError::new(
+                    ErrorKind::WriteFailed,
+                    format!(
+                        "切换前没能存档当前登录的账号，已中止切换以免它无法恢复：{}",
+                        e.message
+                    ),
+                ));
             }
         }
     }
@@ -370,4 +397,49 @@ fn default_auth_dir() -> Option<PathBuf> {
 fn default_data_root(intl: bool) -> Option<PathBuf> {
     let home = paths::home();
     Some(home.join(if intl { ".workbuddy-ai" } else { ".workbuddy" }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{switch_to, WorkBuddyProvider};
+    use crate::app::error::ErrorKind;
+    use std::path::Path;
+
+    /// 在 auth_dir 写一份票据，让 current_uid() 返回指定 uid。
+    fn write_ticket(auth_dir: &Path, provider: &WorkBuddyProvider, uid: &str) {
+        std::fs::create_dir_all(auth_dir).unwrap();
+        let body = serde_json::json!({ "account": { "uid": uid } }).to_string();
+        std::fs::write(auth_dir.join(provider.file_name()), body).unwrap();
+    }
+
+    /// 在 pack_root 造一份完整档案（app/session 目录 + auth.info），让 pack_ready 为真。
+    fn seed_pack(pack_root: &Path, edition: &str, uid: &str) {
+        let dir = pack_root.join(edition).join(uid);
+        std::fs::create_dir_all(dir.join("app/session")).unwrap();
+        std::fs::write(dir.join("auth.info"), "{}").unwrap();
+    }
+
+    /// 切换前存档当前账号失败时必须**中止切换**：客户端保持原状，绝不覆盖当前登录态。
+    /// 早先只记一条 Warn 就继续切，用户切过去后旧账号没存下、回不来。
+    #[test]
+    fn switch_aborts_when_archiving_current_account_fails() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let auth_dir = tmp.path().join("auth");
+        let pack_root = tmp.path().join("packs");
+        // data_root 指向不存在的目录：save_pack 找不到客户端数据目录，必然失败
+        let data_root = tmp.path().join("does-not-exist");
+
+        let provider = WorkBuddyProvider::at(false, auth_dir.clone(), data_root, pack_root.clone())
+            .with_processes(&[]);
+
+        // 当前登录 u_current，目标 u_target 的档案已就绪
+        write_ticket(&auth_dir, &provider, "u_current");
+        seed_pack(&pack_root, "cn", "u_target");
+
+        let err = switch_to(&provider, "u_target", "目标账号").unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::WriteFailed), "{:?}", err.kind);
+        assert!(err.message.contains("中止切换"), "{}", err.message);
+        // 客户端登录态一个字节没动：当前票据仍是 u_current
+        assert_eq!(provider.current_uid().as_deref(), Some("u_current"));
+    }
 }
