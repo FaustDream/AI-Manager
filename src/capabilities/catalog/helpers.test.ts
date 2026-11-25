@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { KIND_ORDER, audienceRating, canRetry, formatDay, isISODate, jobStatusLabel, kindLabel, mondayISO, originalRating, provenanceText, ratingCategory, regionLabel, regionsLabel, safeMetadataUrl, shiftISO, sourceLabel, statusLabel, syncDateError, todayISO, weekdayISO, weekRange } from './helpers';
+import { KIND_ORDER, audienceRating, canRetry, formatDay, isISODate, isSuccessfulSource, jobStatusLabel, kindLabel, mondayISO, originalRating, provenanceText, ratingCategory, regionLabel, regionsLabel, safeMetadataUrl, shiftISO, sourceLabel, statusLabel, syncDateError, todayISO, visibleCatalogSources, weekdayISO, weekRange } from './helpers';
 
 describe('来源当地日期的 ISO 周', () => {
   it.each([
@@ -31,6 +31,39 @@ describe('来源当地日期的 ISO 周', () => {
     expect(syncDateError('history', '2026-11-24', '2026-11-23')).toContain('结束日期');
     expect(syncDateError('history', '2026-11-23', '2026-11-30')).toBeUndefined();
     expect(syncDateError('full', '2026-11-23', '')).toBeDefined();
+  });
+});
+
+describe('采集管理来源过滤', () => {
+  const sources = [
+    { source: 'ok', status: 'success', last_success: '2026-11-25' },
+    { source: 'failed', status: 'failed', last_success: '2026-11-20' },
+    { source: 'partial', status: 'partial', last_success: null },
+    { source: 'idle', status: 'idle', last_success: null },
+    { source: 'added', status: 'unconfigured', last_success: null },
+  ];
+
+  it('只认当前成功且确实成功过的源', () => {
+    expect(isSuccessfulSource(sources[0])).toBe(true);
+    // 历史成功不能掩盖当前失败，否则失败源会混进「成功源」列表
+    expect(isSuccessfulSource(sources[1])).toBe(false);
+    expect(isSuccessfulSource(sources[2])).toBe(false);
+  });
+
+  it('默认只保留成功源，显式新增的源也保留', () => {
+    const rows = visibleCatalogSources(sources, new Set(), new Set(['added']), true);
+    expect(rows.map((row) => row.source)).toEqual(['ok', 'added']);
+  });
+
+  it('移除优先于成功与显式新增', () => {
+    const hidden = new Set(['ok', 'added']);
+    const rows = visibleCatalogSources(sources, hidden, new Set(['added']), true);
+    expect(rows).toEqual([]);
+  });
+
+  it('显示全部时只排除已移除的源', () => {
+    const rows = visibleCatalogSources(sources, new Set(['ok']), new Set(), false);
+    expect(rows.map((row) => row.source)).toEqual(['failed', 'partial', 'idle', 'added']);
   });
 });
 

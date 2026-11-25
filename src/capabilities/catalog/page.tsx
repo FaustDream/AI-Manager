@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Grid2X2, List, RotateCcw } from 'lucide-react';
-import { Button, Card, Hint, Input, Notice, Picker, Section, SkeletonBlock, StateBlock, Tooltip } from '@/components/ui';
+import { Button, Card, Field, Hint, Input, Notice, Picker, Section, SkeletonBlock, StateBlock, Tooltip } from '@/components/ui';
 import { DataTable } from '@/components/ui/table';
 import { errMsg, queryCmd } from '@/lib/cmd';
 import { listen } from '@/lib/events';
@@ -21,14 +21,23 @@ const EMPTY_FILTERS = { kind: '', region: '', genre: '', platform: '', status: '
 type Filters = typeof EMPTY_FILTERS;
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 
-function FacetFilter({ label, value, items, disabled, onChange, region = false }: {
-  label: string; value: string; items: CatalogFacetCount[]; disabled: boolean; onChange: (value: string) => void; region?: boolean;
+function FacetFilter({ id, label, value, items, disabled, onChange, region = false }: {
+  id: string; label: string; value: string; items: CatalogFacetCount[]; disabled: boolean; onChange: (value: string) => void; region?: boolean;
 }) {
   return <Hint content={disabled ? '这些组合筛选适用于媒体库与发行日历' : label} focusable={false}>
-    <Picker label={label} value={value} disabled={disabled} onValueChange={onChange} options={[
-      { value: '', label: `全部${label}` },
-      ...items.map((item) => ({ value: item.key, label: `${region ? regionLabel(item.key) : item.label || item.key}（${item.count}）` })),
-    ]} />
+    <Picker
+      id={id}
+      label={label}
+      value={value}
+      disabled={disabled}
+      size="sm"
+      className="w-full max-w-none"
+      onValueChange={onChange}
+      options={[
+        { value: '', label: `全部${label}` },
+        ...items.map((item) => ({ value: item.key, label: `${region ? regionLabel(item.key) : item.label || item.key}（${item.count}）` })),
+      ]}
+    />
   </Hint>;
 }
 
@@ -48,7 +57,6 @@ export function CatalogPage() {
   const isSchedule = tab === 'daily' || tab === 'weekly';
   const range = weekRange(date);
   const dateValid = isISODate(date);
-  const facetsQ = useQuery({ queryKey: ['catalog', 'facets'], queryFn: () => queryCmd('catalog_facets') });
   const query = useMemo<CatalogQuery>(() => ({
     search: search.trim() || null, kind: filters.kind || null, region: filters.region || null,
     genre: filters.genre || null, platform: filters.platform || null, status: filters.status || null,
@@ -57,6 +65,15 @@ export function CatalogPage() {
     end: tab === 'daily' ? shiftISO(date, 1) : tab === 'weekly' ? range.end : null,
     weekday: tab === 'weekly' ? weekday : null, sort, page, page_size: pageSize,
   }), [search, filters, tab, date, range.start, range.end, weekday, sort, page, pageSize]);
+  // 分面计数跟着筛选走，但翻页/排序不该触发重算；日期无效时先不算，等用户改对。
+  const facetQuery = useMemo<CatalogQuery>(() => ({
+    search: query.search, kind: query.kind, region: query.region,
+    genre: query.genre, platform: query.platform, status: query.status,
+    year: query.year, min_rating: query.min_rating,
+    start: dateValid ? query.start : null, end: dateValid ? query.end : null,
+    weekday: query.weekday, sort: null, page: null, page_size: null,
+  }), [query, dateValid]);
+  const facetsQ = useQuery({ queryKey: ['catalog', 'facets', facetQuery], queryFn: () => queryCmd('catalog_facets', { query: facetQuery }) });
   const libraryQ = useQuery({ queryKey: ['catalog', 'library', query], queryFn: () => queryCmd('catalog_library', { query }), enabled: tab === 'library' });
   const releasesQ = useQuery({ queryKey: ['catalog', 'releases', query], queryFn: () => queryCmd('catalog_releases', { query }), enabled: isSchedule && dateValid });
   const overviewQ = useQuery({ queryKey: ['catalog', 'overview'], queryFn: () => queryCmd('catalog_overview'), enabled: tab === 'overview' });
@@ -91,58 +108,79 @@ export function CatalogPage() {
         <div className="flex flex-wrap gap-1" aria-label="媒体库视图">
           {TABS.map((item) => <Button key={item.id} type="button" size="sm" variant={tab === item.id ? 'soft' : 'ghost'} aria-pressed={tab === item.id} onClick={() => changeTab(item.id)}>{item.label}</Button>)}
         </div>
-        <Tooltip content="概览与采集管理不接受作品筛选；输入搜索会转到媒体库">
-          <Input type="search" aria-label="搜索作品名称或别名" placeholder="搜索作品名称、原名、别名" value={search} className="min-w-0 flex-1 sm:min-w-48" onChange={(event) => { setSearch(event.target.value); setPage(1); if (!isList) changeTab('library'); }} />
-        </Tooltip>
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:min-w-48">
+          <label htmlFor="catalog-search" className="shrink-0 text-xs font-medium text-fg2">搜索</label>
+          <Tooltip content="概览与采集管理不接受作品筛选；输入搜索会转到媒体库">
+            <Input id="catalog-search" type="search" aria-label="搜索作品名称或别名" placeholder="搜索作品名称、原名、别名" value={search} className="min-w-0 flex-1" onChange={(event) => { setSearch(event.target.value); setPage(1); if (!isList) changeTab('library'); }} />
+          </Tooltip>
+        </div>
         {isList && <div className="flex gap-1" aria-label="展示方式">
           <Button type="button" size="sm" variant={layout === 'grid' ? 'soft' : 'ghost'} aria-label="卡片视图" aria-pressed={layout === 'grid'} onClick={() => setLayout('grid')}><Grid2X2 size={13} aria-hidden /></Button>
           <Button type="button" size="sm" variant={layout === 'table' ? 'soft' : 'ghost'} aria-label="紧凑表格" aria-pressed={layout === 'table'} onClick={() => setLayout('table')}><List size={13} aria-hidden /></Button>
         </div>}
       </div>
-      <div className="flex flex-col gap-2 p-2">
-        <div className="flex flex-wrap gap-1" aria-label="作品类型">
-          <Tooltip content={!isList ? '类型筛选适用于媒体库与日历' : undefined}>
-            <Button type="button" size="sm" variant={!filters.kind ? 'soft' : 'ghost'} disabled={!isList} aria-pressed={!filters.kind} onClick={() => changeFilter('kind', '')}>全部类型</Button>
-          </Tooltip>
-          {KIND_ORDER.map((kind) => {
-            const facet = facetsQ.data?.kinds.find((item) => item.key === kind);
-            return <Tooltip key={kind} content={!isList ? '类型筛选适用于媒体库与日历' : facet ? '计数来自当前资料库，不代表来源全量覆盖' : '该类型暂未返回数据库计数'}>
-              <Button type="button" size="sm" variant={filters.kind === kind ? 'soft' : 'ghost'} disabled={!isList} aria-pressed={filters.kind === kind} onClick={() => changeFilter('kind', kind)}>{kindLabel(kind)}{facet ? `（${facet.count}）` : ''}</Button>
-            </Tooltip>;
-          })}
+      <div className="flex flex-col gap-2.5 p-2.5">
+        <div className="flex flex-wrap items-center gap-2 rounded-md bg-sunken/40 px-2.5 py-2">
+          <span className="shrink-0 text-xs font-medium text-fg2">类型</span>
+          <div className="flex flex-wrap gap-1.5" aria-label="作品类型">
+            <Tooltip content={!isList ? '类型筛选适用于媒体库与日历' : undefined}>
+              <Button type="button" size="sm" variant={!filters.kind ? 'soft' : 'ghost'} disabled={!isList} aria-pressed={!filters.kind} onClick={() => changeFilter('kind', '')}>全部类型</Button>
+            </Tooltip>
+            {KIND_ORDER.map((kind) => {
+              const facet = facetsQ.data?.kinds.find((item) => item.key === kind);
+              return <Tooltip key={kind} content={!isList ? '类型筛选适用于媒体库与日历' : facet ? '计数来自当前资料库，不代表来源全量覆盖' : '该类型暂未返回数据库计数'}>
+                <Button type="button" size="sm" variant={filters.kind === kind ? 'soft' : 'ghost'} disabled={!isList} aria-pressed={filters.kind === kind} onClick={() => changeFilter('kind', kind)}>{kindLabel(kind)}{facet ? `（${facet.count}）` : ''}</Button>
+              </Tooltip>;
+            })}
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <FacetFilter label="国家/地区" value={filters.region} items={facetsQ.data?.regions ?? []} disabled={!isList || facetsQ.isLoading} onChange={(value) => changeFilter('region', value)} region />
-          <FacetFilter label="题材" value={filters.genre} items={facetsQ.data?.genres ?? []} disabled={!isList || facetsQ.isLoading} onChange={(value) => changeFilter('genre', value)} />
-          <FacetFilter label="平台" value={filters.platform} items={facetsQ.data?.platforms ?? []} disabled={!isList || facetsQ.isLoading} onChange={(value) => changeFilter('platform', value)} />
-          <Hint content={!isList ? '状态筛选适用于媒体库与日历' : '作品发行状态，不是观看状态'} focusable={false}>
-            <Picker label="发行状态" value={filters.status} disabled={!isList} onValueChange={(next) => changeFilter('status', next)} options={[
-              { value: '', label: '全部发行状态' },
-              ...Object.entries(MEDIA_STATUSES).map(([key, label]) => ({ value: key, label })),
-            ]} />
-          </Hint>
-          <Hint content={!isList ? '年份筛选适用于媒体库与日历' : '年份来自数据库'} focusable={false}>
-            <Picker label="年份" value={filters.year} disabled={!isList || facetsQ.isLoading} onValueChange={(next) => changeFilter('year', next)} options={[
-              { value: '', label: '全部年份' },
-              ...(facetsQ.data?.years ?? []).map((year) => ({ value: String(year), label: `${year} 年` })),
-            ]} />
-          </Hint>
-          <Hint content="后端选择一个用户/观众评分换算为十分制；来源见条目。不是专业评论或综合评分" focusable={false}>
-            <Picker label="用户或观众评分下限，十分制" value={filters.rating} disabled={!isList} onValueChange={(next) => changeFilter('rating', next)} options={[
-              { value: '', label: '用户/观众评分不限' },
-              ...[6, 7, 8, 9].map((rating) => ({ value: String(rating), label: `用户/观众 ≥ ${rating} / 10` })),
-            ]} />
-          </Hint>
-          {hasFilters && <Button type="button" size="sm" variant="ghost" onClick={resetFilters}><RotateCcw size={12} aria-hidden />清空筛选</Button>}
-          {isList && <Picker label="排序" value={sort} className="ml-auto" onValueChange={(next) => { setSort(next); setPage(1); }} options={[
-            ...(isSchedule ? [{ value: 'time', label: '发行时间' }] : []),
-            { value: 'rating', label: '用户/观众评分' },
-            { value: 'newest', label: isSchedule ? '近期发行优先' : '最新收录' },
-            { value: 'title', label: '标题' },
-            ...(!isSchedule ? [{ value: 'year', label: '年份' }] : []),
-          ]} />}
+        <div className="grid gap-2 rounded-md bg-sunken/40 p-2.5 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-8">
+          <Field label="国家 / 地区" htmlFor="catalog-filter-region">
+            <FacetFilter id="catalog-filter-region" label="国家 / 地区" value={filters.region} items={facetsQ.data?.regions ?? []} disabled={!isList || facetsQ.isLoading} onChange={(value) => changeFilter('region', value)} region />
+          </Field>
+          <Field label="题材" htmlFor="catalog-filter-genre">
+            <FacetFilter id="catalog-filter-genre" label="题材" value={filters.genre} items={facetsQ.data?.genres ?? []} disabled={!isList || facetsQ.isLoading} onChange={(value) => changeFilter('genre', value)} />
+          </Field>
+          <Field label="平台" htmlFor="catalog-filter-platform">
+            <FacetFilter id="catalog-filter-platform" label="平台" value={filters.platform} items={facetsQ.data?.platforms ?? []} disabled={!isList || facetsQ.isLoading} onChange={(value) => changeFilter('platform', value)} />
+          </Field>
+          <Field label="发行状态" htmlFor="catalog-filter-status">
+            <Hint content={!isList ? '状态筛选适用于媒体库与日历' : '作品发行状态，不是观看状态'} focusable={false}>
+              <Picker id="catalog-filter-status" label="发行状态" value={filters.status} disabled={!isList} size="sm" className="w-full max-w-none" onValueChange={(next) => changeFilter('status', next)} options={[
+                { value: '', label: '全部发行状态' },
+                ...Object.entries(MEDIA_STATUSES).map(([key, label]) => ({ value: key, label })),
+              ]} />
+            </Hint>
+          </Field>
+          <Field label="年份" htmlFor="catalog-filter-year">
+            <Hint content={!isList ? '年份筛选适用于媒体库与日历' : '年份来自数据库'} focusable={false}>
+              <Picker id="catalog-filter-year" label="年份" value={filters.year} disabled={!isList || facetsQ.isLoading} size="sm" className="w-full max-w-none" onValueChange={(next) => changeFilter('year', next)} options={[
+                { value: '', label: '全部年份' },
+                ...(facetsQ.data?.years ?? []).map((year) => ({ value: String(year), label: `${year} 年` })),
+              ]} />
+            </Hint>
+          </Field>
+          <Field label="评分下限" htmlFor="catalog-filter-rating">
+            <Hint content="后端选择一个用户/观众评分换算为十分制；来源见条目。不是专业评论或综合评分" focusable={false}>
+              <Picker id="catalog-filter-rating" label="用户或观众评分下限，十分制" value={filters.rating} disabled={!isList} size="sm" className="w-full max-w-none" onValueChange={(next) => changeFilter('rating', next)} options={[
+                { value: '', label: '用户/观众评分不限' },
+                ...[6, 7, 8, 9].map((rating) => ({ value: String(rating), label: `用户/观众 ≥ ${rating} / 10` })),
+              ]} />
+            </Hint>
+          </Field>
+          <Field label="排序" htmlFor="catalog-filter-sort">
+            {isList ? <Picker id="catalog-filter-sort" label="排序" value={sort} size="sm" className="w-full max-w-none" onValueChange={(next) => { setSort(next); setPage(1); }} options={[
+              ...(isSchedule ? [{ value: 'time', label: '发行时间' }] : []),
+              { value: 'rating', label: '用户/观众评分' },
+              { value: 'newest', label: isSchedule ? '近期发行优先' : '最新收录' },
+              { value: 'title', label: '标题' },
+              ...(!isSchedule ? [{ value: 'year', label: '年份' }] : []),
+            ]} /> : <span className="text-xs text-muted">—</span>}
+          </Field>
+          {hasFilters && <div className="flex items-end"><Button type="button" size="sm" variant="ghost" onClick={resetFilters}><RotateCcw size={12} aria-hidden />清空筛选</Button></div>}
         </div>
-        {isSchedule && <div className="flex flex-wrap items-center gap-2 border-t border-line pt-2">
+        {isSchedule && <div className="flex flex-wrap items-center gap-2 rounded-md bg-sunken/40 px-2.5 py-2">
+          <span className="shrink-0 text-xs font-medium text-fg2">发行日期</span>
           <Tooltip content={!dateValid ? '请先选择有效日期' : undefined}>
             <Button type="button" size="sm" variant="ghost" aria-label={tab === 'weekly' ? '上一周' : '上一天'} disabled={!dateValid} onClick={() => changeDate(shiftISO(date, tab === 'weekly' ? -7 : -1))}><ChevronLeft size={14} aria-hidden /></Button>
           </Tooltip>
@@ -152,9 +190,12 @@ export function CatalogPage() {
           </Tooltip>
           <Button type="button" size="sm" variant="ghost" onClick={() => changeDate(todayISO())}>{tab === 'weekly' ? '本周' : '今天'}</Button>
           {dateValid && <span className="text-xs tabular-nums text-fg2">{tab === 'weekly' ? `${formatDay(range.start)} — ${formatDay(range.last)}` : formatDay(date)}</span>}
-          {tab === 'weekly' && <div className="flex flex-wrap gap-1" aria-label="星期筛选">
-            <Button type="button" size="sm" variant={weekday === null ? 'soft' : 'ghost'} aria-pressed={weekday === null} onClick={() => { setWeekday(null); setPage(1); }}>全周</Button>
-            {WEEKDAYS.map((label, index) => <Button key={label} type="button" size="sm" variant={weekday === index + 1 ? 'soft' : 'ghost'} aria-pressed={weekday === index + 1} aria-label={`只看周${label}`} onClick={() => { setWeekday(index + 1); setPage(1); }}>周{label}</Button>)}
+          {tab === 'weekly' && <div className="flex flex-wrap items-center gap-1">
+            <span className="shrink-0 text-xs font-medium text-fg2">发行星期</span>
+            <div className="flex flex-wrap gap-1" aria-label="星期筛选">
+              <Button type="button" size="sm" variant={weekday === null ? 'soft' : 'ghost'} aria-pressed={weekday === null} onClick={() => { setWeekday(null); setPage(1); }}>全周</Button>
+              {WEEKDAYS.map((label, index) => <Button key={label} type="button" size="sm" variant={weekday === index + 1 ? 'soft' : 'ghost'} aria-pressed={weekday === index + 1} aria-label={`只看周${label}`} onClick={() => { setWeekday(index + 1); setPage(1); }}>周{label}</Button>)}
+            </div>
           </div>}
         </div>}
       </div>

@@ -298,6 +298,35 @@ fn kind_rank(kind: &str) -> u8 {
         _ => 0,
     }
 }
+fn cjk_count(value: &str) -> usize {
+    value
+        .chars()
+        .filter(|c| {
+            matches!(
+                c,
+                '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
+            )
+        })
+        .count()
+}
+/// 多源合并后选主标题：中文优先，短名优先，避免运营长文案或后来的英文名盖掉中文名。
+pub(crate) fn choose_display_title(current: &str, aliases: &[String]) -> String {
+    let mut candidates: Vec<&str> = std::iter::once(current)
+        .chain(aliases.iter().map(String::as_str))
+        .filter(|name| cjk_count(name) >= 2)
+        .collect();
+    candidates.sort_by(|a, b| {
+        a.chars()
+            .count()
+            .cmp(&b.chars().count())
+            .then_with(|| cjk_count(b).cmp(&cjk_count(a)))
+            .then_with(|| a.cmp(b))
+    });
+    candidates
+        .first()
+        .map(|name| (*name).to_string())
+        .unwrap_or_else(|| current.to_string())
+}
 fn merge_media(
     old: &CatalogMedia,
     incoming: &CatalogMedia,
@@ -398,6 +427,7 @@ fn merge_media(
         studios,
         distributors
     );
+    media.title = choose_display_title(&media.title, &media.aliases);
     media
 }
 fn clean_media(mut media: CatalogMedia) -> CatalogMedia {
@@ -911,46 +941,73 @@ fn pagination(q: &CatalogQuery) -> (u32, u32, i64) {
     let size = q.page_size.unwrap_or(40).clamp(1, 100);
     (page, size, i64::from(page - 1) * i64::from(size))
 }
-fn media_filters(q: &CatalogQuery) -> (String, Vec<Value>) {
+fn media_filters_except(q: &CatalogQuery, skip: &str) -> (String, Vec<Value>) {
     let mut clauses = vec!["1=1".to_string()];
     let mut values = Vec::new();
     let mut push = |clause: &str, value: Value| {
         clauses.push(clause.into());
         values.push(value);
     };
-    if let Some(search) = q.search.as_deref().filter(|s| !s.trim().is_empty()) {
-        push(
-            "m.search_text LIKE ? ESCAPE '\\' COLLATE NOCASE",
-            literal_like(search).into(),
-        );
+    if skip != "search" {
+        if let Some(search) = q.search.as_deref().filter(|s| !s.trim().is_empty()) {
+            push(
+                "m.search_text LIKE ? ESCAPE '\\' COLLATE NOCASE",
+                literal_like(search).into(),
+            );
+        }
     }
-    for (value, sql) in [
-        (&q.kind, "m.kind=?"),
-        (&q.status, "m.status=?"),
+    for (name, value, sql) in [
+        ("kind", &q.kind, "m.kind=?"),
+        ("status", &q.status, "m.status=?"),
         (
+            "region",
             &q.region,
             "EXISTS(SELECT 1 FROM media_regions f WHERE f.media_key=m.key AND f.region=?)",
         ),
         (
+            "genre",
             &q.genre,
             "EXISTS(SELECT 1 FROM media_genres f WHERE f.media_key=m.key AND f.genre=?)",
         ),
         (
+            "platform",
             &q.platform,
             "EXISTS(SELECT 1 FROM media_platforms f WHERE f.media_key=m.key AND f.platform=?)",
         ),
     ] {
+        if skip == name { continue; }
         if let Some(value) = value.as_ref().filter(|s| !s.is_empty()) {
             push(sql, value.clone().into());
         }
     }
-    if let Some(year) = q.year {
-        push("m.year=?", i64::from(year).into());
+    if skip != "year" {
+        if let Some(year) = q.year {
+            push("m.year=?", i64::from(year).into());
+        }
     }
-    if let Some(rating) = q.min_rating {
-        push("m.rating>=?", rating.into());
+    if skip != "rating" {
+        if let Some(rating) = q.min_rating {
+            push("m.rating>=?", rating.into());
+        }
     }
     (clauses.join(" AND "), values)
+}
+fn media_filters(q: &CatalogQuery) -> (String, Vec<Value>) { media_filters_except(q, "") }
+
+/// 分面计数用的过滤：按「除本组外全部生效」口径，日期/星期条件沿用日历的媒体集合。
+fn facet_filters(q: &CatalogQuery, skip: &str) -> (String, Vec<Value>) {
+    let (mut filter, mut values) = media_filters_except(q, skip);
+    for (date, sql) in [(&q.start, "r.date>=?"), (&q.end, "r.date<?")] {
+        if let Some(date) = date.as_deref().filter(|d| valid_date(d)) {
+            filter.push_str(&format!(" AND EXISTS(SELECT 1 FROM release_schedules r WHERE r.media_key=m.key AND {sql})"));
+            values.push(date.to_string().into());
+        }
+    }
+    if let Some(weekday) = q.weekday.filter(|d| (1..=7).contains(d)) {
+        filter.push_str(" AND EXISTS(SELECT 1 FROM release_schedules r WHERE r.media_key=m.key AND ((CAST(strftime('%w',r.date) AS INTEGER)+6)%7)+1=?)");
+        values.push(i64::from(weekday).into());
+    }
+    (filter, values)
 }
 fn media_order(sort: Option<&str>) -> &'static str {
     match sort {
@@ -1163,10 +1220,11 @@ fn genre_label(genre: &str) -> &str {
 fn facet_counts(
     conn: &Connection,
     sql: &str,
+    values: &[Value],
     label: fn(&str) -> &str,
 ) -> Result<Vec<CatalogFacetCount>> {
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map(params_from_iter(values.iter()), |r| {
         let key: String = r.get(0)?;
         Ok(CatalogFacetCount {
             label: label(&key).into(),
@@ -1176,14 +1234,43 @@ fn facet_counts(
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
-pub fn facets(db: &Db) -> Result<CatalogFacets> {
+pub fn facets(db: &Db, q: &CatalogQuery) -> Result<CatalogFacets> {
     db.read(|conn| {
-        let kinds = facet_counts(conn, "SELECT kind,COUNT(*) FROM media GROUP BY kind ORDER BY COUNT(*) DESC,kind", kind_label)?;
-        let regions = facet_counts(conn, "SELECT region,COUNT(DISTINCT media_key) FROM media_regions GROUP BY region ORDER BY COUNT(DISTINCT media_key) DESC,region", region_label)?;
-        let genres = facet_counts(conn, "SELECT genre,COUNT(DISTINCT media_key) FROM media_genres GROUP BY genre ORDER BY COUNT(DISTINCT media_key) DESC,genre", genre_label)?;
-        let platforms = facet_counts(conn, "SELECT platform,COUNT(DISTINCT media_key) FROM media_platforms GROUP BY platform ORDER BY COUNT(DISTINCT media_key) DESC,platform", platform_label)?;
-        let mut stmt = conn.prepare("SELECT DISTINCT year FROM media WHERE year IS NOT NULL ORDER BY year DESC")?;
-        let years = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let (filter, values) = facet_filters(q, "kind");
+        let kinds = facet_counts(
+            conn,
+            &format!("SELECT m.kind,COUNT(*) FROM media m WHERE {filter} GROUP BY m.kind ORDER BY COUNT(*) DESC,m.kind"),
+            &values,
+            kind_label,
+        )?;
+        let (filter, values) = facet_filters(q, "region");
+        let regions = facet_counts(
+            conn,
+            &format!("SELECT x.region,COUNT(DISTINCT x.media_key) FROM media_regions x JOIN media m ON m.key=x.media_key WHERE {filter} GROUP BY x.region ORDER BY COUNT(DISTINCT x.media_key) DESC,x.region"),
+            &values,
+            region_label,
+        )?;
+        let (filter, values) = facet_filters(q, "genre");
+        let genres = facet_counts(
+            conn,
+            &format!("SELECT x.genre,COUNT(DISTINCT x.media_key) FROM media_genres x JOIN media m ON m.key=x.media_key WHERE {filter} GROUP BY x.genre ORDER BY COUNT(DISTINCT x.media_key) DESC,x.genre"),
+            &values,
+            genre_label,
+        )?;
+        let (filter, values) = facet_filters(q, "platform");
+        let platforms = facet_counts(
+            conn,
+            &format!("SELECT x.platform,COUNT(DISTINCT x.media_key) FROM media_platforms x JOIN media m ON m.key=x.media_key WHERE {filter} GROUP BY x.platform ORDER BY COUNT(DISTINCT x.media_key) DESC,x.platform"),
+            &values,
+            platform_label,
+        )?;
+        let (filter, values) = facet_filters(q, "year");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT m.year FROM media m WHERE {filter} AND m.year IS NOT NULL ORDER BY m.year DESC",
+        ))?;
+        let years = stmt
+            .query_map(params_from_iter(values.iter()), |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(CatalogFacets { kinds, regions, genres, platforms, years })
     })
 }

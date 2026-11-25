@@ -683,7 +683,10 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             let id = arg(v, "id")?;
             to_json(cmd::catalog::catalog_retry(state, id).await)
         }
-        "catalog_facets" => to_json(cmd::catalog::catalog_facets(state).await),
+        "catalog_facets" => {
+            let query = arg(v, "query")?;
+            to_json(cmd::catalog::catalog_facets(state, query).await)
+        }
 
         // ------------------------------------------------------------ schedule
         "schedule_list" => to_json(cmd::schedule::schedule_list(state).await),

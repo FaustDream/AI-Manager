@@ -19,8 +19,8 @@ pub async fn catalog_detail(state: &AppState, key: String) -> std::result::Resul
 pub async fn catalog_overview(state: &AppState) -> std::result::Result<CatalogOverview, String> {
     state.catalog.overview().await.map_err(err_text)
 }
-pub async fn catalog_facets(state: &AppState) -> std::result::Result<CatalogFacets, String> {
-    state.catalog.facets().await.map_err(err_text)
+pub async fn catalog_facets(state: &AppState, query: CatalogQuery) -> std::result::Result<CatalogFacets, String> {
+    state.catalog.facets(query).await.map_err(err_text)
 }
 pub async fn catalog_jobs(state: &AppState) -> std::result::Result<Vec<CatalogJob>, String> {
     state.catalog.jobs().await.map_err(err_text)

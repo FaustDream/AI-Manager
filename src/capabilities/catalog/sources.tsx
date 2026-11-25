@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { KeyRound, RefreshCw, RotateCcw } from 'lucide-react';
+import { KeyRound, Plus, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
 import { Button, Card, Dialog, Field, Input, Notice, Picker, Section, SkeletonBlock, StateBlock, Tag, Tooltip, confirmAction } from '@/components/ui';
 import { DataTable, type Column } from '@/components/ui/table';
 import { errMsg, queryCmd, runCmd, useBusy } from '@/lib/cmd';
 import type { CatalogJob, CatalogRefreshReport, CatalogSourceStatus, CatalogSyncRequest } from '@/lib/types';
-import { SYNC_MODES, canRetry, jobStatusLabel, jobTone, sourceLabel, syncDateError, textOrUnknown, type SyncMode } from './helpers';
+import { usePersistedFlag, usePersistedSet } from '@/lib/ui-state';
+import { SYNC_MODES, canRetry, isSuccessfulSource, jobStatusLabel, jobTone, sourceLabel, syncDateError, textOrUnknown, visibleCatalogSources, type SyncMode } from './helpers';
 
 type Counters = Pick<CatalogJob, 'fetched' | 'added' | 'updated' | 'deduplicated' | 'releases' | 'failed' | 'pages' | 'pagination_complete' | 'cursor' | 'http_status'>;
 function Counts({ row }: { row: Counters }) {
@@ -38,11 +39,23 @@ export function CatalogSources() {
   const [keySource, setKeySource] = useState<CatalogSourceStatus | null>(null);
   const [token, setToken] = useState('');
   const [keyError, setKeyError] = useState<unknown>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [hiddenIds, setHiddenIds] = usePersistedSet('catalog.source.hidden');
+  const [addedIds, setAddedIds] = usePersistedSet('catalog.source.added');
+  const [successfulOnly, setSuccessfulOnly] = usePersistedFlag('catalog.source.successful-only', true);
   const statusQ = useQuery({ queryKey: ['catalog', 'status'], queryFn: () => queryCmd('catalog_status') });
   const jobsQ = useQuery({ queryKey: ['catalog', 'jobs'], queryFn: () => queryCmd('catalog_jobs') });
   const sources = statusQ.data ?? [];
   const dateError = syncDateError(mode, start, end);
-  const available = target ? sources.filter((row) => row.source === target && sourceReady(row)) : sources.filter(sourceReady);
+  const managed = useMemo(
+    () => visibleCatalogSources(sources, hiddenIds, addedIds, successfulOnly),
+    [sources, hiddenIds, addedIds, successfulOnly],
+  );
+  const candidates = useMemo(
+    () => sources.filter((row) => !managed.some((item) => item.source === row.source)),
+    [sources, managed],
+  );
+  const available = target ? managed.filter((row) => row.source === target && sourceReady(row)) : managed.filter(sourceReady);
   const invalidate = () => qc.invalidateQueries({ queryKey: ['catalog'] });
 
   const refresh = (source?: string) => run(`refresh:${source ?? 'all'}`, async () => {
@@ -51,9 +64,36 @@ export function CatalogSources() {
     const result = await runCmd('catalog_refresh', { request });
     if (result !== undefined) { setReport(result); await invalidate(); }
   });
-  const toggle = (row: CatalogSourceStatus) => run(`toggle:${row.source}`, async () => {
-    const result = await runCmd('catalog_source_set', { source: row.source, enabled: !row.enabled });
+  const applyEnabled = async (row: CatalogSourceStatus, enabled: boolean) => {
+    const result = await runCmd('catalog_source_set', { source: row.source, enabled });
     if (result !== undefined) { qc.setQueryData(['catalog', 'status'], result); await invalidate(); }
+  };
+  const toggle = (row: CatalogSourceStatus) => run(`toggle:${row.source}`, async () => {
+    await applyEnabled(row, !row.enabled);
+  });
+  const removeSource = (row: CatalogSourceStatus) => run(`source:remove:${row.source}`, async () => {
+    const ok = await confirmAction({
+      title: '移除来源',
+      message: `把 ${row.label} 从采集管理移除？该源会被停用并停止后续自动采集；已采集数据与任务记录保留，仍可从「新增来源」加回。`,
+      danger: true,
+      okText: '移除来源',
+    });
+    if (!ok) return;
+    setHiddenIds(new Set(hiddenIds).add(row.source));
+    const nextAdded = new Set(addedIds);
+    nextAdded.delete(row.source);
+    setAddedIds(nextAdded);
+    if (target === row.source) setTarget('');
+    if (row.enabled) await applyEnabled(row, false);
+    setAddOpen(false);
+  });
+  const addSource = (row: CatalogSourceStatus) => run(`source:add:${row.source}`, async () => {
+    const nextHidden = new Set(hiddenIds);
+    nextHidden.delete(row.source);
+    setHiddenIds(nextHidden);
+    setAddedIds(new Set(addedIds).add(row.source));
+    if (!row.enabled) await applyEnabled(row, true);
+    setAddOpen(false);
   });
   const retry = (row: CatalogJob) => run(`retry:${row.id}`, async () => {
     const result = await runCmd('catalog_retry', { id: row.id });
@@ -93,6 +133,9 @@ export function CatalogSources() {
       {row.requires_key && row.implemented && <Tooltip content={row.status === 'running' ? '采集完成后可修改密钥' : undefined}>
         <Button type="button" size="sm" variant="ghost" disabled={!!busy || row.status === 'running'} aria-label={`配置 ${row.label} 密钥`} onClick={() => { setToken(''); setKeyError(null); setKeySource(row); }}><KeyRound size={12} aria-hidden />密钥</Button>
       </Tooltip>}
+      <Tooltip content="停用并从采集管理移除；已采集数据保留，可再新增回来">
+        <Button type="button" size="sm" variant="ghost" disabled={!!busy} loading={busy === `source:remove:${row.source}`} aria-label={`移除 ${row.label}`} onClick={() => void removeSource(row)}><Trash2 size={12} aria-hidden />移除</Button>
+      </Tooltip>
     </div> },
   ];
   const jobColumns: Column<CatalogJob>[] = [
@@ -115,7 +158,7 @@ export function CatalogSources() {
         <Field label="采集模式" htmlFor="catalog-sync-mode"><Picker id="catalog-sync-mode" value={mode} disabled={!!busy} onValueChange={(next) => setMode(next as SyncMode)} options={Object.entries(SYNC_MODES).map(([key, label]) => ({ value: key, label }))} /></Field>
         <Field label="来源" htmlFor="catalog-sync-target"><Picker id="catalog-sync-target" value={target} disabled={!!busy} onValueChange={setTarget} options={[
           { value: '', label: '全部已启用且已配置来源' },
-          ...sources.filter((row) => row.implemented).map((row) => ({
+          ...managed.filter((row) => row.implemented).map((row) => ({
             value: row.source,
             label: `${row.label}${!sourceReady(row) ? `（${unavailableReason(row)}）` : ''}`,
             disabled: !sourceReady(row),
@@ -131,10 +174,15 @@ export function CatalogSources() {
           <Button type="button" size="sm" variant="primary" disabled={!!busy || !!dateError || !available.length || statusQ.isError || statusQ.isLoading} loading={busy === 'refresh:all'} onClick={() => void refresh()}><RefreshCw size={13} aria-hidden />手动采集</Button>
         </Tooltip>
       </div>
+      <div className="flex flex-wrap items-center gap-2 border-t border-line pt-2">
+        <Button type="button" size="sm" variant={successfulOnly ? 'soft' : 'ghost'} aria-pressed={successfulOnly} onClick={() => setSuccessfulOnly(!successfulOnly)}>只看成功源</Button>
+        <Button type="button" size="sm" variant="ghost" disabled={!!busy || statusQ.isLoading} onClick={() => setAddOpen(true)}><Plus size={13} aria-hidden />新增来源</Button>
+        <span className="text-xs text-muted">当前 {managed.length} / {sources.length} 个来源</span>
+      </div>
       {dateError && <Notice tone="warn">{dateError}</Notice>}
       {report && <div className="text-xs text-fg2" role="status">上次手动任务：新增 {report.added} · 更新 {report.updated} · 发行 {report.releases} · 全库 {report.total}；逐源结果见下表。</div>}
     </Card>
-    {statusQ.isError ? <StateBlock kind="error" title="来源状态读取失败" detail={errMsg(statusQ.error)} onRetry={() => void statusQ.refetch()} /> : statusQ.isLoading ? <SkeletonBlock rows={6} /> : <div className="overflow-x-auto rounded-lg border border-line bg-card"><DataTable columns={columns} rows={sources} rowKey={(row) => row.source} dense empty={<StateBlock kind="empty" title="暂无已登记来源" />} /></div>}
+    {statusQ.isError ? <StateBlock kind="error" title="来源状态读取失败" detail={errMsg(statusQ.error)} onRetry={() => void statusQ.refetch()} /> : statusQ.isLoading ? <SkeletonBlock rows={6} /> : <div className="overflow-x-auto rounded-lg border border-line bg-card"><DataTable columns={columns} rows={managed} rowKey={(row) => row.source} dense empty={<StateBlock kind="empty" title="暂无采集成功的来源" detail="可点「新增来源」把已登记来源加入管理，或关闭「只看成功源」查看全部。" />} /></div>}
     <Section title="采集任务记录" flush>
       {jobsQ.isError ? <StateBlock kind="error" title="采集记录读取失败" detail={errMsg(jobsQ.error)} onRetry={() => void jobsQ.refetch()} /> : jobsQ.isLoading ? <SkeletonBlock rows={5} className="p-3" /> : <div className="overflow-x-auto"><DataTable columns={jobColumns} rows={jobsQ.data ?? []} rowKey={(row) => row.id} dense empty={<StateBlock kind="empty" title="暂无采集任务" detail="页面不会在首次进入时触发采集；可手动采集或等待后端调度。" />} /></div>}
     </Section>
@@ -148,6 +196,17 @@ export function CatalogSources() {
         {keySource?.license_note && <Notice>{keySource.license_note}</Notice>}
         {keyError !== null && <Notice tone="bad">{errMsg(keyError)}</Notice>}
       </form>
+    </Dialog>
+    <Dialog open={addOpen} title="新增来源" subtitle="从已登记来源加入采集管理；移除过的来源也会回到这里。" onClose={() => setAddOpen(false)} footer={<Button type="button" size="sm" variant="ghost" onClick={() => setAddOpen(false)}>关闭</Button>}>
+      {candidates.length === 0 ? <StateBlock kind="empty" title="没有可新增的来源" detail="所有已登记来源都在当前列表里。" /> : <div className="space-y-2">
+        {candidates.map((row) => <div key={row.source} className="flex flex-wrap items-center gap-2 rounded-md border border-line px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{row.label}</span><Tag tone={jobTone(row.status)}>{jobStatusLabel(row.status)}</Tag></div>
+            <div className="mt-1 text-xs text-muted">{row.source} · {row.item_count} 条 · {isSuccessfulSource(row) ? '已成功采集' : unavailableReason(row) || '尚未成功采集'}</div>
+          </div>
+          <Button type="button" size="sm" variant="soft" disabled={!!busy} loading={busy === `source:add:${row.source}`} onClick={() => void addSource(row)}>新增</Button>
+        </div>)}
+      </div>}
     </Dialog>
   </div>;
 }

@@ -4,19 +4,67 @@
 //! （例如「撞破亲哥出轨！」），后置模块才是剧名——去重时保留更短的那个。
 
 use super::{
-    check, is_finished, non_empty, normalize_date, year_of, Draft, MOBILE_UA,
+    check, is_finished, non_empty, normalize_date, pace, year_of, Draft, DESKTOP_UA, MOBILE_UA,
 };
 use crate::app::error::{AppError, ErrorKind, Result};
-use crate::app::net::{Http, HttpRequest};
+use crate::app::net::HttpRequest;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 const PAGE: &str = "https://m.v.qq.com/";
+const LIST_URL: &str = "https://v.qq.com/x/bu/pagesheet/list";
+const LIST_CHANNELS: &[(&str, &str)] = &[
+    ("movie", "movie"),
+    ("tv", "tv"),
+    ("cartoon", "anime"),
+    ("variety", "variety"),
+];
 
-pub async fn fetch(http: Arc<dyn Http>) -> Result<Vec<Draft>> {
+pub async fn fetch(ctx: super::AdapterContext) -> Result<Vec<Draft>> {
+    let mut items = Vec::new();
     let req = HttpRequest::get(PAGE).header("User-Agent", MOBILE_UA);
-    let resp = check(http.send(req).await?, "腾讯视频")?;
-    parse(&resp.body)
+    let resp = check(ctx.http.send(req).await?, "腾讯视频")?;
+    items.append(&mut parse(&resp.body)?);
+
+    for (channel, kind) in LIST_CHANNELS {
+        for page in 0..ctx.max_pages.max(1) {
+            let url = format!(
+                "{LIST_URL}?_all=1&append=1&channel={channel}&listpage=2&offset={}&pagesize=30",
+                page * 30
+            );
+            let req = HttpRequest::get(url).header("User-Agent", DESKTOP_UA);
+            let resp = check(ctx.http.send(req).await?, "腾讯视频频道列表")?;
+            let mut rows = parse_list(kind, &resp.body)?;
+            if rows.is_empty() {
+                break;
+            }
+            items.append(&mut rows);
+            pace().await;
+        }
+    }
+    Ok(merge_drafts(items))
+}
+
+fn merge_drafts(drafts: Vec<Draft>) -> Vec<Draft> {
+    let mut map: BTreeMap<String, Draft> = BTreeMap::new();
+    for draft in drafts {
+        match map.get_mut(&draft.native_id) {
+            Some(old) => {
+                if old.summary.is_none() { old.summary.clone_from(&draft.summary); }
+                if old.poster.is_none() { old.poster.clone_from(&draft.poster); }
+                if old.year.is_none() { old.year = draft.year; }
+                if old.air_date.is_none() { old.air_date.clone_from(&draft.air_date); }
+                if old.rating.is_none() { old.rating = draft.rating; }
+                for value in draft.cast {
+                    if !old.cast.contains(&value) { old.cast.push(value); }
+                }
+                for value in draft.genres {
+                    if !old.genres.contains(&value) { old.genres.push(value); }
+                }
+            }
+            None => { map.insert(draft.native_id.clone(), draft); }
+        }
+    }
+    map.into_values().collect()
 }
 
 fn parse(html: &str) -> Result<Vec<Draft>> {
@@ -68,6 +116,7 @@ fn parse(html: &str) -> Result<Vec<Draft>> {
                 episode_id: None,
                 local_time: None,
                 poster: non_empty(card.get("pic").and_then(|v| v.as_str())),
+                ..Default::default()
             };
             match map.get(&cid) {
                 Some(old) if old.title.chars().count() <= draft.title.chars().count() => {}
@@ -78,6 +127,96 @@ fn parse(html: &str) -> Result<Vec<Draft>> {
         }
     }
     Ok(map.into_values().collect())
+}
+
+/// 频道列表页返回的 HTML 卡片：这里只取能稳定解析的标题、封面、演员与评分。
+fn parse_list(kind: &'static str, html: &str) -> Result<Vec<Draft>> {
+    let mut out = Vec::new();
+    let marks: Vec<usize> = html.match_indices("list_item").map(|(i, _)| i).collect();
+    for (index, mark) in marks.iter().enumerate() {
+        let start = html[..*mark].rfind("<div").unwrap_or(*mark);
+        let end = marks
+            .get(index + 1)
+            .and_then(|next| html[..*next].rfind("<div"))
+            .unwrap_or(html.len());
+        let card = &html[start..end];
+        let Some(title) = non_empty(attr(card, "title")) else {
+            continue;
+        };
+        let href = non_empty(attr(card, "href")).unwrap_or_default();
+        let Some(native_id) = non_empty(attr(card, "data-float")).or_else(|| cover_id(&href)) else {
+            continue;
+        };
+        let poster = non_empty(attr(card, "src")).map(|src| {
+            if src.starts_with("//") { format!("https:{src}") } else { src }
+        });
+        let rating = tag_text(card, "figure_score\">")
+            .and_then(|score| score.parse::<f64>().ok())
+            .filter(|score| (0.0..=10.0).contains(score));
+        out.push(Draft {
+            platform: "tencent",
+            native_id,
+            kind,
+            title,
+            update_note: None,
+            year: None,
+            air_date: None,
+            finished: false,
+            url: Some(absolute(&href)),
+            episode_id: None,
+            local_time: None,
+            poster,
+            summary: None,
+            cast: cast_from_card(card),
+            genres: Vec::new(),
+            regions: Vec::new(),
+            rating,
+        });
+    }
+    Ok(out)
+}
+
+fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=\"");
+    let start = tag.find(&needle)? + needle.len();
+    let rest = &tag[start..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
+fn cover_id(href: &str) -> Option<String> {
+    let rest = href.split_once("/cover/")?.1;
+    let id = rest.split(['.', '?', '#']).next()?.trim();
+    non_empty(Some(id))
+}
+
+fn tag_text(card: &str, marker: &str) -> Option<String> {
+    let start = card.find(marker)? + marker.len();
+    let rest = &card[start..];
+    non_empty(Some(&rest[..rest.find('<').unwrap_or(rest.len())]))
+}
+
+fn cast_from_card(card: &str) -> Vec<String> {
+    let marker = "title=\"主演：";
+    let Some(start) = card.find(marker) else {
+        return Vec::new();
+    };
+    let rest = &card[start + marker.len()..];
+    let end = rest.find('"').unwrap_or(rest.len());
+    rest[..end]
+        .split_whitespace()
+        .filter_map(|name| non_empty(Some(name)))
+        .collect()
+}
+
+fn absolute(href: &str) -> String {
+    if href.starts_with("https://") || href.starts_with("http://") {
+        href.to_string()
+    } else if href.starts_with("//") {
+        format!("https:{href}")
+    } else {
+        format!("https://v.qq.com{href}")
+    }
 }
 
 fn pinia_body(html: &str) -> Option<&str> {
@@ -153,5 +292,31 @@ window.__PINIA__={"channel":{"channelModData":{"index":[
     fn missing_pinia_is_a_provider_error() {
         let err = parse("<html></html>").unwrap_err();
         assert_eq!(err.kind, ErrorKind::Provider);
+    }
+
+    const LIST_FIXTURE: &str = r#"<html><body>
+      <div class="list_item">
+        <a class="figure" data-float="j3czmhisqin799r" href="https://v.qq.com/x/cover/j3czmhisqin799r.html" title="霸王别姬">
+          <img class="figure_pic" src="//puui.qpic.cn/vcover.jpg/220">
+          <div class="figure_score">9.6</div>
+        </a>
+        <div class="figure_detail">
+          <a class="figure_title" title="霸王别姬">霸王别姬</a>
+          <div class="figure_desc" title="主演：张国荣 张丰毅 巩俐">主演：张国荣 张丰毅 巩俐</div>
+        </div>
+      </div>
+    </body></html>"#;
+
+    #[test]
+    fn channel_list_cards_are_parsed() {
+        let items = parse_list("movie", LIST_FIXTURE).unwrap();
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.native_id, "j3czmhisqin799r");
+        assert_eq!(item.title, "霸王别姬");
+        assert_eq!(item.kind, "movie");
+        assert_eq!(item.poster.as_deref(), Some("https://puui.qpic.cn/vcover.jpg/220"));
+        assert_eq!(item.cast, vec!["张国荣", "张丰毅", "巩俐"]);
+        assert_eq!(item.rating, Some(9.6));
     }
 }

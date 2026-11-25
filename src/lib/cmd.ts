@@ -217,7 +217,7 @@ export interface CmdArgs {
   catalog_jobs: void;
   catalog_source_set: { source: string; enabled: boolean; token?: string | null; clear_key?: boolean };
   catalog_retry: { id: string };
-  catalog_facets: void;
+  catalog_facets: { query: CatalogQuery };
   system_health: void;
   platform_capabilities: void;
   platform_features: void;

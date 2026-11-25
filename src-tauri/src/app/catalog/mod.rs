@@ -222,8 +222,9 @@ impl Service {
     pub async fn detail(&self, key: String) -> Result<Option<CatalogDetail>> {
         let db = self.db.clone(); blocking(move || store::detail(&db, &key)).await?
     }
-    pub async fn facets(&self) -> Result<CatalogFacets> {
-        let db = self.db.clone(); blocking(move || store::facets(&db)).await?
+    pub async fn facets(&self, query: CatalogQuery) -> Result<CatalogFacets> {
+        validate_query(&query)?;
+        let db = self.db.clone(); blocking(move || store::facets(&db, &query)).await?
     }
     pub async fn jobs(&self) -> Result<Vec<CatalogJob>> {
         let db = self.db.clone(); blocking(move || store::jobs(&db)).await?

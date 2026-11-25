@@ -1,4 +1,5 @@
-// 任务编辑器：新建与编辑共用一个抽屉，字段覆盖滴答开放平台可写全集。
+// 任务编辑器：新建用弹窗聚焦一次写入，编辑保留抽屉的长文滚动手感；
+// 字段覆盖滴答开放平台可写全集。
 //
 // 子任务有两种，界面分开表达：
 //   - 清单子项（items[]）：任务内部的勾选条目，这里可直接增删改；
@@ -7,6 +8,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { GripVertical, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Dialog } from '@/components/ui/dialog';
 import { Drawer } from '@/components/ui/drawer';
 import { Field, Input, Textarea } from '@/components/ui/form';
 import { Checkbox } from '@/components/ui/form';
@@ -159,25 +161,20 @@ export function TaskEditor({
   };
 
   const doneCount = items.filter((i) => i.status === 1).length;
+  const footerActions = (
+    <>
+      <Button variant="ghost" onClick={onClose}>
+        取消
+      </Button>
+      <Button variant="primary" loading={saving} onClick={() => void save()}>
+        {task ? '保存' : '写入滴答清单'}
+      </Button>
+    </>
+  );
+  const dialogTitle = task ? '编辑任务' : defaultParentId ? '新建子任务' : '新建任务';
+  const subtitle = task ? task.title : '写入滴答清单指定清单';
 
-  return (
-    <Drawer
-      open={open}
-      width={620}
-      title={task ? '编辑任务' : defaultParentId ? '新建子任务' : '新建任务'}
-      subtitle={task ? task.title : '写入滴答清单指定清单'}
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            取消
-          </Button>
-          <Button variant="primary" loading={saving} onClick={() => void save()}>
-            {task ? '保存' : '写入滴答清单'}
-          </Button>
-        </>
-      }
-    >
+  const body = (
       <div className="flex flex-col gap-3">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="清单" htmlFor="dida-editor-project">
@@ -397,7 +394,23 @@ export function TaskEditor({
 
         {task && <AssignBlock task={task} />}
       </div>
+  );
+
+  return task ? (
+    <Drawer
+      open={open}
+      width={620}
+      title={dialogTitle}
+      subtitle={subtitle}
+      onClose={onClose}
+      footer={footerActions}
+    >
+      {body}
     </Drawer>
+  ) : (
+    <Dialog open={open} wide title={dialogTitle} subtitle={subtitle} onClose={onClose} footer={footerActions}>
+      {body}
+    </Dialog>
   );
 }
 

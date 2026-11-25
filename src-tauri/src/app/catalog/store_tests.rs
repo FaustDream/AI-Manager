@@ -25,6 +25,17 @@ fn sample(source: &str, id: &str) -> MediaDraft {
     }
 }
 
+#[test]
+fn display_title_prefers_short_chinese_name() {
+    assert_eq!(
+        choose_display_title("The Legend", &["传说".into(), "很长的中文别名也要靠后".into()]),
+        "传说"
+    );
+    assert_eq!(choose_display_title("已经中文", &["Another Name".into()]), "已经中文");
+    assert_eq!(choose_display_title("Solo Leveling", &["我独自升级".into()]), "我独自升级");
+    assert_eq!(choose_display_title("Only English", &[]), "Only English");
+}
+
 fn episode(id: &str, date: &str) -> CatalogRelease {
     CatalogRelease {
         source: "bilibili".into(),
@@ -283,10 +294,55 @@ fn literal_multilingual_search_and_combined_filters_paginate_on_server() {
         .page_size,
         100
     );
-    let facets = facets(&db).unwrap();
+    let facets = facets(&db, &CatalogQuery::default()).unwrap();
     assert_eq!(facets.kinds[0].label, "动漫");
     assert_eq!(facets.regions[0].label, "日本");
     assert_eq!(facets.genres[0].count, 3);
+}
+
+#[test]
+fn facets_follow_other_filters_but_not_own_group() {
+    let (_dir, db) = setup();
+    let mut anime = sample("tmdb", "anime");
+    anime.releases = vec![episode("anime-1", "2026-11-18")];
+    let mut tv = sample("tmdb", "tv");
+    tv.media.title = "另一部".into();
+    tv.media.kind = "tv".into();
+    tv.media.regions = vec!["US".into()];
+    tv.media.genres = vec!["Comedy".into()];
+    tv.media.platforms = vec!["netflix".into()];
+    tv.media.year = Some(2025);
+    tv.releases = vec![episode("tv-1", "2026-11-22")];
+    upsert(&db, &[anime, tv], "2026-11-22").unwrap();
+
+    let count = |list: &[CatalogFacetCount], key: &str| {
+        list.iter().find(|item| item.key == key).map_or(0, |item| item.count)
+    };
+
+    let jp = facets(&db, &CatalogQuery { region: Some("JP".into()), ..Default::default() }).unwrap();
+    assert_eq!(count(&jp.kinds, "anime"), 1);
+    assert_eq!(count(&jp.kinds, "tv"), 0);
+    // 本组过滤不参与本组计数，换其他选项的后果才看得见
+    assert_eq!(count(&jp.regions, "JP"), 1);
+    assert_eq!(count(&jp.regions, "US"), 1);
+    assert_eq!(count(&jp.genres, "剧情"), 1);
+    assert_eq!(count(&jp.genres, "喜剧"), 0);
+    assert_eq!(jp.years, vec![2026]);
+
+    let anime_only = facets(&db, &CatalogQuery { kind: Some("anime".into()), ..Default::default() }).unwrap();
+    assert_eq!(count(&anime_only.kinds, "tv"), 1);
+    assert_eq!(count(&anime_only.regions, "US"), 0);
+
+    let year = facets(&db, &CatalogQuery { year: Some(2026), ..Default::default() }).unwrap();
+    assert!(year.years.contains(&2025));
+
+    let week = facets(&db, &CatalogQuery {
+        start: Some("2026-11-22".into()),
+        end: Some("2026-11-23".into()),
+        ..Default::default()
+    }).unwrap();
+    assert_eq!(count(&week.kinds, "tv"), 1);
+    assert_eq!(count(&week.kinds, "anime"), 0);
 }
 
 #[test]

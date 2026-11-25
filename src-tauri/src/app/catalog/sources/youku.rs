@@ -60,6 +60,7 @@ fn parse(html: &str) -> Result<Vec<Draft>> {
             episode_id: None,
             local_time: None,
             poster: None,
+            ..Default::default()
         };
         match map.get(&native_id) {
             Some(old) if old.update_note.is_some() || draft.update_note.is_none() => {}

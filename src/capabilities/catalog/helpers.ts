@@ -1,4 +1,4 @@
-import type { CatalogMedia, CatalogRating } from '@/lib/types';
+import type { CatalogMedia, CatalogRating, CatalogSourceStatus } from '@/lib/types';
 
 export const KIND_ORDER = ['variety', 'anime', 'manga', 'tv', 'movie', 'documentary'] as const;
 export const KIND_LABELS: Record<string, string> = {
@@ -59,6 +59,30 @@ export function jobTone(status: string): 'ok' | 'warn' | 'bad' | 'muted' | 'info
   return status === 'running' ? 'info' : 'muted';
 }
 export function canRetry(status: string): boolean { return status === 'failed' || status === 'partial'; }
+
+type SourceSuccess = Pick<CatalogSourceStatus, 'status' | 'last_success'>;
+type SourceIdentity = Pick<CatalogSourceStatus, 'source'>;
+
+/** 当前成功才算成功源：历史 last_success 不能掩盖后来的失败。 */
+export function isSuccessfulSource(row: SourceSuccess): boolean {
+  return row.status === 'success' && row.last_success !== null;
+}
+
+/**
+ * 采集管理的可见来源：移除优先；只看成功源时，显式新增的源即使还没成功也保留。
+ * 只管界面可见性，不影响后端调度与任务记录。
+ */
+export function visibleCatalogSources<T extends SourceSuccess & SourceIdentity>(
+  sources: readonly T[],
+  hidden: ReadonlySet<string>,
+  added: ReadonlySet<string>,
+  successfulOnly: boolean,
+): T[] {
+  return sources.filter((row) => {
+    if (hidden.has(row.source)) return false;
+    return !successfulOnly || added.has(row.source) || isSuccessfulSource(row);
+  });
+}
 
 export function todayISO(date = new Date()): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;

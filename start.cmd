@@ -4,8 +4,9 @@ rem the UI in your default browser. The minimized console window is the
 rem backend's log console -- close it (or Ctrl+C inside) to stop the backend,
 rem or use the power button in the page's top bar.
 rem
-rem Zero packaging: the backend is the cargo debug build. If it is missing,
-rem this script builds it first (requires Rust toolchain + npm install once).
+rem Zero packaging: the backend is the cargo debug build. In the repo layout it
+rem is rebuilt on every start (incremental) so a stale exe cannot serve a newer UI.
+rem Packaged layout uses the sibling exe and needs no Rust toolchain.
 rem
 rem ASCII only: cmd.exe reads batch files in the OEM codepage.
 
@@ -33,23 +34,27 @@ if not exist "%DIST%\index.html" (
     )
 )
 
-rem --- backend exe: build once if missing, repo layout only ---
-if not exist "%EXE%" (
-    if not exist "%ROOT%src-tauri\Cargo.toml" (
-        echo [start] ai-manager.exe not found. Keep ai-manager.exe, dist\ and start.cmd in the same folder.
-        pause
-        exit /b 1
-    )
-    echo [start] backend exe not found - building (debug^)...
-    if not exist "%CARGO%" set "CARGO=cargo"
+rem --- stop any previous backend first: one scheduler owns the data dir ---
+taskkill /F /IM "ai-manager.exe" /T >nul 2>&1
+verify >nul 2>&1
+if not exist "%CARGO%" set "CARGO=cargo"
+
+rem --- backend exe: repo layout rebuilds incrementally; packaged layout uses sibling ---
+if exist "%ROOT%src-tauri\Cargo.toml" (
+    echo [start] rebuilding backend (debug^) to match current sources...
     pushd "%ROOT%src-tauri"
     "%CARGO%" build --bin ai-manager
     popd
-    if not exist "%EXE%" (
+    if errorlevel 1 (
         echo [start] backend build failed. Check the Rust toolchain.
         pause
         exit /b 1
     )
+)
+if not exist "%EXE%" (
+    echo [start] ai-manager.exe not found. Keep ai-manager.exe, dist\ and start.cmd in the same folder.
+    pause
+    exit /b 1
 )
 
 rem --- launch minimized: the console stays as the backend log window ---

@@ -1,7 +1,7 @@
 // 侧边栏：品牌区 + 菜单 + 折叠开关。
 //
 // 两种宽度共用一套结构：240px 展开（图标 + 文字）与 56px 图标轨道
-// （只留图标，说明进 title 气泡）。折叠只改宽度与文字显隐，**不换组件树**——
+// （只留图标，不再挂悬停提示）。折叠只改宽度与文字显隐，**不换组件树**——
 // 换树会让折叠那一下丢掉焦点与滚动位置。
 //
 // 选中态三件事一起给：淡主色底 + 左侧指示条 + 图标转主色。
@@ -234,8 +234,6 @@ export function Sidebar({
           {preview.map((cap) => {
             const Icon = navIcon(cap.manifest.id);
             const on = active === cap.manifest.id;
-            // 快捷键编号按稳定顺序算，拖动预览期间不乱跳
-            const at = caps.findIndex((item) => item.manifest.id === cap.manifest.id) + 1;
             const isDragging = dragging === cap.manifest.id;
             return (
               <li key={cap.manifest.id} data-nav-id={cap.manifest.id} className="relative rounded-md">
@@ -251,52 +249,44 @@ export function Sidebar({
                     {collapsed ? <span className="h-1.5 w-1.5 rounded-full bg-accent" /> : '松手放到这里'}
                   </div>
                 ) : (
-                  <Tooltip
-                    content={
-                      collapsed
-                        ? `${cap.manifest.title}（快捷键 ${at}，可拖动排序）${cap.manifest.note ? ` — ${cap.manifest.note}` : ''}`
-                        : `${cap.manifest.note ?? cap.manifest.title}（快捷键 ${at}，可拖动排序）`
-                    }
+                  <button
+                    type="button"
+                    onPointerDown={(e) => startDrag(e, cap.manifest.id)}
+                    onClick={() => {
+                      if (draggedRef.current) {
+                        draggedRef.current = false;
+                        return;
+                      }
+                      onGo(cap.manifest.id);
+                    }}
+                    aria-current={on ? 'page' : undefined}
+                    // 图标轨道里没有可见文字，可读名字必须显式给
+                    aria-label={cap.manifest.title}
+                    className={cn(
+                      'group relative flex w-full items-center gap-2.5 rounded-md py-2 text-sm',
+                      dragging ? 'cursor-grabbing' : 'cursor-pointer',
+                      'transition-colors duration-[var(--dur-1)]',
+                      collapsed ? 'justify-center px-0' : 'px-2.5',
+                      on
+                        ? 'bg-accent-soft font-medium text-fg'
+                        : 'text-fg2 hover:bg-hover hover:text-fg',
+                    )}
                   >
-                    <button
-                      type="button"
-                      onPointerDown={(e) => startDrag(e, cap.manifest.id)}
-                      onClick={() => {
-                        if (draggedRef.current) {
-                          draggedRef.current = false;
-                          return;
-                        }
-                        onGo(cap.manifest.id);
-                      }}
-                      aria-current={on ? 'page' : undefined}
-                      // 图标轨道里没有可见文字，可读名字必须显式给
-                      aria-label={cap.manifest.title}
-                      className={cn(
-                        'group relative flex w-full items-center gap-2.5 rounded-md py-2 text-sm',
-                        dragging ? 'cursor-grabbing' : 'cursor-pointer',
-                        'transition-colors duration-[var(--dur-1)]',
-                        collapsed ? 'justify-center px-0' : 'px-2.5',
-                        on
-                          ? 'bg-accent-soft font-medium text-fg'
-                          : 'text-fg2 hover:bg-hover hover:text-fg',
-                      )}
-                    >
-                      {on && (
-                        <span
-                          aria-hidden
-                          className="nav-marker absolute top-1/2 left-0 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-accent"
-                        />
-                      )}
-                      <Icon
-                        size={16}
-                        className={cn(
-                          'shrink-0 transition-colors duration-[var(--dur-1)]',
-                          on ? 'text-accent' : 'text-muted group-hover:text-fg2',
-                        )}
+                    {on && (
+                      <span
+                        aria-hidden
+                        className="nav-marker absolute top-1/2 left-0 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-accent"
                       />
-                      {!collapsed && <span className="min-w-0 truncate">{cap.manifest.title}</span>}
-                    </button>
-                  </Tooltip>
+                    )}
+                    <Icon
+                      size={16}
+                      className={cn(
+                        'shrink-0 transition-colors duration-[var(--dur-1)]',
+                        on ? 'text-accent' : 'text-muted group-hover:text-fg2',
+                      )}
+                    />
+                    {!collapsed && <span className="min-w-0 truncate">{cap.manifest.title}</span>}
+                  </button>
                 )}
               </li>
             );

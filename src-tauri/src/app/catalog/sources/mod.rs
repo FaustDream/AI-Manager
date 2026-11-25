@@ -34,9 +34,9 @@ pub const SOURCES: &[SourceSpec] = &[
     SourceSpec { id: "kitsu", label: "Kitsu", implemented: true, requires_key: false, default_enabled: false, coverage: "当前动漫/漫画元数据，按 next 完整分页；无单集日期时不进入日历。", license_note: "公开 JSON:API；只读取作品资料，遵守 Kitsu 服务条款。" },
     SourceSpec { id: "tmdb", label: "TMDb", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按发现接口分页采集指定首播日期范围的影视元数据；发现接口不保证所有单集播出日。", license_note: "需要个人 API Read Access Token；署名 TMDb，非商业用途须遵守条款，商业另行授权。" },
     SourceSpec { id: "bilibili", label: "哔哩哔哩", implemented: true, requires_key: false, default_enabled: true, coverage: "公开番剧/国创/综艺/影视时间线前后7日；没有平台全量索引，保留每一集。", license_note: "现有公开接口，只读节目元数据；不获取播放线路。" },
-    SourceSpec { id: "tencent", label: "腾讯视频", implemented: true, requires_key: false, default_enabled: false, coverage: "公开移动首页节目卡片，非全量目录；首播日期不能当作更新日期。", license_note: "现有公开页面，只读节目资料；页面改版可能无法采集。" },
-    SourceSpec { id: "iqiyi", label: "爱奇艺", implemented: true, requires_key: false, default_enabled: false, coverage: "公开频道资料第一页（接口为推荐模块，无可靠全量分页契约）；不得冒充完整日历。", license_note: "现有公开频道资料；推荐页不作为全量数据源。" },
-    SourceSpec { id: "youku", label: "优酷", implemented: true, requires_key: false, default_enabled: false, coverage: "公开电视频道卡片，非全量；无确认集数日期，不进入更新日历。", license_note: "现有公开页面，只读资料；不获取播放线路。" },
+    SourceSpec { id: "tencent", label: "腾讯视频", implemented: true, requires_key: false, default_enabled: true, coverage: "公开移动首页 + 频道列表分页；中文剧名、封面、演员与评分；无逐集日期，不生成更新日历。", license_note: "现有公开页面，只读节目资料；页面改版可能无法采集。" },
+    SourceSpec { id: "iqiyi", label: "爱奇艺", implemented: true, requires_key: false, default_enabled: true, coverage: "推荐页 + 频道关键词分页搜索；中文简介、集数、地区/题材、封面与评分；仍非全量目录。", license_note: "现有公开页面，只读节目资料；不获取播放线路。" },
+    SourceSpec { id: "youku", label: "优酷", implemented: true, requires_key: false, default_enabled: true, coverage: "公开电视剧频道卡片；中文剧名与集数状态；页面不提供年份/简介/封面，不生成更新日历。", license_note: "现有公开页面，只读资料；不获取播放线路。" },
     SourceSpec { id: "mgtv", label: "芒果TV", implemented: true, requires_key: false, default_enabled: true, coverage: "公开频道列表（综艺/电视剧/动漫），带中文简介、类型、年份、集数与知乎评分；无确认单集日期，不进入更新日历。", license_note: "现有公开列表接口，只读节目元数据；不获取播放线路。" },
     SourceSpec { id: "omdb", label: "OMDb / IMDb / Rotten Tomatoes", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按库内IMDb ID逐项获取原始评分；覆盖取决于OMDb授权，不推测观众好评率或评分人数。",  license_note: "需要 OMDb API key，评分字段取决于账户与授权；不抓取评价网站。" },
     SourceSpec { id: "tvdb", label: "TheTVDB", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：需要 API v4 授权/订阅。", license_note: "需要遵守 TheTVDB 许可，不能借用他人 key。" },
@@ -75,12 +75,13 @@ pub async fn fetch(source: &str, ctx: AdapterContext, tx: Sender<IngestionBatch>
         "bilibili" => bilibili::fetch(ctx, tx).await,
         "iqiyi" => iqiyi::fetch(ctx, tx).await,
         "mgtv" => mgtv::fetch(ctx, tx).await,
-        "tencent" | "youku" => {
-            let drafts = if source == "tencent" {
-                tencent::fetch(ctx.http).await?
-            } else {
-                youku::fetch(ctx.http).await?
-            };
+        "tencent" => {
+            let drafts = tencent::fetch(ctx).await?;
+            let items = drafts.into_iter().map(legacy_draft).collect();
+            publish(&tx, IngestionBatch { items, page: 1, complete: true, http_status: Some(200), ..Default::default() }).await
+        }
+        "youku" => {
+            let drafts = youku::fetch(ctx.http).await?;
             let items = drafts.into_iter().map(legacy_draft).collect();
             publish(&tx, IngestionBatch { items, page: 1, complete: true, http_status: Some(200), ..Default::default() }).await
         }
@@ -144,7 +145,7 @@ pub fn strip_html(value: &str) -> String {
     out.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Draft {
     pub platform: &'static str,
     pub native_id: String,
@@ -158,10 +159,15 @@ pub struct Draft {
     pub episode_id: Option<String>,
     pub local_time: Option<String>,
     pub poster: Option<String>,
+    pub summary: Option<String>,
+    pub cast: Vec<String>,
+    pub genres: Vec<String>,
+    pub regions: Vec<String>,
+    pub rating: Option<f64>,
 }
 
 fn legacy_draft(d: Draft) -> MediaDraft {
-    use crate::app::catalog::types::{CatalogMedia, CatalogRelease};
+    use crate::app::catalog::types::{CatalogMedia, CatalogRating, CatalogRelease};
     let note = d.update_note.as_deref().unwrap_or("");
     let (episode_count, aired_episodes) = episode_numbers(note);
     let status = if d.finished {
@@ -174,13 +180,24 @@ fn legacy_draft(d: Draft) -> MediaDraft {
     let mut out = MediaDraft {
         source: d.platform.into(), external_id: d.native_id,
         media: CatalogMedia {
-            title: d.title, kind: d.kind.into(), regions: Vec::new(),
+            title: d.title.clone(), kind: d.kind.into(), regions: d.regions,
             platforms: vec![spec(d.platform).map(|s| s.label.to_string()).unwrap_or_default()],
+            summary: d.summary,
             status: status.into(),
             year: d.year, premiered: if d.platform != "bilibili" { d.air_date.clone() } else { None },
             episode_count, aired_episodes,
+            cast: d.cast, genres: d.genres,
             poster: d.poster, source_url: d.url.clone(), ..Default::default()
-        }, ..Default::default()
+        },
+        ratings: d.rating.map(|value| vec![CatalogRating {
+            source: d.platform.into(),
+            category: "audience".into(),
+            value: Some(value),
+            scale: 10.0,
+            url: d.url.clone(),
+            ..Default::default()
+        }]).unwrap_or_default(),
+        ..Default::default()
     };
     if d.platform == "bilibili" {
         if let (Some(date), Some(id)) = (d.air_date, d.episode_id) {
@@ -292,6 +309,7 @@ mod tests {
             episode_id: None,
             local_time: None,
             poster: None,
+            ..Default::default()
         });
         assert_eq!(airing.media.status, "airing");
         assert_eq!(airing.media.aired_episodes, Some(12));
@@ -309,6 +327,7 @@ mod tests {
             episode_id: None,
             local_time: None,
             poster: None,
+            ..Default::default()
         });
         assert_eq!(done.media.status, "completed");
         assert_eq!(done.media.episode_count, Some(40));
