@@ -1479,7 +1479,7 @@ function RefreshPolicyNote() {
 
   return (
     <div className="mt-3 px-3 py-2">
-      <Tooltip content="上面的间隔是上限：到点这一轮只查「距上次成功查询已超过平台最小间隔」的账号，没到点的直接跳过——这是正常的限速，不是失败。手动「刷新积分」不受限制。">
+      <Tooltip content="上面的间隔是上限：到点这一轮只查「距上次成功查询已超过平台最小间隔」的账号，没到点的直接跳过——这是正常的限速，不是失败。手动点账号中心的「签到 · 积分」不受限制。">
         <p className="text-xs font-semibold">
           各平台的自动刷新节奏
         </p>

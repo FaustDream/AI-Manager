@@ -236,7 +236,7 @@ const FEATURES: &[FeatureDef] = &[
     FeatureDef {
         key: "renew",
         label: "凭据刷新",
-        hint: "先问云端（用保存的凭据打只读接口），再重扫客户端取最新凭据与有效期；两边都拿不到才需要重新授权",
+        hint: "重扫客户端取最新凭据与有效期；没有可重扫客户端的账号（如豆包）改问平台只读接口；两边都拿不到才需要重新授权",
     },
     FeatureDef {
         key: "sessions",
@@ -266,7 +266,7 @@ const FEATURES: &[FeatureDef] = &[
     FeatureDef {
         key: "cloud",
         label: "云端校验",
-        hint: "刷新状态/凭据时，先用保存的凭据问一次平台（只读余额接口）；云端给不出答案才回退读本机客户端",
+        hint: "刷新账号状态时用保存的凭据问一次平台只读接口；云端给不出答案就按本机客户端的凭据判",
     },
 ];
 

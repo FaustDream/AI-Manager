@@ -1,12 +1,12 @@
-// 账号中心顶栏：扫描 / 添加 / 刷积分 / 批量签到 + 添加账号对话框。
+// 账号中心顶栏：添加账号 / 签到 · 积分 / 刷新凭据 + 添加账号对话框。
 //
-// 批量签到是任务化的：进度由 tasks 轮询给，这里只负责把「正在跑」画出来，
-// 不在前端猜完成时刻。
+// 批量动作的进度由后端 `progress` 事件推进（见 lib/progress.ts），这里只负责把
+// 「正在跑第几项」画出来，不在前端猜完成时刻。
 //
-// 「添加账号」两条路：
-//   1. 浏览器登录（多数平台）：选平台 → 开官方登录页 → 轮询入库；
-//   2. 粘贴 Cookie（豆包这类没有可借用登录流程的平台）：一份 Cookie = 一个账号，
-//      多账号就是多份 Cookie，各自入库、互不覆盖。
+// 「添加账号」三条路：
+//   1. 客户端登录（WorkBuddy 系）：启动客户端 → 登录 → 扫描入库；
+//   2. 浏览器登录（多数平台）：开官方登录页 → 授权后自动入库；
+//   3. 粘贴 Cookie（豆包）：一份 Cookie = 一个账号，多账号各自入库、互不覆盖。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { queryCmd, runCmd } from '@/lib/cmd';
 import { listen } from '@/lib/events';
@@ -110,7 +110,7 @@ export function AccountToolbar({
         content={
           busy === 'refresh-credentials'
             ? '正在重扫客户端并刷新账号…'
-            : '刷新凭据：重扫客户端，更新每个账号的最新凭据、到期时间与登录态（不查平台余额）'
+            : '刷新凭据：重扫客户端，更新每个账号的最新凭据、到期时间与登录态；没有可重扫客户端的账号改问平台只读接口（不查余额）'
         }
       >
         <Button
@@ -353,7 +353,7 @@ export function AddAccountDialog({
         { onError: (e) => setCookieError(errText(e)) },
       );
       if (!iid) return;
-      toast(`${platformOf(platform).label} 账号已添加，可以刷新积分了`);
+      toast(`${platformOf(platform).label} 账号已添加，可以点「签到 · 积分」拉一次余额`);
       setCookie('');
       setCookieName('');
       onScanned();

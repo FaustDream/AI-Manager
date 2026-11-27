@@ -44,6 +44,7 @@ import {
 import { TravelCard } from './travel';
 import { ReauthDialog } from './toolbar';
 import { creditUnit } from './credit-unit';
+import { FAIL_LABEL, TRANSIENT_FAIL } from './columns';
 import { DataTable, type Column } from '@/components/ui/table';
 
 const claimSources: Record<string, string> = { checkin: '签到', activity: '活动', travel: '猫猫旅行' };
@@ -467,17 +468,40 @@ export function AccountDetailDialog({
   );
   const nearest = lots.find((lot) => lot.expires_at && new Date(lot.expires_at).getTime() > now);
   const nearestDays = daysUntil(nearest?.expires_at);
-  // 10 天内到期：与「最近到期」共用同一份批次，只算还没过期的
+  // 「10 天内到期」取列表同一份结论（后端算好的三态）：详情自己重算会与列表对不上，
+  // 也分不清「平台说没有剩余批次」和「还没拿到过批次」。
+  const expiring = account.expiring_10d ?? null;
+  // 10 天窗口内的笔数只用于 tooltip 的「N 笔」，金额仍以后端合计为准
   const soonLimit = now + 10 * 86400_000;
   const soonLots = lots.filter((lot) => {
     const at = lot.expires_at ? new Date(lot.expires_at).getTime() : null;
     return at !== null && at > now && at <= soonLimit;
   });
-  const soonTotal = soonLots.reduce((sum, lot) => sum + lot.amount, 0);
   const quota = Object.entries(d?.quota ?? account.quota).sort((a, b) => b[1] - a[1]);
   // 只有额度型平台（ZCode）的「更新时间」说的是配额；其余平台别拿批次缓存时刻冒充
   const quotaAt = account.platform === 'zcode' ? (d?.quota_at ?? account.quota_at) : null;
   const lastError = error ?? account.error;
+  // 「最近查询」不能只看本次会话：上周失败的号也该说失败，否则和登录态列的「登录可能失效」自相矛盾
+  const lastFailLabel = account.last_fail_kind
+    ? (FAIL_LABEL[account.last_fail_kind] ?? account.last_fail_kind)
+    : null;
+  const transientFail = account.last_fail_kind
+    ? TRANSIENT_FAIL.has(account.last_fail_kind)
+    : false;
+  const failTitle =
+    lastError ??
+    (lastFailLabel
+      ? `上次查询失败：${lastFailLabel}${
+          account.last_fail_at ? `（${fmtTime(account.last_fail_at)}）` : ''
+        }`
+      : undefined);
+  const failText = lastError
+    ? '失败'
+    : lastFailLabel
+      ? transientFail
+        ? lastFailLabel
+        : '失败'
+      : '正常';
   const credDays = daysUntil(account.expires_at);
   // 额度型账号没有积分余额：主指标直接给最紧窗口的剩余百分比，别只显示「—」
   const tightest = quota.length > 0 ? Math.max(...quota.map(([, used]) => used)) : null;
@@ -546,7 +570,7 @@ export function AccountDetailDialog({
                 </Button>
               </Tooltip>
             )}
-            <Tooltip content="刷新账号：重扫客户端并写回最新凭据与有效期，同时更新当前登录标记（不查积分）；刷新后仍过期才需要重新授权">
+            <Tooltip content="刷新账号：重扫客户端并写回最新凭据与有效期，同时更新当前登录标记（不查积分）；没有可重扫的客户端时改问平台只读接口；刷新后仍过期才需要重新授权">
               <Button
                 size="sm"
                 onClick={refreshCredential}
@@ -626,10 +650,12 @@ export function AccountDetailDialog({
                     nearest
                       ? nearestDays !== null && nearestDays <= 7
                         ? `只剩 ${Math.max(0, nearestDays)} 天，优先用掉`
-                        : '积分批次里最近的一笔'
+                        : '平台返回的批次里最近的一笔'
                       : isDoubao
                         ? '豆包接口只回累计额度，不下发批次到期日。官方规则：赠送额度自发放起 30 天内有效，这里不推算'
-                        : '平台没有返回批次到期时间'
+                        : lots.length === 0
+                          ? '平台没有返回剩余批次（积分可能已用完），也就没有到期日'
+                          : '平台没有返回批次到期时间'
                   }
                   tone={nearestDays !== null && nearestDays <= 7 ? 'warn' : undefined}
                   strong
@@ -658,15 +684,19 @@ export function AccountDetailDialog({
                 />
                 <Stat
                   label="10 天内到期"
-                  value={lots.length === 0 ? '—' : soonTotal > 0 ? fmtAmount(soonTotal) : '无'}
-                  hint={
-                    lots.length === 0
-                      ? '还没有批次明细：签到成功或刷新积分后才有数据'
-                      : soonTotal > 0
-                        ? `未来 10 天有 ${soonLots.length} 笔到期，合计 ${fmtAmount(soonTotal)}；已过期的批次不计入`
-                        : '10 天内没有要过期的积分'
+                  value={
+                    expiring === null ? '—' : expiring > 0 ? fmtAmount(expiring) : '无'
                   }
-                  tone={soonTotal > 0 ? 'warn' : undefined}
+                  hint={
+                    expiring === null
+                      ? '还没有批次数据：签到成功或点「签到 · 积分」刷新后才有'
+                      : expiring > 0
+                        ? `未来 10 天有 ${soonLots.length} 笔到期，合计 ${fmtAmount(expiring)}；只算平台还剩的批次，已过期的不计`
+                        : lots.length === 0
+                          ? '平台没有剩余批次：积分已用完或已过期'
+                          : '10 天内没有要过期的积分'
+                  }
+                  tone={expiring !== null && expiring > 0 ? 'warn' : undefined}
                 />
               </div>
 
@@ -739,8 +769,16 @@ export function AccountDetailDialog({
                     </>
                   )}
                   <dt className="text-muted">最近查询</dt>
-                  <dd className={cn('truncate', lastError && 'text-bad')}>
-                    {lastError ? '失败' : '正常'}
+                  <dd
+                    className={cn(
+                      'truncate',
+                      lastError || (lastFailLabel && !transientFail) ? 'text-bad' : '',
+                      !lastError && lastFailLabel && transientFail && 'text-warn',
+                    )}
+                  >
+                    <Hint content={failTitle ?? '没有记录到查询失败'} focusable={false}>
+                      {failText}
+                    </Hint>
                   </dd>
                 </dl>
                 {account.note && (
@@ -793,7 +831,9 @@ export function AccountDetailDialog({
               {quota.length === 0 && account.platform === 'zcode' && (
                 <p className="rounded-lg border border-line bg-card px-4 py-3 text-xs text-muted shadow-card">
                   这个账号没有额度明细（Free 套餐或接口未下发）。
-                  {quotaAt ? `上次刷新 ${fmtTime(quotaAt)}。` : '点下方「刷新」拉一次。'}
+                  {quotaAt
+                    ? `上次刷新 ${fmtTime(quotaAt)}。`
+                    : '点账号中心顶部的「签到 · 积分」拉一次（这里的「刷新」只重扫凭据，不查额度）。'}
                 </p>
               )}
 
@@ -889,7 +929,7 @@ export function AccountDetailDialog({
                 <p className="px-4 py-8 text-sm text-muted">
                   {isDoubao
                     ? '豆包不提供批次明细与到期日：接口只回累计额度。官方规则是「赠送额度自发放起 30 天内有效」，这里不推算具体日期。'
-                    : '还没有批次明细：签到成功后这里会列出每笔的金额、来源与到期日。'}
+                    : '平台没有返回剩余批次：积分可能已用完或已过期。本工具只展示平台给的批次，不拿本地发放记录顶替。'}
                 </p>
               ) : (
                 <div className="max-h-[52vh] overflow-auto">

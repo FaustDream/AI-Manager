@@ -386,13 +386,18 @@ impl Service {
         Ok(task_array(&resp.json()?))
     }
 
-    /// 全部清单的未完成任务（平台限最近 14 天窗口）。多项目聚合视图用它，
-    /// 不必对每个清单各打一发。
+    /// 全部清单的未完成任务。多项目聚合视图用它，不必对每个清单各打一发。
+    ///
+    /// 走筛选端点而不是 `task/undone`：后者对任何请求体都回 200 + 空数组（2026-11 实测），
+    /// 界面上就是「全部清单一条任务都没有」。`status: [0]` 即不限清单的全部未完成任务。
+    ///
+    /// **不要带 `startDate` / `endDate`**：那个区间过滤的是任务自身的日期，没写日期的任务
+    /// 会被整体排除（实测同一个账号 2 条变 0 条），等于换个方式再丢一遍数据。
     pub async fn undone_tasks(&self) -> Result<Vec<DidaTask>> {
         let token = self.token().await?;
-        let req = HttpRequest::post(format!("{BASE}/task/undone"))
+        let req = HttpRequest::post(format!("{BASE}/task/filter"))
             .header("Authorization", format!("Bearer {token}"))
-            .json_body(&serde_json::json!({}));
+            .json_body(&serde_json::json!({ "status": [0] }));
         let resp = check(self.http.send(req).await?, "读取未完成任务")?;
         Ok(task_array(&resp.json()?))
     }
@@ -1205,7 +1210,7 @@ mod tests {
     // ------------------------------------------------ 已完成 / 聚合 / 批量 / 指派
 
     const COMPLETED_URL: &str = "https://api.dida365.com/open/v1/task/completed";
-    const UNDONE_URL: &str = "https://api.dida365.com/open/v1/task/undone";
+    const FILTER_URL: &str = "https://api.dida365.com/open/v1/task/filter";
     const COMPLETE_MANY_URL: &str = "https://api.dida365.com/open/v1/task/completeTasks";
     const MOVE_URL: &str = "https://api.dida365.com/open/v1/task/move";
     const ASSIGN_URL: &str = "https://api.dida365.com/open/v1/task/assign";
@@ -1249,17 +1254,42 @@ mod tests {
         assert!(err.message.contains("404"), "{}", err.message);
     }
 
+    /// 跨清单未完成走 `task/filter` + `status:[0]`，且**不带日期区间**。
+    ///
+    /// 回归点：旧实现打 `task/undone`，平台对任何请求体都回 200 + `[]`，
+    /// 界面于是「全部清单一条任务都没有」；补日期区间又会把没写日期的任务整批排除。
     #[tokio::test]
-    async fn undone_tasks_accepts_both_array_and_wrapped_shapes() {
+    async fn undone_tasks_filters_without_date_window_and_accepts_both_shapes() {
         let (_dir, http, service) = seeded().await;
-        http.on(
-            UNDONE_URL,
-            200,
-            r#"{"tasks":[{"id":"a","projectId":"p1","title":"甲"},{"id":"b","projectId":"p2","title":"乙"}]}"#,
+        http.on_sequence(
+            FILTER_URL,
+            vec![
+                (
+                    200,
+                    r#"[{"id":"a","projectId":"p1","title":"甲"},{"id":"b","projectId":"p2","title":"乙"}]"#,
+                ),
+                (
+                    200,
+                    r#"{"tasks":[{"id":"c","projectId":"p2","title":"丙"}]}"#,
+                ),
+            ],
         );
+
         let tasks = service.undone_tasks().await.unwrap();
         assert_eq!(tasks.len(), 2, "跨清单聚合");
         assert_eq!(tasks[1].project_id, "p2");
+
+        let body: serde_json::Value =
+            serde_json::from_str(&http.last_body(FILTER_URL).unwrap()).unwrap();
+        assert_eq!(body["status"][0], 0, "只要未完成");
+        assert!(
+            body.get("startDate").is_none() && body.get("endDate").is_none(),
+            "日期区间会把没写日期的任务整批排除（实测 2 条变 0 条）"
+        );
+
+        // 裸数组与 {tasks:[…]} 两种回执都要认
+        let wrapped = service.undone_tasks().await.unwrap();
+        assert_eq!(wrapped.len(), 1);
     }
 
     #[tokio::test]

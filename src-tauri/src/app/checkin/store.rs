@@ -464,7 +464,12 @@ pub struct CreditView {
     pub balance: Option<f64>,
     /// 额度型平台：窗口名 → 已用百分比
     pub quota: std::collections::BTreeMap<String, f64>,
-    pub lots: Vec<crate::types::CreditLot>,
+    /// 平台下发的批次，`None` 表示这个平台**从不**下发批次（只回余额）。
+    ///
+    /// 必须区分「没给过」与「给了但是空的」：平台说「一批不剩」时台账里的旧发放
+    /// 已经作废，再退回台账就会凭空报出「即将过期」——积分用光了仍提示有钱要过期。
+    #[serde(default)]
+    pub lots: Option<Vec<crate::types::CreditLot>>,
 }
 
 fn view_key(iid: &str) -> String {
@@ -506,7 +511,7 @@ impl SqliteCheckin<'_> {
             view.quota = quota;
         }
         if let Some(lots) = lots {
-            view.lots = lots;
+            view.lots = Some(lots);
         }
         if let Some(balance) = balance {
             view.balance = Some(balance);
@@ -645,25 +650,30 @@ pub fn hydrate(db: &Db, rows: &mut [crate::app::accounts::AccountView], clock: &
         }
         // 「最近到期」与「10 天内到期」共用同一份批次：分开算会出现两张卡对不上。
         // 只有从来没拿到过批次时才留空（空 ≠ 0）。
-        let mut lots = Vec::new();
+        let mut platform_lots = None;
         if let Some(view) = &view {
             // 空配额 = 这个平台没有额度概念，不是「额度用完了」：别让配额列显示「无额度」
             if !view.quota.is_empty() {
                 row.quota = view.quota.clone();
                 row.quota_at = Some(view.at);
             }
-            lots = lots_for_display(&row.iid, view.lots.clone());
+            platform_lots = view.lots.clone();
         }
-        if nearest_lot(&lots, now).0.is_none() && !is_intl_account(&row.iid) {
-            // 没有实时批次（免签到平台 / 还没刷过）：退回本工具发放台账。
+        let mut lots = platform_lots
+            .as_ref()
+            .map(|items| lots_for_display(&row.iid, items.clone()))
+            .unwrap_or_default();
+        if platform_lots.is_none() && !is_intl_account(&row.iid) {
+            // 平台从不给批次（免签到平台 / 还没刷过余额）：退回本工具发放台账。
+            // 平台给过批次就只认平台——台账只记发放不记消耗，积分用完后它仍留着旧到期日。
             // 国际版不参与：它的批次到期本身不可信，台账里的旧日期也不该翻出来。
             lots = lots_of(db, &row.iid, 30);
         }
         (row.lot_expires_at, row.lot_amount) = nearest_lot(&lots, now);
-        row.expiring_10d = if lots.is_empty() {
-            None
-        } else {
+        row.expiring_10d = if platform_lots.is_some() || !lots.is_empty() {
             Some(expiring_within(&lots, now, 10))
+        } else {
+            None
         };
     }
 }
@@ -974,6 +984,65 @@ mod tests {
         assert_eq!(row.lot_amount, Some(170.0));
         // 10 天内到期是**多笔合计**（3 天 170 + 9 天 30），15 天那笔不在窗口内
         assert_eq!(row.expiring_10d, Some(200.0));
+    }
+
+    /// 平台说「一批不剩」时不能退回台账。
+    ///
+    /// 台账只记发放、不记消耗：Qoder 余额 0（平台返回空批次）时若退回台账，
+    /// 会把早就用掉的发放批次当成「即将过期」报出来——实测就是余额 0 仍显示 1200 到期。
+    #[test]
+    fn empty_platform_lots_do_not_resurrect_ledger_expiring() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        repo::upsert_identity(&db, &identity("qoder:u1", "qoder"), 1).unwrap();
+        let clock = FakeClock::at("2026-11-02T09:00:00+08:00");
+        SqliteCheckin::new(&db)
+            .note_view(
+                "qoder:u1",
+                None,
+                Some(Vec::new()),
+                Some(0.0),
+                clock.now().timestamp_millis(),
+            )
+            .unwrap();
+        SqliteLedger::new(&db)
+            .add_if_needed(false, "qoder:u1", 1200.0, Some(3), &clock)
+            .unwrap();
+
+        let mut rows = repo::list(&db).unwrap();
+        hydrate(&db, &mut rows, &clock);
+        let row = &rows[0];
+        assert_eq!(row.lot_expires_at, None, "平台已无批次，不能再翻出台账的旧到期日");
+        assert_eq!(
+            row.expiring_10d,
+            Some(0.0),
+            "拿到过批次（空）就是「无」，不该留成「—」"
+        );
+    }
+
+    /// 平台从不给批次（只回余额）时，台账仍是唯一的到期来源，不能被上面那条改坏。
+    #[test]
+    fn ledger_still_answers_when_platform_never_gives_lots() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Db::open_at(&dir.path().join("app.db")).unwrap();
+        repo::upsert_identity(&db, &identity("ima:u1", "ima"), 1).unwrap();
+        let clock = FakeClock::at("2026-11-02T09:00:00+08:00");
+        SqliteCheckin::new(&db)
+            .note_view(
+                "ima:u1",
+                None,
+                None,
+                Some(50.0),
+                clock.now().timestamp_millis(),
+            )
+            .unwrap();
+        SqliteLedger::new(&db)
+            .add_if_needed(false, "ima:u1", 30.0, Some(4), &clock)
+            .unwrap();
+
+        let mut rows = repo::list(&db).unwrap();
+        hydrate(&db, &mut rows, &clock);
+        assert_eq!(rows[0].expiring_10d, Some(30.0));
     }
 
     /// 10 天窗口：边界含第 10 天，已过期与更远的都不算，空结果不能是 -0.0。

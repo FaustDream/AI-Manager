@@ -949,13 +949,16 @@ impl Service {
                     }
                 })
                 .or_else(|| store.balance_on(&key, &stamp));
-            // 实时批次比台账更接近「现在还剩什么」；没有就退回台账
-            let mut lots = view
+            // 实时批次比台账更接近「现在还剩什么」；平台从不给批次才退回台账
+            let platform_lots = view.as_ref().and_then(|item| item.lots.clone());
+            let mut lots = platform_lots
                 .as_ref()
-                .map(|item| store::lots_for_display(&key, item.lots.clone()))
+                .map(|items| store::lots_for_display(&key, items.clone()))
                 .unwrap_or_default();
-            if lots.is_empty() && !accounts::is_intl_account(&key) {
-                // 国际版不退回台账：它的批次到期不可信，旧日期也不该翻出来
+            if platform_lots.is_none() && !accounts::is_intl_account(&key) {
+                // 平台给过批次（哪怕是空数组）就不再退回台账：台账只记发放不记消耗，
+                // 积分用光后旧到期日会把「即将过期」算成一个不存在的金额。
+                // 国际版也不退回：它的批次到期不可信，旧日期也不该翻出来
                 lots = store::lots_of(&db, &key, 10);
             }
             (

@@ -26,8 +26,6 @@ import { OPS_WIDTH, RestoreDialog, RowActions, SwitchDialog } from './actions';
 import { AddAccountDialog, AccountToolbar } from './toolbar';
 import { moveBy, useRowDrag } from './use-row-drag';
 
-/// 每次进入账号中心补刷一轮余额：积分查询的唯一自动触发点。
-
 /** 昵称旁的徽章，两种互斥：这行是客户端当前登录的号 / 这行只有网页登录的凭据 */
 type Badge = { text: string; tone: 'ok' | 'muted'; title: string };
 
@@ -197,8 +195,8 @@ export default function AccountCenterPage() {
     setSelected(iid);
   }, []);
 
-  // 每次进入账号中心补刷一轮余额：积分查询的唯一自动触发点。
-  // 不挂后台轮询，也不在模块层做节流——用户点进来就是要看最新数字，一次进入打一轮。
+  // 每次进入账号中心补刷一轮余额（只刷积分，不签到）。
+  // 默认没有「积分刷新」定时任务：用户点进来就是要看最新数字，一次进入打一轮。
   // 用 ref 保证同一次挂载只跑一次（React StrictMode 会双跑 effect）。
   const creditsLooked = useRef(false);
   useEffect(() => {
@@ -259,7 +257,7 @@ export default function AccountCenterPage() {
     // onMove/onUp 全走 ref，不依赖渲染期值：只在挂载时装一次
   }, []);
 
-  // 慢操作的按钮加载态：刷积分/切换/恢复要等几秒，不给 busy 态看起来就像没点上
+  // 慢操作的按钮加载态：签到 · 积分 / 切换 / 恢复要等几秒，不给 busy 态看起来就像没点上
   const { busy, run: runBusy } = useBusy();
   // 正在切换的那一行（busy 的 key 形如 switch:<iid>）：光环呼吸，成功后再留一段收尾高光
   const switchingIid = busy?.startsWith('switch:') ? busy.slice('switch:'.length) : null;
@@ -518,15 +516,17 @@ export default function AccountCenterPage() {
               ...platforms.map(([key, label]) => ({ value: key, label })),
             ]}
           />
+          {/* 这一组筛的是「登录凭据」，不是积分到期：列里已有一个「10 天内到期」（积分），
+              两者混用一套字面会读成同一件事 */}
           <Picker
-            className="w-32"
+            className="w-40"
             value={stateFilter}
-            label="按状态筛选"
+            label="按登录凭据状态筛选"
             onValueChange={(v) => setStateFilter(v as typeof stateFilter)}
             options={[
               { value: 'all', label: '全部状态' },
-              { value: 'expired', label: '已过期' },
-              { value: 'expiring', label: '7 天内到期' },
+              { value: 'expired', label: '凭据已过期' },
+              { value: 'expiring', label: '凭据 7 天内到期' },
               { value: 'unchecked', label: '今日未签' },
             ]}
           />
@@ -653,7 +653,7 @@ export default function AccountCenterPage() {
                   <StateBlock
                     kind="empty"
                     title="还没有账号"
-                    detail="启动时会自动扫描客户端；也可以点「添加账号」登录后入库。"
+                    detail="启动时默认扫描客户端（可在设置里关掉）；也可以点「添加账号」登录后入库。"
                   />
                 )}
               </td>

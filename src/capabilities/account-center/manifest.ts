@@ -6,6 +6,6 @@ export const manifest: Manifest = {
   icon: 'account-center',
   order: 2,
   group: '账号与资产',
-  note: '本机账号一览：切换登录态、签到、积分台账',
+  note: '本机账号一览：登录态与切换、签到、余额与批次',
   fluid: true,
 };

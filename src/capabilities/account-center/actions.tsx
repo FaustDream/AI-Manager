@@ -17,7 +17,7 @@ import type { AccountView } from '@/lib/types';
 import { webLoginUsable } from './columns';
 
 /** 四个槽位的固定宽度（px）：切换 / 恢复对话 / 启停 / 删除。
- *  「当前登录」不再占槽位——它由行背景表达，文字标签是重复信息。 */
+ *  「当前登录」不占槽位——它由昵称旁的徽章表达；行底色只表示「正在看哪一行」。 */
 export const ACTION_SLOTS = [28, 28, 28, 28] as const;
 /** 槽位间距（gap-1）与单元格左右内边距，算操作列总宽时要用。 */
 export const ACTION_GAPS = 4;
@@ -143,8 +143,8 @@ export function RowActions({
           disabled={busy}
           title={
             row.enabled
-              ? '停用：不参与自动签到、自动轮询与积分刷新；手动单账号操作仍可执行'
-              : '启用：重新参与自动签到与积分轮询'
+              ? '停用：不参与定时任务（每日签到、账号状态刷新、积分刷新）；手动单账号操作仍可执行'
+              : '启用：重新参与定时任务（每日签到、账号状态刷新、积分刷新）'
           }
         >
           <IconPower size={15} />

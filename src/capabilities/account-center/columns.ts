@@ -72,7 +72,7 @@ export const FAIL_LABEL: Record<string, string> = {
  * 后端自 2.0.16 起干脆不把它们写进账号健康；这里再兜一层，
  * 是为了让修复前落库的 `io` 记录也不再显示成红字。
  */
-const TRANSIENT_FAIL = new Set(['io', 'rate_limited']);
+export const TRANSIENT_FAIL = new Set(['io', 'rate_limited']);
 
 /** 账号级健康标记：停用 / 最近失败，叠加在登录态单元格上。 */
 const decorateHealth = (a: AccountView, cell: Cell): Cell => {
@@ -82,7 +82,7 @@ const decorateHealth = (a: AccountView, cell: Cell): Cell => {
       sub: '已停用',
       tone: 'muted',
       title: [
-        '已停用：不参与自动签到、自动轮询与积分刷新；手动单账号操作仍可执行',
+        '已停用：不参与定时任务（每日签到、账号状态刷新、积分刷新）；手动单账号操作仍可执行',
         cell.title,
       ]
         .filter(Boolean)
@@ -215,7 +215,7 @@ const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
     a.platform === 'doubao'
       ? '豆包平台口径的累计体验额度（含已消耗），不是剩余可用；官方规则：赠送额度自发放起 30 天有效'
       : a.balance === null
-        ? '还没查到余额，点「刷新积分」'
+        ? '还没查到余额，点「签到 · 积分」拉一次'
         : `平台实时返回的可用${unit} / 额度余额`;
 
   let cell: Cell;
@@ -254,11 +254,14 @@ const creditCell = (a: AccountView, errors: Record<string, string>): Cell => {
  * 列表只给总额：具体是哪几笔、哪天到期属于「点开这一行才关心」的细节，放详情。
  * 三态要分清——从没拿到过批次（`null`，显示「—」）、拿到了但 10 天内没有快过期的（0，显示「无」）、
  * 以及确有金额（按金额显示并染警示色）。
+ *
+ * 只用平台返回的批次：本工具台账只记发放不记消耗，积分用完后它仍留着旧到期日，
+ * 拿它兜底会让「余额 0」和「即将到期 700」同时出现在屏幕上。
  */
 const expiringCell = (a: AccountView): Cell => {
   const amount = a.expiring_10d;
   if (amount === null || amount === undefined) {
-    return { text: '—', tone: 'muted', title: '还没有批次数据：点「刷新积分」拉一次' };
+    return { text: '—', tone: 'muted', title: '还没有批次数据：点「签到 · 积分」拉一次' };
   }
   if (amount <= 0) {
     return { text: '无', tone: 'muted', title: '10 天内没有要过期的积分' };
@@ -269,7 +272,7 @@ const expiringCell = (a: AccountView): Cell => {
     text: fmtAmount(amount),
     tone: 'warn',
     title: [
-      `未来 10 天内到期 ${fmtAmount(amount)} 积分（已过期的不计）`,
+      `未来 10 天内到期 ${fmtAmount(amount)} 积分（只算平台还剩的批次，已过期的不计）`,
       nearest ? `最近一笔到期：${nearest}` : '',
       '具体批次见下方详情',
     ]
@@ -353,7 +356,8 @@ export const COLUMNS: ColumnDefEx[] = [
   {
     key: 'expiring',
     header: '10 天内到期',
-    headerTitle: '未来 10 天内会过期的积分合计；已过期的不计，批次明细见下方详情',
+    headerTitle:
+      '平台返回的批次里，未来 10 天内会过期的积分合计；已过期与已用完的不计。平台说没有剩余批次时显示「无」',
     width: 118,
     min: 96,
     cell: expiringCell,
