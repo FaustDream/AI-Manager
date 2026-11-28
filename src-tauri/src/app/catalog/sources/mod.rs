@@ -18,6 +18,8 @@ use tokio::sync::mpsc::Sender;
 pub struct SourceSpec {
     pub id: &'static str,
     pub label: &'static str,
+    /// 国内 / 国外页签归属；空串 = 评分回填源，不参与页签划分
+    pub scope: &'static str,
     pub implemented: bool,
     pub requires_key: bool,
     pub default_enabled: bool,
@@ -25,26 +27,42 @@ pub struct SourceSpec {
     pub license_note: &'static str,
 }
 
+/// 国内页签 = 这五个国内平台采集的条目；同作品若同时被国际源采集，两边页签都出现。
+pub(crate) use crate::app::catalog::store::valid_date;
+
+pub const DOMESTIC_SOURCES: &[&str] = &["bilibili", "tencent", "iqiyi", "youku", "mgtv"];
+/// 国外页签 = 国际源采集的条目。
+pub const FOREIGN_SOURCES: &[&str] = &["tvmaze", "anilist", "mangadex", "bangumi", "simkl", "kitsu", "tmdb"];
+
+/// 页签 → 该页签包含的采集源集合。
+pub fn scope_sources(scope: &str) -> &'static [&'static str] {
+    match scope {
+        "domestic" => DOMESTIC_SOURCES,
+        "foreign" => FOREIGN_SOURCES,
+        _ => &[],
+    }
+}
+
 pub const SOURCES: &[SourceSpec] = &[
-    SourceSpec { id: "tvmaze", label: "TVmaze", implemented: true, requires_key: false, default_enabled: true, coverage: "指定国家电视台每日节目 + 全球网络平台日历；非全部平台全集。保留节目当地日期与时区。", license_note: "公开 API，CC BY-SA；使用须署名 TVmaze，按其条款分享。" },
-    SourceSpec { id: "anilist", label: "AniList", implemented: true, requires_key: false, default_enabled: true, coverage: "动漫实际播出时间（完整分页）及连载漫画元数据；漫画无章节发布日期时不进入日历。", license_note: "公开 GraphQL，遵守 AniList API 条款；禁止大规模备份/商业竞争用途。" },
-    SourceSpec { id: "mangadex", label: "MangaDex", implemented: true, requires_key: false, default_enabled: true, coverage: "公开漫画目录及站内章节发布时间；属于译本/发行发布时间，不代表原作官方更新。默认排除成人分类。", license_note: "只读取公开元数据，不获取图片页、扫描内容或播放资源；遵守 API 限流与分页上限。" },
-    SourceSpec { id: "bangumi", label: "Bangumi", implemented: true, requires_key: false, default_enabled: true, coverage: "当前动漫周历与公开作品资料；固定星期不能确认单集日期，不据此虚构更新记录。", license_note: "公开 API，仅元数据；署名 Bangumi，遵守服务条款。" },
-    SourceSpec { id: "simkl", label: "SIMKL", implemented: true, requires_key: false, default_enabled: true, coverage: "公开动漫/电影/电视日历快照（含 MAL/TMDb/IMDb ID）；电影记为首映、电视带季集号，保留原始时区偏移。需授权的 API 端点不采集。", license_note: "公开日历资料，署名 SIMKL；不绕过需要 API key 的端点。" },
-    SourceSpec { id: "kitsu", label: "Kitsu", implemented: true, requires_key: false, default_enabled: false, coverage: "当前动漫/漫画元数据，按 next 完整分页；无单集日期时不进入日历。", license_note: "公开 JSON:API；只读取作品资料，遵守 Kitsu 服务条款。" },
-    SourceSpec { id: "tmdb", label: "TMDb", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按发现接口分页采集指定首播日期范围的影视元数据；发现接口不保证所有单集播出日。", license_note: "需要个人 API Read Access Token；署名 TMDb，非商业用途须遵守条款，商业另行授权。" },
-    SourceSpec { id: "bilibili", label: "哔哩哔哩", implemented: true, requires_key: false, default_enabled: true, coverage: "公开番剧/国创/综艺/影视时间线前后7日；没有平台全量索引，保留每一集。", license_note: "现有公开接口，只读节目元数据；不获取播放线路。" },
-    SourceSpec { id: "tencent", label: "腾讯视频", implemented: true, requires_key: false, default_enabled: true, coverage: "公开移动首页 + 频道列表分页；中文剧名、封面、演员与评分；无逐集日期，不生成更新日历。", license_note: "现有公开页面，只读节目资料；页面改版可能无法采集。" },
-    SourceSpec { id: "iqiyi", label: "爱奇艺", implemented: true, requires_key: false, default_enabled: true, coverage: "推荐页 + 频道关键词分页搜索；中文简介、集数、地区/题材、封面与评分；仍非全量目录。", license_note: "现有公开页面，只读节目资料；不获取播放线路。" },
-    SourceSpec { id: "youku", label: "优酷", implemented: true, requires_key: false, default_enabled: true, coverage: "公开电视剧频道卡片；中文剧名与集数状态；页面不提供年份/简介/封面，不生成更新日历。", license_note: "现有公开页面，只读资料；不获取播放线路。" },
-    SourceSpec { id: "mgtv", label: "芒果TV", implemented: true, requires_key: false, default_enabled: true, coverage: "公开频道列表（综艺/电视剧/动漫），带中文简介、类型、年份、集数与知乎评分；无确认单集日期，不进入更新日历。", license_note: "现有公开列表接口，只读节目元数据；不获取播放线路。" },
-    SourceSpec { id: "omdb", label: "OMDb / IMDb / Rotten Tomatoes", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按库内IMDb ID逐项获取原始评分；覆盖取决于OMDb授权，不推测观众好评率或评分人数。",  license_note: "需要 OMDb API key，评分字段取决于账户与授权；不抓取评价网站。" },
-    SourceSpec { id: "tvdb", label: "TheTVDB", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：需要 API v4 授权/订阅。", license_note: "需要遵守 TheTVDB 许可，不能借用他人 key。" },
-    SourceSpec { id: "trakt", label: "Trakt", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：需要注册应用 client ID；当前无授权。", license_note: "遵守 Trakt API 授权及速率限制。" },
-    SourceSpec { id: "jikan", label: "Jikan / MyAnimeList", implemented: false, requires_key: false, default_enabled: false, coverage: "未接入：开发机实测 api.jikan.moe 持续超时（网络不可达）。MAL 评分改走官方 API（见 MyAnimeList 源），MAL ID 已由 AniList/SIMKL 关联。", license_note: "Jikan 非官方只读 API；不冒用 MyAnimeList 授权。" },
-    SourceSpec { id: "mal", label: "MyAnimeList 官方", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按库内 MAL ID 逐项取动漫/漫画 mean 评分、排名与评分人数；覆盖取决于已关联 MAL ID 的作品。", license_note: "需要 MAL 官方 API 客户端 ID（免费申请）；遵守 MyAnimeList API 条款，不抓取受限页面。" },
-    SourceSpec { id: "douban", label: "豆瓣", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：没有可验证的公开批量评分接口或授权，不爬取受限页面。", license_note: "须获得合法数据访问授权；不虚构评分/好评率。" },
-    SourceSpec { id: "netflix", label: "奈飞", implemented: false, requires_key: false, default_enabled: false, coverage: netflix::NOTE, license_note: "Netflix 不提供公开更新列表接口；其原创剧集由 TVmaze 网络日历覆盖。" },
+    SourceSpec { id: "tvmaze", label: "TVmaze", scope: "foreign", implemented: true, requires_key: false, default_enabled: true, coverage: "指定国家电视台每日节目 + 全球网络平台日历；非全部平台全集。保留节目当地日期与时区。", license_note: "公开 API，CC BY-SA；使用须署名 TVmaze，按其条款分享。" },
+    SourceSpec { id: "anilist", label: "AniList", scope: "foreign", implemented: true, requires_key: false, default_enabled: true, coverage: "动漫实际播出时间（完整分页）及连载漫画元数据；漫画无章节发布日期时不进入日历。", license_note: "公开 GraphQL，遵守 AniList API 条款；禁止大规模备份/商业竞争用途。" },
+    SourceSpec { id: "mangadex", label: "MangaDex", scope: "foreign", implemented: true, requires_key: false, default_enabled: true, coverage: "公开漫画目录及站内章节发布时间；属于译本/发行发布时间，不代表原作官方更新。默认排除成人分类。", license_note: "只读取公开元数据，不获取图片页、扫描内容或播放资源；遵守 API 限流与分页上限。" },
+    SourceSpec { id: "bangumi", label: "Bangumi", scope: "foreign", implemented: true, requires_key: false, default_enabled: true, coverage: "当前动漫周历与公开作品资料；固定星期不能确认单集日期，不据此虚构更新记录。", license_note: "公开 API，仅元数据；署名 Bangumi，遵守服务条款。" },
+    SourceSpec { id: "simkl", label: "SIMKL", scope: "foreign", implemented: true, requires_key: false, default_enabled: true, coverage: "公开动漫/电影/电视日历快照（含 MAL/TMDb/IMDb ID）；电影记为首映、电视带季集号，保留原始时区偏移。需授权的 API 端点不采集。", license_note: "公开日历资料，署名 SIMKL；不绕过需要 API key 的端点。" },
+    SourceSpec { id: "kitsu", label: "Kitsu", scope: "foreign", implemented: true, requires_key: false, default_enabled: false, coverage: "当前动漫/漫画元数据，按 next 完整分页；无单集日期时不进入日历。", license_note: "公开 JSON:API；只读取作品资料，遵守 Kitsu 服务条款。" },
+    SourceSpec { id: "tmdb", label: "TMDb", scope: "foreign", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按发现接口分页采集指定首播日期范围的影视元数据；发现接口不保证所有单集播出日。", license_note: "需要个人 API Read Access Token；署名 TMDb，非商业用途须遵守条款，商业另行授权。" },
+    SourceSpec { id: "bilibili", label: "哔哩哔哩", scope: "domestic", implemented: true, requires_key: false, default_enabled: true, coverage: "公开番剧/国创/综艺/影视时间线前后7日；没有平台全量索引，保留每一集。", license_note: "现有公开接口，只读节目元数据；不获取播放线路。" },
+    SourceSpec { id: "tencent", label: "腾讯视频", scope: "domestic", implemented: true, requires_key: false, default_enabled: true, coverage: "公开移动首页 + 频道列表分页；中文剧名、封面、演员与评分；无逐集日期，不生成更新日历。", license_note: "现有公开页面，只读节目资料；页面改版可能无法采集。" },
+    SourceSpec { id: "iqiyi", label: "爱奇艺", scope: "domestic", implemented: true, requires_key: false, default_enabled: true, coverage: "推荐页 + 频道关键词分页搜索；中文简介、集数、地区/题材、封面与评分；仍非全量目录。", license_note: "现有公开页面，只读节目资料；不获取播放线路。" },
+    SourceSpec { id: "youku", label: "优酷", scope: "domestic", implemented: true, requires_key: false, default_enabled: true, coverage: "公开电视剧频道卡片；中文剧名与集数状态；页面不提供年份/简介/封面，不生成更新日历。", license_note: "现有公开页面，只读资料；不获取播放线路。" },
+    SourceSpec { id: "mgtv", label: "芒果TV", scope: "domestic", implemented: true, requires_key: false, default_enabled: true, coverage: "公开频道列表（综艺/电视剧/动漫），带中文简介、类型、年份、集数与知乎评分；无确认单集日期，不进入更新日历。", license_note: "现有公开列表接口，只读节目元数据；不获取播放线路。" },
+    SourceSpec { id: "omdb", label: "OMDb / IMDb / Rotten Tomatoes", scope: "", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按库内IMDb ID逐项获取原始评分；覆盖取决于OMDb授权，不推测观众好评率或评分人数。",  license_note: "需要 OMDb API key，评分字段取决于账户与授权；不抓取评价网站。" },
+    SourceSpec { id: "tvdb", label: "TheTVDB", scope: "foreign", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：需要 API v4 授权/订阅。", license_note: "需要遵守 TheTVDB 许可，不能借用他人 key。" },
+    SourceSpec { id: "trakt", label: "Trakt", scope: "foreign", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：需要注册应用 client ID；当前无授权。", license_note: "遵守 Trakt API 授权及速率限制。" },
+    SourceSpec { id: "jikan", label: "Jikan / MyAnimeList", scope: "foreign", implemented: false, requires_key: false, default_enabled: false, coverage: "未接入：开发机实测 api.jikan.moe 持续超时（网络不可达）。MAL 评分改走官方 API（见 MyAnimeList 源），MAL ID 已由 AniList/SIMKL 关联。", license_note: "Jikan 非官方只读 API；不冒用 MyAnimeList 授权。" },
+    SourceSpec { id: "mal", label: "MyAnimeList 官方", scope: "", implemented: true, requires_key: true, default_enabled: false, coverage: "授权后按库内 MAL ID 逐项取动漫/漫画 mean 评分、排名与评分人数；覆盖取决于已关联 MAL ID 的作品。", license_note: "需要 MAL 官方 API 客户端 ID（免费申请）；遵守 MyAnimeList API 条款，不抓取受限页面。" },
+    SourceSpec { id: "douban", label: "豆瓣", scope: "domestic", implemented: false, requires_key: true, default_enabled: false, coverage: "未接入：没有可验证的公开批量评分接口或授权，不爬取受限页面。", license_note: "须获得合法数据访问授权；不虚构评分/好评率。" },
+    SourceSpec { id: "netflix", label: "奈飞", scope: "foreign", implemented: false, requires_key: false, default_enabled: false, coverage: netflix::NOTE, license_note: "Netflix 不提供公开更新列表接口；其原创剧集由 TVmaze 网络日历覆盖。" },
 ];
 
 pub fn spec(id: &str) -> Result<&'static SourceSpec> {

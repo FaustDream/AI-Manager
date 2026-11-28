@@ -45,12 +45,14 @@ fn main() {
     config::init(&state.db);
 
     // 后台任务：调度器、启动扫描、技能同步、ZCode 领取、事件源桥、
-    // 用量采集、会话扫描、模型接口自启。事件经统一总线 → SSE 送浏览器。
-    let (db, checkin, activity, hub) = (
+    // 用量采集、会话扫描、模型接口自启、资料库最新更新热刷新。
+    // 事件经统一总线 → SSE 送浏览器。
+    let (db, checkin, activity, hub, catalog) = (
         state.db.clone(),
         state.checkin.clone(),
         state.activity.clone(),
         state.hub.clone(),
+        state.catalog.clone(),
     );
     background::spawn_scheduler(db.clone(), checkin.clone(), activity, state.catalog.clone());
     background::spawn_startup_scan(db.clone());
@@ -60,6 +62,8 @@ fn main() {
     background::spawn_usage_scan(db.clone());
     background::spawn_session_scan(state.sessions.clone());
     background::spawn_model_api(db);
+    background::spawn_catalog_hot_sync(catalog.clone());
+    background::spawn_catalog_dedupe_backfill(catalog);
 
     log::action(
         "app.startup",

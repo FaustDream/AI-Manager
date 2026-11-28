@@ -26,7 +26,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            launcher
 
       - uses: actions/setup-node@v4
         with:
@@ -52,6 +54,15 @@ jobs:
         run: cargo build --release
         working-directory: src-tauri
 
+      # 托盘启动器：独立 crate，管理后端生命周期
+      - name: 启动器测试门禁
+        run: cargo test
+        working-directory: launcher
+
+      - name: 构建启动器
+        run: cargo build --release
+        working-directory: launcher
+
       # release/ 被 .gitignore 忽略，克隆里不存在；makensis 与 Compress-Archive
       # 都不会自动建目录（表现为 NSIS 的 "Can't open output file"）
       - name: 准备产物目录
@@ -68,6 +79,7 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP "stage-$ver"
           New-Item -ItemType Directory $stage | Out-Null
           Copy-Item src-tauri\target\release\ai-manager.exe $stage
+          Copy-Item launcher\target\release\ai-manager-launcher.exe $stage
           Copy-Item dist (Join-Path $stage 'dist') -Recurse
           Copy-Item start.cmd $stage
           Copy-Item packaging\nsis\README.txt $stage

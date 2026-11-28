@@ -540,3 +540,59 @@ pub fn spawn_model_api(db: Arc<Db>) {
         }
     });
 }
+
+/// 一次性去重回填：升级后的第一轮把存量行补进新口径（归一化标题/人员/逐源信息），
+/// 并做首次全库扫描。60 秒后跑避开启动高峰；锁被占用就静默跳过（auto_sync 会补）。
+pub fn spawn_catalog_dedupe_backfill(catalog: Arc<crate::app::catalog::Service>) {
+    crate::app::runtime::runtime().spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        if let Err(err) = catalog.run_dedupe_backfill_once().await {
+            log::fail("catalog", "catalog_dedupe", "资料库去重回填失败", err.evidence());
+        }
+    });
+}
+
+/// 资料库「最新更新」热刷新：按 hot_interval_min（缺省 15 分钟，0=关闭）拉国内源
+/// 最轻页面（时间线/推荐页/首页），页面经 SSE 自动刷新。间隔每轮重读配置；
+/// 与全量采集共用互斥锁，挤不进去的本轮直接跳过。
+pub fn spawn_catalog_hot_sync(catalog: Arc<crate::app::catalog::Service>) {
+    crate::app::runtime::runtime().spawn(async move {
+        // 首跑延后 90 秒：避开启动扫描与首屏查询
+        tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+        let mut first_round = true;
+        loop {
+            let interval_min = crate::app::config::get().catalog.hot_interval_min;
+            if interval_min == 0 {
+                // 用户关掉了热刷新：低频探望，配置改回来下一轮生效
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                first_round = true;
+                continue;
+            }
+            let wait = if first_round { 0 } else { interval_min.max(1) };
+            if wait > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(wait * 60)).await;
+            }
+            first_round = false;
+            let started = std::time::Instant::now();
+            match catalog.hot_sync().await {
+                Ok(Some(report)) => {
+                    if report.added > 0 || report.updated > 0 {
+                        log::log(
+                            Level::Info,
+                            "catalog",
+                            format!(
+                                "最新更新热刷新：新增 {} · 更新 {} · 发行 {} 条（{}）",
+                                report.added,
+                                report.updated,
+                                report.releases,
+                                crate::app::log::fmt_ms(started.elapsed().as_millis() as u64)
+                            ),
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {} // hot_sync 内部已落失败日志
+            }
+        }
+    });
+}

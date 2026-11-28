@@ -70,7 +70,7 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       body: JSON.stringify(body),
     });
   } catch {
-    throw `命令 ${cmd} 发不出去：后端没在运行（双击 start.cmd 或执行 cargo run）`;
+    throw `命令 ${cmd} 发不出去：后端没在运行（从托盘启动器启动，或执行 start.cmd / cargo run）`;
   }
   const reply = (await res.json().catch(() => null)) as {
     ok: boolean;

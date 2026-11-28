@@ -60,7 +60,7 @@ export function CatalogSources() {
 
   const refresh = (source?: string) => run(`refresh:${source ?? 'all'}`, async () => {
     if (dateError) return;
-    const request: CatalogSyncRequest = { sources: source ? [source] : target ? [target] : null, mode, start: start || null, end: end || null };
+    const request: CatalogSyncRequest = { sources: source ? [source] : target ? [target] : null, mode, start: start || null, end: end || null, max_pages: null };
     const result = await runCmd('catalog_refresh', { request });
     if (result !== undefined) { setReport(result); await invalidate(); }
   });

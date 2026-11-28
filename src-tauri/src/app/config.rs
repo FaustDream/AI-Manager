@@ -26,6 +26,12 @@ pub struct CatalogConfig {
     pub detail_interval_hours: u64,
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub full_check_days: u64,
+    /// 最新更新热刷新间隔（分钟）。0 = 关闭热刷新；国内源轻页面增量，SSE 推送自动刷新
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub hot_interval_min: u64,
+    /// 热刷新单源页预算（小预算让 B站 只拉时间线、其余源只拉首页/推荐页）
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub hot_max_pages: u32,
     pub history_days: u32,
     pub future_days: u32,
     pub max_pages_per_job: u32,
@@ -43,7 +49,8 @@ impl Default for CatalogConfig {
     fn default() -> Self {
         Self {
             enabled: true, sync_interval_min: 180, detail_interval_hours: 24,
-            full_check_days: 7, history_days: 7, future_days: 7,
+            full_check_days: 7, hot_interval_min: 15, hot_max_pages: 6,
+            history_days: 7, future_days: 7,
             max_pages_per_job: 128, retry_count: 2, retry_delay_ms: 1500,
             request_gap_ms: 700, source_timeout_secs: 600,
             countries: ["CN", "JP", "KR", "US", "GB", "TH", "HK", "TW", "FR", "DE", "ES", "IT", "AU", "CA"]
@@ -289,6 +296,10 @@ enabled = true
 sync_interval_min = 180
 detail_interval_hours = 24
 full_check_days = 7
+# 最新更新热刷新间隔（分钟），0 = 关闭；只拉国内源最轻页面并推送页面刷新
+hot_interval_min = 15
+# 热刷新单源页预算（小预算 = 只拉时间线/首页/推荐页）
+hot_max_pages = 6
 history_days = 7
 future_days = 7
 max_pages_per_job = 128

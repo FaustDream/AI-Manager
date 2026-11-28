@@ -80,7 +80,9 @@ Both artifacts live in [Releases](https://github.com/FaustDream/AI-Manager/relea
 
 Requirements: Windows 10 or later plus a modern browser (Edge, Chrome, …). No .NET, no WebView2, no administrator rights.
 
-> Start with `start.cmd`: it launches the local backend and opens the page. The minimized console window is the backend's log console. Closing the browser tab does **not** stop the backend — use the power button in the page's top bar to really quit.
+> Daily use is handled by the **tray launcher** `ai-manager-launcher.exe`: double-click it (or the Start-menu/desktop shortcut) and it lives in the system tray, starts the local backend and opens the page. The tray icon reflects the service state; the right-click menu starts / stops / restarts the project, and a left click opens a status window with the backend console output and the structured call-chain log. Closing the browser tab does **not** stop the backend — quit via the tray menu "关闭项目" or the power button in the page's top bar.
+>
+> `start.cmd` remains the development fallback: it incrementally rebuilds the backend before launching. Autostart on login is toggled from the launcher's tray menu.
 
 > **Unsigned build.** On first launch Windows SmartScreen may show "Windows protected your PC" — choose "More info" → "Run anyway". Every release ships a `SHA256SUMS.txt` so you can verify what you downloaded.
 
@@ -93,6 +95,8 @@ npm ci
 
 # Daily use: build once if needed, start the backend, open the browser
 start.cmd
+# Or build the tray launcher once, then manage start/stop/restart from the tray
+cd launcher && cargo build --release
 
 # Development: one command starts Vite + the backend and opens a browser
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-run.ps1
@@ -107,7 +111,7 @@ npm run build
 cd src-tauri && cargo build --release
 ```
 
-`src-tauri` has a single binary, `ai-manager`: a local axum service that hosts the built frontend from its own `dist/` folder and exposes `/cmd` plus `/events` on the same port. A release folder therefore needs `ai-manager.exe` + `dist/` + `start.cmd` together — a missing `dist/` means a 404 page.
+`src-tauri` has a single binary, `ai-manager`: a local axum service that hosts the built frontend from its own `dist/` folder and exposes `/cmd` plus `/events` on the same port. `launcher/` is a standalone tray-launcher crate (`ai-manager-launcher.exe`) that only manages the backend lifecycle. A release folder therefore needs `ai-manager.exe` + `ai-manager-launcher.exe` + `dist/` + `start.cmd` together — a missing `dist/` means a 404 page.
 
 The backend binds `127.0.0.1` only and holds the single-instance lock, so a second copy is refused by design (two schedulers must not write the same database).
 

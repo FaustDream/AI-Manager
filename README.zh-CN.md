@@ -78,7 +78,9 @@ Trae 的登录态是设备绑定的加密格式，无法安全写回，请在 Tr
 
 系统要求：Windows 10 及以上 + 一个现代浏览器（Edge / Chrome 等）。不需要 .NET，不需要 WebView2，不需要管理员权限。
 
-> 用 `start.cmd` 启动：它拉起本机后端并自动打开页面，最小化的控制台窗口就是后端日志窗口。关掉浏览器标签页**不会**停后端——要真正退出，点页面右上角的电源按钮。
+> 日常使用交给**托盘启动器** `ai-manager-launcher.exe`：双击（或由开始菜单/桌面快捷方式）后常驻系统托盘，自动拉起本机后端并打开页面；托盘图标反映运行状态，右键菜单可启动 / 关闭 / 重启项目，左键点开状态窗口查看后端输出与调用链日志。关掉浏览器标签页**不会**停后端——要退出服务用托盘菜单「关闭项目」，或点页面右上角的电源按钮。
+>
+> `start.cmd` 保留为开发兜底：它会增量重建后端再拉起。设置里的「开机自启」由启动器的托盘菜单管理。
 
 > **未签名构建。** 首次启动时 Windows SmartScreen 可能提示「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」即可。每个 Release 都附带 `SHA256SUMS.txt`，可自行校验下载内容。
 
@@ -91,6 +93,8 @@ npm ci
 
 # 日常使用：缺产物先构建，然后拉后端 + 开浏览器
 start.cmd
+# 或者构建一次托盘启动器，之后用它管理服务的启动 / 关闭 / 重启
+cd launcher && cargo build --release
 
 # 开发：一条命令，自动启动 Vite + 后端，并用浏览器打开
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-run.ps1
@@ -105,7 +109,7 @@ npm run build
 cd src-tauri && cargo build --release
 ```
 
-`src-tauri` 只有一个二进制 `ai-manager`：本机 axum 服务，从自身同级 `dist/` 托管前端产物，并在同一端口提供 `/cmd` 与 `/events`。所以发布目录里 `ai-manager.exe` + `dist/` + `start.cmd` 必须齐备——漏带 `dist/` 页面直接 404。
+`src-tauri` 只有一个二进制 `ai-manager`：本机 axum 服务，从自身同级 `dist/` 托管前端产物，并在同一端口提供 `/cmd` 与 `/events`。`launcher/` 是独立的托盘启动器 crate（`ai-manager-launcher.exe`），只管后端生命周期，不承载业务。发布目录里 `ai-manager.exe` + `ai-manager-launcher.exe` + `dist/` + `start.cmd` 必须齐备——漏带 `dist/` 页面直接 404。
 
 后端只绑 `127.0.0.1`，并持有单实例锁：第二份实例会被拒绝，这是设计行为（两个调度器不能同时写同一个库）。
 

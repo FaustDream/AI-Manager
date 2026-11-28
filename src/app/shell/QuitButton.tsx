@@ -47,7 +47,7 @@ export function QuitButton() {
           <p className="text-base font-semibold text-fg">AI Manager 已退出</p>
           <p className="text-sm text-muted">
             后端进程已结束，定时任务不再运行。可以关闭此页面；
-            需要再用时双击 start.cmd 重新启动。
+            需要再用时从托盘启动器（或双击 start.cmd）重新启动。
           </p>
         </div>
       )}

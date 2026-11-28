@@ -16,11 +16,20 @@ pub async fn catalog_releases(state: &AppState, query: CatalogQuery) -> std::res
 pub async fn catalog_detail(state: &AppState, key: String) -> std::result::Result<Option<CatalogDetail>, String> {
     state.catalog.detail(key).await.map_err(err_text)
 }
-pub async fn catalog_overview(state: &AppState) -> std::result::Result<CatalogOverview, String> {
-    state.catalog.overview().await.map_err(err_text)
+pub async fn catalog_overview(state: &AppState, scope: Option<String>) -> std::result::Result<CatalogOverview, String> {
+    state.catalog.overview(scope).await.map_err(err_text)
 }
 pub async fn catalog_facets(state: &AppState, query: CatalogQuery) -> std::result::Result<CatalogFacets, String> {
     state.catalog.facets(query).await.map_err(err_text)
+}
+pub async fn catalog_merge(state: &AppState, request: CatalogMergeRequest) -> std::result::Result<String, String> {
+    state.catalog.merge(request).await.map_err(err_text)
+}
+pub async fn catalog_follow_list(state: &AppState, states: Option<Vec<String>>) -> std::result::Result<Vec<CatalogFollowRow>, String> {
+    state.catalog.follow_list(states).await.map_err(err_text)
+}
+pub async fn catalog_follow_set(app: &AppState, key: String, follow_state: Option<String>) -> std::result::Result<String, String> {
+    app.catalog.follow_set(key, follow_state).await.map(|_| "追剧状态已更新".to_string()).map_err(err_text)
 }
 pub async fn catalog_jobs(state: &AppState) -> std::result::Result<Vec<CatalogJob>, String> {
     state.catalog.jobs().await.map_err(err_text)

@@ -22,7 +22,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            launcher
 
       - name: 格式检查
         run: cargo fmt --all -- --check
@@ -41,6 +43,31 @@ jobs:
             Write-Host "::error::src/lib/types/ 有未提交的类型生成物——先在本地跑 cargo test --features ts 并提交"
             exit 1
           }
+
+  launcher:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+
+      - name: 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（警告即失败）
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: 测试
+        run: cargo test
 
   frontend:
     runs-on: ubuntu-latest

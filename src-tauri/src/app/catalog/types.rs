@@ -116,6 +116,35 @@ pub struct CatalogDetail {
     pub ratings: Vec<CatalogRating>,
     pub seasons: Vec<CatalogSeason>,
     pub releases: Vec<CatalogRelease>,
+    /// 同一作品在各采集源的落地信息（标题/网址/集数文案），合并后仍逐源保留
+    pub source_infos: Vec<CatalogSourceInfo>,
+    /// 疑似同一作品但证据不足的候选（标题一致、年份缺失或冲突），供人工合并
+    pub dupe_candidates: Vec<CatalogDupeCandidate>,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogSourceInfo {
+    pub source: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub episode_text: Option<String>,
+    pub updated_at: String,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogDupeCandidate {
+    pub key_a: String,
+    pub key_b: String,
+    pub reason: String,
+    pub title_a: String,
+    pub title_b: String,
+    pub year_a: Option<i32>,
+    pub year_b: Option<i32>,
+    pub created_at: String,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -137,6 +166,48 @@ pub struct CatalogQuery {
     pub sort: Option<String>,
     pub page: Option<u32>,
     pub page_size: Option<u32>,
+    /// 国内 / 国外页签：domestic=国内源采集的条目，foreign=国际源。空 = 全部
+    pub scope: Option<String>,
+    /// 地区多选（任一命中即通过；与 region 单选并存，UI 目前用单选）
+    pub regions: Vec<String>,
+    /// 题材多选，配合 genre_mode 决定任一/全部
+    pub genres: Vec<String>,
+    pub genre_mode: Option<String>,
+    /// 演员多选，配合 cast_mode 决定任一/全部（「两个演员同框」用 all）
+    pub cast: Vec<String>,
+    pub cast_mode: Option<String>,
+    /// 年份区间（与单值 year 并存；区间优先语义上与 year 相互独立）
+    pub year_from: Option<i32>,
+    pub year_to: Option<i32>,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogFollowRow {
+    pub media: CatalogMedia,
+    /// want=想看 / watching=在追 / shelve=搁置 / done=看完
+    pub state: String,
+    pub updated_at: String,
+    /// 最近一次确认发行的日期（无发行记录为空）
+    pub latest_release: Option<String>,
+    /// 最近一次确认发行的集数文案
+    pub latest_episode: Option<String>,
+    /// 未来最近一次计划发行日期（无为空）
+    pub next_release: Option<String>,
+}
+
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../src/lib/types/"))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CatalogMergeRequest {
+    /// 保留的条目（当前查看的资料库 ID）
+    pub keep: String,
+    /// 被合并的条目（疑似重复的另一条）
+    pub drop: String,
+    /// true=执行合并；false=标记「不是同一作品」忽略候选
+    pub merge: bool,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -210,6 +281,8 @@ pub struct CatalogSyncRequest {
     pub mode: Option<String>,
     pub start: Option<String>,
     pub end: Option<String>,
+    /// 本轮每源页预算覆盖（热增量用小预算，只拉最新页面；缺省用 config.max_pages_per_job）
+    pub max_pages: Option<u32>,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -218,6 +291,8 @@ pub struct CatalogSyncRequest {
 pub struct CatalogSourceStatus {
     pub source: String,
     pub label: String,
+    /// 国内 / 国外页签归属（评分回填源为空串）
+    pub scope: String,
     pub enabled: bool,
     pub implemented: bool,
     pub requires_key: bool,

@@ -1,0 +1,42 @@
+[package]
+name = "ai-manager-launcher"
+version = "2.1.0"
+edition = "2021"
+description = "AI Manager 启动器：托盘常驻，管理本机后端服务的启动/关闭/重启"
+
+# 独立 crate：不与 src-tauri 组 workspace，互不拖累构建与门禁。
+# 只管生命周期（拉起/停止/重启后端），不承载任何业务逻辑。
+
+[[bin]]
+name = "ai-manager-launcher"
+path = "src/main.rs"
+
+[dependencies]
+# 仅用于解析 app.jsonl 的结构化日志行
+serde_json = "1"
+# 托盘与菜单（tauri-apps 维护，内部自带 muda）
+tray-icon = "0.27"
+
+[target.'cfg(windows)'.dependencies]
+# 与主仓同一 Win32 绑定库；features 按需开
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",               # CreateFontW / GetSysColorBrush：日志窗格等宽字体与窗口底色
+    "Win32_Security",                   # CreateMutexW 的 SECURITY_ATTRIBUTES 参数门
+    "Win32_System_LibraryLoader",       # GetModuleHandleW：注册窗口类
+    "Win32_System_Registry",            # HKCU Run 开机自启
+    "Win32_System_SystemInformation",   # GetLocalTime：控制台时间戳（不引 chrono）
+    "Win32_System_Threading",           # CreateMutexW / CloseHandle：启动器单实例锁
+    "Win32_UI_Controls",                # EM_*：EDIT 控件消息（追加日志行）
+    "Win32_UI_Shell",                   # ShellExecuteW：打开界面 / 日志目录
+    "Win32_UI_WindowsAndMessaging",     # 状态窗口、消息泵、SetForegroundWindow
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+panic = "unwind"
+opt-level = "s"
+lto = true
+strip = true

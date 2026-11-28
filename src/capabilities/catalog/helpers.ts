@@ -194,3 +194,23 @@ export function provenanceText(value: string | null | undefined): string {
     return url.href;
   } catch { return '非有效网址（不可打开）'; }
 }
+
+/** 追剧状态文案（want=想看 / watching=在追 / shelve=搁置 / done=看完）。 */
+export const FOLLOW_LABELS: Record<string, string> = {
+  want: '想看', watching: '在追', shelve: '搁置', done: '看完',
+};
+export function followLabel(value: string): string { return FOLLOW_LABELS[value] ?? value; }
+
+/** 已确认可安全跳转的国内平台搜索页：没有详情直链时的「去哪看」兜底。 */
+export function platformSearchUrl(platform: string, title: string): string | null {
+  const keyword = encodeURIComponent(title.trim());
+  if (!keyword) return null;
+  switch (platform) {
+    case 'bilibili': return `https://search.bilibili.com/all?keyword=${keyword}`;
+    case 'iqiyi': return `https://so.iqiyi.com/so/q_${keyword}`;
+    case 'tencent': return `https://v.qq.com/x/search/?q=${keyword}`;
+    case 'youku': return `https://so.youku.com/search_video/q_${keyword}`;
+    case 'mgtv': return `https://search.mgtv.com/all?q=${keyword}`;
+    default: return null;
+  }
+}

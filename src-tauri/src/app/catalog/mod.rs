@@ -40,6 +40,7 @@ impl Service {
             sources::SOURCES.iter().map(|s| {
                 let mut state = store::source_state(&db, s.id)?.unwrap_or_default();
                 state.source = s.id.into(); state.label = s.label.into();
+                state.scope = s.scope.into();
                 state.enabled = store::source_enabled(&db, s.id)?;
                 state.implemented = s.implemented; state.requires_key = s.requires_key;
                 state.configured = !s.requires_key || store::source_key(&db, s.id)?.is_some();
@@ -78,7 +79,15 @@ impl Service {
     }
 
     pub async fn refresh(&self, request: CatalogSyncRequest) -> Result<CatalogRefreshReport> {
-        let _guard = self.ingestion.try_lock().map_err(|_| AppError::new(ErrorKind::Conflict, "资料库正在采集，请等待当前任务完成"))?;
+        let guard = self.ingestion.try_lock().map_err(|_| AppError::new(ErrorKind::Conflict, "资料库正在采集，请等待当前任务完成"))?;
+        self.refresh_locked(request, guard).await
+    }
+
+    async fn refresh_locked(
+        &self,
+        request: CatalogSyncRequest,
+        _guard: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<CatalogRefreshReport> {
         let mode = request.mode.as_deref().unwrap_or("incremental");
         if !matches!(mode, "incremental" | "full" | "history") {
             return Err(AppError::new(ErrorKind::Invalid, "采集模式必须是 incremental、full 或 history"));
@@ -88,6 +97,7 @@ impl Service {
         if config.countries.iter().any(|c| c.len() != 2 || !c.bytes().all(|b| b.is_ascii_uppercase())) {
             return Err(AppError::new(ErrorKind::Invalid, "采集国家应使用大写双字母ISO地区代码"));
         }
+        let max_pages = request.max_pages.unwrap_or(config.max_pages_per_job).clamp(1, 4096);
         let today = chrono::Local::now().date_naive();
         let start = parse_date(request.start.as_deref())?.unwrap_or(today - chrono::Duration::days(i64::from(config.history_days)));
         let end = parse_date(request.end.as_deref())?.unwrap_or(today + chrono::Duration::days(i64::from(config.future_days) + 1));
@@ -117,7 +127,7 @@ impl Service {
             state.last_attempt = Some(job.started_at.clone());
             state.status = "running".into(); state.error = None; state.warning = None;
             let db = self.db.clone(); let j = job.clone(); let st = state.clone();
-            let range_stamp = range.clone(); let r = CatalogSyncRequest { sources: Some(vec![source.clone()]), mode: Some(mode.into()), start: Some(start.to_string()), end: Some(end.to_string()) };
+            let range_stamp = range.clone(); let r = CatalogSyncRequest { sources: Some(vec![source.clone()]), mode: Some(mode.into()), start: Some(start.to_string()), end: Some(end.to_string()), max_pages: request.max_pages };
             blocking(move || {
                 store::save_job(&db, &j)?; store::set_source_state(&db, &st)?;
                 db.kv_set(&format!("catalog.range.{}", j.source), &range_stamp)?;
@@ -125,7 +135,7 @@ impl Service {
             }).await??;
             let ctx = sources::AdapterContext {
                 http: self.http.clone(), start, end, mode: mode.into(), cursor,
-                max_pages: config.max_pages_per_job.max(1), countries: config.countries.clone(), token,
+                max_pages, countries: config.countries.clone(), token,
             };
             let (tx, mut rx) = tokio::sync::mpsc::channel(2);
             let source_clone = source.clone();
@@ -210,6 +220,65 @@ impl Service {
         self.refresh(serde_json::from_str(&raw)?).await
     }
 
+    /// 最新更新热刷新：只拉国内源最轻的页面（时间线/推荐页/首页，约 20 请求），
+    /// 让「最新更新」以分钟级保持新鲜。锁被全量采集占着就本轮跳过；
+    /// 失败只落日志，不打断后台循环。
+    pub async fn hot_sync(&self) -> Result<Option<CatalogRefreshReport>> {
+        let config = crate::app::config::get().catalog;
+        if !config.enabled || config.hot_interval_min == 0 {
+            return Ok(None);
+        }
+        let Ok(guard) = self.ingestion.try_lock() else { return Ok(None) };
+        let domestic: Vec<String> = sources::DOMESTIC_SOURCES.iter().map(|s| (*s).to_string()).collect();
+        let request = CatalogSyncRequest {
+            sources: Some(domestic),
+            mode: Some("incremental".into()),
+            max_pages: Some(config.hot_max_pages.max(1)),
+            ..Default::default()
+        };
+        match self.refresh_locked(request, guard).await {
+            Ok(report) => Ok(Some(report)),
+            Err(err) => {
+                crate::app::log::fail("catalog", "catalog_hot", "最新更新热刷新失败，下轮再试", err.evidence());
+                Ok(None)
+            }
+        }
+    }
+
+    pub async fn follow_set(&self, key: String, state: Option<String>) -> Result<()> {
+        if key.trim().is_empty() {
+            return Err(AppError::new(ErrorKind::Invalid, "资料条目 ID 不能为空"));
+        }
+        if let Some(state) = state.as_deref() {
+            if !crate::app::catalog::store::FOLLOW_STATES.contains(&state) {
+                return Err(AppError::new(ErrorKind::Invalid, "追剧状态只能是 want、watching、shelve 或 done"));
+            }
+        }
+        let db = self.db.clone(); let key = key.trim().to_string(); let now = now_text();
+        blocking(move || store::follow_set(&db, &key, state.as_deref(), &now)).await?
+    }
+
+    pub async fn follow_list(&self, states: Option<Vec<String>>) -> Result<Vec<CatalogFollowRow>> {
+        let db = self.db.clone();
+        let states = states.unwrap_or_default();
+        for state in &states {
+            if !crate::app::catalog::store::FOLLOW_STATES.contains(&state.as_str()) {
+                return Err(AppError::new(ErrorKind::Invalid, "追剧状态只能是 want、watching、shelve 或 done"));
+            }
+        }
+        blocking(move || store::follow_list(&db, &states)).await?
+    }
+
+    pub async fn merge(&self, request: CatalogMergeRequest) -> Result<String> {
+        let keep = request.keep.trim().to_string();
+        let drop = request.drop.trim().to_string();
+        if keep.is_empty() || drop.is_empty() {
+            return Err(AppError::new(ErrorKind::Invalid, "合并需要提供两条资料库 ID"));
+        }
+        let db = self.db.clone(); let now = now_text();
+        blocking(move || store::merge_candidates(&db, &keep, &drop, request.merge, &now)).await?
+    }
+
     pub async fn library(&self, query: CatalogQuery) -> Result<CatalogPage> {
         validate_query(&query)?;
         let db = self.db.clone(); blocking(move || store::library(&db, &query)).await?
@@ -229,15 +298,56 @@ impl Service {
     pub async fn jobs(&self) -> Result<Vec<CatalogJob>> {
         let db = self.db.clone(); blocking(move || store::jobs(&db)).await?
     }
-    pub async fn overview(&self) -> Result<CatalogOverview> {
+    pub async fn overview(&self, scope: Option<String>) -> Result<CatalogOverview> {
         let today = chrono::Local::now().date_naive();
         let monday = today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()));
         let end = monday + chrono::Duration::days(7);
-        let db = self.db.clone(); blocking(move || store::overview(&db, &today.to_string(), &monday.to_string(), &end.to_string())).await?
+        let db = self.db.clone(); let scope = scope.filter(|s| matches!(s.as_str(), "domestic" | "foreign"));
+        blocking(move || store::overview(&db, &today.to_string(), &monday.to_string(), &end.to_string(), scope.as_deref())).await?
+    }
+
+    /// 一次性去重回填的启动入口：锁被占用就静默跳过（下一轮 auto_sync 会补）。
+    pub async fn run_dedupe_backfill_once(&self) -> Result<()> {
+        // 持锁到函数结束：回填期间不允许采集并发写同一批表
+        let Ok(_guard) = self.ingestion.try_lock() else { return Ok(()) };
+        let db = self.db.clone(); let now = now_text();
+        let report = blocking(move || store::dedupe_backfill(&db, &now)).await??;
+        if report.norm_backfilled > 0 || report.merged > 0 || report.suspects > 0 {
+            crate::app::log::log(
+                crate::app::log::Level::Info,
+                "catalog",
+                format!(
+                    "资料库去重回填：自动合并 {} 行，疑似重复候选 {} 组，回填归一化标题 {} / 人员 {} / 来源信息 {} 行",
+                    report.merged, report.suspects, report.norm_backfilled, report.people_backfilled, report.source_info_backfilled
+                ),
+            );
+            crate::app::events::emit("catalog:updated", &report);
+        }
+        Ok(())
     }
 
     pub async fn auto_sync(&self) -> Result<CatalogRefreshReport> {
         let config = crate::app::config::get().catalog;
+        // 一次性回填 + 全库去重扫描：存量行在本次之后进入「归一化标题匹配」口径。
+        // 锁被占用说明有采集在跑，下轮 auto_sync 再补。
+        if let Ok(_guard) = self.ingestion.try_lock() {
+            let db = self.db.clone(); let now = now_text();
+            match blocking(move || store::dedupe_backfill(&db, &now)).await {
+                Ok(Ok(report)) if report.norm_backfilled > 0 || report.merged > 0 || report.suspects > 0 => {
+                    crate::app::log::log(
+                        crate::app::log::Level::Info,
+                        "catalog",
+                        format!(
+                            "资料库去重回填：自动合并 {} 行，疑似重复候选 {} 组，回填归一化标题 {} / 人员 {} / 来源信息 {} 行",
+                            report.merged, report.suspects, report.norm_backfilled, report.people_backfilled, report.source_info_backfilled
+                        ),
+                    );
+                    crate::app::events::emit("catalog:updated", &report);
+                }
+                Ok(_) => {}
+                Err(e) => crate::app::log::fail("catalog", "catalog_dedupe", "资料库去重回填失败", e.evidence()),
+            }
+        }
         let db = self.db.clone();
         let last = blocking(move || db.kv_get("catalog.full_check")).await??;
         let full_due = last.and_then(|s| s.parse::<i64>().ok()).is_none_or(|stamp| crate::app::timeutil::now_ms() - stamp >= (config.full_check_days.clamp(1, 365) * 86_400_000) as i64);
@@ -280,6 +390,22 @@ fn validate_query(query: &CatalogQuery) -> Result<()> {
     if query.weekday.is_some_and(|d| !(1..=7).contains(&d)) { return Err(AppError::new(ErrorKind::Invalid, "星期范围为1至7")); }
     if query.search.as_ref().is_some_and(|s| s.len() > 1024) || query.min_rating.is_some_and(|r| !r.is_finite() || !(0.0..=10.0).contains(&r)) {
         return Err(AppError::new(ErrorKind::Invalid, "搜索过长或评分超出0至10"));
+    }
+    if query.scope.as_deref().is_some_and(|s| !matches!(s, "domestic" | "foreign")) {
+        return Err(AppError::new(ErrorKind::Invalid, "scope 只能是 domestic 或 foreign"));
+    }
+    if query.genre_mode.as_deref().is_some_and(|m| !matches!(m, "any" | "all"))
+        || query.cast_mode.as_deref().is_some_and(|m| !matches!(m, "any" | "all")) {
+        return Err(AppError::new(ErrorKind::Invalid, "组合方式只能是 any（任一）或 all（全部）"));
+    }
+    let too_many = |list: &[String], limit: usize| {
+        list.len() > limit || list.iter().any(|v| v.trim().is_empty() || v.len() > 120)
+    };
+    if too_many(&query.genres, 8) || too_many(&query.cast, 8) || too_many(&query.regions, 8) {
+        return Err(AppError::new(ErrorKind::Invalid, "多选筛选最多 8 项，且每项不能为空或超长"));
+    }
+    if matches!((query.year_from, query.year_to), (Some(from), Some(to)) if from > to) {
+        return Err(AppError::new(ErrorKind::Invalid, "年份区间起点不能晚于终点"));
     }
     Ok(())
 }

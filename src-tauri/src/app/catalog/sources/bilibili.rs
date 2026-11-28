@@ -17,7 +17,7 @@ use crate::app::catalog::sources::AdapterContext;
 use chrono::{DateTime, Datelike, FixedOffset, TimeZone, Utc};
 use futures_util::future::join_all;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tokio::sync::mpsc::Sender;
 
 const INDEX_URL: &str = "https://api.bilibili.com/pgc/season/index/result";
@@ -42,14 +42,17 @@ const UA: &str = super::DESKTOP_UA;
 pub async fn fetch(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<()> {
     let catalog = collect_catalog(&ctx).await;
     let timeline = collect_timeline(&ctx).await;
+    // 目录批 complete 与否取决于时间线批是否会来：最后一批必须是 complete=true，
+    // 否则整源永远停在「分页未完成」。
     match catalog {
         Ok(items) => {
+            let timeline_follows = timeline.as_ref().map(|i| !i.is_empty()).unwrap_or(false);
             publish(&tx, IngestionBatch {
                 items,
                 page: 1,
-                complete: true,
+                complete: !timeline_follows,
                 http_status: Some(200),
-                warning: Some("目录按热度取每个频道第一页；没有剧集确认日期的条目只进媒体库，不伪造发行日历".into()),
+                warning: Some("目录按热度分页：频道首页条目带详情，深入页只有索引字段；没有剧集确认日期的条目只进媒体库，不伪造发行日历".into()),
                 ..Default::default()
             }).await?;
         }
@@ -70,54 +73,63 @@ pub async fn fetch(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<()
     Ok(())
 }
 
-/// 目录：每个频道首页 + 逐条详情。详情失败不拖垮整源，该条退回收到的索引字段。
+/// 目录：每个频道按热度分页（页预算 = max_pages 扣掉时间线后均分到 6 个频道），
+/// 频道首页条目逐条补详情，深入页只用索引字段进库。
+/// 热增量（页预算 ≤ 6）只拉时间线：目录翻页留给常规采集轮。
 async fn collect_catalog(ctx: &AdapterContext) -> Result<Vec<MediaDraft>> {
-    let requests = KINDS.iter().map(|(kind_id, kind)| {
-        let http = ctx.http.clone();
-        async move {
-            let url = format!(
-                "{INDEX_URL}?season_type={kind_id}&is_finish=-1&order=3&page=1&pagesize={PAGE_SIZE}&type=1"
-            );
-            let req = HttpRequest::get(url)
-                .header("User-Agent", UA)
-                .header("Referer", "https://www.bilibili.com/");
-            let resp = http.send(req).await?;
-            Ok::<_, AppError>((*kind, resp))
-        }
-    });
-    let mut items = Vec::new();
+    let pages_per_type = if ctx.max_pages <= 6 {
+        0
+    } else {
+        ((ctx.max_pages - 6) / 6).clamp(1, 24)
+    };
+    let mut index: Vec<IndexItem> = Vec::new();
+    let mut detail_ids: BTreeSet<String> = BTreeSet::new();
     let mut first_error = None;
-    for result in join_all(requests).await {
-        let (kind, resp) = match result {
-            Ok(value) => value,
-            Err(err) => {
-                first_error.get_or_insert(err);
-                continue;
-            }
-        };
-        match resp {
-            resp if resp.is_ok() => match parse_index(kind, &resp.body) {
-                Ok(mut rows) => items.append(&mut rows),
-                Err(err) => {
-                    first_error.get_or_insert(err);
+    if pages_per_type > 0 {
+        for (kind_id, kind) in KINDS {
+            for page in 1..=pages_per_type {
+                let url = format!(
+                    "{INDEX_URL}?season_type={kind_id}&is_finish=-1&order=3&page={page}&pagesize={PAGE_SIZE}&type=1"
+                );
+                let req = HttpRequest::get(url)
+                    .header("User-Agent", UA)
+                    .header("Referer", "https://www.bilibili.com/");
+                let resp = match ctx.http.send(req).await {
+                    Ok(resp) => resp,
+                    Err(err) => { first_error.get_or_insert(err); break; }
+                };
+                if !resp.is_ok() {
+                    first_error.get_or_insert_with(|| AppError::new(ErrorKind::Provider, "哔哩哔哩目录返回错误状态"));
+                    break;
                 }
-            },
-            _ => {
-                first_error.get_or_insert_with(|| {
-                    AppError::new(ErrorKind::Provider, "哔哩哔哩目录返回错误状态")
-                });
+                let rows = match parse_index(kind, &resp.body) {
+                    Ok(rows) => rows,
+                    Err(err) => { first_error.get_or_insert(err); break; }
+                };
+                let exhausted = rows.len() < PAGE_SIZE as usize;
+                if page == 1 {
+                    for item in &rows { detail_ids.insert(item.season_id.clone()); }
+                }
+                index.extend(rows);
+                if exhausted { break; }
+                pace().await;
             }
         }
     }
-    if items.is_empty() {
+    if index.is_empty() {
         if let Some(err) = first_error {
             return Err(err);
         }
         return Ok(Vec::new());
     }
-    let mut out = Vec::with_capacity(items.len());
+    let mut out = Vec::with_capacity(index.len());
     let mut detail_error = None;
-    for item in items {
+    for item in index {
+        if !detail_ids.contains(&item.season_id) {
+            // 深入页只有索引字段：标题/封面/评分/完结状态足够进库与展示
+            out.push(index_draft(item));
+            continue;
+        }
         pace().await;
         let url = format!("{SEASON_URL}?season_id={}", item.season_id);
         let req = HttpRequest::get(url)

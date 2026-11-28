@@ -636,16 +636,16 @@ struct QuotaView {
     windows: std::collections::HashMap<String, f64>,
 }
 
-const LIMIT_URL: &str = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
-const SUBSCRIPTION_URL: &str = "https://open.bigmodel.cn/api/biz/subscription/list";
-const BALANCE_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/billing/balance";
+pub const LIMIT_URL: &str = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
+pub const SUBSCRIPTION_URL: &str = "https://open.bigmodel.cn/api/biz/subscription/list";
+pub const BALANCE_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/billing/balance";
 /// 客户端版本号。活动接口的 app_version 参数与这里保持同源（zclaim 用）。
 pub(crate) const APP_VERSION: &str = "3.16.3";
 
 impl ZCodeProvider {
     /// 客户端真实会用的 token 顺序：JWT 优先，其次 provider 的 access token，
     /// 最后是 config.json 里 coding-plan 的 apiKey（新版放在这里）。
-    pub(crate) fn candidate_tokens(cred: &Credential) -> Vec<String> {
+    pub fn candidate_tokens(cred: &Credential) -> Vec<String> {
         let mut tokens: Vec<String> = Vec::new();
         let mut add = |value: Option<&str>| {
             if let Some(value) = value {
@@ -690,7 +690,7 @@ impl ZCodeProvider {
         tokens
     }
 
-    pub(crate) fn zai_headers(
+    pub fn zai_headers(
         cred: &Credential,
         token: &str,
         mid: Option<&str>,
@@ -720,7 +720,7 @@ impl ZCodeProvider {
         headers
     }
 
-    fn bigmodel_headers(cred: &Credential, token: &str) -> Vec<(String, String)> {
+    pub fn bigmodel_headers(cred: &Credential, token: &str) -> Vec<(String, String)> {
         vec![
             ("Authorization".into(), format!("Bearer {token}")),
             (
@@ -833,14 +833,13 @@ impl ZCodeProvider {
         }
 
         let all_auth_failed = auth_fail >= tokens.len() && !no_plan;
-        if !all_auth_failed {
-            if let Ok(view) = self.quota_from_balance_channel(cred, http, &tokens).await {
-                return Ok(view);
-            }
+        // BigModel 401 ≠ z.ai 失效：两套体系独立（实测同一个 token 在监控接口
+        // 「令牌已过期」、在余额接口返回完整套餐）。所以无条件再试余额通道——
+        // 真·过期的账号在余额接口也只是 401/空数据，落回下面的兜底结论，行为不变。
+        if let Ok(view) = self.quota_from_balance_channel(cred, http, &tokens).await {
+            return Ok(view);
         }
         if no_plan || all_auth_failed {
-            // 全部 token 都 401 时，余额通道对过期 token 也只是返回空数据，继续问下去
-            // 只会把「没有套餐」显示成「读取失败」。结论按「无额度」给。
             return Ok(QuotaView {
                 summary: if all_auth_failed {
                     "无额度数据（登录态可能已过期）".into()
@@ -1114,7 +1113,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// `x-request-id`：客户端每次请求都带一个新 uuid，缺失会被网关当成异常流量。
-fn request_id() -> String {
+pub fn request_id() -> String {
     let mut bytes = [0u8; 16];
     let _ = getrandom::getrandom(&mut bytes);
     format!(
@@ -1432,6 +1431,54 @@ mod tests {
         let (id, name, _, _, _) = identity(&c);
         assert_eq!(id, format!("{}@zai", &sha256_hex(token.as_bytes())[..12]));
         assert_eq!(name, "ZCode 账号");
+    }
+
+    /// 抓包回归：监控接口「令牌已过期」的 token 在 z.ai 余额接口可能完全有效
+    /// （两套体系独立）。全部 token 都 401 后仍要试余额通道，否则把有余额的
+    /// 账号显示成「无额度数据（登录态可能已过期）」。
+    #[tokio::test]
+    async fn bigmodel_auth_failure_still_tries_balance_channel() {
+        let http = crate::app::net::MockHttp::new();
+        let balance_url = format!("{BALANCE_URL}?app_version={APP_VERSION}");
+        // 抓包原文：两个 token 在监控接口先后返回不同的 401 文案
+        http.on_sequence(
+            LIMIT_URL,
+            vec![
+                (200, r#"{"code":401,"msg":"令牌已过期或验证不正确","success":false}"#),
+                (200, r#"{"code":401,"msg":"登录状态已过期","success":false}"#),
+            ],
+        );
+        // 同一个 token[0] 在余额接口返回完整套餐（抓包原文）
+        http.on(
+            &balance_url,
+            200,
+            r#"{"code":0,"msg":"","data":{"server_time":1795832796,"plans":[{"plan_id":"zcode-v3-start-plan-1127","name":"ZCODE WEEKEND BUILD","status":"active"}],"balances":[{"show_name":"GLM-5.3-Flash","total_units":300000000.0,"used_units":226491236.0,"remaining_units":73508764.0}]}}"#,
+        );
+        let mut cred = Credential {
+            token: "tok-0123456789-abcdefghijklmnop".into(),
+            ..Default::default()
+        };
+        cred.put(
+            "credentials",
+            json!({
+                "zcodejwttoken": "tok-0123456789-abcdefghijklmnop",
+                "oauth:bigmodel:access_token": "tok-0123456789-zyxwvutsrqponml",
+            }),
+        );
+
+        let quota = ZCodeProvider::new().credits(&cred, &http).await.unwrap();
+
+        let windows = quota.quota.clone().unwrap_or_default();
+        assert!(
+            !windows.is_empty() || quota.summary.contains("GLM"),
+            "监控接口 401 后仍要试余额通道：{}",
+            quota.summary
+        );
+        let used = windows.get("GLM-5.3-Flash").copied().unwrap_or_default();
+        assert!(
+            (used - 75.497).abs() < 0.5,
+            "226491236/300000000 ≈ 75.5%，实际：{used}"
+        );
     }
 
     /// z.ai 族凭据直接走余额通道：BigModel 监控接口一次都不该被请求（每轮

@@ -123,7 +123,7 @@ fn two_episode_dates_survive_and_unchanged_resync_is_deduplicated() {
 }
 
 #[test]
-fn shared_authoritative_ids_merge_but_title_year_and_season_do_not() {
+fn cross_source_merge_by_identity_title_and_year_stays() {
     let (_dir, db) = setup();
     let mut first = sample("anilist", "10");
     first.external_ids.push(CatalogExternalId {
@@ -145,8 +145,13 @@ fn shared_authoritative_ids_merge_but_title_year_and_season_do_not() {
     assert_eq!(item.media.source, "anilist");
     assert_eq!(item.external_ids.len(), 3);
     assert_eq!(item.media.cast, vec!["声優甲"]);
-    let mut other_year = sample("anilist", "11");
-    other_year.media.year = Some(2025);
+    // 新语义：各来源落地信息在详情逐源保留
+    assert!(
+        item.source_infos.iter().any(|s| s.source == "jikan"),
+        "合并后的行要有 jikan 的来源信息"
+    );
+
+    // 同标题 + 同类型 + 同年份（不同季的外部 ID）→ 合并进同一作品，季各自保留
     let mut other_season = sample("anilist", "12");
     other_season.seasons.push(CatalogSeason {
         source: "anilist".into(),
@@ -154,8 +159,48 @@ fn shared_authoritative_ids_merge_but_title_year_and_season_do_not() {
         number: Some(2),
         ..Default::default()
     });
-    upsert(&db, &[other_year, other_season], "2026-11-22").unwrap();
-    assert_eq!(count_all(&db).unwrap(), 3);
+    upsert(&db, &[other_season], "2026-11-22").unwrap();
+    assert_eq!(count_all(&db).unwrap(), 1);
+    let merged = detail(&db, "anilist:10").unwrap().unwrap();
+    assert_eq!(merged.external_ids.len(), 4);
+    assert_eq!(merged.seasons.len(), 1, "第二季挂在同一作品下");
+    assert_eq!(merged.seasons[0].external_id, "s2");
+
+    // 同标题但年份冲突 → 不自动合并，自成一行并记入疑似候选
+    let mut other_year = sample("anilist", "11");
+    other_year.media.year = Some(2025);
+    upsert(&db, &[other_year], "2026-11-23").unwrap();
+    assert_eq!(count_all(&db).unwrap(), 2);
+    let with_suspect = detail(&db, "anilist:10").unwrap().unwrap();
+    assert_eq!(with_suspect.dupe_candidates.len(), 1);
+    assert_eq!(with_suspect.dupe_candidates[0].reason, "year_conflict");
+    db.read(|conn| {
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM media_dupe_candidates WHERE key_a='anilist:10' AND key_b='anilist:11'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "open");
+        Ok(())
+    })
+    .unwrap();
+
+    // 人工合并：确认是同一作品的另一季/另一来源写法
+    let message = merge_candidates(&db, "anilist:10", "anilist:11", true, "2026-11-24").unwrap();
+    assert!(message.contains("已合并"));
+    assert_eq!(count_all(&db).unwrap(), 1);
+    let after = detail(&db, "anilist:10").unwrap().unwrap();
+    assert!(after.external_ids.iter().any(|id| id.source == "anilist" && id.external_id == "11"));
+    db.read(|conn| {
+        let archived: i64 = conn
+            .query_row("SELECT COUNT(*) FROM media_merge_archive WHERE merged_key='anilist:11'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(archived, 1, "被合并的行要归档可追溯");
+        Ok(())
+    })
+    .unwrap();
 }
 
 #[test]
@@ -462,12 +507,11 @@ fn display_rating_keeps_original_scale_and_chapters_are_individual_facts() {
 #[test]
 fn conflicting_trusted_ids_fail_atomically_without_erasing_either_item() {
     let (_dir, db) = setup();
-    upsert(
-        &db,
-        &[sample("anilist", "1"), sample("mal", "2")],
-        "2026-11-22",
-    )
-    .unwrap();
+    // 两条不同年份的样本：归一化标题相同但年份冲突，在新的二级匹配下仍各自成行，
+    // 才能构造出「桥接条目同时指向两条不同行」的真实冲突场景。
+    let mut older = sample("mal", "2");
+    older.media.year = Some(2025);
+    upsert(&db, &[sample("anilist", "1"), older], "2026-11-22").unwrap();
     let mut bridge = sample("tmdb", "3");
     bridge.external_ids = vec![
         CatalogExternalId {
@@ -616,7 +660,7 @@ fn overview_uses_real_release_and_first_seen_counts() {
     future.media.kind = "tv".into();
     future.media.premiered = Some("2026-12-01".into());
     upsert(&db, &[future], "2026-11-20T12:00:00Z").unwrap();
-    let overview = overview(&db, "2026-11-22", "2026-11-16", "2026-11-24").unwrap();
+    let overview = overview(&db, "2026-11-22", "2026-11-16", "2026-11-24", None).unwrap();
     assert_eq!(
         (
             overview.total,
@@ -663,3 +707,232 @@ fn stale_metadata_cannot_erase_nonempty_fields_and_batch_errors_roll_back() {
     assert!(upsert(&db, &[sample("anilist", "2"), invalid], "2026-11-24").is_err());
     assert_eq!(count_all(&db).unwrap(), 1);
 }
+
+#[test]
+fn normalize_title_folds_width_punct_and_case() {
+    assert_eq!(normalize_title("Ｄｒａｍａｔｉｃ 兴奋！"), "dramatic兴奋");
+    assert_eq!(normalize_title("斗罗大陆 第一季"), normalize_title("斗罗大陆·第一季"));
+    assert_eq!(normalize_title("  Re:Zero "), "rezero");
+}
+
+#[test]
+fn scope_year_people_and_genre_filters_shape_the_library() {
+    let (_dir, db) = setup();
+    let mut domestic = sample("bilibili", "1");
+    domestic.media.title = "国内剧".into();
+    domestic.media.cast = vec!["演员甲".into(), "演员乙".into()];
+    domestic.media.year = Some(2024);
+    let mut foreign = sample("tvmaze", "2");
+    foreign.media.title = "海外剧".into();
+    foreign.media.cast = vec!["演员甲".into()];
+    foreign.media.year = Some(2025);
+    foreign.media.genres = vec!["科幻".into(), "悬疑".into()];
+    upsert(&db, &[domestic], "2026-11-25").unwrap();
+    upsert(&db, &[foreign], "2026-11-26").unwrap();
+
+    let count = |query: CatalogQuery| -> i64 { library(&db, &query).unwrap().total };
+    let all = CatalogQuery::default();
+    assert_eq!(count(all.clone()), 2);
+    assert_eq!(count(CatalogQuery { scope: Some("domestic".into()), ..Default::default() }), 1);
+    assert_eq!(count(CatalogQuery { scope: Some("foreign".into()), ..Default::default() }), 1);
+    // 演员任一（any）vs 全部（all）：「两个演员同框」只有国内剧满足
+    assert_eq!(count(CatalogQuery { cast: vec!["演员甲".into()], ..Default::default() }), 2);
+    assert_eq!(count(CatalogQuery {
+        cast: vec!["演员甲".into(), "演员乙".into()],
+        cast_mode: Some("all".into()),
+        ..Default::default()
+    }), 1);
+    // 题材全部（all）：同时含科幻与悬疑
+    assert_eq!(count(CatalogQuery {
+        genres: vec!["科幻".into(), "悬疑".into()],
+        genre_mode: Some("all".into()),
+        ..Default::default()
+    }), 1);
+    // 年份区间
+    assert_eq!(count(CatalogQuery { year_from: Some(2025), year_to: Some(2026), ..Default::default() }), 1);
+    // updated 排序：最近更新的海外剧排最前
+    let page = library(&db, &CatalogQuery { sort: Some("updated".into()), ..Default::default() }).unwrap();
+    assert_eq!(page.items[0].title, "海外剧");
+    // 组合：国内 + 2024 年区间 → 只剩国内剧
+    assert_eq!(count(CatalogQuery {
+        scope: Some("domestic".into()),
+        year_from: Some(2024),
+        year_to: Some(2024),
+        ..Default::default()
+    }), 1);
+    let _ = all;
+}
+
+#[test]
+fn source_info_is_written_per_draft_and_shown_in_detail() {
+    let (_dir, db) = setup();
+    let mut first = sample("bilibili", "1");
+    first.media.source_url = Some("https://www.bilibili.com/bangumi/play/ss1".into());
+    upsert(&db, &[first], "2026-11-25").unwrap();
+    // 跨源合并（同标题同年）：两个来源的信息都留在详情
+    let mut second = sample("iqiyi", "2");
+    second.media.source_url = Some("https://www.iqiyi.com/v/2".into());
+    second.media.episode_count = Some(12);
+    upsert(&db, &[second], "2026-11-26").unwrap();
+    let detail = detail(&db, "bilibili:1").unwrap().unwrap();
+    assert_eq!(detail.source_infos.len(), 2, "两个来源各一条落地信息");
+    let bilibili = detail.source_infos.iter().find(|s| s.source == "bilibili").unwrap();
+    assert_eq!(bilibili.url.as_deref(), Some("https://www.bilibili.com/bangumi/play/ss1"));
+    let iqiyi = detail.source_infos.iter().find(|s| s.source == "iqiyi").unwrap();
+    assert_eq!(iqiyi.episode_text.as_deref(), Some("共 12 集"));
+}
+
+/// 直接插一条「升级前」形态的行：没有 norm_title、没有逐源信息与人员行。
+fn insert_legacy_row(db: &Db, key: &str, source: &str, title: &str, year: Option<i32>, first: &str) {
+    let media = CatalogMedia {
+        key: key.into(),
+        title: title.into(),
+        kind: "anime".into(),
+        source: source.into(),
+        year,
+        status: "airing".into(),
+        platforms: vec![source.into()],
+        first_seen: first.into(),
+        updated_at: first.into(),
+        ..Default::default()
+    };
+    db.write(|conn| {
+        conn.execute(
+            "INSERT INTO media(key,title,kind,status,year,source,first_seen,updated_at,search_text,payload,authority_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'',?9,'{}')",
+            params![key, media.title, media.kind, media.status, media.year, media.source,
+                media.first_seen, media.updated_at, serde_json::to_string(&media).unwrap()],
+        )?;
+        // 迁移路径本来就会写外部 ID 行；没有它，scope 过滤与合并搬移都无从谈起
+        conn.execute(
+            "INSERT INTO media_external_ids(source,external_id,media_key) VALUES (?1,?2,?3)
+             ON CONFLICT DO NOTHING",
+            params![source, key.rsplit_once(':').map(|(_, id)| id).unwrap_or(key), key],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn dedupe_backfill_merges_same_year_and_marks_year_conflicts() {
+    let (_dir, db) = setup();
+    // 真正的「升级前」形态：同一部番在三个源各一行（直接 SQL 插入，无逐源信息）
+    insert_legacy_row(&db, "bilibili:1", "bilibili", "同名番剧", Some(2026), "2026-11-25");
+    insert_legacy_row(&db, "iqiyi:2", "iqiyi", "同名番剧", Some(2026), "2026-11-24");
+    insert_legacy_row(&db, "tencent:3", "tencent", "同名番剧", Some(2025), "2026-11-25");
+    let report = dedupe_backfill(&db, "2026-11-26").unwrap();
+    assert_eq!(report.norm_backfilled, 3);
+    assert_eq!(report.people_backfilled, 3);
+    assert_eq!(report.source_info_backfilled, 3);
+    // 同年（2026）聚类自动合并；2025 的年份冲突行自成一行并记疑似
+    assert_eq!(count_all(&db).unwrap(), 2);
+    assert_eq!(report.merged, 1);
+    assert_eq!(report.suspects, 2, "冲突行与两个主行各记一条候选");
+    // 主体 = first_seen 最早的行（iqiyi:2），bilibili 行并入它
+    let detail = detail(&db, "iqiyi:2").unwrap().unwrap();
+    assert!(detail.external_ids.iter().any(|id| id.source == "bilibili" && id.external_id == "1"));
+    assert!(detail.source_infos.iter().any(|s| s.source == "bilibili"), "被合并行的来源信息要跟过来");
+    assert_eq!(detail.source_infos.len(), 2, "iqiyi 自身 + 被合并的 bilibili");
+    // 幂等：第二次跳过（标记已写）
+    let again = dedupe_backfill(&db, "2026-11-27").unwrap();
+    assert_eq!(again.merged, 0);
+    assert_eq!(again.norm_backfilled, 0);
+}
+
+#[test]
+fn overview_respects_scope_filter() {
+    let (_dir, db) = setup();
+    let mut domestic = sample("bilibili", "1");
+    domestic.media.title = "国内番".into();
+    let mut foreign = sample("anilist", "2");
+    foreign.media.title = "海外番".into();
+    upsert(&db, &[domestic, foreign], "2026-11-25").unwrap();
+    let all = overview(&db, "2026-11-26", "2026-11-23", "2026-11-30", None).unwrap();
+    assert_eq!(all.total, 2);
+    let domestic = overview(&db, "2026-11-26", "2026-11-23", "2026-11-30", Some("domestic")).unwrap();
+    assert_eq!(domestic.total, 1);
+    let foreign = overview(&db, "2026-11-26", "2026-11-23", "2026-11-30", Some("foreign")).unwrap();
+    assert_eq!(foreign.total, 1);
+}
+
+#[test]
+fn follow_set_and_list_roundtrip() {
+    let (_dir, db) = setup();
+    upsert(&db, &[sample("bilibili", "1")], "2026-11-25").unwrap();
+    let mut with_release = sample("iqiyi", "2");
+    with_release.media.title = "另一部".into();
+    with_release.releases.push(CatalogRelease {
+        source: "iqiyi".into(),
+        external_id: "2".into(),
+        date: "2026-11-28".into(),
+        episode: Some("3".into()),
+        release_kind: "update".into(),
+        updated_at: "2026-11-28T10:00:00Z".into(),
+        ..Default::default()
+    });
+    upsert(&db, &[with_release], "2026-11-28").unwrap();
+
+    // 收藏两部：一部在追、一部想看
+    follow_set(&db, "bilibili:1", Some("watching"), "2026-11-28T09:00:00Z").unwrap();
+    follow_set(&db, "iqiyi:2", Some("want"), "2026-11-28T09:00:00Z").unwrap();
+    // 无效状态拒绝
+    assert!(follow_set(&db, "bilibili:1", Some("bogus"), "2026-11-28").is_err());
+    // 不存在的条目拒绝
+    assert!(follow_set(&db, "bilibili:404", Some("watching"), "2026-11-28").is_err());
+
+    let rows = follow_list(&db, &[]).unwrap();
+    assert_eq!(rows.len(), 2);
+    // 有发行的排在最前（latest DESC）
+    assert_eq!(rows[0].media.key, "iqiyi:2");
+    assert_eq!(rows[0].state, "want");
+    assert_eq!(rows[0].latest_release.as_deref(), Some("2026-11-28"));
+    assert_eq!(rows[0].latest_episode.as_deref(), Some("3"));
+    // 状态筛选
+    let watching = follow_list(&db, &["watching".into()]).unwrap();
+    assert_eq!(watching.len(), 1);
+    assert_eq!(watching[0].media.key, "bilibili:1");
+    // 状态切换
+    follow_set(&db, "bilibili:1", Some("done"), "2026-11-28T10:00:00Z").unwrap();
+    let rows = follow_list(&db, &[]).unwrap();
+    let changed = rows.iter().find(|r| r.media.key == "bilibili:1").unwrap();
+    assert_eq!(changed.state, "done");
+    // 取消收藏 = 删行
+    follow_set(&db, "iqiyi:2", None, "2026-11-28T11:00:00Z").unwrap();
+    assert_eq!(follow_list(&db, &[]).unwrap().len(), 1);
+}
+
+#[test]
+fn merge_moves_follow_to_target_and_keeps_existing_state() {
+    let (_dir, db) = setup();
+    // 年份错开让两行共存（ingest 二级匹配只合并同年同题）
+    let mut older = sample("iqiyi", "2");
+    older.media.year = Some(2025);
+    upsert(&db, &[sample("bilibili", "1"), older], "2026-11-25").unwrap();
+    // 修正年份后跨源同题同年的行对，走 merge_candidates 人工合并路径
+    db.write(|conn| {
+        Ok(conn.execute("UPDATE media SET year=2026 WHERE key='iqiyi:2'", [])?)
+    })
+    .unwrap();
+
+    // 分支 A：target 未收藏 → follow 整行搬移到 target
+    follow_set(&db, "iqiyi:2", Some("want"), "2026-11-26").unwrap();
+    merge_candidates(&db, "bilibili:1", "iqiyi:2", true, "2026-11-27").unwrap();
+    let rows = follow_list(&db, &[]).unwrap();
+    assert_eq!(rows.len(), 1, "follow 跟到 target，不产生第二行");
+    assert_eq!(rows[0].media.key, "bilibili:1");
+    assert_eq!(rows[0].state, "want");
+
+    // 分支 B：target 已收藏 → 保留 target 的状态，败者收藏删除
+    let mut older2 = sample("tencent", "3");
+    older2.media.year = Some(2025);
+    upsert(&db, &[older2], "2026-11-27").unwrap();
+    follow_set(&db, "bilibili:1", Some("watching"), "2026-11-28").unwrap();
+    follow_set(&db, "tencent:3", Some("done"), "2026-11-28").unwrap();
+    merge_candidates(&db, "bilibili:1", "tencent:3", true, "2026-11-29").unwrap();
+    let rows = follow_list(&db, &[]).unwrap();
+    assert_eq!(rows.len(), 1, "合并后收藏行不能重复");
+    assert_eq!(rows[0].media.key, "bilibili:1");
+    assert_eq!(rows[0].state, "watching", "target 已收藏时保留 target 的状态");
+}
+

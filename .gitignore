@@ -7,6 +7,8 @@ release/
 src-tauri/target/
 # 隔离测试构建目录（CARGO_TARGET_DIR，开发版占用 target/debug 时跑测试用）
 src-tauri/target-test/
+# 托盘启动器（独立 crate）
+launcher/target/
 src-tauri/gen/
 __pycache__/
 *.py[cod]

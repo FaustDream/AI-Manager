@@ -16,7 +16,7 @@ use ai_manager::app::accounts::repo;
 use ai_manager::app::checkin::Service;
 use ai_manager::app::db::Db;
 use ai_manager::app::net::RealHttp;
-use ai_manager::SystemClock;
+use ai_manager::{Http, SystemClock};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -835,3 +835,122 @@ async fn probe_pack_dirs() {
     println!("  pack_ready   = {}", intl.pack_ready(uid));
 }
 
+
+/// ZCode 余额链路**抓包**探针：按生产顺序逐 token 重放三个额度接口，
+/// 打印 HTTP 状态与原始响应（令牌脱敏）。用于诊断「获取不到余额」卡在哪一层。
+///
+/// ```text
+/// cargo test --test live_probe probe_zcode_quota_capture -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "打真实接口，手动执行"]
+async fn probe_zcode_quota_capture() {
+    use ai_manager::app::accounts::credential::Credential;
+    use ai_manager::app::accounts::repo as acc_repo;
+    use ai_manager::app::net::HttpRequest;
+    use ai_manager::app::providers::zcode::{
+        request_id, BALANCE_URL, LIMIT_URL, SUBSCRIPTION_URL, ZCodeProvider,
+    };
+
+    let db = Arc::new(Db::open().expect("打开真实账号库"));
+    let accounts = repo::list(&db).expect("读账号表");
+    let http = RealHttp::new();
+    for a in accounts.iter().filter(|a| a.platform == "zcode") {
+        let Some(bytes) = acc_repo::secret_of(&db, &a.iid).expect("读凭据") else {
+            println!("- {}：没有凭据", a.display_name());
+            continue;
+        };
+        let cred = Credential::parse(&bytes).expect("解析凭据包");
+        println!("\n=== {} ({}) ===", a.display_name(), a.iid);
+        println!(
+            "meta.provider = {:?} · meta.device_mid = {:?}",
+            cred.meta_str("provider"),
+            cred.meta_str("device_mid")
+        );
+        let tokens: Vec<String> = ZCodeProvider::candidate_tokens(&cred);
+        println!("候选 token {} 个：", tokens.len());
+        for (index, token) in tokens.iter().enumerate() {
+            let head: String = token.chars().take(10).collect();
+            let kind = if token.contains('.') && token.starts_with("ey") { "JWT" } else { "opaque" };
+            println!("  [{index}] {}…（{} 字符，{}）", head, token.chars().count(), kind);
+        }
+        for (index, token) in tokens.iter().enumerate() {
+            println!("\n--- token [{index}] ---");
+            for (name, url, headers) in [
+                ("bigmodel quota/limit", LIMIT_URL.to_string(), Provider::bigmodel_headers(&cred, token)),
+                ("bigmodel subscription", SUBSCRIPTION_URL.to_string(), Provider::bigmodel_headers(&cred, token)),
+                ("zai billing/balance", format!("{BALANCE_URL}?app_version=3.16.3"), Provider::zai_headers(&cred, token, None)),
+            ] {
+                let mut headers = headers;
+                headers.push(("x-request-id".into(), request_id()));
+                let req = HttpRequest::get(url).headers(&headers);
+                match http.send(req).await {
+                    Ok(resp) => {
+                        let body = redact(&resp.body, token);
+                        let shown: String = body.chars().take(if name.contains("balance") { 8000 } else { 400 }).collect();
+                        println!(
+                            "  {name} → HTTP {}\n    {}",
+                            resp.status,
+                            shown
+                        );
+                    }
+                    Err(e) => println!("  {name} → 请求失败：{}", e.message),
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            }
+        }
+    }
+}
+
+use ai_manager::app::providers::zcode::ZCodeProvider as Provider;
+
+/// ZCode 任意端点**返回数据**抓包：静态挖掘（app.asar）拿到端点清单后，
+/// 用有效凭据重放，看真实返回结构。只读 GET，不领任何东西。
+///
+/// ```text
+/// cargo test --test live_probe probe_zcode_endpoints -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "打真实接口，手动执行"]
+async fn probe_zcode_endpoints() {
+    use ai_manager::app::accounts::credential::Credential;
+    use ai_manager::app::accounts::repo as acc_repo;
+    use ai_manager::app::net::HttpRequest;
+    use ai_manager::app::providers::zcode::{request_id, ZCodeProvider};
+
+    const BASE: &str = "https://zcode.z.ai/api/v1";
+    let endpoints = [
+        "/mcp/usage",
+        "/off-peak/ticket/status",
+        "/client/configs",
+    ];
+    let db = Arc::new(Db::open().expect("打开真实账号库"));
+    let accounts = repo::list(&db).expect("读账号表");
+    let http = RealHttp::new();
+    for a in accounts.iter().filter(|a| a.platform == "zcode") {
+        let Some(bytes) = acc_repo::secret_of(&db, &a.iid).expect("读凭据") else {
+            continue;
+        };
+        let cred = Credential::parse(&bytes).expect("解析凭据包");
+        let tokens = ZCodeProvider::candidate_tokens(&cred);
+        let Some(token) = tokens.first().cloned() else {
+            continue;
+        };
+        println!("\n=== {} 用 token[0] 重放 ===", a.display_name());
+        for path in endpoints {
+            let url = format!("{BASE}{path}?app_version=3.16.3");
+            let mut headers = ZCodeProvider::zai_headers(&cred, &token, None);
+            headers.push(("x-request-id".into(), request_id()));
+            let req = HttpRequest::get(url).headers(&headers);
+            match http.send(req).await {
+                Ok(resp) => {
+                    let body = redact(&resp.body, &token);
+                    let shown: String = body.chars().take(900).collect();
+                    println!("\n{path} → HTTP {}\n  {shown}", resp.status);
+                }
+                Err(e) => println!("\n{path} → 请求失败：{}", e.message),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        }
+    }
+}

@@ -673,7 +673,10 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
             let key = arg(v, "key")?;
             to_json(cmd::catalog::catalog_detail(state, key).await)
         }
-        "catalog_overview" => to_json(cmd::catalog::catalog_overview(state).await),
+        "catalog_overview" => {
+            let scope = arg(v, "scope")?;
+            to_json(cmd::catalog::catalog_overview(state, scope).await)
+        }
         "catalog_jobs" => to_json(cmd::catalog::catalog_jobs(state).await),
         "catalog_source_set" => {
             let (source, enabled, token, clear_key) = (arg(v, "source")?, arg(v, "enabled")?, arg(v, "token")?, arg(v, "clear_key")?);
@@ -686,6 +689,18 @@ pub async fn dispatch(state: &AppState, name: &str, v: &Value) -> Result<Value, 
         "catalog_facets" => {
             let query = arg(v, "query")?;
             to_json(cmd::catalog::catalog_facets(state, query).await)
+        }
+        "catalog_merge" => {
+            let request = arg(v, "request")?;
+            to_json(cmd::catalog::catalog_merge(state, request).await)
+        }
+        "catalog_follow_list" => {
+            let states = arg(v, "states")?;
+            to_json(cmd::catalog::catalog_follow_list(state, states).await)
+        }
+        "catalog_follow_set" => {
+            let (key, follow_state) = (arg(v, "key")?, arg(v, "state")?);
+            to_json(cmd::catalog::catalog_follow_set(state, key, follow_state).await)
         }
 
         // ------------------------------------------------------------ schedule

@@ -1,14 +1,14 @@
 ; AI Manager · Windows 安装包（NSIS，per-user / 浏览器形态）
 ;
-; 2.x 运行形态：exe 是只绑 127.0.0.1:5274 的本机 axum 后端，页面由 exe 同级
-; dist\ 静态托管；start.cmd 拉起后端并打开默认浏览器。没有 Tauri/WebView2/
-; .NET 依赖，也没有托盘与开机自启；start.cmd 会保留一个最小化的控制台作为
-; 后端日志窗口。
+; 2.x 运行形态：ai-manager.exe 是只绑 127.0.0.1:5274 的本机 axum 后端，页面由
+; exe 同级 dist\ 静态托管；ai-manager-launcher.exe 是托盘常驻的启动器，负责
+; 后端的启动 / 关闭 / 重启（快捷方式与完成页指向它）。start.cmd 保留作为
+; 开发期兜底入口。没有 Tauri/WebView2/.NET 依赖。
 ;
-; 安装包因此只带：ai-manager.exe + dist\ + start.cmd + README.txt + icon.ico。
-; 前端不嵌进 exe，也不需要 WebView2。
+; 安装包因此带：ai-manager.exe + ai-manager-launcher.exe + dist\ + start.cmd
+; + README.txt + icon.ico。前端不嵌进 exe，也不需要 WebView2。
 ;
-; 构建（仓库根目录，先 npm run build + cargo build --release）：
+; 构建（仓库根目录，先 npm run build + 两个 cargo build --release）：
 ;   makensis.exe /INPUTCHARSET UTF8 packaging\nsis\ai-manager.nsi
 ; CI 用 choco 安装 NSIS；本地推荐走 tools\build-release.ps1，它会查找 NSIS。
 ;
@@ -26,6 +26,8 @@ Unicode true
 !searchparse /file "..\..\src-tauri\Cargo.toml" `version = "` PRODUCT_VERSION `"`
 !define PRODUCT_PUBLISHER "FaustDream"
 !define PRODUCT_EXE "ai-manager.exe"
+!define LAUNCHER_EXE "ai-manager-launcher.exe"
+!define LAUNCHER_SRC "..\..\launcher\target\release"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\AI Manager"
 !define SRC_DIR "..\..\src-tauri\target\release"
 !define DIST_DIR "..\..\dist"
@@ -56,7 +58,7 @@ VIAddVersionKey /LANG=1033 "FileDescription" "AI Manager installer"
 !define MUI_ABORTWARNING
 !define MUI_ICON "${ICON_FILE}"
 !define MUI_UNICON "${ICON_FILE}"
-!define MUI_FINISHPAGE_RUN "$INSTDIR\start.cmd"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${LAUNCHER_EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "Run AI Manager now"
 
 !insertmacro MUI_PAGE_WELCOME
@@ -75,15 +77,20 @@ VIAddVersionKey /LANG=1033 "FileDescription" "AI Manager installer"
 Section "AI Manager" SEC_MAIN
   SectionIn RO
 
-  ; 覆盖安装前停掉常驻后端，否则 exe 被占用会报 File 失败。
+  ; 覆盖安装前停掉常驻后端与托盘启动器，否则 exe 被占用会报 File 失败。
   ; 进程本来就不存在时 taskkill 返回非 0，这里有意忽略，但必须 Pop 平衡栈。
   nsExec::Exec 'taskkill /F /IM "${PRODUCT_EXE}" /T'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM "${LAUNCHER_EXE}" /T'
   Pop $0
 
   SetOutPath "$INSTDIR"
 
   ; 后端主程序（纯 axum 本机服务）
   File "${SRC_DIR}\${PRODUCT_EXE}"
+
+  ; 托盘启动器（管理后端生命周期）
+  File "${LAUNCHER_SRC}\${LAUNCHER_EXE}"
 
   ; 页面由 exe 同级 dist\ 托管：漏带 dist 会 404。用 * 覆盖无扩展名文件。
   SetOutPath "$INSTDIR\dist"
@@ -99,9 +106,9 @@ Section "AI Manager" SEC_MAIN
   CreateDirectory "$INSTDIR\data"
 
   CreateDirectory "$SMPROGRAMS\AI Manager"
-  CreateShortCut "$SMPROGRAMS\AI Manager\AI Manager.lnk" "$INSTDIR\start.cmd" "" "$INSTDIR\icon.ico" 0
+  CreateShortCut "$SMPROGRAMS\AI Manager\AI Manager.lnk" "$INSTDIR\${LAUNCHER_EXE}" "" "$INSTDIR\icon.ico" 0
   CreateShortCut "$SMPROGRAMS\AI Manager\Uninstall AI Manager.lnk" "$INSTDIR\uninstall.exe"
-  CreateShortCut "$DESKTOP\AI Manager.lnk" "$INSTDIR\start.cmd" "" "$INSTDIR\icon.ico" 0
+  CreateShortCut "$DESKTOP\AI Manager.lnk" "$INSTDIR\${LAUNCHER_EXE}" "" "$INSTDIR\icon.ico" 0
   ; 旧版曾用 AI Manager v2.lnk，升级上来时清掉，避免两个入口并存。
   Delete "$DESKTOP\AI Manager v2.lnk"
 
@@ -130,6 +137,8 @@ SectionEnd
 Section "Uninstall"
   ; 单实例锁存在时 exe 会被占用，必须先停掉。用 nsExec 而不是 ExecWait，
   ; 后者会闪一个控制台窗口；返回值同样有意忽略，Pop 平衡栈。
+  nsExec::Exec 'taskkill /F /IM "${LAUNCHER_EXE}" /T'
+  Pop $0
   nsExec::Exec 'taskkill /F /IM "${PRODUCT_EXE}" /T'
   Pop $0
 
@@ -140,6 +149,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\AI Manager"
 
   Delete "$INSTDIR\${PRODUCT_EXE}"
+  Delete "$INSTDIR\${LAUNCHER_EXE}"
   Delete "$INSTDIR\start.cmd"
   Delete "$INSTDIR\README.txt"
   Delete "$INSTDIR\icon.ico"
@@ -148,8 +158,9 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\dist"
 
   DeleteRegKey HKCU "${UNINST_KEY}"
-  ; 浏览器形态之前留过自启项，值名 AIManager；现在已无自启。
+  ; 浏览器形态之前留过自启项，值名 AIManager；现在自启由托盘启动器管理（AIManagerLauncher）。
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "AIManager"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "AIManagerLauncher"
 
   ; 关键：不带 /r。data\ 里是账号库、会话、技能与备份，卸载一律保留。
   ; 目录里只剩 data\ 时这条会静默失败，正是想要的结果。

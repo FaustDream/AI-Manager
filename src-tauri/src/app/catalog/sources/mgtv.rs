@@ -1,14 +1,15 @@
 //! 芒果TV 频道列表。
 //!
 //! 公开列表接口一条记录已带中文简介、类型、年份、更新进度与知乎评分，
-//! 无需逐条详情。列表按频道推荐排序，不是全量目录，也不生成单集日历。
+//! 无需逐条详情。`se_updateTime` 是该记录的最近更新时刻，记成一条
+//! release（每个条目一行，刷新覆盖），让「最新更新」视图能看到芒果的动态。
+//! 列表按频道推荐排序，不是全量目录。
 
-use super::{episode_numbers, publish};
+use super::{episode_numbers, pace, publish, valid_date};
 use crate::app::catalog::sources::AdapterContext;
-use crate::app::catalog::types::{CatalogMedia, CatalogRating, IngestionBatch, MediaDraft};
+use crate::app::catalog::types::{CatalogMedia, CatalogRating, CatalogRelease, IngestionBatch, MediaDraft};
 use crate::app::error::{AppError, ErrorKind, Result};
 use crate::app::net::HttpRequest;
-use futures_util::future::join_all;
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
@@ -19,40 +20,32 @@ const UA: &str = super::MOBILE_UA;
 const CHANNELS: &[(u8, &str)] = &[(1, "variety"), (2, "tv"), (3, "anime")];
 
 pub async fn fetch(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<()> {
-    let requests = CHANNELS.iter().map(|(channel_id, kind)| {
-        let http = ctx.http.clone();
-        async move {
-            let url = format!("{LIST_URL}?channelId={channel_id}&pn=1&pc=30");
-            let req = HttpRequest::get(url).header("User-Agent", UA);
-            let resp = http.send(req).await?;
-            Ok::<_, AppError>((*kind, resp))
-        }
-    });
+    // 每频道页数：预算平摊到 3 个频道；热增量的小预算也能覆盖各频道第一页
+    let pages_per_channel = (ctx.max_pages / CHANNELS.len() as u32).clamp(1, 40);
     let mut items = Vec::new();
     let mut first_error = None;
-    for result in join_all(requests).await {
-        let (kind, resp) = match result {
-            Ok(value) => value,
-            Err(err) => {
-                first_error.get_or_insert(err);
-                continue;
-            }
-        };
-        match resp {
-            resp if resp.is_ok() => match parse(kind, &resp.body) {
-                Ok(mut rows) => items.append(&mut rows),
-                Err(err) => {
-                    first_error.get_or_insert(err);
-                }
-            },
-            resp => {
+    for (channel_id, kind) in CHANNELS {
+        for pn in 1..=pages_per_channel {
+            let url = format!("{LIST_URL}?channelId={channel_id}&pn={pn}&pc=30");
+            let req = HttpRequest::get(url).header("User-Agent", UA);
+            let resp = match ctx.http.send(req).await {
+                Ok(resp) => resp,
+                Err(err) => { first_error.get_or_insert(err); break; }
+            };
+            if !resp.is_ok() {
                 first_error.get_or_insert_with(|| {
-                    AppError::new(
-                        ErrorKind::Provider,
-                        format!("芒果TV返回 HTTP {}", resp.status),
-                    )
+                    AppError::new(ErrorKind::Provider, format!("芒果TV返回 HTTP {}", resp.status))
                 });
+                break;
             }
+            let drafts = match parse(kind, &resp.body) {
+                Ok(drafts) => drafts,
+                Err(err) => { first_error.get_or_insert(err); break; }
+            };
+            let exhausted = drafts.is_empty();
+            items.extend(drafts);
+            if exhausted { break; }
+            if pn < pages_per_channel { pace().await; }
         }
     }
     if items.is_empty() {
@@ -65,10 +58,23 @@ pub async fn fetch(ctx: AdapterContext, tx: Sender<IngestionBatch>) -> Result<()
         page: 1,
         complete: true,
         http_status: Some(200),
-        warning: Some("芒果TV只取综艺/电视剧/动漫频道第一页；列表不含确认单集日期，不进入发行日历".into()),
+        warning: Some("芒果TV拉综艺/电视剧/动漫频道列表（预算内翻页），se_updateTime 记为该条目的最近更新；列表不含确认单集日期，历史逐集不进发行日历".into()),
         ..Default::default()
     })
     .await
+}
+
+/// `se_updateTime` 形如 `2026-11-25 11:54:48`：拆成发行日期 + 当地时刻，
+/// 并合成 RFC3339 戳（芒果是中国平台，固定 +08:00）。
+fn parse_update_time(raw: &str) -> Option<(String, Option<String>, String)> {
+    let raw = raw.trim();
+    let (date, time) = raw.split_once(' ')?;
+    if !valid_date(date) {
+        return None;
+    }
+    let time = time.trim();
+    let stamp = format!("{date}T{time}+08:00");
+    Some((date.to_string(), Some(time.to_string()), stamp))
 }
 
 fn parse(kind: &'static str, body: &str) -> Result<Vec<MediaDraft>> {
@@ -169,6 +175,23 @@ fn parse(kind: &'static str, body: &str) -> Result<Vec<MediaDraft>> {
                 ..Default::default()
             });
         }
+        // se_updateTime → 每条目一行「最近更新」release：同一 external_id 的行在
+        // save_release 里按戳更新，热刷新轮次自动把它推到最新更新视图。
+        if let Some(update_time) = row.get("se_updateTime").and_then(|v| v.as_str()) {
+            if let Some((date, local_time, stamp)) = parse_update_time(update_time) {
+                draft.releases.push(CatalogRelease {
+                    source: "mgtv".into(),
+                    external_id: format!("upd:{}", draft.external_id),
+                    date,
+                    local_time,
+                    title: update_info.clone(),
+                    release_kind: "update".into(),
+                    url: draft.media.source_url.clone(),
+                    updated_at: stamp,
+                    ..Default::default()
+                });
+            }
+        }
         out.push(draft);
     }
     Ok(out)
@@ -212,5 +235,15 @@ mod tests {
         assert_eq!(variety.media.episode_count, None);
         assert!(variety.media.cast.is_empty(), "综艺的定位文案不是演员表");
         assert!(variety.ratings.is_empty(), "0 分不造评分");
+
+        // se_updateTime → 每条目一条「最近更新」release，戳用 +08:00
+        let show = &items[0];
+        assert_eq!(show.releases.len(), 1, "有 se_updateTime 就要有更新记录");
+        let release = &show.releases[0];
+        assert_eq!(release.date, "2026-11-25");
+        assert_eq!(release.local_time.as_deref(), Some("11:54:48"));
+        assert_eq!(release.updated_at, "2026-11-25T11:54:48+08:00");
+        assert_eq!(release.release_kind, "update");
+        assert_eq!(release.title.as_deref(), Some("全24集"));
     }
 }

@@ -398,6 +398,8 @@ function ConfigPane() {
           </label>
           {([
             ['同步间隔', 'sync_interval_min', '分钟', '两轮自动采集之间等多久；调大更省请求，调小更新更勤'],
+            ['热刷新间隔', 'hot_interval_min', '分钟', '最新更新热刷新多久跑一轮（只拉国内源最轻页面）；0 = 关闭热刷新'],
+            ['热刷新页预算', 'hot_max_pages', '页', '热刷新单源页数；小预算让 B站只拉时间线、其余源只拉首页/推荐页'],
             ['全量检查', 'full_check_days', '天', '多久跑一次全量目录（含已完结作品）；日常增量只补近期更新'],
             ['历史天数', 'history_days', '天', '没填日期时，采集从今天往前覆盖多少天'],
             ['未来天数', 'future_days', '天', '没填日期时，采集向未来覆盖多少天'],
@@ -508,6 +510,7 @@ function ConfigPane() {
                 ...base,
                 checkin: draft.checkin,
                 network: draft.network,
+                catalog: draft.catalog,
                 codebuddy: draft.codebuddy,
                 activity: { ...base.activity, travel_events_limit: draft.activity.travel_events_limit },
               };

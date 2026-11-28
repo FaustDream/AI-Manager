@@ -80,6 +80,8 @@ import type {
   SpaceReport,
   SwitchResult,
   TravelPrefs,
+  CatalogMergeRequest,
+  CatalogFollowRow,
 } from './types';
 
 /** 每个命令一行：JS 入参。省略 `State`/`AppHandle` 这类注入参数。 */
@@ -213,8 +215,11 @@ export interface CmdArgs {
   catalog_library: { query: CatalogQuery };
   catalog_releases: { query: CatalogQuery };
   catalog_detail: { key: string };
-  catalog_overview: void;
+  catalog_overview: { scope?: string | null };
   catalog_jobs: void;
+  catalog_merge: { request: CatalogMergeRequest };
+  catalog_follow_list: { states?: string[] | null };
+  catalog_follow_set: { key: string; state?: string | null };
   catalog_source_set: { source: string; enabled: boolean; token?: string | null; clear_key?: boolean };
   catalog_retry: { id: string };
   catalog_facets: { query: CatalogQuery };
@@ -376,6 +381,9 @@ export interface CmdReturn {
   catalog_detail: CatalogDetail | null;
   catalog_overview: CatalogOverview;
   catalog_jobs: CatalogJob[];
+  catalog_merge: string;
+  catalog_follow_list: CatalogFollowRow[];
+  catalog_follow_set: string;
   catalog_source_set: CatalogSourceStatus[];
   catalog_retry: CatalogRefreshReport;
   catalog_facets: CatalogFacets;
@@ -601,6 +609,9 @@ const CMD_LABELS: Record<string, string> = {
   catalog_detail: '读取作品详情与评分来源',
   catalog_overview: '读取资料库概览',
   catalog_jobs: '读取采集任务',
+  catalog_merge: '合并疑似重复作品',
+  catalog_follow_list: '读取我的追剧',
+  catalog_follow_set: '设置追剧状态',
   catalog_source_set: '配置资料库数据源',
   catalog_retry: '重试资料库采集任务',
   catalog_facets: '读取剧集筛选值',
